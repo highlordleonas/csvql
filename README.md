@@ -113,3 +113,4 @@ CSVQL is currently a local developer tool for trusted SQL. Do not run untrusted 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Codex capability review](docs/CODEX_CAPABILITY_REVIEW.md)
+- [v1 Quality Spine design](docs/superpowers/specs/2026-06-26-csvql-v1-quality-spine-design.md)
