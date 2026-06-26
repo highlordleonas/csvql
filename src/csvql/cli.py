@@ -8,8 +8,18 @@ from rich.console import Console
 from csvql import __version__
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import CSVQLError, TableMappingError
+from csvql.inspection import inspect_csv_source, sample_csv_source
 from csvql.models import TableSource
-from csvql.output import OutputFormat, format_json_result, format_table_result
+from csvql.output import (
+    OutputFormat,
+    format_inspect_result_json,
+    format_inspect_result_table,
+    format_json_result,
+    format_sample_result_json,
+    format_sample_result_table,
+    format_table_result,
+)
+from csvql.source import source_from_path
 from csvql.table_mapping import parse_table_mapping, source_from_single_csv
 
 app = typer.Typer(
@@ -38,6 +48,79 @@ def _root(
     ] = False,
 ) -> None:
     """CSVQL command group."""
+
+
+@app.command()
+def inspect(
+    csv_path: Annotated[
+        str,
+        typer.Argument(help="CSV file to inspect."),
+    ],
+    exact: Annotated[
+        bool,
+        typer.Option(
+            "--exact",
+            help="Run a full scan to calculate an exact row count.",
+        ),
+    ] = False,
+    output: Annotated[
+        OutputFormat,
+        typer.Option(
+            "--output",
+            "-o",
+            case_sensitive=False,
+            help="Inspection output format.",
+        ),
+    ] = OutputFormat.table,
+) -> None:
+    """Inspect a local CSV file without running user-authored SQL."""
+
+    try:
+        source = source_from_path(csv_path)
+        result = inspect_csv_source(source, exact=exact)
+        if output is OutputFormat.json:
+            typer.echo(format_inspect_result_json(result))
+        else:
+            typer.echo(format_inspect_result_table(result), nl=False)
+    except CSVQLError as exc:
+        _exit_with_error(exc)
+
+
+@app.command()
+def sample(
+    csv_path: Annotated[
+        str,
+        typer.Argument(help="CSV file to sample."),
+    ],
+    limit: Annotated[
+        int,
+        typer.Option(
+            "--limit",
+            min=1,
+            help="Maximum number of rows to sample.",
+        ),
+    ] = 10,
+    output: Annotated[
+        OutputFormat,
+        typer.Option(
+            "--output",
+            "-o",
+            case_sensitive=False,
+            help="Sample output format.",
+        ),
+    ] = OutputFormat.table,
+) -> None:
+    """Sample rows from a local CSV file without running user-authored SQL."""
+
+    try:
+        source = source_from_path(csv_path)
+        result = sample_csv_source(source, limit=limit)
+        if output is OutputFormat.json:
+            typer.echo(format_sample_result_json(result))
+        else:
+            typer.echo(format_sample_result_table(result), nl=False)
+    except CSVQLError as exc:
+        _exit_with_error(exc)
 
 
 @app.command()
