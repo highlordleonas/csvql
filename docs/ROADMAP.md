@@ -13,7 +13,25 @@ Goal: prove the core promise with a small working CLI.
 - clear missing-file, bad-mapping, and query errors
 - package layout, tests, Ruff, mypy, and CI
 
-## v0.2.0 - Project Catalog
+Stable gate:
+
+- CLI behavior documented in `README.md`
+- missing-file, bad-mapping, invalid-alias, and query-failure tests
+- JSON and table output tests
+- Ruff format, Ruff lint, mypy, and pytest passing through `uv run`
+- no unsupported sandbox, security-isolation, production-readiness, or large-file performance claims
+
+## v0.2.0 - Inspect And Sample
+
+- source model for resolved local CSV files
+- `csvql inspect <path>`
+- bounded/default row-count status; exact row count only with `--exact`
+- `csvql sample <path>`
+- table and JSON output for `inspect` and `sample`
+- messy CSV fixtures and error-path tests
+- README and architecture updates
+
+## v0.3.0 - Project Catalog
 
 - `.csvql.yml` models and loader
 - `csvql init`
@@ -23,15 +41,15 @@ Goal: prove the core promise with a small working CLI.
 - relative path resolution
 - CSV reader options and type overrides
 
-## v0.3.0 - SQL Files, Schema, Preview, Export
+## v0.4.0 - SQL Files And Export
 
 - `csvql run queries/file.sql`
 - positional query parameters
-- `csvql schema <table>`
-- `csvql preview <table>`
+- registered-table support for `csvql inspect`
+- registered-table support for `csvql sample`
 - `csvql export queries/file.sql --format csv|json|markdown|parquet --out path`
 
-## v0.4.0 - Profiling
+## v0.5.0 - Profiling
 
 - row and column counts
 - null counts and percentages
@@ -40,14 +58,22 @@ Goal: prove the core promise with a small working CLI.
 - duplicate row count
 - JSON profile output
 
-## v0.5.0 - Data Quality Checks
+## v0.6.0 - Data Quality Checks
 
 - configured checks in `.csvql.yml`
 - `not_null`, `unique`, `accepted_values`, `min`, `max`, `row_count_between`, `foreign_key`
 - non-zero exit code on failures
 - JSON check output for CI
 
-## v0.6.0 - Python API
+## v0.7.0 - Benchmark And Release Hardening
+
+- benchmark harness and JSON artifact
+- Markdown benchmark summary
+- release workflow
+- changelog
+- polished examples with reproducible data and commands
+
+## Post-v1 - Python API
 
 - `CSVQLSession.from_config(".csvql.yml")`
 - `session.query(sql, params=None)`
@@ -62,4 +88,4 @@ Goal: prove the core promise with a small working CLI.
 - benchmark report
 - release workflow
 - changelog
-- portfolio-grade examples
+- polished examples with reproducible data and commands

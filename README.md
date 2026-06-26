@@ -34,9 +34,8 @@ Implemented now:
 Planned later:
 
 - `.csvql.yml` project config
-- `run`, `schema`, `preview`, and `export`
+- `inspect`, `sample`, `run`, and `export`
 - profiling and data quality checks
-- Python API
 - benchmarks and release workflow
 
 ## Install For Development
@@ -106,7 +105,7 @@ make ci
 
 ## Security Model
 
-CSVQL is currently a local developer tool for trusted SQL. Do not run untrusted SQL files or input unless safe mode has been explicitly implemented and tested.
+CSVQL is currently a local developer tool for trusted SQL. DuckDB executes the SQL, and CSVQL does not restrict DuckDB capabilities or sandbox filesystem access. Do not run untrusted SQL files or input. Safe mode is not implemented and requires a separate design, threat model, implementation, and tests before CSVQL can make untrusted-SQL safety claims.
 
 ## Documentation
 

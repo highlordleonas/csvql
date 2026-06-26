@@ -1,6 +1,6 @@
 # Codex Capability Review
 
-This review tiers the local Codex skills, plugins, and agent roles that are useful for CSVQL. The intent is to keep the project efficient by loading the right capability at the right time instead of turning every task into process overhead.
+This review tiers the local Codex skills, plugins, and agent roles that are useful for CSVQL. The intent is to keep the project efficient by loading the right capability at the right time instead of turning every task into process overhead. `AGENTS.md` owns mandatory skill activation rules; this file is selection guidance, not scope authority.
 
 ## Tier 0 - Active Defaults
 

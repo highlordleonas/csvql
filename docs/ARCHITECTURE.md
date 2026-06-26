@@ -40,6 +40,7 @@ CLI arguments
 - CSV files are registered as views using DuckDB's CSV reader.
 - Table aliases must match `^[A-Za-z_][A-Za-z0-9_]*$`.
 - User SQL is passed through to DuckDB and treated as trusted local input.
+- CSVQL does not restrict DuckDB capabilities or sandbox filesystem access.
 - `--output` controls stdout formatting for query results.
 
 ## Deferred Decisions
@@ -47,5 +48,5 @@ CLI arguments
 - `.csvql.yml` schema and project discovery.
 - Whether persistent DuckDB cache is worth adding.
 - Whether named parameters should be supported before v1.
-- Whether safe mode belongs in v1 or post-v1.
+- Whether safe mode belongs later; it requires a separate ADR, threat model, implementation plan, and tests.
 - How export should share execution paths with stdout output.

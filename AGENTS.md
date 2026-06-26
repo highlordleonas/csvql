@@ -17,6 +17,14 @@ The active implementation target is v0.1:
 
 Do not implement project config, profiling, data quality checks, exports, shell, doctor, persistent cache, safe mode, or Python API until the v0.1 surface is stable.
 
+`v0.1-stable` means:
+
+- CLI behavior is documented in `README.md`.
+- Missing-file, bad-mapping, invalid-alias, and query-failure errors are covered by tests.
+- JSON and Rich table output behavior are covered by tests.
+- `uv run ruff format --check .`, `uv run ruff check .`, `uv run mypy src`, and `uv run pytest` pass.
+- Docs make no unsupported sandbox, security-isolation, production-readiness, or large-file performance claims.
+
 ## Tooling
 
 - Use `uv` for dependency management and command execution.
@@ -47,9 +55,11 @@ uv run pytest
 
 `csvql_project_pack/` and `csvql_project_pack.zip` are input artifacts, not runtime source. Copy useful content into normal repo files before relying on it.
 
-## General Working Contract
+## Skill Activation Contract
 
 Use relevant repo-local, global, plugin, and Superpowers skills intentionally. Select by task, but bias toward the local Python CLI, DuckDB, CSV inspection, testing, documentation, and evidence-backed product-quality stack.
+
+Before code or docs changes, read active repo authority first: this `AGENTS.md`, relevant docs, tests, and existing source patterns.
 
 Default stack for non-trivial CSVQL work:
 
@@ -58,7 +68,7 @@ Default stack for non-trivial CSVQL work:
 - `verification-before-completion`
 - `documentation` or `readme` when docs or user-facing behavior changes
 
-Must-not-be-missing baseline:
+Mandatory skill triggers:
 
 - Python modules, CLI code, packaging, dependencies, typing, or tests: `python-codebase-standards`
 - DuckDB execution, SQL behavior, table aliasing, CSV path handling, or user input boundaries: `python-codebase-standards`; add `security-best-practices` for path, SQL, safe-mode, or untrusted-input work
@@ -70,6 +80,10 @@ Must-not-be-missing baseline:
 - Review or security gates: `code-review`, `security-best-practices`, `differential-review` when appropriate
 - Superpowers: use when explicitly invoked or when the task fits brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion, or branch finishing
 - GitHub, PR, and CI tools: only when requested or needed
+
+If a mandatory skill is unavailable, stop and state the missing skill before proceeding, unless the user explicitly approves a fallback.
+
+Every implementation handoff must list skills used, verification commands run, skipped checks, and remaining risk.
 
 Authority precedence:
 
@@ -86,10 +100,12 @@ Scope guardrails:
 - CSVQL is local-first: CSV files, DuckDB, CLI workflow, typed Python boundaries, useful output, repeatable tests.
 - Do not turn v1 into a web app, cloud connector platform, multi-tenant/auth system, dashboard product, NLP execution engine, or Rust performance project without evidence and explicit scope approval.
 - Treat user-authored SQL as trusted local SQL until safe mode is explicitly designed, implemented, and tested.
+- CSVQL does not restrict DuckDB capabilities, sandbox filesystem access, or make untrusted SQL safe.
 - Do not claim sandboxing, security isolation, production readiness, or large-file performance without proof.
 - Add cache/materialization only as explicit user-controlled behavior, not hidden automatic state.
 - Use `uv` for all local execution. Do not install global packages.
 - Keep changes small, reversible, and backed by focused tests.
+- Prefer coherent vertical batches over one-command micro-slices when related behavior can be reviewed and verified together safely.
 
 Readiness and proof language:
 
