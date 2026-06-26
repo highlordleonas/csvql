@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from csvql.exceptions import CSVInspectionError
-from csvql.inspection import SNIFF_BYTES, _detect_dialect, inspect_csv_source
+from csvql.inspection import SNIFF_BYTES, _detect_dialect, inspect_csv_source, sample_csv_source
 from csvql.source import source_from_path
 
 
@@ -79,6 +79,35 @@ def test_inspect_csv_source_reports_detected_dialect(tmp_path: Path) -> None:
     assert result.dialect.delimiter == "\t"
     assert result.dialect.header is True
     assert result.dialect.encoding == "utf-8"
+
+
+def test_sample_csv_source_returns_bounded_rows(tmp_path: Path) -> None:
+    csv_path = tmp_path / "orders.csv"
+    csv_path.write_text(
+        "order_id,status\nORD-1,paid\nORD-2,pending\nORD-3,paid\n",
+        encoding="utf-8",
+    )
+    source = source_from_path(str(csv_path))
+
+    result = sample_csv_source(source, limit=2)
+
+    assert result.as_dict()["limit"] == 2
+    assert result.columns == ("order_id", "status")
+    assert result.rows == (("ORD-1", "paid"), ("ORD-2", "pending"))
+    assert result.warnings == ()
+
+
+def test_sample_csv_source_rejects_non_positive_limit(tmp_path: Path) -> None:
+    csv_path = tmp_path / "orders.csv"
+    csv_path.write_text("order_id,status\nORD-1,paid\n", encoding="utf-8")
+    source = source_from_path(str(csv_path))
+
+    try:
+        sample_csv_source(source, limit=0)
+    except ValueError as exc:
+        assert str(exc) == "Sample limit must be greater than zero."
+    else:
+        raise AssertionError("sample_csv_source accepted a non-positive limit")
 
 
 def test_detect_dialect_reads_only_sniff_bytes(

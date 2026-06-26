@@ -6,7 +6,7 @@ from pathlib import Path
 import duckdb
 
 from csvql.exceptions import CSVInspectionError
-from csvql.models import ColumnInfo, DialectInfo, InspectResult, RowCountInfo
+from csvql.models import ColumnInfo, DialectInfo, InspectResult, RowCountInfo, SampleResult
 from csvql.source import CSVSource
 
 SNIFF_BYTES = 64 * 1024
@@ -59,6 +59,42 @@ def inspect_csv_source(source: CSVSource, *, exact: bool = False) -> InspectResu
         dialect=dialect,
         columns=columns,
         row_count=row_count,
+        warnings=tuple(warnings),
+    )
+
+
+def sample_csv_source(source: CSVSource, *, limit: int = 10) -> SampleResult:
+    """Return a bounded row sample from a CSV source."""
+
+    if limit <= 0:
+        raise ValueError("Sample limit must be greater than zero.")
+
+    warnings: list[str] = []
+    connection: duckdb.DuckDBPyConnection | None = None
+    try:
+        connection = duckdb.connect(database=":memory:")
+        relation = connection.read_csv(
+            str(source.path),
+            auto_detect=True,
+            header=True,
+        )
+        sample_relation = relation.limit(limit)
+        rows = tuple(tuple(row) for row in sample_relation.fetchall())
+        columns = tuple(str(column) for column in relation.columns)
+    except (OSError, duckdb.Error) as exc:
+        raise CSVInspectionError(
+            f"Failed to sample CSV file: {source.display_path}",
+            suggestion="Check that the file is a readable CSV with a header row.",
+        ) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+    return SampleResult(
+        source=source.to_json_summary(),
+        limit=limit,
+        columns=columns,
+        rows=rows,
         warnings=tuple(warnings),
     )
 
