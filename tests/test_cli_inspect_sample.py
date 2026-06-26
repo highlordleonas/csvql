@@ -71,6 +71,16 @@ def test_sample_outputs_table_by_default(tmp_path: Path) -> None:
     assert "paid" in result.output
 
 
+def test_sample_rejects_non_positive_limit(tmp_path: Path) -> None:
+    csv_path = tmp_path / "orders.csv"
+    csv_path.write_text("order_id,status\nORD-1,paid\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["sample", str(csv_path), "--limit", "0"])
+
+    assert result.exit_code == 2
+    assert "--limit" in result.output
+
+
 def test_inspect_missing_file_uses_existing_file_error() -> None:
     result = runner.invoke(app, ["inspect", "missing.csv"])
 

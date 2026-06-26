@@ -20,7 +20,7 @@ CSVQL does not implement a SQL engine. DuckDB executes SQL; CSVQL owns the local
 
 ## Status
 
-This repository is at the v0.1 scaffold stage.
+This repository has the v0.1 query workflow plus the first inspect/sample vertical implemented for local CLI use.
 
 Implemented now:
 

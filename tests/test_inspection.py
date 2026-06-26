@@ -97,6 +97,21 @@ def test_sample_csv_source_returns_bounded_rows(tmp_path: Path) -> None:
     assert result.warnings == ()
 
 
+def test_sample_csv_source_wraps_missing_file_after_source_resolution(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "orders.csv"
+    csv_path.write_text("order_id,status\nORD-1,paid\n", encoding="utf-8")
+    source = source_from_path(str(csv_path))
+    csv_path.unlink()
+
+    with pytest.raises(CSVInspectionError) as exc_info:
+        sample_csv_source(source, limit=1)
+
+    assert str(exc_info.value) == f"Failed to sample CSV file: {csv_path}"
+    assert exc_info.value.suggestion == ("Check that the file is a readable CSV with a header row.")
+
+
 def test_sample_csv_source_rejects_non_positive_limit(tmp_path: Path) -> None:
     csv_path = tmp_path / "orders.csv"
     csv_path.write_text("order_id,status\nORD-1,paid\n", encoding="utf-8")
