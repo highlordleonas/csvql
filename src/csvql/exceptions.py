@@ -28,3 +28,9 @@ class QueryExecutionError(CSVQLError):
     """Raised when DuckDB rejects or fails a query."""
 
     exit_code = 1
+
+
+class CSVInspectionError(CSVQLError):
+    """Raised when CSV inspection or sampling fails."""
+
+    exit_code = 7
