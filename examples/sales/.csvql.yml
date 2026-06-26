@@ -1,0 +1,47 @@
+project: sales_analysis
+
+tables:
+  customers:
+    path: data/customers.csv
+    description: Sample customer master data
+    options:
+      header: true
+      delimiter: ","
+
+  orders:
+    path: data/orders.csv
+    description: Sample order data
+    options:
+      header: true
+      delimiter: ","
+    columns:
+      order_id:
+        type: varchar
+        primary_key: true
+      customer_id:
+        type: varchar
+      order_date:
+        type: date
+      status:
+        type: varchar
+      total_amount:
+        type: decimal
+
+checks:
+  customers:
+    - rule: not_null
+      column: customer_id
+    - rule: unique
+      column: customer_id
+
+  orders:
+    - rule: not_null
+      column: order_id
+    - rule: unique
+      column: order_id
+    - rule: min
+      column: total_amount
+      value: 0
+    - rule: foreign_key
+      column: customer_id
+      references: customers.customer_id

@@ -1,0 +1,5 @@
+order_id,customer_id,order_date,status,total_amount
+ORD-001,CUST-001,2025-03-01,paid,120.50
+ORD-002,CUST-001,2025-03-15,paid,80.00
+ORD-003,CUST-002,2025-04-01,pending,42.25
+ORD-004,CUST-003,2025-04-10,paid,230.10

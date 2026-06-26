@@ -1,0 +1,4 @@
+customer_id,email,created_at
+CUST-001,alex@example.com,2025-01-01
+CUST-002,blair@example.com,2025-01-12
+CUST-003,casey@example.com,2025-02-03
