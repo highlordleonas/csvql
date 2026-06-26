@@ -25,6 +25,8 @@ This repository is at the v0.1 scaffold stage.
 Implemented now:
 
 - `csvql query --table name=path "SELECT ..."`
+- `csvql inspect data/orders.csv --output json`
+- `csvql sample data/orders.csv --limit 10`
 - repeated `--table` mappings for joins
 - single-file shortcut mode
 - table and JSON stdout output
@@ -34,7 +36,7 @@ Implemented now:
 Planned later:
 
 - `.csvql.yml` project config
-- `inspect`, `sample`, `run`, and `export`
+- `run` and `export`
 - profiling and data quality checks
 - benchmarks and release workflow
 
@@ -86,6 +88,26 @@ uv run csvql query \
   --table orders=examples/sales/data/orders.csv \
   --output json \
   "SELECT status, COUNT(*) AS order_count FROM orders GROUP BY status"
+```
+
+## Inspect And Sample Examples
+
+Inspect a CSV without running user-authored SQL:
+
+```bash
+uv run csvql inspect examples/sales/data/orders.csv --output json
+```
+
+Calculate an exact row count when you explicitly want a full scan:
+
+```bash
+uv run csvql inspect examples/sales/data/orders.csv --exact --output json
+```
+
+Sample rows from a CSV:
+
+```bash
+uv run csvql sample examples/sales/data/orders.csv --limit 5
 ```
 
 ## Development Checks

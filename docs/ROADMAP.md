@@ -23,6 +23,8 @@ Stable gate:
 
 ## v0.2.0 - Inspect And Sample
 
+Implemented:
+
 - source model for resolved local CSV files
 - `csvql inspect <path>`
 - bounded/default row-count status; exact row count only with `--exact`

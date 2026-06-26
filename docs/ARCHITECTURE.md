@@ -22,6 +22,12 @@ CLI arguments
 `table_mapping.py`
 : Parse `name=path`, validate table aliases, resolve CSV paths, and support single-file alias derivation.
 
+`source.py`
+: Resolve local CSV paths and capture file metadata used by inspect, sample, and later catalog workflows.
+
+`inspection.py`
+: Use DuckDB and bounded file reads to infer columns, dialect metadata, row-count status, and sample rows.
+
 `engine.py`
 : Own DuckDB connection lifecycle, CSV registration, SQL execution, and DuckDB error conversion.
 
@@ -41,6 +47,8 @@ CLI arguments
 - Table aliases must match `^[A-Za-z_][A-Za-z0-9_]*$`.
 - User SQL is passed through to DuckDB and treated as trusted local input.
 - CSVQL does not restrict DuckDB capabilities or sandbox filesystem access.
+- `inspect` does not run an exact row count by default; `--exact` is the explicit full-scan mode.
+- `sample` reads a bounded row count and shares source resolution with `inspect` and `query`.
 - `--output` controls stdout formatting for query results.
 
 ## Deferred Decisions
