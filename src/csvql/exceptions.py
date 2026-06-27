@@ -34,3 +34,9 @@ class CSVInspectionError(CSVQLError):
     """Raised when CSV inspection or sampling fails."""
 
     exit_code = 7
+
+
+class ProjectConfigError(CSVQLError):
+    """Raised when project catalog discovery, parsing, or validation fails."""
+
+    exit_code = 8
