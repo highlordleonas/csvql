@@ -134,7 +134,8 @@ def _project_config_payload(config: ProjectConfig) -> dict[str, object]:
         )
 
     tables_payload = {
-        table.name: table.path for table in sorted(config.tables, key=lambda table: table.name)
+        table.name: {"path": table.path}
+        for table in sorted(config.tables, key=lambda table: table.name)
     }
     return {
         "version": config.version,
@@ -168,6 +169,11 @@ def _parse_project_config(raw_config: object, *, config_path: Path) -> ProjectCo
             f"Missing version in {config_path}.",
             suggestion=f"Set version: {SUPPORTED_VERSION} in .csvql.yml.",
         )
+    if type(version) is not int:
+        raise ProjectConfigError(
+            f"Project catalog version in {config_path} must be an integer.",
+            suggestion=f"Set version: {SUPPORTED_VERSION} in .csvql.yml.",
+        )
     if version != SUPPORTED_VERSION:
         raise ProjectConfigError(
             f"Unsupported project catalog version: {version}.",
@@ -183,19 +189,20 @@ def _parse_project_config(raw_config: object, *, config_path: Path) -> ProjectCo
     if not isinstance(tables, dict):
         raise ProjectConfigError(
             f"Project catalog tables in {config_path} must be a mapping.",
-            suggestion="Use table names as keys and CSV paths as string values.",
+            suggestion="Use table names as keys and nested mappings with path string entries, "
+            "for example orders: {path: data/orders.csv}.",
         )
 
     project_tables = tuple(
-        _parse_project_table_entry(name, path_value, config_path=config_path)
-        for name, path_value in tables.items()
+        _parse_project_table_entry(name, table_value, config_path=config_path)
+        for name, table_value in tables.items()
     )
     return ProjectConfig(version=SUPPORTED_VERSION, tables=project_tables)
 
 
 def _parse_project_table_entry(
     raw_name: object,
-    raw_path: object,
+    raw_table: object,
     *,
     config_path: Path,
 ) -> ProjectTable:
@@ -212,20 +219,40 @@ def _parse_project_table_entry(
             suggestion="Use letters, numbers, and underscores; start with a letter or underscore.",
         ) from exc
 
-    if raw_path is None:
+    if not isinstance(raw_table, dict):
+        raise ProjectConfigError(
+            f"Project catalog table '{name}' in {config_path} must be a mapping.",
+            suggestion="Use a nested path mapping such as orders: {path: data/orders.csv}.",
+        )
+
+    allowed_keys = {"path"}
+    extra_keys = set(raw_table) - allowed_keys
+    if extra_keys:
+        extra_keys_display = sorted(extra_keys)
+        message = (
+            f"Unsupported metadata for project catalog table '{name}' "
+            f"in {config_path}: {extra_keys_display}."
+        )
+        raise ProjectConfigError(
+            message,
+            suggestion="Keep each table entry to a single path key.",
+        )
+
+    if "path" not in raw_table:
         raise ProjectConfigError(
             f"Missing CSV path for project catalog table '{name}' in {config_path}.",
-            suggestion="Provide a string path to the CSV file.",
+            suggestion="Provide a nested path value for the CSV file.",
         )
+    raw_path = raw_table["path"]
     if not isinstance(raw_path, str):
         raise ProjectConfigError(
             f"Project catalog table '{name}' in {config_path} must map to a string path.",
-            suggestion="Use table: path values such as orders: data/orders.csv.",
+            suggestion="Use a nested string path value such as path: data/orders.csv.",
         )
     if not raw_path.strip():
         raise ProjectConfigError(
             f"Missing CSV path for project catalog table '{name}' in {config_path}.",
-            suggestion="Provide a string path to the CSV file.",
+            suggestion="Provide a nested string path to the CSV file.",
         )
 
     return ProjectTable(name=name, path=raw_path)

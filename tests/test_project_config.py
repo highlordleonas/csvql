@@ -97,11 +97,32 @@ def test_load_project_rejects_unsupported_version(tmp_path: Path) -> None:
         load_project(tmp_path)
 
 
+@pytest.mark.parametrize("payload", ["version: true\ntables: {}\n", "version: 1.0\ntables: {}\n"])
+def test_load_project_rejects_non_integer_version(
+    tmp_path: Path,
+    payload: str,
+) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(ProjectConfigError):
+        load_project(tmp_path)
+
+
+def test_load_project_rejects_missing_version(tmp_path: Path) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text("tables: {}\n", encoding="utf-8")
+
+    with pytest.raises(ProjectConfigError):
+        load_project(tmp_path)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
         "version: 1\n",
         "version: 1\ntables: []\n",
+        "- version: 1\n- tables: {}\n",
     ],
 )
 def test_load_project_rejects_missing_or_non_mapping_tables(
@@ -115,12 +136,56 @@ def test_load_project_rejects_missing_or_non_mapping_tables(
         load_project(tmp_path)
 
 
+def test_load_project_accepts_nested_table_entries(tmp_path: Path) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\ntables:\n  orders:\n    path: data/orders.csv\n",
+        encoding="utf-8",
+    )
+
+    context = load_project(tmp_path)
+
+    assert context.config == ProjectConfig(
+        version=SUPPORTED_VERSION,
+        tables=(ProjectTable(name="orders", path="data/orders.csv"),),
+    )
+
+
+def test_load_project_rejects_flat_table_entries(tmp_path: Path) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text("version: 1\ntables:\n  orders: data/orders.csv\n", encoding="utf-8")
+
+    with pytest.raises(ProjectConfigError):
+        load_project(tmp_path)
+
+
+def test_load_project_rejects_invalid_nested_table_alias(tmp_path: Path) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\ntables:\n  order-items:\n    path: data/orders.csv\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProjectConfigError):
+        load_project(tmp_path)
+
+
+def test_load_project_rejects_nested_table_entry_without_path(tmp_path: Path) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text("version: 1\ntables:\n  orders: {}\n", encoding="utf-8")
+
+    with pytest.raises(ProjectConfigError):
+        load_project(tmp_path)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
-        "version: 1\ntables:\n  order-items: data/orders.csv\n",
-        "version: 1\ntables:\n  orders:\n    path: data/orders.csv\n",
         "version: 1\ntables:\n  orders:\n",
+        "version: 1\ntables:\n  orders:\n    path:\n",
+        "version: 1\ntables:\n  orders:\n    path: 123\n",
+        "version: 1\ntables:\n  orders:\n    path: ''\n",
+        "version: 1\ntables:\n  orders:\n    path: data/orders.csv\n    format: csv\n",
     ],
 )
 def test_load_project_rejects_invalid_table_entries(tmp_path: Path, payload: str) -> None:
@@ -133,7 +198,7 @@ def test_load_project_rejects_invalid_table_entries(tmp_path: Path, payload: str
 
 def test_load_project_rejects_non_string_path(tmp_path: Path) -> None:
     config_path = tmp_path / CONFIG_FILENAME
-    config_path.write_text("version: 1\ntables:\n  orders: 123\n", encoding="utf-8")
+    config_path.write_text("version: 1\ntables:\n  orders:\n    path: 123\n", encoding="utf-8")
 
     with pytest.raises(ProjectConfigError):
         load_project(tmp_path)
@@ -211,5 +276,5 @@ def test_save_project_persists_sorted_tables(tmp_path: Path) -> None:
     save_project(context)
 
     assert config_path.read_text(encoding="utf-8") == (
-        "version: 1\ntables:\n  alpha: alpha.csv\n  zeta: zeta.csv\n"
+        "version: 1\ntables:\n  alpha:\n    path: alpha.csv\n  zeta:\n    path: zeta.csv\n"
     )
