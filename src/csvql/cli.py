@@ -1,5 +1,6 @@
 """Typer command-line interface for CSVQL."""
 
+import re
 from pathlib import Path
 from typing import Annotated
 
@@ -23,6 +24,7 @@ from csvql.output import (
     format_table_result,
 )
 from csvql.project_config import (
+    ProjectTable,
     add_project_table,
     build_project_tables_result,
     discover_project,
@@ -261,8 +263,14 @@ def _build_query_request(
     if sql is None:
         explicit_sources = [parse_table_mapping(mapping) for mapping in table_mappings]
         if explicit_sources:
-            return sql_or_csv, explicit_sources
-        catalog_sources = _catalog_table_sources()
+            catalog_sources = _catalog_table_sources(
+                sql_or_csv,
+                required=False,
+                excluded_names={source.name for source in explicit_sources},
+                referenced_only=True,
+            )
+            return sql_or_csv, _merge_table_sources(catalog_sources, explicit_sources)
+        catalog_sources = _catalog_table_sources(sql_or_csv, required=True)
         return sql_or_csv, _merge_table_sources(catalog_sources, explicit_sources)
 
     if table_mappings:
@@ -273,13 +281,42 @@ def _build_query_request(
     return sql, [source_from_single_csv(sql_or_csv)]
 
 
-def _catalog_table_sources() -> list[TableSource]:
-    project_root, _ = discover_project()
+def _catalog_table_sources(
+    sql: str,
+    *,
+    required: bool,
+    excluded_names: set[str] | None = None,
+    referenced_only: bool = False,
+) -> list[TableSource]:
+    try:
+        project_root, _ = discover_project()
+    except CSVQLError:
+        if required:
+            raise
+        return []
+
     context = load_project(project_root)
+    excluded_names = excluded_names or set()
+    project_tables = [table for table in context.config.tables if table.name not in excluded_names]
+    if referenced_only:
+        referenced_names = _referenced_catalog_table_names(sql, project_tables)
+        project_tables = [table for table in project_tables if table.name in referenced_names]
+
     return [
         TableSource(name=table.name, path=resolve_catalog_path(table, context))
-        for table in context.config.tables
+        for table in project_tables
     ]
+
+
+def _referenced_catalog_table_names(
+    sql: str,
+    catalog_tables: list[ProjectTable],
+) -> set[str]:
+    return {
+        table.name
+        for table in catalog_tables
+        if re.search(rf"\b{re.escape(table.name)}\b", sql, flags=re.IGNORECASE)
+    }
 
 
 def _merge_table_sources(

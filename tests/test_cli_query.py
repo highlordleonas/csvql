@@ -167,6 +167,48 @@ def test_query_inline_sql_explicit_table_overrides_catalog_alias(
     assert payload["rows"][0]["total_amount"] == 20.0
 
 
+def test_query_inline_sql_explicit_table_still_uses_referenced_catalog_tables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = _create_catalog(tmp_path, monkeypatch)
+    catalog_orders = project_root / "data" / "catalog_orders.csv"
+    explicit_orders = project_root / "data" / "explicit_orders.csv"
+    customers = project_root / "data" / "customers.csv"
+    _write_csv(
+        catalog_orders,
+        "order_id,customer_id,total_amount\nORD-001,CUST-001,10.00\n",
+    )
+    _write_csv(
+        explicit_orders,
+        "order_id,customer_id,total_amount\nORD-001,CUST-001,20.00\n",
+    )
+    _write_csv(customers, "customer_id,email\nCUST-001,alex@example.com\n")
+    assert runner.invoke(app, ["add", "orders", "data/catalog_orders.csv"]).exit_code == 0
+    assert runner.invoke(app, ["add", "customers", "data/customers.csv"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "--table",
+            "orders=data/explicit_orders.csv",
+            "--output",
+            "json",
+            (
+                "SELECT c.email, SUM(o.total_amount) AS total_amount "
+                "FROM orders o JOIN customers c USING (customer_id) "
+                "GROUP BY c.email"
+            ),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["row_count"] == 1
+    assert payload["rows"][0] == {"email": "alex@example.com", "total_amount": 20.0}
+
+
 def test_query_inline_sql_explicit_table_ignores_missing_catalog_override(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
