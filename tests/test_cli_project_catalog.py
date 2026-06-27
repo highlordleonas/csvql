@@ -37,6 +37,7 @@ def test_init_refuses_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
     assert result.exit_code == 8
     assert "already exists" in result.output
+    assert "Pass --force" in result.output
     assert config_path.read_text(encoding="utf-8") == (
         "version: 1\ntables:\n  orders:\n    path: data/orders.csv\n"
     )
@@ -90,6 +91,7 @@ def test_add_rejects_duplicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 
     assert result.exit_code == 8
     assert "already exists" in result.output
+    assert "Pass --replace" in result.output
 
 
 def test_add_replace_updates_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -65,7 +65,7 @@ def initialize_project(project_root: Path, *, force: bool = False) -> ProjectCon
     if config_path.exists() and not force:
         raise ProjectConfigError(
             f"Project catalog already exists at {config_path}.",
-            suggestion="Pass force=True to reinitialize the project catalog.",
+            suggestion="Pass --force to reinitialize the project catalog.",
         )
 
     context = ProjectContext(
@@ -176,7 +176,7 @@ def add_project_table(
     if existing_index is not None and not replace:
         raise ProjectConfigError(
             f"Project catalog table '{table_name}' already exists in {context.config_path}.",
-            suggestion="Pass replace=True to update the existing table entry.",
+            suggestion="Pass --replace to update the existing table entry.",
         )
     if existing_index is not None:
         tables[existing_index] = updated_table
