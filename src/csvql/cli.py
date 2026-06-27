@@ -25,8 +25,10 @@ from csvql.output import (
 from csvql.project_config import (
     add_project_table,
     build_project_tables_result,
+    discover_project,
     initialize_project,
     load_project,
+    project_tables_to_sources,
 )
 from csvql.source import source_from_path
 from csvql.table_mapping import parse_table_mapping, source_from_single_csv
@@ -257,12 +259,9 @@ def _build_query_request(
     table_mappings: list[str],
 ) -> tuple[str, list[TableSource]]:
     if sql is None:
-        if not table_mappings:
-            raise TableMappingError(
-                "At least one --table mapping is required for inline SQL mode.",
-                suggestion="Use --table orders=data/orders.csv before the SQL string.",
-            )
-        return sql_or_csv, [parse_table_mapping(mapping) for mapping in table_mappings]
+        explicit_sources = [parse_table_mapping(mapping) for mapping in table_mappings]
+        catalog_sources = _catalog_table_sources(required=not explicit_sources)
+        return sql_or_csv, _merge_table_sources(catalog_sources, explicit_sources)
 
     if table_mappings:
         raise TableMappingError(
@@ -270,6 +269,25 @@ def _build_query_request(
             suggestion='Use either csvql query data/orders.csv "SELECT ..." or --table mappings.',
         )
     return sql, [source_from_single_csv(sql_or_csv)]
+
+
+def _catalog_table_sources(required: bool) -> list[TableSource]:
+    try:
+        project_root, _ = discover_project()
+    except CSVQLError:
+        if required:
+            raise
+        return []
+
+    context = load_project(project_root)
+    return project_tables_to_sources(context)
+
+
+def _merge_table_sources(
+    catalog_sources: list[TableSource],
+    explicit_sources: list[TableSource],
+) -> list[TableSource]:
+    return [*catalog_sources, *explicit_sources]
 
 
 def _exit_with_error(error: CSVQLError) -> None:

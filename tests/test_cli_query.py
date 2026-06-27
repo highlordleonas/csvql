@@ -1,11 +1,24 @@
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from csvql.cli import app
 
 runner = CliRunner()
+
+
+def _write_csv(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _create_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["init"])
+    assert result.exit_code == 0, result.output
+    return tmp_path
 
 
 def test_query_multiple_tables_as_json(tmp_path: Path) -> None:
@@ -46,6 +59,151 @@ def test_query_multiple_tables_as_json(tmp_path: Path) -> None:
     assert payload["rows"][0]["revenue"] == 200.5
 
 
+def test_query_inline_sql_uses_catalog_tables_from_project_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = _create_catalog(tmp_path, monkeypatch)
+    orders = project_root / "data" / "orders.csv"
+    _write_csv(
+        orders,
+        "order_id,status,total_amount\nORD-001,paid,120.50\nORD-002,pending,80.00\n",
+    )
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "orders",
+            "data/orders.csv",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "--output",
+            "json",
+            "SELECT status, COUNT(*) AS order_count FROM orders GROUP BY status ORDER BY status",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["columns"] == ["status", "order_count"]
+    assert payload["row_count"] == 2
+    assert payload["rows"] == [
+        {"status": "paid", "order_count": 1},
+        {"status": "pending", "order_count": 1},
+    ]
+
+
+def test_query_inline_sql_uses_catalog_tables_from_subdirectory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = _create_catalog(tmp_path, monkeypatch)
+    nested_dir = project_root / "nested" / "child"
+    nested_dir.mkdir(parents=True)
+    orders = project_root / "data" / "orders.csv"
+    _write_csv(
+        orders,
+        "order_id,status,total_amount\nORD-001,paid,120.50\nORD-002,pending,80.00\n",
+    )
+    result = runner.invoke(app, ["add", "orders", "data/orders.csv"])
+    assert result.exit_code == 0, result.output
+
+    monkeypatch.chdir(nested_dir)
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "--output",
+            "json",
+            "SELECT COUNT(*) AS order_count FROM orders",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["row_count"] == 1
+    assert payload["rows"][0]["order_count"] == 2
+
+
+def test_query_inline_sql_explicit_table_overrides_catalog_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = _create_catalog(tmp_path, monkeypatch)
+    catalog_orders = project_root / "data" / "catalog_orders.csv"
+    explicit_orders = project_root / "data" / "explicit_orders.csv"
+    _write_csv(
+        catalog_orders,
+        "order_id,total_amount\nORD-001,10.00\n",
+    )
+    _write_csv(
+        explicit_orders,
+        "order_id,total_amount\nORD-001,20.00\n",
+    )
+    result = runner.invoke(app, ["add", "orders", "data/catalog_orders.csv"])
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "--table",
+            "orders=data/explicit_orders.csv",
+            "--output",
+            "json",
+            "SELECT SUM(total_amount) AS total_amount FROM orders",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["row_count"] == 1
+    assert payload["rows"][0]["total_amount"] == 20.0
+
+
+def test_query_inline_sql_explicit_table_succeeds_without_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    orders = tmp_path / "orders.csv"
+    _write_csv(
+        orders,
+        "order_id,status,total_amount\nORD-001,paid,120.50\nORD-002,pending,80.00\n",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "--table",
+            f"orders={orders}",
+            "--output",
+            "json",
+            "SELECT COUNT(*) AS order_count FROM orders",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["row_count"] == 1
+    assert payload["rows"][0]["order_count"] == 2
+
+
+def test_query_inline_sql_without_catalog_returns_project_config_exit_code() -> None:
+    result = runner.invoke(app, ["query", "SELECT 1"])
+
+    assert result.exit_code == 8
+    assert "No .csvql.yml project catalog found" in result.output
+    assert "Run project init/add or pass --table mappings explicitly." in result.output
+
+
 def test_query_single_file_shortcut_outputs_table(tmp_path: Path) -> None:
     orders = tmp_path / "orders.csv"
     orders.write_text(
@@ -66,10 +224,3 @@ def test_query_single_file_shortcut_outputs_table(tmp_path: Path) -> None:
     assert "paid" in result.output
     assert "pending" in result.output
     assert "2 row(s)" in result.output
-
-
-def test_query_requires_table_mapping_for_inline_sql() -> None:
-    result = runner.invoke(app, ["query", "SELECT 1"])
-
-    assert result.exit_code == 6
-    assert "At least one --table mapping is required" in result.output
