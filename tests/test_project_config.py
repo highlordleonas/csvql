@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from csvql.exceptions import ProjectConfigError
+from csvql.exceptions import FileMissingError, ProjectConfigError
 from csvql.models import TableSource
 from csvql.project_config import (
     CONFIG_FILENAME,
@@ -11,6 +11,10 @@ from csvql.project_config import (
     ProjectConfig,
     ProjectContext,
     ProjectTable,
+    ProjectTableListing,
+    ProjectTablesResult,
+    add_project_table,
+    build_project_tables_result,
     discover_project,
     initialize_project,
     load_project,
@@ -278,3 +282,233 @@ def test_save_project_persists_sorted_tables(tmp_path: Path) -> None:
     assert config_path.read_text(encoding="utf-8") == (
         "version: 1\ntables:\n  alpha:\n    path: alpha.csv\n  zeta:\n    path: zeta.csv\n"
     )
+
+
+def test_add_project_table_stores_project_relative_path_for_internal_file(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    csv_path = project_root / "data" / "orders.csv"
+    csv_path.parent.mkdir(parents=True)
+    csv_path.write_text("order_id,total_amount\nORD-1,12.34\n", encoding="utf-8")
+    context = initialize_project(project_root)
+
+    updated_context = add_project_table(
+        context,
+        "orders",
+        "data/orders.csv",
+        invocation_dir=project_root,
+    )
+
+    assert updated_context.config.tables == (ProjectTable(name="orders", path="data/orders.csv"),)
+    assert updated_context.config_path.read_text(encoding="utf-8") == (
+        "version: 1\ntables:\n  orders:\n    path: data/orders.csv\n"
+    )
+
+
+def test_add_project_table_uses_invocation_dir_for_relative_input(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    invocation_dir = project_root / "nested" / "cli"
+    csv_path = project_root / "data" / "orders.csv"
+    invocation_dir.mkdir(parents=True)
+    csv_path.parent.mkdir(parents=True)
+    csv_path.write_text("order_id,total_amount\nORD-1,12.34\n", encoding="utf-8")
+    context = initialize_project(project_root)
+
+    updated_context = add_project_table(
+        context,
+        "orders",
+        "../../data/orders.csv",
+        invocation_dir=invocation_dir,
+    )
+
+    assert updated_context.config.tables == (ProjectTable(name="orders", path="data/orders.csv"),)
+    assert updated_context.config_path.read_text(encoding="utf-8") == (
+        "version: 1\ntables:\n  orders:\n    path: data/orders.csv\n"
+    )
+
+
+def test_add_project_table_stores_absolute_path_for_external_file(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    external_dir = tmp_path / "external"
+    csv_path = external_dir / "orders.csv"
+    csv_path.parent.mkdir(parents=True)
+    csv_path.write_text("order_id,total_amount\nORD-1,12.34\n", encoding="utf-8")
+    context = initialize_project(project_root)
+
+    updated_context = add_project_table(
+        context,
+        "orders",
+        str(csv_path),
+        invocation_dir=project_root,
+    )
+
+    assert updated_context.config.tables == (
+        ProjectTable(name="orders", path=str(csv_path.resolve())),
+    )
+
+
+def test_add_project_table_propagates_missing_file_error(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    context = initialize_project(project_root)
+
+    with pytest.raises(FileMissingError):
+        add_project_table(
+            context,
+            "orders",
+            "data/orders.csv",
+            invocation_dir=project_root,
+        )
+
+
+def test_add_project_table_rejects_duplicate_without_replace(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    csv_path = project_root / "data" / "orders.csv"
+    csv_path.parent.mkdir(parents=True)
+    csv_path.write_text("order_id,total_amount\nORD-1,12.34\n", encoding="utf-8")
+    context = initialize_project(project_root)
+    context = add_project_table(context, "orders", "data/orders.csv", invocation_dir=project_root)
+
+    with pytest.raises(ProjectConfigError):
+        add_project_table(
+            context,
+            "orders",
+            "data/orders.csv",
+            invocation_dir=project_root,
+        )
+
+    assert context.config.tables == (ProjectTable(name="orders", path="data/orders.csv"),)
+
+
+def test_add_project_table_replace_updates_only_matching_table(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    orders_path = project_root / "data" / "orders.csv"
+    replacement_path = project_root / "data" / "orders_v2.csv"
+    customers_path = project_root / "customers.csv"
+    for csv_path in (orders_path, replacement_path, customers_path):
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        csv_path.write_text("id,value\n1,2\n", encoding="utf-8")
+    context = initialize_project(project_root)
+    context = add_project_table(context, "customers", "customers.csv", invocation_dir=project_root)
+    context = add_project_table(context, "orders", "data/orders.csv", invocation_dir=project_root)
+
+    updated_context = add_project_table(
+        context,
+        "orders",
+        "data/orders_v2.csv",
+        replace=True,
+        invocation_dir=project_root,
+    )
+
+    assert updated_context.config.tables == (
+        ProjectTable(name="customers", path="customers.csv"),
+        ProjectTable(name="orders", path="data/orders_v2.csv"),
+    )
+    assert updated_context.config_path.read_text(encoding="utf-8") == (
+        "version: 1\ntables:\n  customers:\n    path: customers.csv\n"
+        "  orders:\n    path: data/orders_v2.csv\n"
+    )
+
+
+def test_build_project_tables_result_returns_sorted_resolved_listings(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    config_path = project_root / CONFIG_FILENAME
+    alpha_path = project_root / "alpha.csv"
+    zeta_path = project_root / "zeta.csv"
+    alpha_path.parent.mkdir(parents=True, exist_ok=True)
+    alpha_path.write_text("id,value\n1,2\n", encoding="utf-8")
+    zeta_path.write_text("id,value\n3,4\n", encoding="utf-8")
+    context = ProjectContext(
+        project_root=project_root.resolve(),
+        config_path=config_path.resolve(),
+        config=ProjectConfig(
+            version=SUPPORTED_VERSION,
+            tables=(
+                ProjectTable(name="zeta", path="zeta.csv"),
+                ProjectTable(name="alpha", path="alpha.csv"),
+            ),
+        ),
+    )
+
+    result = build_project_tables_result(context)
+
+    assert result == ProjectTablesResult(
+        project_root=project_root.resolve(),
+        config_path=config_path.resolve(),
+        tables=(
+            ProjectTableListing(
+                name="alpha",
+                path="alpha.csv",
+                resolved_path=alpha_path.resolve(),
+            ),
+            ProjectTableListing(
+                name="zeta",
+                path="zeta.csv",
+                resolved_path=zeta_path.resolve(),
+            ),
+        ),
+    )
+
+
+def test_build_project_tables_result_includes_table_name_when_file_missing(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    config_path = project_root / CONFIG_FILENAME
+    context = ProjectContext(
+        project_root=project_root.resolve(),
+        config_path=config_path.resolve(),
+        config=ProjectConfig(
+            version=SUPPORTED_VERSION,
+            tables=(ProjectTable(name="orders", path="data/orders.csv"),),
+        ),
+    )
+
+    with pytest.raises(FileMissingError, match="project catalog table 'orders'"):
+        build_project_tables_result(context)
+
+
+def test_project_tables_to_sources_includes_table_name_when_file_missing(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    config_path = project_root / CONFIG_FILENAME
+    context = ProjectContext(
+        project_root=project_root.resolve(),
+        config_path=config_path.resolve(),
+        config=ProjectConfig(
+            version=SUPPORTED_VERSION,
+            tables=(ProjectTable(name="orders", path="data/orders.csv"),),
+        ),
+    )
+
+    with pytest.raises(FileMissingError, match="project catalog table 'orders'"):
+        project_tables_to_sources(context)
+
+
+def test_add_project_table_rejects_invalid_alias(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    csv_path = project_root / "data" / "orders.csv"
+    csv_path.parent.mkdir(parents=True)
+    csv_path.write_text("order_id,total_amount\nORD-1,12.34\n", encoding="utf-8")
+    context = initialize_project(project_root)
+
+    with pytest.raises(ProjectConfigError):
+        add_project_table(
+            context,
+            "order-items",
+            "data/orders.csv",
+            invocation_dir=project_root,
+        )

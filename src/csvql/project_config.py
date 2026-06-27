@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml  # type: ignore[import-untyped]
 
-from csvql.exceptions import ProjectConfigError, TableMappingError
+from csvql.exceptions import FileMissingError, ProjectConfigError, TableMappingError
 from csvql.models import TableSource
 from csvql.source import resolve_csv_path
 from csvql.table_mapping import validate_table_alias
@@ -20,6 +20,24 @@ class ProjectTable:
 
     name: str
     path: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectTableListing:
+    """A resolved project catalog table listing."""
+
+    name: str
+    path: str
+    resolved_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectTablesResult:
+    """A deterministic snapshot of the project catalog tables."""
+
+    project_root: Path
+    config_path: Path
+    tables: tuple[ProjectTableListing, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +132,84 @@ def save_project(context: ProjectContext) -> ProjectContext:
 def resolve_catalog_path(table: ProjectTable, context: ProjectContext) -> Path:
     """Resolve a table path relative to the project root."""
 
-    return resolve_csv_path(table.path, base_dir=context.project_root)
+    try:
+        return resolve_csv_path(table.path, base_dir=context.project_root)
+    except FileMissingError as exc:
+        raise FileMissingError(
+            f"CSV file not found for project catalog table '{table.name}': {table.path}",
+            suggestion=(
+                "Update .csvql.yml, run csvql add "
+                f"{table.name} <path> --replace, or restore the CSV file."
+            ),
+        ) from exc
+
+
+def add_project_table(
+    context: ProjectContext,
+    name: str,
+    path_value: str,
+    *,
+    replace: bool = False,
+    invocation_dir: Path | None = None,
+) -> ProjectContext:
+    """Add or replace a project catalog table and persist the update."""
+
+    try:
+        table_name = validate_table_alias(name)
+    except TableMappingError as exc:
+        raise ProjectConfigError(
+            f"Invalid project catalog table alias '{name}'.",
+            suggestion=exc.suggestion
+            or "Use letters, numbers, and underscores; start with a letter or underscore.",
+        ) from exc
+
+    base_dir = (invocation_dir or Path.cwd()).expanduser().resolve()
+    resolved_path = resolve_csv_path(path_value, base_dir=base_dir)
+    stored_path = _project_catalog_path_value(context.project_root, resolved_path)
+    updated_table = ProjectTable(name=table_name, path=stored_path)
+
+    tables = list(context.config.tables)
+    existing_index = next(
+        (index for index, table in enumerate(tables) if table.name == table_name),
+        None,
+    )
+    if existing_index is not None and not replace:
+        raise ProjectConfigError(
+            f"Project catalog table '{table_name}' already exists in {context.config_path}.",
+            suggestion="Pass replace=True to update the existing table entry.",
+        )
+    if existing_index is not None:
+        tables[existing_index] = updated_table
+    else:
+        tables.append(updated_table)
+
+    updated_context = ProjectContext(
+        project_root=context.project_root,
+        config_path=context.config_path,
+        config=ProjectConfig(
+            version=context.config.version,
+            tables=tuple(sorted(tables, key=lambda table: table.name)),
+        ),
+    )
+    return save_project(updated_context)
+
+
+def build_project_tables_result(context: ProjectContext) -> ProjectTablesResult:
+    """Build a sorted, resolved view of the project catalog tables."""
+
+    tables = tuple(
+        ProjectTableListing(
+            name=table.name,
+            path=table.path,
+            resolved_path=resolve_catalog_path(table, context),
+        )
+        for table in sorted(context.config.tables, key=lambda table: table.name)
+    )
+    return ProjectTablesResult(
+        project_root=context.project_root,
+        config_path=context.config_path,
+        tables=tables,
+    )
 
 
 def project_tables_to_sources(context: ProjectContext) -> list[TableSource]:
@@ -256,3 +351,10 @@ def _parse_project_table_entry(
         )
 
     return ProjectTable(name=name, path=raw_path)
+
+
+def _project_catalog_path_value(project_root: Path, resolved_path: Path) -> str:
+    try:
+        return resolved_path.relative_to(project_root).as_posix()
+    except ValueError:
+        return str(resolved_path)
