@@ -201,6 +201,40 @@ def test_query_inline_sql_explicit_table_ignores_missing_catalog_override(
     assert payload["rows"][0]["total_amount"] == 20.0
 
 
+def test_query_inline_sql_explicit_table_ignores_unrelated_missing_catalog_table(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / ".csvql.yml"
+    config_path.write_text(
+        "version: 1\ntables:\n  customers:\n    path: missing_customers.csv\n",
+        encoding="utf-8",
+    )
+    explicit_orders = tmp_path / "orders.csv"
+    _write_csv(
+        explicit_orders,
+        "order_id,total_amount\nORD-001,20.00\n",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "--table",
+            f"orders={explicit_orders}",
+            "--output",
+            "json",
+            "SELECT SUM(total_amount) AS total_amount FROM orders",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["row_count"] == 1
+    assert payload["rows"][0]["total_amount"] == 20.0
+
+
 def test_query_inline_sql_explicit_table_succeeds_without_catalog(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
