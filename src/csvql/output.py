@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.table import Table
 
 from csvql.models import InspectResult, QueryResult, RowCountInfo, SampleResult
+from csvql.project_config import ProjectTablesResult
 
 
 class OutputFormat(StrEnum):
@@ -38,6 +39,24 @@ def format_sample_result_json(result: SampleResult) -> str:
     """Format a sample result as deterministic JSON."""
 
     return json.dumps(result.as_dict(), default=str, indent=2, sort_keys=True)
+
+
+def format_project_tables_json(result: ProjectTablesResult) -> str:
+    """Format a project catalog table listing as deterministic JSON."""
+
+    payload = {
+        "config_path": str(result.config_path),
+        "project_root": str(result.project_root),
+        "tables": [
+            {
+                "name": table.name,
+                "path": table.path,
+                "resolved_path": str(table.resolved_path),
+            }
+            for table in result.tables
+        ],
+    }
+    return json.dumps(payload, indent=2, sort_keys=True)
 
 
 def format_table_result(result: QueryResult) -> str:
@@ -92,6 +111,20 @@ def format_sample_result_table(result: SampleResult) -> str:
         console.print("Warnings:")
         for warning in result.warnings:
             console.print(f"- {warning}")
+    return console.export_text(clear=True)
+
+
+def format_project_tables_table(result: ProjectTablesResult) -> str:
+    """Format a project catalog table listing as Rich table text."""
+
+    console = Console(color_system=None, force_terminal=False, record=True, width=120)
+    table = Table(show_header=True)
+    table.add_column("name")
+    table.add_column("path")
+    table.add_column("resolved_path")
+    for listing in result.tables:
+        table.add_row(listing.name, listing.path, str(listing.resolved_path))
+    console.print(table)
     return console.export_text(clear=True)
 
 
