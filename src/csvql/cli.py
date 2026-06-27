@@ -1,5 +1,6 @@
 """Typer command-line interface for CSVQL."""
 
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -15,9 +16,17 @@ from csvql.output import (
     format_inspect_result_json,
     format_inspect_result_table,
     format_json_result,
+    format_project_tables_json,
+    format_project_tables_table,
     format_sample_result_json,
     format_sample_result_table,
     format_table_result,
+)
+from csvql.project_config import (
+    add_project_table,
+    build_project_tables_result,
+    initialize_project,
+    load_project,
 )
 from csvql.source import source_from_path
 from csvql.table_mapping import parse_table_mapping, source_from_single_csv
@@ -164,6 +173,80 @@ def query(
             typer.echo(format_json_result(result))
         else:
             typer.echo(format_table_result(result), nl=False)
+    except CSVQLError as exc:
+        _exit_with_error(exc)
+
+
+@app.command()
+def init(
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Reinitialize an existing project catalog.",
+        ),
+    ] = False,
+) -> None:
+    """Create a project catalog in the current working directory."""
+
+    try:
+        context = initialize_project(Path.cwd(), force=force)
+        typer.echo(f"Created project catalog at {context.config_path}.")
+    except CSVQLError as exc:
+        _exit_with_error(exc)
+
+
+@app.command()
+def add(
+    name: Annotated[str, typer.Argument(help="Project catalog table name.")],
+    path_value: Annotated[str, typer.Argument(help="CSV file path to add.")],
+    replace: Annotated[
+        bool,
+        typer.Option(
+            "--replace",
+            help="Replace an existing project catalog table entry.",
+        ),
+    ] = False,
+) -> None:
+    """Add a table to the nearest project catalog."""
+
+    try:
+        context = load_project()
+        updated_context = add_project_table(
+            context,
+            name,
+            path_value,
+            replace=replace,
+            invocation_dir=Path.cwd(),
+        )
+        typer.echo(
+            f"Added project catalog table '{name.strip()}' to {updated_context.config_path}."
+        )
+    except CSVQLError as exc:
+        _exit_with_error(exc)
+
+
+@app.command()
+def tables(
+    output: Annotated[
+        OutputFormat,
+        typer.Option(
+            "--output",
+            "-o",
+            case_sensitive=False,
+            help="Project catalog table output format.",
+        ),
+    ] = OutputFormat.table,
+) -> None:
+    """List tables from the nearest project catalog."""
+
+    try:
+        context = load_project()
+        result = build_project_tables_result(context)
+        if output is OutputFormat.json:
+            typer.echo(format_project_tables_json(result))
+        else:
+            typer.echo(format_project_tables_table(result), nl=False)
     except CSVQLError as exc:
         _exit_with_error(exc)
 
