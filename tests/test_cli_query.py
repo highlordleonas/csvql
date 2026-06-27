@@ -224,3 +224,27 @@ def test_query_single_file_shortcut_outputs_table(tmp_path: Path) -> None:
     assert "paid" in result.output
     assert "pending" in result.output
     assert "2 row(s)" in result.output
+
+
+def test_query_single_file_shortcut_rejects_table_mappings(tmp_path: Path) -> None:
+    orders = tmp_path / "orders.csv"
+    other = tmp_path / "other.csv"
+    orders.write_text(
+        "order_id,status,total_amount\nORD-001,paid,120.50\nORD-002,pending,80.00\n",
+        encoding="utf-8",
+    )
+    other.write_text("id,value\n1,2\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            str(orders),
+            "SELECT status FROM orders",
+            "--table",
+            f"something={other}",
+        ],
+    )
+
+    assert result.exit_code == 6
+    assert "Single-file shortcut mode cannot be combined with --table mappings" in result.output
