@@ -28,7 +28,7 @@ from csvql.project_config import (
     discover_project,
     initialize_project,
     load_project,
-    project_tables_to_sources,
+    resolve_catalog_path,
 )
 from csvql.source import source_from_path
 from csvql.table_mapping import parse_table_mapping, source_from_single_csv
@@ -260,7 +260,10 @@ def _build_query_request(
 ) -> tuple[str, list[TableSource]]:
     if sql is None:
         explicit_sources = [parse_table_mapping(mapping) for mapping in table_mappings]
-        catalog_sources = _catalog_table_sources(required=not explicit_sources)
+        catalog_sources = _catalog_table_sources(
+            required=not explicit_sources,
+            excluded_names={source.name for source in explicit_sources},
+        )
         return sql_or_csv, _merge_table_sources(catalog_sources, explicit_sources)
 
     if table_mappings:
@@ -271,7 +274,11 @@ def _build_query_request(
     return sql, [source_from_single_csv(sql_or_csv)]
 
 
-def _catalog_table_sources(required: bool) -> list[TableSource]:
+def _catalog_table_sources(
+    required: bool,
+    *,
+    excluded_names: set[str],
+) -> list[TableSource]:
     try:
         project_root, _ = discover_project()
     except CSVQLError:
@@ -280,7 +287,11 @@ def _catalog_table_sources(required: bool) -> list[TableSource]:
         return []
 
     context = load_project(project_root)
-    return project_tables_to_sources(context)
+    return [
+        TableSource(name=table.name, path=resolve_catalog_path(table, context))
+        for table in context.config.tables
+        if table.name not in excluded_names
+    ]
 
 
 def _merge_table_sources(
