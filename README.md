@@ -16,15 +16,20 @@ csvql query \
    ORDER BY lifetime_value DESC"
 ```
 
-CSVQL does not implement a SQL engine. DuckDB executes SQL; CSVQL owns the local workflow around table aliases, readable output, validation, and later project configuration.
+CSVQL does not implement a SQL engine. DuckDB executes SQL; CSVQL owns the local workflow around table aliases, readable output, validation, and project catalog configuration.
 
 ## Status
 
-This repository has the v0.1 query workflow plus the first inspect/sample vertical implemented for local CLI use.
+This repository has the v0.1 query workflow, the first inspect/sample vertical, and the v0.3 project catalog workflow implemented for local CLI use.
 
 Implemented now:
 
 - `csvql query --table name=path "SELECT ..."`
+- `.csvql.yml` project catalog discovery
+- `csvql init`
+- `csvql add`
+- `csvql tables`
+- catalog-backed `csvql query "SELECT ... FROM alias"`
 - `csvql inspect data/orders.csv --output json`
 - `csvql sample data/orders.csv --limit 10`
 - repeated `--table` mappings for joins
@@ -35,7 +40,6 @@ Implemented now:
 
 Planned later:
 
-- `.csvql.yml` project config
 - `run` and `export`
 - profiling and data quality checks
 - benchmarks and release workflow
@@ -90,6 +94,40 @@ uv run csvql query \
   "SELECT status, COUNT(*) AS order_count FROM orders GROUP BY status"
 ```
 
+## Project Catalog Examples
+
+Initialize a local project catalog:
+
+```bash
+uv run csvql init
+```
+
+Register a table once:
+
+```bash
+uv run csvql add orders examples/sales/data/orders.csv
+```
+
+List registered tables as JSON:
+
+```bash
+uv run csvql tables --output json
+```
+
+Query a registered table by alias:
+
+```bash
+uv run csvql query "SELECT COUNT(*) AS order_count FROM orders"
+```
+
+For one invocation, explicit `--table` mappings still work and override catalog aliases with the same name.
+
+```bash
+uv run csvql query \
+  --table orders=examples/sales/data/orders.csv \
+  "SELECT COUNT(*) AS order_count FROM orders"
+```
+
 ## Inspect And Sample Examples
 
 Inspect a CSV without running user-authored SQL:
@@ -127,7 +165,7 @@ make ci
 
 ## Security Model
 
-CSVQL is currently a local developer tool for trusted SQL. DuckDB executes the SQL, and CSVQL does not restrict DuckDB capabilities or sandbox filesystem access. Do not run untrusted SQL files or input. Safe mode is not implemented and requires a separate design, threat model, implementation, and tests before CSVQL can make untrusted-SQL safety claims.
+CSVQL is currently a local developer tool for trusted SQL. DuckDB executes the SQL, and CSVQL does not restrict DuckDB capabilities or filesystem access. Do not run untrusted SQL files or input.
 
 ## Documentation
 

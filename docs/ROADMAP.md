@@ -35,13 +35,16 @@ Implemented:
 
 ## v0.3.0 - Project Catalog
 
+Implemented:
+
 - `.csvql.yml` models and loader
 - `csvql init`
 - `csvql add`
 - `csvql tables`
 - project root discovery
-- relative path resolution
-- CSV reader options and type overrides
+- relative path resolution for catalog-backed tables
+- catalog-backed `csvql query "SELECT ... FROM alias"`
+- explicit `--table` mappings override catalog aliases for one invocation
 
 ## v0.4.0 - SQL Files And Export
 
