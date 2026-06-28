@@ -9,6 +9,12 @@ from rich.console import Console
 from csvql import __version__
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import CSVQLError
+from csvql.export import (
+    ExportFormat,
+    format_query_result_for_export,
+    resolve_export_path,
+    write_export_file,
+)
 from csvql.inspection import inspect_csv_source, sample_csv_source
 from csvql.output import (
     OutputFormat,
@@ -224,6 +230,62 @@ def run(
             typer.echo(format_json_result(result))
         else:
             typer.echo(format_table_result(result), nl=False)
+    except CSVQLError as exc:
+        _exit_with_error(exc)
+
+
+@app.command()
+def export(
+    sql_file: Annotated[
+        str,
+        typer.Argument(help="SQL file to run and export."),
+    ],
+    export_format: Annotated[
+        ExportFormat,
+        typer.Option(
+            "--format",
+            case_sensitive=False,
+            help="Export output format.",
+        ),
+    ],
+    out: Annotated[
+        str,
+        typer.Option(
+            "--out",
+            help="Output file path.",
+        ),
+    ],
+    table: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--table",
+            "-t",
+            help="Table mapping in name=path form. Repeat for multiple CSV files.",
+        ),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Overwrite an existing export output file.",
+        ),
+    ] = False,
+) -> None:
+    """Run SQL from a local file and write the result to a file."""
+
+    try:
+        loaded_sql = load_sql_file(sql_file, base_dir=Path.cwd())
+        output_path = resolve_export_path(out, base_dir=Path.cwd(), force=force)
+        request = build_saved_sql_query_request(
+            loaded_sql.sql,
+            table or [],
+            base_dir=Path.cwd(),
+        )
+        with CSVQLEngine() as engine:
+            result = execute_query_request(engine, request)
+        content = format_query_result_for_export(result, export_format)
+        write_export_file(output_path, content)
+        typer.echo(f"Wrote export to {output_path}.")
     except CSVQLError as exc:
         _exit_with_error(exc)
 
