@@ -41,6 +41,24 @@ def test_resolve_path_or_catalog_source_resolves_catalog_alias(
     assert source.display_path == "orders"
 
 
+def test_resolve_path_or_catalog_source_matches_catalog_alias_case_insensitively(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    csv_path = tmp_path / "data" / "orders.csv"
+    _write_csv(csv_path)
+    (tmp_path / ".csvql.yml").write_text(
+        "version: 1\ntables:\n  Orders:\n    path: data/orders.csv\n",
+        encoding="utf-8",
+    )
+
+    source = resolve_path_or_catalog_source("orders", base_dir=tmp_path)
+
+    assert source.path == csv_path.resolve()
+    assert source.display_path == "orders"
+
+
 def test_resolve_path_or_catalog_source_falls_back_to_path_error_for_unknown_alias(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

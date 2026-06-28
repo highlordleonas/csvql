@@ -24,11 +24,12 @@ def resolve_path_or_catalog_source(
             raise
         return source_from_path(path_or_alias, base_dir=base_dir)
 
+    alias_key = path_or_alias.lower()
     table = next(
         (
             catalog_table
             for catalog_table in context.config.tables
-            if catalog_table.name == path_or_alias
+            if catalog_table.name.lower() == alias_key
         ),
         None,
     )
