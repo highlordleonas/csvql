@@ -1,6 +1,5 @@
 """Typer command-line interface for CSVQL."""
 
-import re
 from pathlib import Path
 from typing import Annotated
 
@@ -9,9 +8,8 @@ from rich.console import Console
 
 from csvql import __version__
 from csvql.engine import CSVQLEngine
-from csvql.exceptions import CSVQLError, QueryExecutionError, TableMappingError
+from csvql.exceptions import CSVQLError
 from csvql.inspection import inspect_csv_source, sample_csv_source
-from csvql.models import QueryResult, TableSource
 from csvql.output import (
     OutputFormat,
     format_inspect_result_json,
@@ -26,17 +24,11 @@ from csvql.output import (
 from csvql.project_config import (
     add_project_table,
     build_project_tables_result,
-    discover_project,
     initialize_project,
     load_project,
-    resolve_catalog_path,
 )
+from csvql.query_workflow import build_inline_query_request, execute_query_request
 from csvql.source import source_from_path
-from csvql.table_mapping import parse_table_mapping, source_from_single_csv
-
-_DUCKDB_MISSING_TABLE_RE = re.compile(
-    r"Table with name (?P<name>[A-Za-z_][A-Za-z0-9_]*) does not exist!"
-)
 
 app = typer.Typer(
     add_completion=False,
@@ -172,16 +164,14 @@ def query(
     """Run SQL against one or more local CSV files."""
 
     try:
-        query_sql, table_sources = _build_query_request(sql_or_csv, sql, table or [])
-        catalog_fallback = sql is None and bool(table)
+        request = build_inline_query_request(
+            sql_or_csv,
+            sql,
+            table or [],
+            base_dir=Path.cwd(),
+        )
         with CSVQLEngine() as engine:
-            engine.register_tables(table_sources)
-            result = _query_with_catalog_fallback(
-                engine,
-                query_sql,
-                table_sources=table_sources,
-                catalog_fallback=catalog_fallback,
-            )
+            result = execute_query_request(engine, request)
         if output is OutputFormat.json:
             typer.echo(format_json_result(result))
         else:
@@ -262,105 +252,6 @@ def tables(
             typer.echo(format_project_tables_table(result), nl=False)
     except CSVQLError as exc:
         _exit_with_error(exc)
-
-
-def _build_query_request(
-    sql_or_csv: str,
-    sql: str | None,
-    table_mappings: list[str],
-) -> tuple[str, list[TableSource]]:
-    if sql is None:
-        explicit_sources = [parse_table_mapping(mapping) for mapping in table_mappings]
-        if explicit_sources:
-            return sql_or_csv, explicit_sources
-        catalog_sources = _catalog_table_sources()
-        return sql_or_csv, _merge_table_sources(catalog_sources, explicit_sources)
-
-    if table_mappings:
-        raise TableMappingError(
-            "Single-file shortcut mode cannot be combined with --table mappings.",
-            suggestion='Use either csvql query data/orders.csv "SELECT ..." or --table mappings.',
-        )
-    return sql, [source_from_single_csv(sql_or_csv)]
-
-
-def _catalog_table_sources() -> list[TableSource]:
-    project_root, _ = discover_project()
-    context = load_project(project_root)
-    return [
-        TableSource(name=table.name, path=resolve_catalog_path(table, context))
-        for table in context.config.tables
-    ]
-
-
-def _query_with_catalog_fallback(
-    engine: CSVQLEngine,
-    sql: str,
-    *,
-    table_sources: list[TableSource],
-    catalog_fallback: bool,
-) -> QueryResult:
-    if not catalog_fallback:
-        return engine.query(sql)
-
-    registered_names = {source.name.lower() for source in table_sources}
-    while True:
-        try:
-            return engine.query(sql)
-        except QueryExecutionError as exc:
-            missing_name = _missing_duckdb_table_name(exc)
-            if missing_name is None or missing_name.lower() in registered_names:
-                raise
-
-            catalog_source = _catalog_table_source_by_name(
-                missing_name,
-                excluded_names=registered_names,
-            )
-            if catalog_source is None:
-                raise
-            engine.register_tables([catalog_source])
-            registered_names.add(catalog_source.name.lower())
-
-
-def _missing_duckdb_table_name(error: QueryExecutionError) -> str | None:
-    match = _DUCKDB_MISSING_TABLE_RE.search(error.message)
-    if match is None:
-        return None
-    return match.group("name")
-
-
-def _catalog_table_source_by_name(
-    table_name: str,
-    *,
-    excluded_names: set[str],
-) -> TableSource | None:
-    table_key = table_name.lower()
-    if table_key in excluded_names:
-        return None
-
-    try:
-        context = load_project()
-    except CSVQLError:
-        return None
-
-    table = next(
-        (
-            catalog_table
-            for catalog_table in context.config.tables
-            if catalog_table.name.lower() == table_key
-        ),
-        None,
-    )
-    if table is None:
-        return None
-    return TableSource(name=table.name, path=resolve_catalog_path(table, context))
-
-
-def _merge_table_sources(
-    catalog_sources: list[TableSource],
-    explicit_sources: list[TableSource],
-) -> list[TableSource]:
-    return [*catalog_sources, *explicit_sources]
 
 
 def _exit_with_error(error: CSVQLError) -> None:
