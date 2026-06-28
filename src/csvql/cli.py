@@ -27,8 +27,13 @@ from csvql.project_config import (
     initialize_project,
     load_project,
 )
-from csvql.query_workflow import build_inline_query_request, execute_query_request
+from csvql.query_workflow import (
+    build_inline_query_request,
+    build_saved_sql_query_request,
+    execute_query_request,
+)
 from csvql.source import source_from_path
+from csvql.sql_file import load_sql_file
 
 app = typer.Typer(
     add_completion=False,
@@ -167,6 +172,49 @@ def query(
         request = build_inline_query_request(
             sql_or_csv,
             sql,
+            table or [],
+            base_dir=Path.cwd(),
+        )
+        with CSVQLEngine() as engine:
+            result = execute_query_request(engine, request)
+        if output is OutputFormat.json:
+            typer.echo(format_json_result(result))
+        else:
+            typer.echo(format_table_result(result), nl=False)
+    except CSVQLError as exc:
+        _exit_with_error(exc)
+
+
+@app.command()
+def run(
+    sql_file: Annotated[
+        str,
+        typer.Argument(help="SQL file to run."),
+    ],
+    table: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--table",
+            "-t",
+            help="Table mapping in name=path form. Repeat for multiple CSV files.",
+        ),
+    ] = None,
+    output: Annotated[
+        OutputFormat,
+        typer.Option(
+            "--output",
+            "-o",
+            case_sensitive=False,
+            help="Result output format.",
+        ),
+    ] = OutputFormat.table,
+) -> None:
+    """Run SQL from a local file."""
+
+    try:
+        loaded_sql = load_sql_file(sql_file, base_dir=Path.cwd())
+        request = build_saved_sql_query_request(
+            loaded_sql.sql,
             table or [],
             base_dir=Path.cwd(),
         )
