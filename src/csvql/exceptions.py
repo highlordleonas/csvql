@@ -40,3 +40,15 @@ class ProjectConfigError(CSVQLError):
     """Raised when project catalog discovery, parsing, or validation fails."""
 
     exit_code = 8
+
+
+class SQLFileError(CSVQLError):
+    """Raised when a saved SQL file cannot be used."""
+
+    exit_code = 9
+
+
+class ExportError(CSVQLError):
+    """Raised when an export output path or format cannot be used."""
+
+    exit_code = 10
