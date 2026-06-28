@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from csvql.cli import app
@@ -86,3 +87,41 @@ def test_inspect_missing_file_uses_existing_file_error() -> None:
 
     assert result.exit_code == 4
     assert "CSV file not found" in result.output
+
+
+def test_inspect_catalog_alias_outputs_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    orders = tmp_path / "data" / "orders.csv"
+    orders.parent.mkdir(parents=True)
+    orders.write_text("order_id,total_amount\nORD-001,20.00\n", encoding="utf-8")
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    assert runner.invoke(app, ["add", "orders", "data/orders.csv"]).exit_code == 0
+
+    result = runner.invoke(app, ["inspect", "orders", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["source"]["display_path"] == "orders"
+    assert payload["columns"][0]["name"] == "order_id"
+
+
+def test_sample_catalog_alias_outputs_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    orders = tmp_path / "data" / "orders.csv"
+    orders.parent.mkdir(parents=True)
+    orders.write_text("order_id,total_amount\nORD-001,20.00\n", encoding="utf-8")
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    assert runner.invoke(app, ["add", "orders", "data/orders.csv"]).exit_code == 0
+
+    result = runner.invoke(app, ["sample", "orders", "--limit", "1", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["source"]["display_path"] == "orders"
+    assert payload["rows"] == [{"order_id": "ORD-001", "total_amount": 20.0}]

@@ -32,7 +32,7 @@ from csvql.query_workflow import (
     build_saved_sql_query_request,
     execute_query_request,
 )
-from csvql.source import source_from_path
+from csvql.source_resolver import resolve_path_or_catalog_source
 from csvql.sql_file import load_sql_file
 
 app = typer.Typer(
@@ -89,7 +89,7 @@ def inspect(
     """Inspect a local CSV file without running user-authored SQL."""
 
     try:
-        source = source_from_path(csv_path)
+        source = resolve_path_or_catalog_source(csv_path, base_dir=Path.cwd())
         result = inspect_csv_source(source, exact=exact)
         if output is OutputFormat.json:
             typer.echo(format_inspect_result_json(result))
@@ -126,7 +126,7 @@ def sample(
     """Sample rows from a local CSV file without running user-authored SQL."""
 
     try:
-        source = source_from_path(csv_path)
+        source = resolve_path_or_catalog_source(csv_path, base_dir=Path.cwd())
         result = sample_csv_source(source, limit=limit)
         if output is OutputFormat.json:
             typer.echo(format_sample_result_json(result))
