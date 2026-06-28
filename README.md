@@ -20,7 +20,7 @@ CSVQL does not implement a SQL engine. DuckDB executes SQL; CSVQL owns the local
 
 ## Status
 
-This repository has the v0.1 query workflow, the first inspect/sample vertical, and the v0.3 project catalog workflow implemented for local CLI use.
+This repository has the v0.1 query workflow, the first inspect/sample vertical, the v0.3 project catalog workflow, and the v0.4 saved-workflow surfaces implemented for local CLI use.
 
 Implemented now:
 
@@ -32,6 +32,10 @@ Implemented now:
 - catalog-backed `csvql query "SELECT ... FROM alias"`
 - `csvql inspect data/orders.csv --output json`
 - `csvql sample data/orders.csv --limit 10`
+- `csvql run queries/file.sql`
+- `csvql export queries/file.sql --format csv|json|markdown --out path`
+- catalog-backed `csvql inspect alias`
+- catalog-backed `csvql sample alias`
 - repeated `--table` mappings for joins
 - single-file shortcut mode
 - table and JSON stdout output
@@ -40,7 +44,6 @@ Implemented now:
 
 Planned later:
 
-- `run` and `export`
 - profiling and data quality checks
 - benchmarks and release workflow
 
@@ -127,6 +130,42 @@ uv run csvql query \
   --table orders=examples/sales/data/orders.csv \
   "SELECT COUNT(*) AS order_count FROM orders"
 ```
+
+## Saved Workflow Examples
+
+Run SQL from a file using catalog aliases:
+
+```bash
+cd examples/sales
+uv run csvql run queries/revenue_by_month.sql --output json
+```
+
+Inspect and sample registered catalog aliases:
+
+```bash
+uv run csvql inspect orders --output json
+uv run csvql sample orders --limit 5 --output json
+```
+
+Export SQL-file results:
+
+```bash
+mkdir -p out
+
+uv run csvql export queries/revenue_by_month.sql \
+  --format csv \
+  --out out/revenue.csv
+
+uv run csvql export queries/revenue_by_month.sql \
+  --format json \
+  --out out/revenue.json
+
+uv run csvql export queries/revenue_by_month.sql \
+  --format markdown \
+  --out out/revenue.md
+```
+
+`csvql export` refuses to overwrite an existing output file unless `--force` is passed. The output directory must already exist.
 
 ## Inspect And Sample Examples
 

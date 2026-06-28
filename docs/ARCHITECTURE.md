@@ -6,14 +6,11 @@ CSVQL wraps DuckDB with a small CLI workflow. The project should stay useful wit
 
 ```text
 CLI arguments
-  -> query/input parser
-  -> explicit table mapping parser
-  -> optional project catalog discovery
+  -> path/sql-file/input parser
+  -> explicit table mapping parser or project catalog discovery
   -> validated table aliases and resolved CSV paths
   -> in-memory DuckDB engine
-  -> CSV views
-  -> user-authored SQL
-  -> table or JSON output
+  -> query/inspect/sample/export output
 ```
 
 ## Boundaries
@@ -24,17 +21,29 @@ CLI arguments
 `table_mapping.py`
 : Parse `name=path`, validate table aliases, resolve CSV paths, and support single-file alias derivation.
 
+`sql_file.py`
+: Resolve and read saved SQL files, rejecting missing, directory, unreadable, and empty SQL inputs.
+
 `project_config.py`
 : Discover `.csvql.yml`, load and validate the project catalog, resolve catalog table paths, and build queryable table sources for catalog-backed commands.
 
+`query_workflow.py`
+: Shared query request construction and execution for inline query, saved SQL run, and export workflows.
+
 `source.py`
 : Resolve local CSV paths and capture file metadata used by inspect, sample, and catalog workflows.
+
+`source_resolver.py`
+: Resolve inspect/sample inputs as direct CSV paths or project catalog aliases.
 
 `inspection.py`
 : Use DuckDB and bounded file reads to infer columns, dialect metadata, row-count status, and sample rows.
 
 `engine.py`
 : Own DuckDB connection lifecycle, CSV registration, SQL execution, and DuckDB error conversion.
+
+`export.py`
+: Validate export output paths and serialize query results to CSV, JSON, or Markdown.
 
 `output.py`
 : Convert `QueryResult` into human-readable table output or automation-friendly JSON.

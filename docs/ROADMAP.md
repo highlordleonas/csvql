@@ -46,13 +46,15 @@ Implemented:
 - catalog-backed `csvql query "SELECT ... FROM alias"`
 - explicit `--table` mappings override catalog aliases for one invocation
 
-## v0.4.0 - SQL Files And Export
+## v0.4.0 - Saved Workflows
+
+Implemented:
 
 - `csvql run queries/file.sql`
-- positional query parameters
 - registered-table support for `csvql inspect`
 - registered-table support for `csvql sample`
-- `csvql export queries/file.sql --format csv|json|markdown|parquet --out path`
+- `csvql export queries/file.sql --format csv|json|markdown --out path`
+- overwrite protection for export outputs with explicit `--force`
 
 ## v0.5.0 - Profiling
 
