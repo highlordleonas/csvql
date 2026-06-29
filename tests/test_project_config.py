@@ -203,6 +203,48 @@ def test_load_project_accepts_table_checks(tmp_path: Path) -> None:
     assert orders.checks[3].references.table == "customers"
 
 
+def test_load_project_rejects_duplicate_check_names(tmp_path: Path) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\n"
+        "tables:\n"
+        "  orders:\n"
+        "    path: data/orders.csv\n"
+        "    checks:\n"
+        "      - name: duplicate\n"
+        "        type: not_null\n"
+        "        column: order_id\n"
+        "      - name: duplicate\n"
+        "        type: unique\n"
+        "        column: order_id\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProjectConfigError):
+        load_project(tmp_path)
+
+
+def test_load_project_rejects_missing_foreign_key_reference_table(tmp_path: Path) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\n"
+        "tables:\n"
+        "  orders:\n"
+        "    path: data/orders.csv\n"
+        "    checks:\n"
+        "      - name: customer_exists\n"
+        "        type: foreign_key\n"
+        "        column: customer_id\n"
+        "        references:\n"
+        "          table: customers\n"
+        "          column: customer_id\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProjectConfigError):
+        load_project(tmp_path)
+
+
 @pytest.mark.parametrize(
     "payload",
     [

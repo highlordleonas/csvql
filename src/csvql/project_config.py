@@ -298,6 +298,7 @@ def _parse_project_config(raw_config: object, *, config_path: Path) -> ProjectCo
         _parse_project_table_entry(name, table_value, config_path=config_path)
         for name, table_value in tables.items()
     )
+    _validate_project_table_references(project_tables, config_path=config_path)
     return ProjectConfig(version=SUPPORTED_VERSION, tables=project_tables)
 
 
@@ -336,7 +337,7 @@ def _parse_project_table_entry(
         )
         raise ProjectConfigError(
             message,
-            suggestion="Keep each table entry to a single path key.",
+            suggestion="Use only path and optional checks keys in each table entry.",
         )
 
     if "path" not in raw_table:
@@ -405,7 +406,7 @@ def _parse_project_table_checks(
             f"Project catalog table '{table_name}' in {config_path} must define checks as a list.",
             suggestion="Use checks: [] or a list of nested check mappings.",
         )
-    return tuple(
+    checks = tuple(
         _parse_project_check_entry(
             raw_check,
             table_name=table_name,
@@ -413,6 +414,8 @@ def _parse_project_table_checks(
         )
         for raw_check in raw_checks
     )
+    _validate_project_table_check_names(checks, table_name=table_name, config_path=config_path)
+    return checks
 
 
 def _parse_project_check_entry(
@@ -713,6 +716,49 @@ def _project_check_entries_context(*, table_name: str, config_path: Path) -> str
 
 def _project_check_context(*, table_name: str, check_name: str, config_path: Path) -> str:
     return f"Project catalog check '{check_name}' for table '{table_name}' in {config_path}"
+
+
+def _validate_project_table_check_names(
+    checks: tuple[ConfiguredCheck, ...],
+    *,
+    table_name: str,
+    config_path: Path,
+) -> None:
+    seen_names: set[str] = set()
+    for check in checks:
+        if check.name in seen_names:
+            raise ProjectConfigError(
+                (
+                    f"Duplicate project catalog check name '{check.name}' "
+                    f"for table '{table_name}' in {config_path}."
+                ),
+                suggestion="Use unique check names within each table.",
+            )
+        seen_names.add(check.name)
+
+
+def _validate_project_table_references(
+    tables: tuple[ProjectTable, ...],
+    *,
+    config_path: Path,
+) -> None:
+    table_names = {table.name.lower(): table.name for table in tables}
+    for table in tables:
+        for check in table.checks:
+            if check.type != "foreign_key" or check.references is None:
+                continue
+            if table_names.get(check.references.table.lower()) is None:
+                raise ProjectConfigError(
+                    (
+                        f"Project catalog check '{check.name}' for table "
+                        f"'{table.name}' in {config_path} references unknown "
+                        f"table '{check.references.table}'."
+                    ),
+                    suggestion=(
+                        "Add the referenced table to the project catalog or "
+                        "update the foreign_key reference table."
+                    ),
+                )
 
 
 def _project_catalog_path_value(project_root: Path, resolved_path: Path) -> str:
