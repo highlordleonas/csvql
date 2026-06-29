@@ -262,8 +262,17 @@ def test_load_project_rejects_missing_foreign_key_reference_table(tmp_path: Path
             "    references: {table: bad-table, column: customer_id}\n"
         ),
         (
+            "checks:\n  - name: bad\n    type: not_null\n    column: order_id\n"
+            "    1: numeric_key\n    z: string_key\n"
+        ),
+        (
             "checks:\n  - name: bad\n    type: foreign_key\n    column: customer_id\n"
             "    references: {table: customers}\n"
+        ),
+        (
+            "checks:\n  - name: bad\n    type: foreign_key\n    column: customer_id\n"
+            "    references:\n      table: customers\n      column: customer_id\n"
+            "      1: numeric_key\n      z: string_key\n"
         ),
     ],
 )

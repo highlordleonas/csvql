@@ -330,7 +330,7 @@ def _parse_project_table_entry(
     allowed_keys = {"path", "checks"}
     extra_keys = set(raw_table) - allowed_keys
     if extra_keys:
-        extra_keys_display = sorted(extra_keys)
+        extra_keys_display = _sorted_key_display(extra_keys)
         message = (
             f"Unsupported metadata for project catalog table '{name}' "
             f"in {config_path}: {extra_keys_display}."
@@ -481,7 +481,7 @@ def _parse_project_check_entry(
     extra_keys = set(raw_check) - allowed_keys
     if extra_keys:
         raise ProjectConfigError(
-            f"Unsupported metadata for {check_context}: {sorted(extra_keys)}.",
+            f"Unsupported metadata for {check_context}: {_sorted_key_display(extra_keys)}.",
             suggestion="Remove unsupported keys from the check entry.",
         )
 
@@ -606,7 +606,7 @@ def _parse_foreign_key_reference(
     extra_keys = set(raw_references) - allowed_keys
     if extra_keys:
         raise ProjectConfigError(
-            f"Unsupported metadata for {check_context}: {sorted(extra_keys)}.",
+            f"Unsupported metadata for {check_context}: {_sorted_key_display(extra_keys)}.",
             suggestion="Keep foreign_key references to table and column only.",
         )
 
@@ -716,6 +716,10 @@ def _project_check_entries_context(*, table_name: str, config_path: Path) -> str
 
 def _project_check_context(*, table_name: str, check_name: str, config_path: Path) -> str:
     return f"Project catalog check '{check_name}' for table '{table_name}' in {config_path}"
+
+
+def _sorted_key_display(keys: set[object]) -> list[str]:
+    return sorted(str(key) for key in keys)
 
 
 def _validate_project_table_check_names(
