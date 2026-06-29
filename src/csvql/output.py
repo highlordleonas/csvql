@@ -2,6 +2,7 @@
 
 import json
 from enum import StrEnum
+from io import StringIO
 
 from rich.console import Console
 from rich.table import Table
@@ -174,7 +175,8 @@ def format_profile_result_table(result: ProfileResult) -> str:
 def format_check_result_table(result: CheckRunResult, *, include_failures: bool) -> str:
     """Format a data-quality check result as Rich table text."""
 
-    console = Console(color_system=None, force_terminal=False, record=True, width=140)
+    buffer = StringIO()
+    console = Console(color_system=None, force_terminal=False, record=True, width=140, file=buffer)
     console.print(f"Status: {result.status}")
     console.print(
         "Checks: "

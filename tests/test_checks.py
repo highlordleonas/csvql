@@ -4,7 +4,13 @@ import pytest
 
 from csvql.checks import run_configured_checks
 from csvql.exceptions import FileMissingError, ProjectConfigError
-from csvql.project_config import CONFIG_FILENAME, ProjectConfig, ProjectContext, ProjectTable
+from csvql.project_config import (
+    CONFIG_FILENAME,
+    ProjectConfig,
+    ProjectContext,
+    ProjectTable,
+    load_project,
+)
 from csvql.quality import ConfiguredCheck, ForeignKeyReference
 
 
@@ -261,6 +267,41 @@ def test_run_configured_checks_reports_row_count_between_sample(tmp_path: Path) 
     assert result.checks[0].failures[0].observed == 2
     assert result.checks[0].failures[0].min_value == 4
     assert result.checks[0].failures[0].max_value == 6
+
+
+def test_run_configured_checks_accepts_date_scalars_from_yaml(tmp_path: Path) -> None:
+    (tmp_path / "orders.csv").write_text(
+        "ordered_at\n2024-01-01\n2024-01-02\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\n"
+        "tables:\n"
+        "  orders:\n"
+        "    path: orders.csv\n"
+        "    checks:\n"
+        "      - name: ordered_at_min\n"
+        "        type: min\n"
+        "        column: ordered_at\n"
+        "        value: 2024-01-01\n"
+        "      - name: ordered_at_max\n"
+        "        type: max\n"
+        "        column: ordered_at\n"
+        "        value: 2024-01-02\n"
+        "      - name: ordered_at_known\n"
+        "        type: accepted_values\n"
+        "        column: ordered_at\n"
+        "        values: [2024-01-01, 2024-01-02]\n",
+        encoding="utf-8",
+    )
+
+    context = load_project(tmp_path)
+
+    result = run_configured_checks(context, table_name=None, show_failures=False, failure_limit=3)
+
+    assert result.status == "passed"
+    assert [check.failed_count for check in result.checks] == [0, 0, 0]
 
 
 @pytest.mark.parametrize(

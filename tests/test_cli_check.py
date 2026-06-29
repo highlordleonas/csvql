@@ -76,6 +76,7 @@ def test_check_outputs_table_and_exits_11_for_failures(
 
     assert result.exit_code == 11, result.output
     assert "Status: failed" in result.output
+    assert result.output.count("Status: failed") == 1
     assert "order_id_required" in result.output
     assert "Error: Configured data-quality checks failed." not in result.output
 

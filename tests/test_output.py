@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from csvql.models import (
     ColumnInfo,
     ColumnProfile,
@@ -288,6 +290,18 @@ def test_format_check_result_table_contains_status_counts_and_failures() -> None
     assert "row_number=2" in output
     assert "Warnings:" in output
     assert "No data quality checks configured for table 'customers'." in output
+
+
+def test_format_check_result_table_does_not_write_to_stdout(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output = format_check_result_table(_check_run_result(), include_failures=True)
+
+    captured = capsys.readouterr()
+
+    assert output
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_format_check_result_table_suppresses_failures_when_disabled() -> None:

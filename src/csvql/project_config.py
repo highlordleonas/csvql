@@ -1,6 +1,7 @@
 """Project catalog configuration loading and discovery."""
 
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import cast
 
@@ -738,7 +739,7 @@ def _sorted_key_display(keys: set[object]) -> list[str]:
 
 
 def _is_yaml_scalar(value: object) -> bool:
-    return value is None or isinstance(value, (str, int, float, bool))
+    return value is None or isinstance(value, (str, int, float, bool, date))
 
 
 def _validate_project_table_check_names(

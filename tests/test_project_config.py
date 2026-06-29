@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 from textwrap import indent
 
@@ -232,6 +233,44 @@ def test_load_project_accepts_table_checks(tmp_path: Path) -> None:
     assert saved_checks[0]["column"] == " order_id "
     assert saved_checks[3]["column"] == " customer_id "
     assert saved_checks[3]["references"]["column"] == " customer id "
+
+
+def test_load_project_accepts_date_scalars_for_check_values(tmp_path: Path) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\n"
+        "tables:\n"
+        "  orders:\n"
+        "    path: data/orders.csv\n"
+        "    checks:\n"
+        "      - name: ordered_at_min\n"
+        "        type: min\n"
+        "        column: ordered_at\n"
+        "        value: 2024-01-01\n"
+        "      - name: ordered_at_max\n"
+        "        type: max\n"
+        "        column: ordered_at\n"
+        "        value: 2024-01-02\n"
+        "      - name: ordered_at_known\n"
+        "        type: accepted_values\n"
+        "        column: ordered_at\n"
+        "        values: [2024-01-01, 2024-01-02]\n",
+        encoding="utf-8",
+    )
+
+    context = load_project(tmp_path)
+
+    orders = context.config.tables[0]
+    assert orders.checks[0].value == date(2024, 1, 1)
+    assert orders.checks[1].value == date(2024, 1, 2)
+    assert orders.checks[2].values == (date(2024, 1, 1), date(2024, 1, 2))
+
+    save_project(context)
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    saved_checks = saved["tables"]["orders"]["checks"]
+    assert saved_checks[0]["value"] == date(2024, 1, 1)
+    assert saved_checks[1]["value"] == date(2024, 1, 2)
+    assert saved_checks[2]["values"] == [date(2024, 1, 1), date(2024, 1, 2)]
 
 
 def test_load_project_rejects_duplicate_check_names(tmp_path: Path) -> None:
