@@ -70,10 +70,14 @@ Implemented:
 
 ## v0.6.0 - Data Quality Checks
 
+Implemented:
+
 - configured checks in `.csvql.yml`
+- `csvql check [table]`
 - `not_null`, `unique`, `accepted_values`, `min`, `max`, `row_count_between`, `foreign_key`
-- non-zero exit code on failures
-- JSON check output for CI
+- non-zero exit code `11` on data-quality failures
+- table and JSON output for check results
+- sampled failing rows or values with `--show-failures`
 
 ## v0.7.0 - Benchmark And Release Hardening
 

@@ -10,7 +10,7 @@ CLI arguments
   -> explicit table mapping parser or project catalog discovery
   -> validated table aliases and resolved CSV paths
   -> in-memory DuckDB engine
-  -> query/inspect/sample/profile/export output
+  -> query/inspect/sample/profile/check/export output
 ```
 
 ## Boundaries
@@ -25,7 +25,7 @@ CLI arguments
 : Resolve and read saved SQL files, rejecting missing, directory, unreadable, and empty SQL inputs.
 
 `project_config.py`
-: Discover `.csvql.yml`, load and validate the project catalog, resolve catalog table paths, and build queryable table sources for catalog-backed commands.
+: Discover `.csvql.yml`, load and validate the project catalog, parse configured data-quality checks, resolve catalog table paths, and build queryable table sources for catalog-backed commands.
 
 `query_workflow.py`
 : Shared query request construction and execution for inline query, saved SQL run, and export workflows.
@@ -42,6 +42,12 @@ CLI arguments
 `profiling.py`
 : Use DuckDB full-scan aggregate queries to calculate deterministic profile metrics for direct CSV paths and project catalog aliases. Generated aggregate SQL is CSVQL-controlled and quotes DuckDB-discovered column identifiers.
 
+`quality.py`
+: Own typed configured-check and check-result value objects.
+
+`checks.py`
+: Run CSVQL-controlled DuckDB validation queries for configured project catalog checks. The check path uses generated SQL only, quotes identifiers, and resolves CSV files through the project catalog.
+
 `engine.py`
 : Own DuckDB connection lifecycle, CSV registration, SQL execution, and DuckDB error conversion.
 
@@ -49,7 +55,7 @@ CLI arguments
 : Validate export output paths and serialize query results to CSV, JSON, or Markdown.
 
 `output.py`
-: Convert query, inspect, sample, project catalog, and profile results into human-readable table output or automation-friendly JSON.
+: Convert query, inspect, sample, project catalog, profile, and check results into human-readable table output or automation-friendly JSON.
 
 `models.py`
 : Small typed value objects shared across services.
@@ -72,6 +78,10 @@ CLI arguments
 - `sample` reads a bounded row count and shares source resolution with `inspect` and `query`.
 - `profile` intentionally performs a full scan and shares source resolution with `inspect` and `sample`.
 - `profile` does not run user-authored SQL; it builds CSVQL-controlled aggregate SQL from DuckDB-discovered columns.
+- `check` reads configured checks from `.csvql.yml`; v0.6 does not support ad hoc CLI check definitions.
+- `check` uses full-file DuckDB validation queries and exits `11` when checks fail.
+- `check` does not run user-authored SQL; it builds CSVQL-controlled validation SQL from validated config and DuckDB-registered CSV views.
+- `--show-failures` adds capped sampled failing rows or values for failed checks.
 - `--output` controls stdout formatting for query results.
 
 ## Deferred Decisions

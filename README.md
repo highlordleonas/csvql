@@ -20,7 +20,7 @@ CSVQL does not implement a SQL engine. DuckDB executes SQL; CSVQL owns the local
 
 ## Status
 
-This repository has the v0.1 query workflow, the first inspect/sample vertical, the v0.3 project catalog workflow, the v0.4 saved-workflow surfaces, and the v0.5 profiling surface implemented for local CLI use.
+This repository has the v0.1 query workflow, the first inspect/sample vertical, the v0.3 project catalog workflow, the v0.4 saved-workflow surfaces, the v0.5 profiling surface, and the v0.6 data-quality check surface implemented for local CLI use.
 
 Implemented now:
 
@@ -38,6 +38,9 @@ Implemented now:
 - catalog-backed `csvql sample alias`
 - `csvql profile data/orders.csv --output json`
 - catalog-backed `csvql profile alias`
+- configured data-quality checks in `.csvql.yml`
+- `csvql check [table] --output json`
+- sampled failure output with `csvql check --show-failures`
 - repeated `--table` mappings for joins
 - single-file shortcut mode
 - table and JSON stdout output
@@ -46,7 +49,6 @@ Implemented now:
 
 Planned later:
 
-- data quality checks
 - benchmarks and release workflow
 
 ## Install For Development
@@ -211,6 +213,56 @@ uv run csvql profile orders --output json
 ```
 
 `csvql profile` reports row and column counts, duplicate row count, per-column null counts and percentages, non-null counts, distinct counts excluding nulls, and DuckDB `min`/`max` values. String `min` and `max` use DuckDB lexicographic ordering.
+
+## Data Quality Check Examples
+
+Configure checks in `.csvql.yml`:
+
+```yaml
+version: 1
+tables:
+  orders:
+    path: data/orders.csv
+    checks:
+      - name: order_id_required
+        type: not_null
+        column: order_id
+      - name: order_id_unique
+        type: unique
+        column: order_id
+      - name: status_known
+        type: accepted_values
+        column: status
+        values: [paid, pending, cancelled]
+      - name: customer_exists
+        type: foreign_key
+        column: customer_id
+        references:
+          table: customers
+          column: customer_id
+  customers:
+    path: data/customers.csv
+```
+
+Run all configured checks:
+
+```bash
+uv run csvql check
+```
+
+Run checks for one registered table and return JSON:
+
+```bash
+uv run csvql check orders --output json
+```
+
+Include capped failure samples:
+
+```bash
+uv run csvql check orders --output json --show-failures --failure-limit 5
+```
+
+`csvql check` exits `0` when checks pass or no checks are configured. It exits `11` when configured checks run successfully and find data-quality failures. Missing catalogs, missing files, invalid config, and DuckDB execution errors use the existing CLI error path.
 
 ## Development Checks
 
