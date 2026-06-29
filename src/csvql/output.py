@@ -6,7 +6,7 @@ from enum import StrEnum
 from rich.console import Console
 from rich.table import Table
 
-from csvql.models import InspectResult, QueryResult, RowCountInfo, SampleResult
+from csvql.models import InspectResult, ProfileResult, QueryResult, RowCountInfo, SampleResult
 from csvql.project_config import ProjectTablesResult
 
 
@@ -37,6 +37,12 @@ def format_inspect_result_json(result: InspectResult) -> str:
 
 def format_sample_result_json(result: SampleResult) -> str:
     """Format a sample result as deterministic JSON."""
+
+    return json.dumps(result.as_dict(), default=str, indent=2, sort_keys=True)
+
+
+def format_profile_result_json(result: ProfileResult) -> str:
+    """Format a profile result as deterministic JSON."""
 
     return json.dumps(result.as_dict(), default=str, indent=2, sort_keys=True)
 
@@ -106,6 +112,45 @@ def format_sample_result_table(result: SampleResult) -> str:
         table.add_row(*(_format_cell(value) for value in row))
     console.print(table)
     console.print(f"{len(result.rows)} row(s) sampled with limit {result.limit}")
+
+    if result.warnings:
+        console.print("Warnings:")
+        for warning in result.warnings:
+            console.print(f"- {warning}")
+    return console.export_text(clear=True)
+
+
+def format_profile_result_table(result: ProfileResult) -> str:
+    """Format a profile result as Rich table text."""
+
+    console = Console(color_system=None, force_terminal=False, record=True, width=140)
+    source = result.source
+    console.print(f"Source: {source.get('display_path', '')}")
+    console.print(f"Rows: {result.row_count}")
+    console.print(f"Columns: {result.column_count}")
+    console.print(f"Duplicate rows: {result.duplicate_row_count}")
+
+    table = Table(show_header=True)
+    table.add_column("column")
+    table.add_column("type")
+    table.add_column("non_null")
+    table.add_column("null")
+    table.add_column("null_%")
+    table.add_column("distinct")
+    table.add_column("min")
+    table.add_column("max")
+    for column in result.columns:
+        table.add_row(
+            column.name,
+            column.duckdb_type,
+            str(column.non_null_count),
+            str(column.null_count),
+            f"{column.null_percentage:.3f}",
+            str(column.distinct_count),
+            _format_cell(column.min),
+            _format_cell(column.max),
+        )
+    console.print(table)
 
     if result.warnings:
         console.print("Warnings:")

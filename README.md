@@ -20,7 +20,7 @@ CSVQL does not implement a SQL engine. DuckDB executes SQL; CSVQL owns the local
 
 ## Status
 
-This repository has the v0.1 query workflow, the first inspect/sample vertical, the v0.3 project catalog workflow, and the v0.4 saved-workflow surfaces implemented for local CLI use.
+This repository has the v0.1 query workflow, the first inspect/sample vertical, the v0.3 project catalog workflow, the v0.4 saved-workflow surfaces, and the v0.5 profiling surface implemented for local CLI use.
 
 Implemented now:
 
@@ -36,6 +36,8 @@ Implemented now:
 - `csvql export queries/file.sql --format csv|json|markdown --out path`
 - catalog-backed `csvql inspect alias`
 - catalog-backed `csvql sample alias`
+- `csvql profile data/orders.csv --output json`
+- catalog-backed `csvql profile alias`
 - repeated `--table` mappings for joins
 - single-file shortcut mode
 - table and JSON stdout output
@@ -44,7 +46,7 @@ Implemented now:
 
 Planned later:
 
-- profiling and data quality checks
+- data quality checks
 - benchmarks and release workflow
 
 ## Install For Development
@@ -186,6 +188,29 @@ Sample rows from a CSV:
 ```bash
 uv run csvql sample examples/sales/data/orders.csv --limit 5
 ```
+
+## Profile Examples
+
+Profile a CSV with a full scan:
+
+```bash
+uv run csvql profile examples/sales/data/orders.csv
+```
+
+Return JSON profile metrics:
+
+```bash
+uv run csvql profile examples/sales/data/orders.csv --output json
+```
+
+Profile a registered catalog alias:
+
+```bash
+cd examples/sales
+uv run csvql profile orders --output json
+```
+
+`csvql profile` reports row and column counts, duplicate row count, per-column null counts and percentages, non-null counts, distinct counts excluding nulls, and DuckDB `min`/`max` values. String `min` and `max` use DuckDB lexicographic ordering.
 
 ## Development Checks
 

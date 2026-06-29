@@ -10,7 +10,7 @@ CLI arguments
   -> explicit table mapping parser or project catalog discovery
   -> validated table aliases and resolved CSV paths
   -> in-memory DuckDB engine
-  -> query/inspect/sample/export output
+  -> query/inspect/sample/profile/export output
 ```
 
 ## Boundaries
@@ -39,6 +39,9 @@ CLI arguments
 `inspection.py`
 : Use DuckDB and bounded file reads to infer columns, dialect metadata, row-count status, and sample rows.
 
+`profiling.py`
+: Use DuckDB full-scan aggregate queries to calculate deterministic profile metrics for direct CSV paths and project catalog aliases. Generated aggregate SQL is CSVQL-controlled and quotes DuckDB-discovered column identifiers.
+
 `engine.py`
 : Own DuckDB connection lifecycle, CSV registration, SQL execution, and DuckDB error conversion.
 
@@ -46,7 +49,7 @@ CLI arguments
 : Validate export output paths and serialize query results to CSV, JSON, or Markdown.
 
 `output.py`
-: Convert `QueryResult` into human-readable table output or automation-friendly JSON.
+: Convert query, inspect, sample, project catalog, and profile results into human-readable table output or automation-friendly JSON.
 
 `models.py`
 : Small typed value objects shared across services.
@@ -67,6 +70,8 @@ CLI arguments
 - CSVQL does not restrict DuckDB capabilities or sandbox filesystem access.
 - `inspect` does not run an exact row count by default; `--exact` is the explicit full-scan mode.
 - `sample` reads a bounded row count and shares source resolution with `inspect` and `query`.
+- `profile` intentionally performs a full scan and shares source resolution with `inspect` and `sample`.
+- `profile` does not run user-authored SQL; it builds CSVQL-controlled aggregate SQL from DuckDB-discovered columns.
 - `--output` controls stdout formatting for query results.
 
 ## Deferred Decisions

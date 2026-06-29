@@ -58,12 +58,15 @@ Implemented:
 
 ## v0.5.0 - Profiling
 
+Implemented:
+
 - row and column counts
 - null counts and percentages
-- distinct counts
-- numeric/date min and max
-- duplicate row count
-- JSON profile output
+- distinct counts excluding nulls
+- numeric, date, and string min and max
+- duplicate row count using excess-row semantics
+- direct path and catalog alias support for `csvql profile`
+- table and JSON profile output
 
 ## v0.6.0 - Data Quality Checks
 

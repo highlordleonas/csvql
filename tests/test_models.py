@@ -1,7 +1,9 @@
 from csvql.models import (
     ColumnInfo,
+    ColumnProfile,
     DialectInfo,
     InspectResult,
+    ProfileResult,
     RowCountInfo,
     SampleResult,
 )
@@ -99,5 +101,49 @@ def test_sample_result_payload_contract() -> None:
         "columns": ["order_id", "status"],
         "rows": [{"order_id": "ORD-1", "status": "paid"}],
         "warnings": [],
+    }
+    assert result.as_dict()["source"] is source
+
+
+def test_profile_result_payload_contract() -> None:
+    source = {"display_path": "orders.csv"}
+    result = ProfileResult(
+        source=source,
+        row_count=3,
+        column_count=1,
+        duplicate_row_count=1,
+        columns=(
+            ColumnProfile(
+                name="status",
+                duckdb_type="VARCHAR",
+                non_null_count=2,
+                null_count=1,
+                null_percentage=33.333,
+                distinct_count=2,
+                min="paid",
+                max="pending",
+            ),
+        ),
+        warnings=("profile warning",),
+    )
+
+    assert result.as_dict() == {
+        "source": {"display_path": "orders.csv"},
+        "row_count": 3,
+        "column_count": 1,
+        "duplicate_row_count": 1,
+        "columns": [
+            {
+                "name": "status",
+                "duckdb_type": "VARCHAR",
+                "non_null_count": 2,
+                "null_count": 1,
+                "null_percentage": 33.333,
+                "distinct_count": 2,
+                "min": "paid",
+                "max": "pending",
+            }
+        ],
+        "warnings": ["profile warning"],
     }
     assert result.as_dict()["source"] is source

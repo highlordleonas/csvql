@@ -130,3 +130,51 @@ class SampleResult:
             "rows": self.as_records(),
             "warnings": list(self.warnings),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class ColumnProfile:
+    """Full-scan profile metrics for one CSV column."""
+
+    name: str
+    duckdb_type: str
+    non_null_count: int
+    null_count: int
+    null_percentage: float
+    distinct_count: int
+    min: object
+    max: object
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "duckdb_type": self.duckdb_type,
+            "non_null_count": self.non_null_count,
+            "null_count": self.null_count,
+            "null_percentage": self.null_percentage,
+            "distinct_count": self.distinct_count,
+            "min": self.min,
+            "max": self.max,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileResult:
+    """Structured result for `csvql profile`."""
+
+    source: dict[str, object]
+    row_count: int
+    column_count: int
+    duplicate_row_count: int
+    columns: tuple[ColumnProfile, ...]
+    warnings: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "source": self.source,
+            "row_count": self.row_count,
+            "column_count": self.column_count,
+            "duplicate_row_count": self.duplicate_row_count,
+            "columns": [column.as_dict() for column in self.columns],
+            "warnings": list(self.warnings),
+        }

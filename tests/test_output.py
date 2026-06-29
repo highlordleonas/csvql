@@ -1,10 +1,20 @@
 import json
 from pathlib import Path
 
-from csvql.models import ColumnInfo, DialectInfo, InspectResult, RowCountInfo, SampleResult
+from csvql.models import (
+    ColumnInfo,
+    ColumnProfile,
+    DialectInfo,
+    InspectResult,
+    ProfileResult,
+    RowCountInfo,
+    SampleResult,
+)
 from csvql.output import (
     format_inspect_result_json,
     format_inspect_result_table,
+    format_profile_result_json,
+    format_profile_result_table,
     format_project_tables_json,
     format_project_tables_table,
     format_sample_result_json,
@@ -93,6 +103,76 @@ def test_format_sample_result_table_contains_rows() -> None:
 
     assert "ORD-1" in output
     assert "paid" in output
+
+
+def test_format_profile_result_json_is_deterministic() -> None:
+    result = ProfileResult(
+        source={"display_path": "orders.csv"},
+        row_count=2,
+        column_count=1,
+        duplicate_row_count=0,
+        columns=(
+            ColumnProfile(
+                name="status",
+                duckdb_type="VARCHAR",
+                non_null_count=1,
+                null_count=1,
+                null_percentage=50.0,
+                distinct_count=1,
+                min="paid",
+                max="paid",
+            ),
+        ),
+        warnings=(),
+    )
+
+    payload = json.loads(format_profile_result_json(result))
+
+    assert payload["row_count"] == 2
+    assert payload["column_count"] == 1
+    assert payload["duplicate_row_count"] == 0
+    assert payload["columns"] == [
+        {
+            "duckdb_type": "VARCHAR",
+            "distinct_count": 1,
+            "max": "paid",
+            "min": "paid",
+            "name": "status",
+            "non_null_count": 1,
+            "null_count": 1,
+            "null_percentage": 50.0,
+        }
+    ]
+
+
+def test_format_profile_result_table_contains_profile_metrics() -> None:
+    result = ProfileResult(
+        source={"display_path": "orders.csv"},
+        row_count=2,
+        column_count=1,
+        duplicate_row_count=0,
+        columns=(
+            ColumnProfile(
+                name="status",
+                duckdb_type="VARCHAR",
+                non_null_count=1,
+                null_count=1,
+                null_percentage=50.0,
+                distinct_count=1,
+                min="paid",
+                max="paid",
+            ),
+        ),
+        warnings=(),
+    )
+
+    output = format_profile_result_table(result)
+
+    assert "orders.csv" in output
+    assert "Rows: 2" in output
+    assert "Duplicate rows: 0" in output
+    assert "status" in output
+    assert "50.000" in output
 
 
 def test_format_project_tables_json_is_deterministic() -> None:

@@ -21,12 +21,15 @@ from csvql.output import (
     format_inspect_result_json,
     format_inspect_result_table,
     format_json_result,
+    format_profile_result_json,
+    format_profile_result_table,
     format_project_tables_json,
     format_project_tables_table,
     format_sample_result_json,
     format_sample_result_table,
     format_table_result,
 )
+from csvql.profiling import profile_csv_source
 from csvql.project_config import (
     add_project_table,
     build_project_tables_result,
@@ -138,6 +141,35 @@ def sample(
             typer.echo(format_sample_result_json(result))
         else:
             typer.echo(format_sample_result_table(result), nl=False)
+    except CSVQLError as exc:
+        _exit_with_error(exc)
+
+
+@app.command()
+def profile(
+    csv_path: Annotated[
+        str,
+        typer.Argument(help="CSV file or project catalog alias to profile."),
+    ],
+    output: Annotated[
+        OutputFormat,
+        typer.Option(
+            "--output",
+            "-o",
+            case_sensitive=False,
+            help="Profile output format.",
+        ),
+    ] = OutputFormat.table,
+) -> None:
+    """Profile a local CSV file without running user-authored SQL."""
+
+    try:
+        source = resolve_path_or_catalog_source(csv_path, base_dir=Path.cwd())
+        result = profile_csv_source(source)
+        if output is OutputFormat.json:
+            typer.echo(format_profile_result_json(result))
+        else:
+            typer.echo(format_profile_result_table(result), nl=False)
     except CSVQLError as exc:
         _exit_with_error(exc)
 
