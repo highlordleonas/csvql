@@ -94,6 +94,23 @@ def test_run_configured_checks_resolves_table_filter_case_insensitively(
     assert result.checks[0].name == "order_id_required"
 
 
+def test_run_configured_checks_rejects_case_colliding_table_aliases(
+    tmp_path: Path,
+) -> None:
+    orders = tmp_path / "orders.csv"
+    orders.write_text("order_id\nORD-1\n", encoding="utf-8")
+    context = _context(
+        tmp_path,
+        (
+            ProjectTable("Orders", "orders.csv"),
+            ProjectTable("orders", "orders.csv"),
+        ),
+    )
+
+    with pytest.raises(ProjectConfigError):
+        run_configured_checks(context, table_name=None, show_failures=False, failure_limit=5)
+
+
 def test_run_configured_checks_validates_core_semantics_and_identifier_quoting(
     tmp_path: Path,
 ) -> None:
@@ -273,6 +290,98 @@ def test_run_configured_checks_rejects_invalid_row_count_between_bounds(
                         "row_count_between",
                         min_value=min_value,
                         max_value=max_value,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(ProjectConfigError):
+        run_configured_checks(context, table_name=None, show_failures=False, failure_limit=5)
+
+
+@pytest.mark.parametrize("bad_value", [2.9, -0.5, "3", True])
+def test_run_configured_checks_rejects_non_integer_row_count_between_min(
+    tmp_path: Path,
+    bad_value: object,
+) -> None:
+    orders = tmp_path / "orders.csv"
+    orders.write_text("order_id\nORD-1\n", encoding="utf-8")
+    context = _context(
+        tmp_path,
+        (
+            ProjectTable(
+                "orders",
+                "orders.csv",
+                checks=(
+                    _check(
+                        "expected_rows",
+                        "orders",
+                        "row_count_between",
+                        min_value=bad_value,
+                        max_value=10,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(ProjectConfigError):
+        run_configured_checks(context, table_name=None, show_failures=False, failure_limit=5)
+
+
+@pytest.mark.parametrize("bad_value", [2.9, -0.5, "3", True])
+def test_run_configured_checks_rejects_non_integer_row_count_between_max(
+    tmp_path: Path,
+    bad_value: object,
+) -> None:
+    orders = tmp_path / "orders.csv"
+    orders.write_text("order_id\nORD-1\n", encoding="utf-8")
+    context = _context(
+        tmp_path,
+        (
+            ProjectTable(
+                "orders",
+                "orders.csv",
+                checks=(
+                    _check(
+                        "expected_rows",
+                        "orders",
+                        "row_count_between",
+                        min_value=0,
+                        max_value=bad_value,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(ProjectConfigError):
+        run_configured_checks(context, table_name=None, show_failures=False, failure_limit=5)
+
+
+def test_run_configured_checks_rejects_unsupported_direct_model_check_type(
+    tmp_path: Path,
+) -> None:
+    orders = tmp_path / "orders.csv"
+    orders.write_text("order_id\nORD-1\n", encoding="utf-8")
+    context = _context(
+        tmp_path,
+        (
+            ProjectTable(
+                "orders",
+                "orders.csv",
+                checks=(
+                    ConfiguredCheck(
+                        name="made_up_check",
+                        table="orders",
+                        type="made_up",  # type: ignore[arg-type]
+                        column=None,
+                        values=(),
+                        value=None,
+                        min_value=None,
+                        max_value=None,
+                        references=None,
                     ),
                 ),
             ),

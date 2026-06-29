@@ -19,6 +19,15 @@ from csvql.sql_utils import quote_identifier
 CHECK_VIEW_PREFIX = "__csvql_check_"
 CHECK_ROWS_ALIAS = "__csvql_check_rows"
 CHECK_ROW_NUMBER_COLUMN = "__csvql_row_number"
+_SUPPORTED_CHECK_TYPES = {
+    "not_null",
+    "unique",
+    "accepted_values",
+    "min",
+    "max",
+    "row_count_between",
+    "foreign_key",
+}
 
 
 def run_configured_checks(
@@ -36,6 +45,7 @@ def run_configured_checks(
             suggestion="Pass a failure limit of 1 or greater.",
         )
 
+    _validate_table_aliases(context)
     selected_tables = _select_tables(context, table_name)
     checks = tuple(check for table in selected_tables for check in table.checks)
     if not checks:
@@ -102,6 +112,28 @@ def _select_tables(
             suggestion="Run csvql tables to list configured table aliases.",
         )
     return (match,)
+
+
+def _validate_table_aliases(context: ProjectContext) -> None:
+    seen: dict[str, str] = {}
+    collisions: list[tuple[str, str]] = []
+    for table in context.config.tables:
+        normalized = table.name.lower()
+        existing = seen.get(normalized)
+        if existing is None:
+            seen[normalized] = table.name
+            continue
+        if existing != table.name:
+            collisions.append((existing, table.name))
+
+    if collisions:
+        collision_display = ", ".join(
+            f"'{first}' and '{second}'" for first, second in sorted(collisions)
+        )
+        raise ProjectConfigError(
+            f"Project catalog table aliases differ only by case: {collision_display}.",
+            suggestion="Rename one of the colliding aliases before running csvql check.",
+        )
 
 
 def _required_tables(
@@ -192,6 +224,11 @@ def _run_check(
 
 def _validate_check_execution(check: ConfiguredCheck) -> None:
     context = _check_context(check)
+    if check.type not in _SUPPORTED_CHECK_TYPES:
+        raise ProjectConfigError(
+            f"{context} uses unsupported check type '{check.type}'.",
+            suggestion="Use one of the supported data quality check types.",
+        )
     if check.column is None and check.type != "row_count_between":
         raise ProjectConfigError(
             f"{context} must define a column.",
@@ -203,22 +240,21 @@ def _validate_check_execution(check: ConfiguredCheck) -> None:
                 f"{context} must define min, max, or both.",
                 suggestion="Use min, max, or both row-count bounds.",
             )
-        if check.min_value is not None and _as_int(check.min_value) < 0:
+        min_value = (
+            _require_strict_non_negative_int(check.min_value, field_name="min")
+            if check.min_value is not None
+            else None
+        )
+        max_value = (
+            _require_strict_non_negative_int(check.max_value, field_name="max")
+            if check.max_value is not None
+            else None
+        )
+        if min_value is not None and max_value is not None and min_value > max_value:
             raise ProjectConfigError(
-                f"{context} cannot define a negative min.",
-                suggestion="Set min to a whole number greater than or equal to zero.",
+                f"{context} has min greater than max.",
+                suggestion="Set min to a value less than or equal to max.",
             )
-        if check.max_value is not None and _as_int(check.max_value) < 0:
-            raise ProjectConfigError(
-                f"{context} cannot define a negative max.",
-                suggestion="Set max to a whole number greater than or equal to zero.",
-            )
-        if check.min_value is not None and check.max_value is not None:
-            if _as_int(check.min_value) > _as_int(check.max_value):
-                raise ProjectConfigError(
-                    f"{context} has min greater than max.",
-                    suggestion="Set min to a value less than or equal to max.",
-                )
     if check.type in {"min", "max"} and check.value is None:
         raise ProjectConfigError(
             f"{context} cannot use a null threshold.",
@@ -488,14 +524,24 @@ def _row_count_between_failure_count(
     connection: duckdb.DuckDBPyConnection,
     check: ConfiguredCheck,
 ) -> int:
+    min_value = (
+        _require_strict_non_negative_int(check.min_value, field_name="min")
+        if check.min_value is not None
+        else None
+    )
+    max_value = (
+        _require_strict_non_negative_int(check.max_value, field_name="max")
+        if check.max_value is not None
+        else None
+    )
     observed = _fetch_scalar_int(
         connection,
         f"SELECT COUNT(*) FROM {quote_identifier(_view_name(check.table))}",
     )
-    if check.min_value is not None and observed < _as_int(check.min_value):
-        return _as_int(check.min_value) - observed
-    if check.max_value is not None and observed > _as_int(check.max_value):
-        return observed - _as_int(check.max_value)
+    if min_value is not None and observed < min_value:
+        return min_value - observed
+    if max_value is not None and observed > max_value:
+        return observed - max_value
     return 0
 
 
@@ -674,3 +720,16 @@ def _as_int(value: object) -> int:
     """Coerce a DuckDB scalar into an int for check accounting."""
 
     return int(cast(int | str | float | bool, value))
+
+
+def _require_strict_non_negative_int(value: object, *, field_name: str) -> int:
+    if type(value) is not int or value < 0:
+        raise ProjectConfigError(
+            f"{_check_context_for_row_count_between(field_name)} must be a non-negative integer.",
+            suggestion="Use a whole number greater than or equal to zero.",
+        )
+    return value
+
+
+def _check_context_for_row_count_between(field_name: str) -> str:
+    return f"row_count_between {field_name}"
