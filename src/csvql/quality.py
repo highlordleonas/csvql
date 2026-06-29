@@ -14,6 +14,7 @@ CheckType = Literal[
 ]
 CheckStatus = Literal["passed", "failed"]
 RunStatus = Literal["passed", "failed"]
+_UNSET = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +71,7 @@ class CheckFailureSample:
     """One sampled failure for verbose check output."""
 
     row_number: int | None = None
-    value: object | None = None
+    value: object = _UNSET
     row: dict[str, object] | None = None
     observed: object | None = None
     expected: object | None = None
@@ -83,7 +84,7 @@ class CheckFailureSample:
         payload: dict[str, object] = {}
         if self.row_number is not None:
             payload["row_number"] = self.row_number
-        if self.value is not None or self.row is not None:
+        if self.value is not _UNSET or self.row is not None:
             payload["value"] = self.value
         if self.row is not None:
             payload["row"] = self.row
@@ -114,6 +115,14 @@ class CheckResult:
     failed_count: int
     failures: tuple[CheckFailureSample, ...] = ()
 
+    def __post_init__(self) -> None:
+        if self.failed_count < 0:
+            raise ValueError("failed_count must be non-negative")
+        if self.status == "passed" and self.failed_count > 0:
+            raise ValueError("passed checks cannot have failed_count > 0")
+        if self.status == "failed" and self.failed_count == 0:
+            raise ValueError("failed checks must have failed_count > 0")
+
     def as_dict(self, *, include_failures: bool) -> dict[str, object]:
         payload: dict[str, object] = {
             "name": self.name,
@@ -136,6 +145,14 @@ class CheckRunResult:
     status: RunStatus
     checks: tuple[CheckResult, ...]
     warnings: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        any_failed = any(check.status == "failed" for check in self.checks)
+        expected_status: RunStatus = "failed" if any_failed else "passed"
+        if self.status != expected_status:
+            raise ValueError(
+                "run status must match child check statuses"
+            )
 
     @property
     def check_count(self) -> int:
