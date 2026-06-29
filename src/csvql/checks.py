@@ -5,7 +5,7 @@ from typing import cast
 
 import duckdb
 
-from csvql.exceptions import CSVInspectionError, FileMissingError, ProjectConfigError
+from csvql.exceptions import CSVInspectionError, ProjectConfigError
 from csvql.project_config import ProjectContext, ProjectTable, resolve_catalog_path
 from csvql.quality import (
     CheckFailureSample,
@@ -147,7 +147,7 @@ def _register_tables(
             column_names_by_table[table.name.lower()] = tuple(
                 str(column) for column in relation.columns
             )
-        except (FileMissingError, OSError, duckdb.Error) as exc:
+        except (OSError, duckdb.Error) as exc:
             raise CSVInspectionError(
                 f"Failed to run data quality checks for project catalog table '{table.name}'.",
                 suggestion="Check that the configured CSV file exists and is readable.",
@@ -202,6 +202,16 @@ def _validate_check_execution(check: ConfiguredCheck) -> None:
             raise ProjectConfigError(
                 f"{context} must define min, max, or both.",
                 suggestion="Use min, max, or both row-count bounds.",
+            )
+        if check.min_value is not None and _as_int(check.min_value) < 0:
+            raise ProjectConfigError(
+                f"{context} cannot define a negative min.",
+                suggestion="Set min to a whole number greater than or equal to zero.",
+            )
+        if check.max_value is not None and _as_int(check.max_value) < 0:
+            raise ProjectConfigError(
+                f"{context} cannot define a negative max.",
+                suggestion="Set max to a whole number greater than or equal to zero.",
             )
         if check.min_value is not None and check.max_value is not None:
             if _as_int(check.min_value) > _as_int(check.max_value):
