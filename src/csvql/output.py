@@ -8,6 +8,7 @@ from rich.table import Table
 
 from csvql.models import InspectResult, ProfileResult, QueryResult, RowCountInfo, SampleResult
 from csvql.project_config import ProjectTablesResult
+from csvql.quality import CheckRunResult
 
 
 class OutputFormat(StrEnum):
@@ -45,6 +46,17 @@ def format_profile_result_json(result: ProfileResult) -> str:
     """Format a profile result as deterministic JSON."""
 
     return json.dumps(result.as_dict(), default=str, indent=2, sort_keys=True)
+
+
+def format_check_result_json(result: CheckRunResult, *, include_failures: bool) -> str:
+    """Format a data-quality check result as deterministic JSON."""
+
+    return json.dumps(
+        result.as_dict(include_failures=include_failures),
+        default=str,
+        indent=2,
+        sort_keys=True,
+    )
 
 
 def format_project_tables_json(result: ProjectTablesResult) -> str:
@@ -159,6 +171,43 @@ def format_profile_result_table(result: ProfileResult) -> str:
     return console.export_text(clear=True)
 
 
+def format_check_result_table(result: CheckRunResult, *, include_failures: bool) -> str:
+    """Format a data-quality check result as Rich table text."""
+
+    console = Console(color_system=None, force_terminal=False, record=True, width=140)
+    console.print(f"Status: {result.status}")
+    console.print(
+        "Checks: "
+        f"{result.check_count} | Passed: {result.passed_count} | Failed: {result.failed_count}"
+    )
+
+    table = Table(show_header=True)
+    table.add_column("table")
+    table.add_column("check")
+    table.add_column("type")
+    table.add_column("column")
+    table.add_column("status")
+    table.add_column("failed")
+    for check in result.checks:
+        table.add_row(
+            check.table,
+            check.name,
+            check.type,
+            _format_cell(check.column),
+            check.status,
+            str(check.failed_count),
+        )
+    console.print(table)
+
+    if include_failures:
+        _print_check_failures(console, result)
+    if result.warnings:
+        console.print("Warnings:")
+        for warning in result.warnings:
+            console.print(f"- {warning}")
+    return console.export_text(clear=True)
+
+
 def format_project_tables_table(result: ProjectTablesResult) -> str:
     """Format a project catalog table listing as Rich table text."""
 
@@ -183,3 +232,17 @@ def _format_row_count(row_count: RowCountInfo) -> str:
     if row_count.value is not None:
         return str(row_count.value)
     return row_count.mode
+
+
+def _print_check_failures(console: Console, result: CheckRunResult) -> None:
+    failure_lines: list[str] = []
+    for check in result.checks:
+        for failure in check.failures:
+            details = ", ".join(
+                f"{key}={_format_cell(value)}" for key, value in failure.as_dict().items()
+            )
+            failure_lines.append(f"{check.table}.{check.name}: {details}")
+    if failure_lines:
+        console.print("Failures:")
+        for line in failure_lines:
+            console.print(f"- {line}")

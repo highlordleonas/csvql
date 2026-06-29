@@ -11,6 +11,8 @@ from csvql.models import (
     SampleResult,
 )
 from csvql.output import (
+    format_check_result_json,
+    format_check_result_table,
     format_inspect_result_json,
     format_inspect_result_table,
     format_profile_result_json,
@@ -21,6 +23,7 @@ from csvql.output import (
     format_sample_result_table,
 )
 from csvql.project_config import ProjectTableListing, ProjectTablesResult
+from csvql.quality import CheckFailureSample, CheckResult, CheckRunResult
 
 
 def _inspect_result() -> InspectResult:
@@ -173,6 +176,65 @@ def test_format_profile_result_table_contains_profile_metrics() -> None:
     assert "Duplicate rows: 0" in output
     assert "status" in output
     assert "50.000" in output
+
+
+def _check_run_result() -> CheckRunResult:
+    return CheckRunResult(
+        status="failed",
+        checks=(
+            CheckResult(
+                name="order_id_required",
+                table="orders",
+                type="not_null",
+                column="order_id",
+                status="failed",
+                failed_count=1,
+                failures=(CheckFailureSample(row_number=2, value=None, row={"order_id": None}),),
+            ),
+            CheckResult(
+                name="status_known",
+                table="orders",
+                type="accepted_values",
+                column="status",
+                status="passed",
+                failed_count=0,
+            ),
+        ),
+        warnings=("No data quality checks configured for table 'customers'.",),
+    )
+
+
+def test_format_check_result_json_is_deterministic_without_failures() -> None:
+    payload = json.loads(format_check_result_json(_check_run_result(), include_failures=False))
+
+    assert payload["status"] == "failed"
+    assert payload["check_count"] == 2
+    assert payload["passed_count"] == 1
+    assert payload["failed_count"] == 1
+    assert "failures" not in payload["checks"][0]
+
+
+def test_format_check_result_json_includes_failures_when_requested() -> None:
+    payload = json.loads(format_check_result_json(_check_run_result(), include_failures=True))
+
+    assert payload["checks"][0]["failures"] == [
+        {"row_number": 2, "value": None, "row": {"order_id": None}}
+    ]
+
+
+def test_format_check_result_table_contains_status_counts_and_failures() -> None:
+    output = format_check_result_table(_check_run_result(), include_failures=True)
+
+    assert "Status: failed" in output
+    assert "Checks: 2 | Passed: 1 | Failed: 1" in output
+    assert "orders" in output
+    assert "order_id_required" in output
+    assert "accepted_values" in output
+    assert "order_id" in output
+    assert "Failures:" in output
+    assert "row_number=2" in output
+    assert "Warnings:" in output
+    assert "No data quality checks configured for table 'customers'." in output
 
 
 def test_format_project_tables_json_is_deterministic() -> None:
