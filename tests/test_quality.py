@@ -43,6 +43,22 @@ def test_check_failure_sample_with_row_defaults_value_to_null() -> None:
     assert failure.as_dict() == {"row": {"order_id": None}}
 
 
+def test_check_failure_sample_preserves_explicit_null_aggregate_fields() -> None:
+    failure = CheckFailureSample(
+        observed=None,
+        expected=None,
+        min_value=None,
+        max_value=None,
+    )
+
+    assert failure.as_dict() == {
+        "observed": None,
+        "expected": None,
+        "min": None,
+        "max": None,
+    }
+
+
 def test_check_run_result_as_dict_omits_failures_when_not_requested() -> None:
     result = CheckRunResult(
         status="failed",
@@ -153,6 +169,19 @@ def test_check_result_rejects_passed_status_with_failure_samples() -> None:
             status="passed",
             failed_count=0,
             failures=(CheckFailureSample(value=1),),
+        )
+
+
+def test_check_result_rejects_more_failure_samples_than_failed_count() -> None:
+    with pytest.raises(ValueError, match="failure samples cannot exceed failed_count"):
+        CheckResult(
+            name="order_id_required",
+            table="orders",
+            type="not_null",
+            column="order_id",
+            status="failed",
+            failed_count=1,
+            failures=(CheckFailureSample(value=1), CheckFailureSample(value=2)),
         )
 
 

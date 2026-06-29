@@ -73,10 +73,10 @@ class CheckFailureSample:
     row_number: int | None = None
     value: object = _UNSET
     row: dict[str, object] | None = None
-    observed: object | None = None
-    expected: object | None = None
-    min_value: object | None = None
-    max_value: object | None = None
+    observed: object = _UNSET
+    expected: object = _UNSET
+    min_value: object = _UNSET
+    max_value: object = _UNSET
     reference_table: str | None = None
     reference_column: str | None = None
 
@@ -88,13 +88,13 @@ class CheckFailureSample:
             payload["value"] = self.value
         if self.row is not None:
             payload["row"] = self.row
-        if self.observed is not None:
+        if self.observed is not _UNSET:
             payload["observed"] = self.observed
-        if self.expected is not None:
+        if self.expected is not _UNSET:
             payload["expected"] = self.expected
-        if self.min_value is not None:
+        if self.min_value is not _UNSET:
             payload["min"] = self.min_value
-        if self.max_value is not None:
+        if self.max_value is not _UNSET:
             payload["max"] = self.max_value
         if self.reference_table is not None:
             payload["reference_table"] = self.reference_table
@@ -124,6 +124,8 @@ class CheckResult:
             raise ValueError("passed checks cannot include failure samples")
         if self.status == "failed" and self.failed_count == 0:
             raise ValueError("failed checks must have failed_count > 0")
+        if len(self.failures) > self.failed_count:
+            raise ValueError("failure samples cannot exceed failed_count")
 
     def as_dict(self, *, include_failures: bool) -> dict[str, object]:
         payload: dict[str, object] = {
