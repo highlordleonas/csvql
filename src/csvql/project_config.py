@@ -260,7 +260,10 @@ def _parse_project_config(raw_config: object, *, config_path: Path) -> ProjectCo
     extra_keys = set(raw_config) - allowed_keys
     if extra_keys:
         raise ProjectConfigError(
-            f"Unsupported project catalog keys in {config_path}: {sorted(extra_keys)}.",
+            (
+                f"Unsupported project catalog keys in {config_path}: "
+                f"{_sorted_key_display(extra_keys)}."
+            ),
             suggestion="Keep the project catalog schema to version and tables only.",
         )
 

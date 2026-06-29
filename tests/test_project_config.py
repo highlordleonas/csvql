@@ -122,6 +122,14 @@ def test_load_project_rejects_missing_version(tmp_path: Path) -> None:
         load_project(tmp_path)
 
 
+def test_load_project_rejects_mixed_type_unsupported_top_level_keys(tmp_path: Path) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text("version: 1\ntables: {}\n1: bad\nz: also_bad\n", encoding="utf-8")
+
+    with pytest.raises(ProjectConfigError):
+        load_project(tmp_path)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
