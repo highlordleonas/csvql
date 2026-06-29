@@ -3,8 +3,9 @@
 import re
 from pathlib import Path
 
-from csvql.exceptions import FileMissingError, TableMappingError
+from csvql.exceptions import TableMappingError
 from csvql.models import TableSource
+from csvql.source import resolve_csv_path
 
 TABLE_ALIAS_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -24,21 +25,6 @@ def validate_table_alias(alias: str) -> str:
             suggestion="Use letters, numbers, and underscores; start with a letter or underscore.",
         )
     return normalized_alias
-
-
-def resolve_csv_path(path_value: str, *, base_dir: Path | None = None) -> Path:
-    """Resolve and validate a local CSV path."""
-
-    candidate = Path(path_value).expanduser()
-    if not candidate.is_absolute():
-        candidate = (base_dir or Path.cwd()) / candidate
-    resolved_path = candidate.resolve(strict=False)
-    if not resolved_path.is_file():
-        raise FileMissingError(
-            f"CSV file not found: {path_value}",
-            suggestion="Check the path or run from the directory that contains the CSV file.",
-        )
-    return resolved_path
 
 
 def parse_table_mapping(raw_mapping: str, *, base_dir: Path | None = None) -> TableSource:

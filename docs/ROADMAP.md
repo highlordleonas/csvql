@@ -23,6 +23,8 @@ Stable gate:
 
 ## v0.2.0 - Inspect And Sample
 
+Implemented:
+
 - source model for resolved local CSV files
 - `csvql inspect <path>`
 - bounded/default row-count status; exact row count only with `--exact`
@@ -33,37 +35,49 @@ Stable gate:
 
 ## v0.3.0 - Project Catalog
 
+Implemented:
+
 - `.csvql.yml` models and loader
 - `csvql init`
 - `csvql add`
 - `csvql tables`
 - project root discovery
-- relative path resolution
-- CSV reader options and type overrides
+- relative path resolution for catalog-backed tables
+- catalog-backed `csvql query "SELECT ... FROM alias"`
+- explicit `--table` mappings override catalog aliases for one invocation
 
-## v0.4.0 - SQL Files And Export
+## v0.4.0 - Saved Workflows
+
+Implemented:
 
 - `csvql run queries/file.sql`
-- positional query parameters
 - registered-table support for `csvql inspect`
 - registered-table support for `csvql sample`
-- `csvql export queries/file.sql --format csv|json|markdown|parquet --out path`
+- `csvql export queries/file.sql --format csv|json|markdown --out path`
+- overwrite protection for export outputs with explicit `--force`
 
 ## v0.5.0 - Profiling
 
+Implemented:
+
 - row and column counts
 - null counts and percentages
-- distinct counts
-- numeric/date min and max
-- duplicate row count
-- JSON profile output
+- distinct counts excluding nulls
+- numeric, date, and string min and max
+- duplicate row count using excess-row semantics
+- direct path and catalog alias support for `csvql profile`
+- table and JSON profile output
 
 ## v0.6.0 - Data Quality Checks
 
+Implemented:
+
 - configured checks in `.csvql.yml`
+- `csvql check [table]`
 - `not_null`, `unique`, `accepted_values`, `min`, `max`, `row_count_between`, `foreign_key`
-- non-zero exit code on failures
-- JSON check output for CI
+- non-zero exit code `11` on data-quality failures
+- table and JSON output for check results
+- sampled failing rows or values with `--show-failures`
 
 ## v0.7.0 - Benchmark And Release Hardening
 

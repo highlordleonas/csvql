@@ -1,0 +1,185 @@
+import json
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from csvql.cli import app
+
+runner = CliRunner()
+
+
+def _write_csv(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _init_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["init"])
+    assert result.exit_code == 0, result.output
+
+
+def test_run_sql_file_uses_catalog_tables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_catalog(tmp_path, monkeypatch)
+    orders = tmp_path / "data" / "orders.csv"
+    query = tmp_path / "queries" / "count_orders.sql"
+    _write_csv(orders, "order_id,total_amount\nORD-001,20.00\nORD-002,10.00\n")
+    query.parent.mkdir()
+    query.write_text("SELECT COUNT(*) AS order_count FROM orders", encoding="utf-8")
+    assert runner.invoke(app, ["add", "orders", "data/orders.csv"]).exit_code == 0
+
+    result = runner.invoke(app, ["run", "queries/count_orders.sql", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["rows"] == [{"order_count": 2}]
+
+
+def test_run_sql_file_with_explicit_table_works_without_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    orders = tmp_path / "orders.csv"
+    query = tmp_path / "count_orders.sql"
+    _write_csv(orders, "order_id,total_amount\nORD-001,20.00\n")
+    query.write_text("SELECT COUNT(*) AS order_count FROM orders", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "count_orders.sql",
+            "--table",
+            "orders=orders.csv",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["rows"] == [{"order_count": 1}]
+
+
+def test_run_sql_file_rejects_empty_sql_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    query = tmp_path / "empty.sql"
+    query.write_text("   \n", encoding="utf-8")
+
+    result = runner.invoke(app, ["run", "empty.sql"])
+
+    assert result.exit_code == 9
+    assert "SQL file is empty" in result.output
+
+
+def test_export_sql_file_writes_csv(tmp_path: Path, monkeypatch) -> None:
+    _init_catalog(tmp_path, monkeypatch)
+    orders = tmp_path / "data" / "orders.csv"
+    query = tmp_path / "queries" / "count_orders.sql"
+    output_path = tmp_path / "result.csv"
+    _write_csv(orders, "order_id,total_amount\nORD-001,20.00\nORD-002,10.00\n")
+    query.parent.mkdir()
+    query.write_text("SELECT COUNT(*) AS order_count FROM orders", encoding="utf-8")
+    assert runner.invoke(app, ["add", "orders", "data/orders.csv"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["export", "queries/count_orders.sql", "--format", "csv", "--out", "result.csv"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert output_path.read_bytes() == b"order_count\r\n2\r\n"
+    assert "Wrote export" in result.output
+
+
+def test_export_sql_file_writes_json(tmp_path: Path, monkeypatch) -> None:
+    _init_catalog(tmp_path, monkeypatch)
+    orders = tmp_path / "data" / "orders.csv"
+    query = tmp_path / "queries" / "count_orders.sql"
+    output_path = tmp_path / "result.json"
+    _write_csv(orders, "order_id,total_amount\nORD-001,20.00\n")
+    query.parent.mkdir()
+    query.write_text("SELECT COUNT(*) AS order_count FROM orders", encoding="utf-8")
+    assert runner.invoke(app, ["add", "orders", "data/orders.csv"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["export", "queries/count_orders.sql", "--format", "json", "--out", "result.json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["rows"] == [{"order_count": 1}]
+
+
+def test_export_sql_file_writes_markdown(tmp_path: Path, monkeypatch) -> None:
+    _init_catalog(tmp_path, monkeypatch)
+    orders = tmp_path / "data" / "orders.csv"
+    query = tmp_path / "queries" / "count_orders.sql"
+    output_path = tmp_path / "result.md"
+    _write_csv(orders, "order_id,total_amount\nORD-001,20.00\n")
+    query.parent.mkdir()
+    query.write_text("SELECT COUNT(*) AS order_count FROM orders", encoding="utf-8")
+    assert runner.invoke(app, ["add", "orders", "data/orders.csv"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "export",
+            "queries/count_orders.sql",
+            "--format",
+            "markdown",
+            "--out",
+            "result.md",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert output_path.read_text(encoding="utf-8") == ("| order_count |\n| --- |\n| 1 |\n")
+
+
+def test_export_refuses_overwrite_without_force(tmp_path: Path, monkeypatch) -> None:
+    _init_catalog(tmp_path, monkeypatch)
+    orders = tmp_path / "data" / "orders.csv"
+    query = tmp_path / "count_orders.sql"
+    output_path = tmp_path / "result.csv"
+    _write_csv(orders, "order_id,total_amount\nORD-001,20.00\n")
+    query.write_text("SELECT COUNT(*) AS order_count FROM orders", encoding="utf-8")
+    output_path.write_text("existing", encoding="utf-8")
+    assert runner.invoke(app, ["add", "orders", "data/orders.csv"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["export", "count_orders.sql", "--format", "csv", "--out", "result.csv"],
+    )
+
+    assert result.exit_code == 10
+    assert "Export output already exists" in result.output
+    assert output_path.read_text(encoding="utf-8") == "existing"
+
+
+def test_export_force_overwrites_existing_file(tmp_path: Path, monkeypatch) -> None:
+    _init_catalog(tmp_path, monkeypatch)
+    orders = tmp_path / "data" / "orders.csv"
+    query = tmp_path / "count_orders.sql"
+    output_path = tmp_path / "result.csv"
+    _write_csv(orders, "order_id,total_amount\nORD-001,20.00\n")
+    query.write_text("SELECT COUNT(*) AS order_count FROM orders", encoding="utf-8")
+    output_path.write_text("existing", encoding="utf-8")
+    assert runner.invoke(app, ["add", "orders", "data/orders.csv"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["export", "count_orders.sql", "--format", "csv", "--out", "result.csv", "--force"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert output_path.read_bytes() == b"order_count\r\n1\r\n"
