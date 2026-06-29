@@ -387,7 +387,7 @@ def _project_check_payload(check: ConfiguredCheck) -> dict[str, object]:
         payload["column"] = check.column
     if check.values:
         payload["values"] = list(check.values)
-    if check.value is not None:
+    if check.type in {"min", "max"}:
         payload["value"] = check.value
     if check.min_value is not None:
         payload["min"] = check.min_value

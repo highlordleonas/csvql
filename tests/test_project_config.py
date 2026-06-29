@@ -436,6 +436,29 @@ def test_save_project_persists_sorted_tables(tmp_path: Path) -> None:
     )
 
 
+def test_save_project_preserves_null_min_max_values(tmp_path: Path) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\n"
+        "tables:\n"
+        "  orders:\n"
+        "    path: data/orders.csv\n"
+        "    checks:\n"
+        "      - name: total_min\n"
+        "        type: min\n"
+        "        column: total_amount\n"
+        "        value:\n",
+        encoding="utf-8",
+    )
+
+    context = load_project(tmp_path)
+
+    save_project(context)
+
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert saved["tables"]["orders"]["checks"][0]["value"] is None
+
+
 def test_add_project_table_replace_preserves_checks_for_same_table(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
