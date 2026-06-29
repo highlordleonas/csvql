@@ -83,23 +83,39 @@ Implemented:
 
 - benchmark harness and JSON artifact
 - Markdown benchmark summary
-- release workflow
-- changelog
-- polished examples with reproducible data and commands
+- reproducible synthetic and fixture-sized benchmark inputs
+- benchmark documentation that avoids large-file claims beyond the recorded artifact
 
-## Post-v1 - Python API
+## v0.8.0 - Portfolio Polish And Python API
 
+- polished example project with reproducible data and commands
+- walkthrough documentation for the example project
+- stable JSON contract documentation for automation-oriented command outputs
+- common failure gallery covering missing files, invalid aliases, invalid config, failed checks, and overwrite protection
+- focused `csvql doctor` command for local project health checks
 - `CSVQLSession.from_config(".csvql.yml")`
-- `session.query(sql, params=None)`
-- `session.run_file(path, params=None)`
-- typed result object with export helpers
+- `session.query(sql)`
+- `session.run_file(path)`
+- `session.profile(table)`
+- `session.check(table=None)`
+- small typed result objects that wrap existing CLI-tested internals
+- no dataframe framework, notebook integration, async API, plugin API, or second execution engine
 
 ## v1.0.0 - Stable Release
 
 - stable CLI contract
 - stable config schema
+- stable small Python API contract
 - full documentation
 - benchmark report
 - release workflow
 - changelog
 - polished examples with reproducible data and commands
+
+## Post-v1 - Future Expansion Candidates
+
+- optional explicit cache or materialization with user-controlled state
+- additional export formats if real workflows need them
+- safe mode only after a separate ADR, threat model, implementation plan, and tests
+- broader local file formats only after CSV-first v1 is stable
+- richer Python API only after the small v1 API has real usage feedback

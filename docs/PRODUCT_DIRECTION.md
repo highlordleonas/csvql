@@ -99,6 +99,19 @@ After Inspect and Sample, the strongest order remains:
    a Great Expectations, Soda, Frictionless, or dbt clone.
 5. Benchmark and release hardening: only publish performance or large-file
    claims after reproducible benchmark evidence exists.
+6. Portfolio polish and a small Python API: make the repository easy to
+   understand, demo, and evaluate without changing the product category.
+
+The small Python API is now part of the v1 target, but only as a thin library
+boundary over the same internals that power the CLI. It should expose project
+configuration, trusted SQL execution, saved SQL files, profiling, and checks
+without introducing dataframe integrations, notebook helpers, plugins, async
+execution, a query builder, cloud access, or a second execution engine.
+
+Portfolio polish should demonstrate product maturity rather than add broad new
+features. Favor a polished example project, stable JSON contract documentation,
+common failure examples, and a focused project-health command over UI, cloud, AI,
+or framework scope.
 
 ## Non-Negotiable Guardrails
 
@@ -116,6 +129,8 @@ After Inspect and Sample, the strongest order remains:
   must be explicit user-controlled behavior.
 - Keep public positioning CSV-focused until the repo actually supports broader
   local data files.
+- Keep the v1 Python API small and boring. It should wrap CSVQL's existing
+  tested services, not create a separate Python data framework.
 
 ## DuckDB Version And Security Posture
 
@@ -183,6 +198,8 @@ Reject or defer these unless the user explicitly opens a new product strategy:
 - second execution engine
 - hidden cache/materialization
 - performance claims without benchmark artifacts
+- dataframe-first Python API design
+- plugin systems or async session APIs before real usage demands them
 
 ## Implementation Steering Checklist
 
