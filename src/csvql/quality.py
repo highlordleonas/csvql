@@ -86,8 +86,6 @@ class CheckFailureSample:
             payload["row_number"] = self.row_number
         if self.value is not _UNSET:
             payload["value"] = self.value
-        elif self.row is not None:
-            payload["value"] = None
         if self.row is not None:
             payload["row"] = self.row
         if self.observed is not None:
@@ -122,6 +120,8 @@ class CheckResult:
             raise ValueError("failed_count must be non-negative")
         if self.status == "passed" and self.failed_count > 0:
             raise ValueError("passed checks cannot have failed_count > 0")
+        if self.status == "passed" and self.failures:
+            raise ValueError("passed checks cannot include failure samples")
         if self.status == "failed" and self.failed_count == 0:
             raise ValueError("failed checks must have failed_count > 0")
 

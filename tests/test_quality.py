@@ -40,7 +40,7 @@ def test_check_failure_sample_preserves_explicit_null_value() -> None:
 def test_check_failure_sample_with_row_defaults_value_to_null() -> None:
     failure = CheckFailureSample(row={"order_id": None})
 
-    assert failure.as_dict() == {"value": None, "row": {"order_id": None}}
+    assert failure.as_dict() == {"row": {"order_id": None}}
 
 
 def test_check_run_result_as_dict_omits_failures_when_not_requested() -> None:
@@ -140,6 +140,19 @@ def test_check_result_rejects_passed_status_with_failures() -> None:
             column="order_id",
             status="passed",
             failed_count=1,
+        )
+
+
+def test_check_result_rejects_passed_status_with_failure_samples() -> None:
+    with pytest.raises(ValueError, match="passed checks cannot include failure samples"):
+        CheckResult(
+            name="order_id_required",
+            table="orders",
+            type="not_null",
+            column="order_id",
+            status="passed",
+            failed_count=0,
+            failures=(CheckFailureSample(value=1),),
         )
 
 
