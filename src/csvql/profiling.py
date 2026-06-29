@@ -5,6 +5,7 @@ import duckdb
 from csvql.exceptions import CSVInspectionError
 from csvql.models import ColumnProfile, ProfileResult
 from csvql.source import CSVSource
+from csvql.sql_utils import quote_identifier
 
 PROFILE_VIEW_NAME = "__csvql_profile_source"
 
@@ -25,7 +26,7 @@ def profile_csv_source(source: CSVSource) -> ProfileResult:
         duckdb_types = tuple(str(duckdb_type) for duckdb_type in relation.types)
         row_count = _fetch_scalar_int(
             connection,
-            f"SELECT count(*) FROM {_quote_identifier(PROFILE_VIEW_NAME)}",
+            f"SELECT count(*) FROM {quote_identifier(PROFILE_VIEW_NAME)}",
         )
         column_profiles = tuple(
             _profile_column(
@@ -63,7 +64,7 @@ def _profile_column(
     duckdb_type: str,
     row_count: int,
 ) -> ColumnProfile:
-    quoted_column = _quote_identifier(column_name)
+    quoted_column = quote_identifier(column_name)
     query = f"""
         SELECT
             count({quoted_column}) AS non_null_count,
@@ -71,7 +72,7 @@ def _profile_column(
             count(DISTINCT {quoted_column}) AS distinct_count,
             min({quoted_column}) AS min_value,
             max({quoted_column}) AS max_value
-        FROM {_quote_identifier(PROFILE_VIEW_NAME)}
+        FROM {quote_identifier(PROFILE_VIEW_NAME)}
     """
     row = connection.execute(query).fetchone()
     if row is None:
@@ -103,16 +104,16 @@ def _duplicate_row_count(
     if not columns:
         row_count = _fetch_scalar_int(
             connection,
-            f"SELECT count(*) FROM {_quote_identifier(PROFILE_VIEW_NAME)}",
+            f"SELECT count(*) FROM {quote_identifier(PROFILE_VIEW_NAME)}",
         )
         return max(row_count - 1, 0)
 
-    quoted_columns = ", ".join(_quote_identifier(column) for column in columns)
+    quoted_columns = ", ".join(quote_identifier(column) for column in columns)
     query = f"""
         SELECT coalesce(sum(row_count - 1), 0)
         FROM (
             SELECT count(*) AS row_count
-            FROM {_quote_identifier(PROFILE_VIEW_NAME)}
+            FROM {quote_identifier(PROFILE_VIEW_NAME)}
             GROUP BY {quoted_columns}
             HAVING count(*) > 1
         )
@@ -125,7 +126,3 @@ def _fetch_scalar_int(connection: duckdb.DuckDBPyConnection, query: str) -> int:
     if row is None:
         return 0
     return int(row[0] or 0)
-
-
-def _quote_identifier(identifier: str) -> str:
-    return f'"{identifier.replace(chr(34), chr(34) * 2)}"'
