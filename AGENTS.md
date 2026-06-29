@@ -89,7 +89,7 @@ Authority precedence:
 
 - Direct user instruction and current-session boundaries come first.
 - Then this `AGENTS.md` and any nested `AGENTS.override.md`.
-- Then `README.md`, `docs/ROADMAP.md`, `docs/ARCHITECTURE.md`, and accepted ADRs.
+- Then `README.md`, `docs/PRODUCT_DIRECTION.md`, `docs/ROADMAP.md`, `docs/ARCHITECTURE.md`, and accepted ADRs.
 - Tests and source code are implementation truth.
 - `docs/CODEX_CAPABILITY_REVIEW.md` guides capability selection but does not expand product scope by itself.
 - `csvql_project_pack/` and `csvql_project_pack.zip` are input artifacts, not runtime or authority source.
@@ -98,6 +98,7 @@ Authority precedence:
 Scope guardrails:
 
 - CSVQL is local-first: CSV files, DuckDB, CLI workflow, typed Python boundaries, useful output, repeatable tests.
+- `docs/PRODUCT_DIRECTION.md` records the reconciled research verdict and implementation steering checklist; use it as advisory scope guardrail, not as permission to skip the active release lane.
 - Do not turn v1 into a web app, cloud connector platform, multi-tenant/auth system, dashboard product, NLP execution engine, or Rust performance project without evidence and explicit scope approval.
 - Treat user-authored SQL as trusted local SQL until safe mode is explicitly designed, implemented, and tested.
 - CSVQL does not restrict DuckDB capabilities, sandbox filesystem access, or make untrusted SQL safe.
@@ -106,6 +107,15 @@ Scope guardrails:
 - Use `uv` for all local execution. Do not install global packages.
 - Keep changes small, reversible, and backed by focused tests.
 - Prefer coherent vertical batches over one-command micro-slices when related behavior can be reviewed and verified together safely.
+
+Codex operating model:
+
+- Treat external research reports, generated plans, subagent notes, and brainstorming notes as advisory evidence only. They do not redefine the active lane or product scope.
+- For implementation planning, start with the `docs/PRODUCT_DIRECTION.md` direction gate: target lane, wedge strengthened, scope rejected, contracts touched, and verification target.
+- Prefer one accountable implementer for code changes. Use subagents or reviewer roles only for bounded scouting, test drafting, or read-only final review.
+- Keep product direction, JSON contract shape, exit-code policy, security posture, and roadmap sequencing in the main agent's synthesis.
+- Do not add repo-local `.codex/hooks`, `.codex/agents`, `.agents/skills`, Codex GitHub Actions, or broad verification scripts until a repeated failure is documented and the user explicitly approves that new authority surface.
+- Determinism and trustworthy contracts are the moat, but contract machinery must stay proportional to the current lane. Do not build a full JSON-contract, exit-code, hook, or agent framework before `v0.1` is stable.
 
 Readiness and proof language:
 
