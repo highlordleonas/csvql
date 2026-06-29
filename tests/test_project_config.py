@@ -164,6 +164,19 @@ def test_load_project_accepts_nested_table_entries(tmp_path: Path) -> None:
     )
 
 
+def test_load_project_treats_null_table_checks_as_empty_tuple(tmp_path: Path) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\ntables:\n  orders:\n    path: data/orders.csv\n    checks:\n",
+        encoding="utf-8",
+    )
+
+    context = load_project(tmp_path)
+
+    assert context.config.tables == (ProjectTable(name="orders", path="data/orders.csv"),)
+    assert context.config.tables[0].checks == ()
+
+
 def test_load_project_accepts_table_checks(tmp_path: Path) -> None:
     config_path = tmp_path / CONFIG_FILENAME
     config_path.write_text(
@@ -174,10 +187,10 @@ def test_load_project_accepts_table_checks(tmp_path: Path) -> None:
         "    checks:\n"
         "      - name: order_id_required\n"
         "        type: not_null\n"
-        "        column: order_id\n"
+        '        column: " order_id "\n'
         "      - name: status_known\n"
         "        type: accepted_values\n"
-        "        column: status\n"
+        '        column: " status "\n'
         "        values: [paid, pending]\n"
         "      - name: expected_rows\n"
         "        type: row_count_between\n"
@@ -185,10 +198,10 @@ def test_load_project_accepts_table_checks(tmp_path: Path) -> None:
         "        max: 10\n"
         "      - name: customer_exists\n"
         "        type: foreign_key\n"
-        "        column: customer_id\n"
+        '        column: " customer_id "\n'
         "        references:\n"
         "          table: customers\n"
-        "          column: customer_id\n"
+        '          column: " customer id "\n'
         "  customers:\n"
         "    path: data/customers.csv\n",
         encoding="utf-8",
@@ -204,11 +217,21 @@ def test_load_project_accepts_table_checks(tmp_path: Path) -> None:
         "expected_rows",
         "customer_exists",
     ]
+    assert orders.checks[0].column == " order_id "
     assert orders.checks[1].values == ("paid", "pending")
     assert orders.checks[2].min_value == 1
     assert orders.checks[2].max_value == 10
+    assert orders.checks[3].column == " customer_id "
     assert orders.checks[3].references is not None
     assert orders.checks[3].references.table == "customers"
+    assert orders.checks[3].references.column == " customer id "
+
+    save_project(context)
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    saved_checks = saved["tables"]["orders"]["checks"]
+    assert saved_checks[0]["column"] == " order_id "
+    assert saved_checks[3]["column"] == " customer_id "
+    assert saved_checks[3]["references"]["column"] == " customer id "
 
 
 def test_load_project_rejects_duplicate_check_names(tmp_path: Path) -> None:

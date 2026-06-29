@@ -404,6 +404,8 @@ def _parse_project_table_checks(
     table_name: str,
     config_path: Path,
 ) -> tuple[ConfiguredCheck, ...]:
+    if raw_checks is None:
+        return ()
     if not isinstance(raw_checks, list):
         raise ProjectConfigError(
             f"Project catalog table '{table_name}' in {config_path} must define checks as a list.",
@@ -668,7 +670,7 @@ def _parse_non_empty_string(
             f"{check_context} must define {field_name} as a non-empty string.",
             suggestion="Use a non-empty string value.",
         )
-    return raw_value.strip()
+    return raw_value
 
 
 def _parse_non_negative_int(
