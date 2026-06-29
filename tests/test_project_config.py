@@ -217,6 +217,10 @@ def test_load_project_accepts_table_checks(tmp_path: Path) -> None:
         "checks:\n  - name: bad\n    type: foreign_key\n    column: customer_id\n",
         (
             "checks:\n  - name: bad\n    type: foreign_key\n    column: customer_id\n"
+            "    references: {table: bad-table, column: customer_id}\n"
+        ),
+        (
+            "checks:\n  - name: bad\n    type: foreign_key\n    column: customer_id\n"
             "    references: {table: customers}\n"
         ),
     ],

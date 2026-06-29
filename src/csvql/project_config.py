@@ -613,7 +613,16 @@ def _parse_foreign_key_reference(
             f"{check_context} must define references.table as a non-empty string.",
             suggestion="Use references: {table: customers, column: customer_id}.",
         )
-    reference_table = validate_table_alias(raw_reference_table)
+    try:
+        reference_table = validate_table_alias(raw_reference_table)
+    except TableMappingError as exc:
+        raise ProjectConfigError(
+            (
+                f"Invalid foreign_key reference table alias "
+                f"'{raw_reference_table}' for {check_context}."
+            ),
+            suggestion="Use letters, numbers, and underscores; start with a letter or underscore.",
+        ) from exc
 
     reference_column = _parse_non_empty_string(
         raw_references.get("column"),
