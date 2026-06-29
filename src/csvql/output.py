@@ -239,10 +239,16 @@ def _print_check_failures(console: Console, result: CheckRunResult) -> None:
     for check in result.checks:
         for failure in check.failures:
             details = ", ".join(
-                f"{key}={_format_cell(value)}" for key, value in failure.as_dict().items()
+                f"{key}={_format_failure_value(value)}" for key, value in failure.as_dict().items()
             )
             failure_lines.append(f"{check.table}.{check.name}: {details}")
     if failure_lines:
         console.print("Failures:")
         for line in failure_lines:
             console.print(f"- {line}")
+
+
+def _format_failure_value(value: object) -> str:
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, default=str, sort_keys=True, separators=(",", ":"))
+    return _format_cell(value)

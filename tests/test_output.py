@@ -204,6 +204,59 @@ def _check_run_result() -> CheckRunResult:
     )
 
 
+def _zero_check_result() -> CheckRunResult:
+    return CheckRunResult(
+        status="passed",
+        checks=(),
+        warnings=("No data quality checks configured for table 'orders'.",),
+    )
+
+
+def _rich_failure_result() -> CheckRunResult:
+    return CheckRunResult(
+        status="failed",
+        checks=(
+            CheckResult(
+                name="order_id_required",
+                table="orders",
+                type="not_null",
+                column="order_id",
+                status="failed",
+                failed_count=1,
+                failures=(
+                    CheckFailureSample(
+                        row_number=2,
+                        value=None,
+                        row={
+                            "order_id": None,
+                            "tags": ["vip", "web"],
+                            "meta": {"source": "api", "flags": ("new", "urgent")},
+                        },
+                    ),
+                ),
+            ),
+            CheckResult(
+                name="customer_exists",
+                table="orders",
+                type="foreign_key",
+                column="customer_id",
+                status="failed",
+                failed_count=1,
+                failures=(
+                    CheckFailureSample(
+                        observed="CUST-9",
+                        reference_table="customers",
+                        reference_column="customer_id",
+                        min_value=1,
+                        max_value=10,
+                    ),
+                ),
+            ),
+        ),
+        warnings=(),
+    )
+
+
 def test_format_check_result_json_is_deterministic_without_failures() -> None:
     payload = json.loads(format_check_result_json(_check_run_result(), include_failures=False))
 
@@ -235,6 +288,40 @@ def test_format_check_result_table_contains_status_counts_and_failures() -> None
     assert "row_number=2" in output
     assert "Warnings:" in output
     assert "No data quality checks configured for table 'customers'." in output
+
+
+def test_format_check_result_table_suppresses_failures_when_disabled() -> None:
+    output = format_check_result_table(_check_run_result(), include_failures=False)
+
+    assert "Failures:" not in output
+    assert "row_number=2" not in output
+
+
+def test_format_check_result_json_and_table_render_zero_check_warnings() -> None:
+    payload = json.loads(format_check_result_json(_zero_check_result(), include_failures=False))
+
+    assert payload["status"] == "passed"
+    assert payload["check_count"] == 0
+    assert payload["warnings"] == ["No data quality checks configured for table 'orders'."]
+
+    output = format_check_result_table(_zero_check_result(), include_failures=False)
+
+    assert "Status: passed" in output
+    assert "Checks: 0 | Passed: 0 | Failed: 0" in output
+    assert "Warnings:" in output
+    assert "No data quality checks configured for table 'orders'." in output
+
+
+def test_format_check_result_table_renders_nested_failure_values_deterministically() -> None:
+    output = format_check_result_table(_rich_failure_result(), include_failures=True)
+
+    assert '"meta":{"flags":["new","urgent"],"source":"api"}' in output
+    assert '"tags":["vip","web"]' in output
+    assert "observed=CUST-9" in output
+    assert "reference_table=customers" in output
+    assert "reference_column=customer_id" in output
+    assert "min=1" in output
+    assert "max=10" in output
 
 
 def test_format_project_tables_json_is_deterministic() -> None:
