@@ -84,8 +84,10 @@ class CheckFailureSample:
         payload: dict[str, object] = {}
         if self.row_number is not None:
             payload["row_number"] = self.row_number
-        if self.value is not _UNSET or self.row is not None:
+        if self.value is not _UNSET:
             payload["value"] = self.value
+        elif self.row is not None:
+            payload["value"] = None
         if self.row is not None:
             payload["row"] = self.row
         if self.observed is not None:
@@ -150,9 +152,7 @@ class CheckRunResult:
         any_failed = any(check.status == "failed" for check in self.checks)
         expected_status: RunStatus = "failed" if any_failed else "passed"
         if self.status != expected_status:
-            raise ValueError(
-                "run status must match child check statuses"
-            )
+            raise ValueError("run status must match child check statuses")
 
     @property
     def check_count(self) -> int:
@@ -172,9 +172,6 @@ class CheckRunResult:
             "check_count": self.check_count,
             "passed_count": self.passed_count,
             "failed_count": self.failed_count,
-            "checks": [
-                check.as_dict(include_failures=include_failures)
-                for check in self.checks
-            ],
+            "checks": [check.as_dict(include_failures=include_failures) for check in self.checks],
             "warnings": list(self.warnings),
         }

@@ -37,6 +37,12 @@ def test_check_failure_sample_preserves_explicit_null_value() -> None:
     assert failure.as_dict() == {"value": None}
 
 
+def test_check_failure_sample_with_row_defaults_value_to_null() -> None:
+    failure = CheckFailureSample(row={"order_id": None})
+
+    assert failure.as_dict() == {"value": None, "row": {"order_id": None}}
+
+
 def test_check_run_result_as_dict_omits_failures_when_not_requested() -> None:
     result = CheckRunResult(
         status="failed",
