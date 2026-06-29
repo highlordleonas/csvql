@@ -7,8 +7,9 @@ import typer
 from rich.console import Console
 
 from csvql import __version__
+from csvql.checks import run_configured_checks
 from csvql.engine import CSVQLEngine
-from csvql.exceptions import CSVQLError
+from csvql.exceptions import CSVQLError, DataQualityCheckFailure
 from csvql.export import (
     ExportFormat,
     format_query_result_for_export,
@@ -18,6 +19,8 @@ from csvql.export import (
 from csvql.inspection import inspect_csv_source, sample_csv_source
 from csvql.output import (
     OutputFormat,
+    format_check_result_json,
+    format_check_result_table,
     format_inspect_result_json,
     format_inspect_result_table,
     format_json_result,
@@ -170,6 +173,57 @@ def profile(
             typer.echo(format_profile_result_json(result))
         else:
             typer.echo(format_profile_result_table(result), nl=False)
+    except CSVQLError as exc:
+        _exit_with_error(exc)
+
+
+@app.command()
+def check(
+    table_name: Annotated[
+        str | None,
+        typer.Argument(help="Optional project catalog table alias to check."),
+    ] = None,
+    output: Annotated[
+        OutputFormat,
+        typer.Option(
+            "--output",
+            "-o",
+            case_sensitive=False,
+            help="Data-quality check output format.",
+        ),
+    ] = OutputFormat.table,
+    show_failures: Annotated[
+        bool,
+        typer.Option(
+            "--show-failures",
+            help="Include sampled failing rows or values in output.",
+        ),
+    ] = False,
+    failure_limit: Annotated[
+        int,
+        typer.Option(
+            "--failure-limit",
+            min=1,
+            help="Maximum sampled failures per failed check.",
+        ),
+    ] = 5,
+) -> None:
+    """Run configured data-quality checks from the project catalog."""
+
+    try:
+        context = load_project()
+        result = run_configured_checks(
+            context,
+            table_name=table_name,
+            show_failures=show_failures,
+            failure_limit=failure_limit,
+        )
+        if output is OutputFormat.json:
+            typer.echo(format_check_result_json(result, include_failures=show_failures))
+        else:
+            typer.echo(format_check_result_table(result, include_failures=show_failures), nl=False)
+        if result.status == "failed":
+            raise typer.Exit(DataQualityCheckFailure.exit_code)
     except CSVQLError as exc:
         _exit_with_error(exc)
 

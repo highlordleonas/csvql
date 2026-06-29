@@ -52,3 +52,9 @@ class ExportError(CSVQLError):
     """Raised when an export output path or format cannot be used."""
 
     exit_code = 10
+
+
+class DataQualityCheckFailure(CSVQLError):
+    """Raised when configured data-quality checks fail."""
+
+    exit_code = 11
