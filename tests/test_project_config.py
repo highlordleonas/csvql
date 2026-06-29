@@ -1,4 +1,5 @@
 from pathlib import Path
+from textwrap import indent
 
 import pytest
 import yaml
@@ -153,6 +154,85 @@ def test_load_project_accepts_nested_table_entries(tmp_path: Path) -> None:
         version=SUPPORTED_VERSION,
         tables=(ProjectTable(name="orders", path="data/orders.csv"),),
     )
+
+
+def test_load_project_accepts_table_checks(tmp_path: Path) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\n"
+        "tables:\n"
+        "  orders:\n"
+        "    path: data/orders.csv\n"
+        "    checks:\n"
+        "      - name: order_id_required\n"
+        "        type: not_null\n"
+        "        column: order_id\n"
+        "      - name: status_known\n"
+        "        type: accepted_values\n"
+        "        column: status\n"
+        "        values: [paid, pending]\n"
+        "      - name: expected_rows\n"
+        "        type: row_count_between\n"
+        "        min: 1\n"
+        "        max: 10\n"
+        "      - name: customer_exists\n"
+        "        type: foreign_key\n"
+        "        column: customer_id\n"
+        "        references:\n"
+        "          table: customers\n"
+        "          column: customer_id\n"
+        "  customers:\n"
+        "    path: data/customers.csv\n",
+        encoding="utf-8",
+    )
+
+    context = load_project(tmp_path)
+
+    orders = context.config.tables[0]
+    assert orders.name == "orders"
+    assert [check.name for check in orders.checks] == [
+        "order_id_required",
+        "status_known",
+        "expected_rows",
+        "customer_exists",
+    ]
+    assert orders.checks[1].values == ("paid", "pending")
+    assert orders.checks[2].min_value == 1
+    assert orders.checks[2].max_value == 10
+    assert orders.checks[3].references is not None
+    assert orders.checks[3].references.table == "customers"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "checks: {}\n",
+        "checks:\n  - type: not_null\n    column: order_id\n",
+        "checks:\n  - name: bad\n    column: order_id\n",
+        "checks:\n  - name: bad name\n    type: not_null\n    column: order_id\n",
+        "checks:\n  - name: bad\n    type: not_null\n",
+        "checks:\n  - name: bad\n    type: accepted_values\n    column: status\n    values: []\n",
+        "checks:\n  - name: bad\n    type: row_count_between\n",
+        "checks:\n  - name: bad\n    type: row_count_between\n    min: 10\n    max: 1\n",
+        "checks:\n  - name: bad\n    type: foreign_key\n    column: customer_id\n",
+        (
+            "checks:\n  - name: bad\n    type: foreign_key\n    column: customer_id\n"
+            "    references: {table: customers}\n"
+        ),
+    ],
+)
+def test_load_project_rejects_invalid_table_checks(
+    tmp_path: Path,
+    payload: str,
+) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        f"version: 1\ntables:\n  orders:\n    path: data/orders.csv\n{indent(payload, '    ')}",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProjectConfigError):
+        load_project(tmp_path)
 
 
 def test_load_project_rejects_flat_table_entries(tmp_path: Path) -> None:
@@ -418,6 +498,45 @@ def test_add_project_table_replace_updates_only_matching_table(
         "version: 1\ntables:\n  customers:\n    path: customers.csv\n"
         "  orders:\n    path: data/orders_v2.csv\n"
     )
+
+
+def test_save_project_preserves_checks_when_replacing_unrelated_table(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    customers_path = project_root / "data" / "customers_v2.csv"
+    customers_path.parent.mkdir(parents=True)
+    customers_path.write_text("customer_id,email\nCUST-1,a@example.com\n", encoding="utf-8")
+    config_path = project_root / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\n"
+        "tables:\n"
+        "  orders:\n"
+        "    path: data/orders.csv\n"
+        "    checks:\n"
+        "      - name: order_id_required\n"
+        "        type: not_null\n"
+        "        column: order_id\n"
+        "  customers:\n"
+        "    path: data/customers.csv\n",
+        encoding="utf-8",
+    )
+
+    context = load_project(project_root)
+    updated_context = add_project_table(
+        context,
+        "customers",
+        "data/customers_v2.csv",
+        replace=True,
+        invocation_dir=project_root,
+    )
+
+    orders = next(table for table in updated_context.config.tables if table.name == "orders")
+    assert [check.name for check in orders.checks] == ["order_id_required"]
+    saved_text = updated_context.config_path.read_text(encoding="utf-8")
+    assert "customers:\n    path: data/customers_v2.csv" in saved_text
+    assert "orders:\n    path: data/orders.csv" in saved_text
+    assert "checks:\n" in saved_text
+    assert "order_id_required" in saved_text
 
 
 def test_build_project_tables_result_returns_sorted_resolved_listings(

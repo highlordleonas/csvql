@@ -2,11 +2,13 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import yaml  # type: ignore[import-untyped]
 
 from csvql.exceptions import FileMissingError, ProjectConfigError, TableMappingError
 from csvql.models import TableSource
+from csvql.quality import CheckType, ConfiguredCheck, ForeignKeyReference
 from csvql.source import resolve_csv_path
 from csvql.table_mapping import validate_table_alias
 
@@ -20,6 +22,7 @@ class ProjectTable:
 
     name: str
     path: str
+    checks: tuple[ConfiguredCheck, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,8 +169,6 @@ def add_project_table(
     base_dir = (invocation_dir or Path.cwd()).expanduser().resolve()
     resolved_path = resolve_csv_path(path_value, base_dir=base_dir)
     stored_path = _project_catalog_path_value(context.project_root, resolved_path)
-    updated_table = ProjectTable(name=table_name, path=stored_path)
-
     tables = list(context.config.tables)
     existing_index = next(
         (index for index, table in enumerate(tables) if table.name == table_name),
@@ -179,9 +180,14 @@ def add_project_table(
             suggestion="Pass --replace to update the existing table entry.",
         )
     if existing_index is not None:
-        tables[existing_index] = updated_table
+        existing_table = tables[existing_index]
+        tables[existing_index] = ProjectTable(
+            name=table_name,
+            path=stored_path,
+            checks=existing_table.checks,
+        )
     else:
-        tables.append(updated_table)
+        tables.append(ProjectTable(name=table_name, path=stored_path))
 
     updated_context = ProjectContext(
         project_root=context.project_root,
@@ -229,7 +235,7 @@ def _project_config_payload(config: ProjectConfig) -> dict[str, object]:
         )
 
     tables_payload = {
-        table.name: {"path": table.path}
+        table.name: _project_table_payload(table)
         for table in sorted(config.tables, key=lambda table: table.name)
     }
     return {
@@ -320,7 +326,7 @@ def _parse_project_table_entry(
             suggestion="Use a nested path mapping such as orders: {path: data/orders.csv}.",
         )
 
-    allowed_keys = {"path"}
+    allowed_keys = {"path", "checks"}
     extra_keys = set(raw_table) - allowed_keys
     if extra_keys:
         extra_keys_display = sorted(extra_keys)
@@ -350,7 +356,354 @@ def _parse_project_table_entry(
             suggestion="Provide a nested string path to the CSV file.",
         )
 
-    return ProjectTable(name=name, path=raw_path)
+    checks: tuple[ConfiguredCheck, ...] = ()
+    if "checks" in raw_table:
+        checks = _parse_project_table_checks(
+            raw_table["checks"],
+            table_name=name,
+            config_path=config_path,
+        )
+
+    return ProjectTable(name=name, path=raw_path, checks=checks)
+
+
+def _project_table_payload(table: ProjectTable) -> dict[str, object]:
+    payload: dict[str, object] = {"path": table.path}
+    if table.checks:
+        payload["checks"] = [_project_check_payload(check) for check in table.checks]
+    return payload
+
+
+def _project_check_payload(check: ConfiguredCheck) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "name": check.name,
+        "type": check.type,
+    }
+    if check.column is not None:
+        payload["column"] = check.column
+    if check.values:
+        payload["values"] = list(check.values)
+    if check.value is not None:
+        payload["value"] = check.value
+    if check.min_value is not None:
+        payload["min"] = check.min_value
+    if check.max_value is not None:
+        payload["max"] = check.max_value
+    if check.references is not None:
+        payload["references"] = check.references.as_dict()
+    return payload
+
+
+def _parse_project_table_checks(
+    raw_checks: object,
+    *,
+    table_name: str,
+    config_path: Path,
+) -> tuple[ConfiguredCheck, ...]:
+    if not isinstance(raw_checks, list):
+        raise ProjectConfigError(
+            f"Project catalog table '{table_name}' in {config_path} must define checks as a list.",
+            suggestion="Use checks: [] or a list of nested check mappings.",
+        )
+    return tuple(
+        _parse_project_check_entry(
+            raw_check,
+            table_name=table_name,
+            config_path=config_path,
+        )
+        for raw_check in raw_checks
+    )
+
+
+def _parse_project_check_entry(
+    raw_check: object,
+    *,
+    table_name: str,
+    config_path: Path,
+) -> ConfiguredCheck:
+    if not isinstance(raw_check, dict):
+        table_context = _project_check_entries_context(
+            table_name=table_name,
+            config_path=config_path,
+        )
+        raise ProjectConfigError(
+            f"{table_context} must be mappings.",
+            suggestion="Use nested check mappings with name and type keys.",
+        )
+
+    table_context = _project_check_entries_context(
+        table_name=table_name,
+        config_path=config_path,
+    )
+    raw_name = raw_check.get("name")
+    if not isinstance(raw_name, str):
+        raise ProjectConfigError(
+            f"{table_context} must define a string name.",
+            suggestion="Use a check alias such as order_id_required.",
+        )
+    try:
+        name = validate_table_alias(raw_name)
+    except TableMappingError as exc:
+        raise ProjectConfigError(
+            f"Invalid project catalog check alias '{raw_name}' for table '{table_name}'.",
+            suggestion="Use letters, numbers, and underscores; start with a letter or underscore.",
+        ) from exc
+
+    raw_type = raw_check.get("type")
+    if not isinstance(raw_type, str):
+        check_context = _project_check_context(
+            table_name=table_name,
+            check_name=name,
+            config_path=config_path,
+        )
+        raise ProjectConfigError(
+            f"{check_context} must define a string type.",
+            suggestion="Use one of: not_null, unique, accepted_values, min, max, "
+            "row_count_between, or foreign_key.",
+        )
+    check_type = cast(CheckType, raw_type.strip())
+    check_context = _project_check_context(
+        table_name=table_name,
+        check_name=name,
+        config_path=config_path,
+    )
+    if check_type not in _SUPPORTED_CHECK_TYPES:
+        raise ProjectConfigError(
+            f"Unsupported project catalog check type '{check_type}' for {check_context}.",
+            suggestion="Use one of: not_null, unique, accepted_values, min, max, "
+            "row_count_between, or foreign_key.",
+        )
+
+    allowed_keys = {"name", "type"} | _supported_check_keys(check_type)
+    extra_keys = set(raw_check) - allowed_keys
+    if extra_keys:
+        raise ProjectConfigError(
+            f"Unsupported metadata for {check_context}: {sorted(extra_keys)}.",
+            suggestion="Remove unsupported keys from the check entry.",
+        )
+
+    column = None
+    if check_type in _CHECK_TYPES_REQUIRING_COLUMN:
+        column = _parse_non_empty_string(
+            raw_check.get("column"),
+            field_name="column",
+            table_name=table_name,
+            check_name=name,
+            config_path=config_path,
+        )
+    elif "column" in raw_check:
+        raise ProjectConfigError(
+            f"{check_context} cannot define column.",
+            suggestion="Remove column for row_count_between checks.",
+        )
+
+    values: tuple[object, ...] = ()
+    if check_type == "accepted_values":
+        raw_values = raw_check.get("values")
+        if not isinstance(raw_values, list) or not raw_values:
+            raise ProjectConfigError(
+                f"{check_context} must define a non-empty values list.",
+                suggestion="Use values: [paid, pending] or another non-empty list.",
+            )
+        values = tuple(raw_values)
+
+    value = None
+    if check_type in {"min", "max"}:
+        if "value" not in raw_check:
+            raise ProjectConfigError(
+                f"{check_context} must define value.",
+                suggestion="Use value: <scalar> for min and max checks.",
+            )
+        value = raw_check["value"]
+
+    min_value = None
+    max_value = None
+    if check_type == "row_count_between":
+        has_min = "min" in raw_check
+        has_max = "max" in raw_check
+        if not has_min and not has_max:
+            raise ProjectConfigError(
+                f"{check_context} must define min, max, or both.",
+                suggestion="Use min, max, or both row-count bounds.",
+            )
+        if has_min:
+            min_value = _parse_non_negative_int(
+                raw_check["min"],
+                field_name="min",
+                table_name=table_name,
+                check_name=name,
+                config_path=config_path,
+            )
+        if has_max:
+            max_value = _parse_non_negative_int(
+                raw_check["max"],
+                field_name="max",
+                table_name=table_name,
+                check_name=name,
+                config_path=config_path,
+            )
+        if min_value is not None and max_value is not None and min_value > max_value:
+            raise ProjectConfigError(
+                f"{check_context} has min greater than max.",
+                suggestion="Set min to a value less than or equal to max.",
+            )
+    else:
+        if "min" in raw_check or "max" in raw_check:
+            raise ProjectConfigError(
+                f"{check_context} cannot define min or max.",
+                suggestion="Use min and max only for row_count_between checks.",
+            )
+
+    references = None
+    if check_type == "foreign_key":
+        raw_references = raw_check.get("references")
+        references = _parse_foreign_key_reference(
+            raw_references,
+            table_name=table_name,
+            check_name=name,
+            config_path=config_path,
+        )
+    elif "references" in raw_check:
+        raise ProjectConfigError(
+            f"{check_context} cannot define references.",
+            suggestion="Use references only for foreign_key checks.",
+        )
+
+    return ConfiguredCheck(
+        name=name,
+        table=table_name,
+        type=check_type,
+        column=column,
+        values=values,
+        value=value,
+        min_value=min_value,
+        max_value=max_value,
+        references=references,
+    )
+
+
+def _parse_foreign_key_reference(
+    raw_references: object,
+    *,
+    table_name: str,
+    check_name: str,
+    config_path: Path,
+) -> ForeignKeyReference:
+    check_context = _project_check_context(
+        table_name=table_name,
+        check_name=check_name,
+        config_path=config_path,
+    )
+    if not isinstance(raw_references, dict):
+        raise ProjectConfigError(
+            f"{check_context} must define references as a mapping.",
+            suggestion="Use references: {table: customers, column: customer_id}.",
+        )
+    allowed_keys = {"table", "column"}
+    extra_keys = set(raw_references) - allowed_keys
+    if extra_keys:
+        raise ProjectConfigError(
+            f"Unsupported metadata for {check_context}: {sorted(extra_keys)}.",
+            suggestion="Keep foreign_key references to table and column only.",
+        )
+
+    raw_reference_table = raw_references.get("table")
+    if not isinstance(raw_reference_table, str) or not raw_reference_table.strip():
+        raise ProjectConfigError(
+            f"{check_context} must define references.table as a non-empty string.",
+            suggestion="Use references: {table: customers, column: customer_id}.",
+        )
+    reference_table = validate_table_alias(raw_reference_table)
+
+    reference_column = _parse_non_empty_string(
+        raw_references.get("column"),
+        field_name="references.column",
+        table_name=table_name,
+        check_name=check_name,
+        config_path=config_path,
+    )
+    return ForeignKeyReference(table=reference_table, column=reference_column)
+
+
+def _parse_non_empty_string(
+    raw_value: object,
+    *,
+    field_name: str,
+    table_name: str,
+    check_name: str,
+    config_path: Path,
+) -> str:
+    check_context = _project_check_context(
+        table_name=table_name,
+        check_name=check_name,
+        config_path=config_path,
+    )
+    if not isinstance(raw_value, str) or not raw_value.strip():
+        raise ProjectConfigError(
+            f"{check_context} must define {field_name} as a non-empty string.",
+            suggestion="Use a non-empty string value.",
+        )
+    return raw_value.strip()
+
+
+def _parse_non_negative_int(
+    raw_value: object,
+    *,
+    field_name: str,
+    table_name: str,
+    check_name: str,
+    config_path: Path,
+) -> int:
+    check_context = _project_check_context(
+        table_name=table_name,
+        check_name=check_name,
+        config_path=config_path,
+    )
+    if type(raw_value) is not int or raw_value < 0:
+        raise ProjectConfigError(
+            f"{check_context} must define {field_name} as a non-negative integer.",
+            suggestion="Use a whole number greater than or equal to zero.",
+        )
+    return raw_value
+
+
+_SUPPORTED_CHECK_TYPES = {
+    "not_null",
+    "unique",
+    "accepted_values",
+    "min",
+    "max",
+    "row_count_between",
+    "foreign_key",
+}
+_CHECK_TYPES_REQUIRING_COLUMN = {
+    "not_null",
+    "unique",
+    "accepted_values",
+    "min",
+    "max",
+    "foreign_key",
+}
+
+
+def _supported_check_keys(check_type: str) -> set[str]:
+    if check_type in {"not_null", "unique"}:
+        return {"column"}
+    if check_type == "accepted_values":
+        return {"column", "values"}
+    if check_type in {"min", "max"}:
+        return {"column", "value"}
+    if check_type == "row_count_between":
+        return {"min", "max"}
+    return {"column", "references"}
+
+
+def _project_check_entries_context(*, table_name: str, config_path: Path) -> str:
+    return f"Project catalog check entries for table '{table_name}' in {config_path}"
+
+
+def _project_check_context(*, table_name: str, check_name: str, config_path: Path) -> str:
+    return f"Project catalog check '{check_name}' for table '{table_name}' in {config_path}"
 
 
 def _project_catalog_path_value(project_root: Path, resolved_path: Path) -> str:
