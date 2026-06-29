@@ -49,9 +49,19 @@ def run_configured_checks(
     connection: duckdb.DuckDBPyConnection | None = None
     try:
         connection = duckdb.connect(database=":memory:")
-        _register_tables(connection, context, _required_tables(context, selected_tables))
+        column_names_by_table = _register_tables(
+            connection,
+            context,
+            _required_tables(context, selected_tables),
+        )
         results = tuple(
-            _run_check(connection, check, show_failures=show_failures, failure_limit=failure_limit)
+            _run_check(
+                connection,
+                check,
+                column_names_by_table=column_names_by_table,
+                show_failures=show_failures,
+                failure_limit=failure_limit,
+            )
             for check in checks
         )
     except CSVInspectionError:
@@ -123,7 +133,8 @@ def _register_tables(
     connection: duckdb.DuckDBPyConnection,
     context: ProjectContext,
     tables: Iterable[ProjectTable],
-) -> None:
+) -> dict[str, tuple[str, ...]]:
+    column_names_by_table: dict[str, tuple[str, ...]] = {}
     for table in tables:
         try:
             resolved_path = resolve_catalog_path(table, context)
@@ -133,11 +144,15 @@ def _register_tables(
                 header=True,
             )
             relation.create_view(_view_name(table.name), replace=True)
+            column_names_by_table[table.name.lower()] = tuple(
+                str(column) for column in relation.columns
+            )
         except (FileMissingError, OSError, duckdb.Error) as exc:
             raise CSVInspectionError(
                 f"Failed to run data quality checks for project catalog table '{table.name}'.",
                 suggestion="Check that the configured CSV file exists and is readable.",
             ) from exc
+    return column_names_by_table
 
 
 def _view_name(table_name: str) -> str:
@@ -148,13 +163,19 @@ def _run_check(
     connection: duckdb.DuckDBPyConnection,
     check: ConfiguredCheck,
     *,
+    column_names_by_table: dict[str, tuple[str, ...]],
     show_failures: bool,
     failure_limit: int,
 ) -> CheckResult:
     _validate_check_execution(check)
-    failed_count = _failed_count(connection, check)
+    failed_count = _failed_count(connection, check, column_names_by_table)
     failures = (
-        _failure_samples(connection, check, limit=failure_limit)
+        _failure_samples(
+            connection,
+            check,
+            column_names_by_table=column_names_by_table,
+            limit=failure_limit,
+        )
         if show_failures and failed_count > 0
         else ()
     )
@@ -176,6 +197,18 @@ def _validate_check_execution(check: ConfiguredCheck) -> None:
             f"{context} must define a column.",
             suggestion="Add a column for column-level checks.",
         )
+    if check.type == "row_count_between":
+        if check.min_value is None and check.max_value is None:
+            raise ProjectConfigError(
+                f"{context} must define min, max, or both.",
+                suggestion="Use min, max, or both row-count bounds.",
+            )
+        if check.min_value is not None and check.max_value is not None:
+            if _as_int(check.min_value) > _as_int(check.max_value):
+                raise ProjectConfigError(
+                    f"{context} has min greater than max.",
+                    suggestion="Set min to a value less than or equal to max.",
+                )
     if check.type in {"min", "max"} and check.value is None:
         raise ProjectConfigError(
             f"{context} cannot use a null threshold.",
@@ -193,25 +226,49 @@ def _validate_check_execution(check: ConfiguredCheck) -> None:
         )
 
 
-def _failed_count(connection: duckdb.DuckDBPyConnection, check: ConfiguredCheck) -> int:
+def _failed_count(
+    connection: duckdb.DuckDBPyConnection,
+    check: ConfiguredCheck,
+    column_names_by_table: dict[str, tuple[str, ...]],
+) -> int:
     if check.type == "not_null":
-        return _fetch_scalar_int(connection, _not_null_count_sql(check))
+        column_name = _resolve_column_name(check.table, check.column, column_names_by_table)
+        return _fetch_scalar_int(connection, _not_null_count_sql(check, column_name))
     if check.type == "unique":
-        return _fetch_scalar_int(connection, _unique_count_sql(check))
+        column_name = _resolve_column_name(check.table, check.column, column_names_by_table)
+        return _fetch_scalar_int(connection, _unique_count_sql(check, column_name))
     if check.type == "accepted_values":
+        column_name = _resolve_column_name(check.table, check.column, column_names_by_table)
         return _fetch_scalar_int(
             connection,
-            _accepted_values_count_sql(check),
+            _accepted_values_count_sql(check, column_name),
             _accepted_values_parameters(check),
         )
     if check.type == "min":
-        return _fetch_scalar_int(connection, _min_count_sql(check), (check.value,))
+        column_name = _resolve_column_name(check.table, check.column, column_names_by_table)
+        return _fetch_scalar_int(connection, _min_count_sql(check, column_name), (check.value,))
     if check.type == "max":
-        return _fetch_scalar_int(connection, _max_count_sql(check), (check.value,))
+        column_name = _resolve_column_name(check.table, check.column, column_names_by_table)
+        return _fetch_scalar_int(connection, _max_count_sql(check, column_name), (check.value,))
     if check.type == "row_count_between":
         return _row_count_between_failure_count(connection, check)
     if check.type == "foreign_key":
-        return _fetch_scalar_int(connection, _foreign_key_count_sql(check))
+        reference = check.references
+        if reference is None:
+            raise ProjectConfigError(
+                f"{_check_context(check)} must define a foreign key reference.",
+                suggestion="Add a referenced table and column for foreign_key checks.",
+            )
+        child_column = _resolve_column_name(check.table, check.column, column_names_by_table)
+        parent_column = _resolve_column_name(
+            reference.table,
+            reference.column,
+            column_names_by_table,
+        )
+        return _fetch_scalar_int(
+            connection,
+            _foreign_key_count_sql(check, child_column, parent_column),
+        )
     raise AssertionError(f"Unhandled check type: {check.type}")
 
 
@@ -219,26 +276,48 @@ def _failure_samples(
     connection: duckdb.DuckDBPyConnection,
     check: ConfiguredCheck,
     *,
+    column_names_by_table: dict[str, tuple[str, ...]],
     limit: int,
 ) -> tuple[CheckFailureSample, ...]:
     if check.type in {"not_null", "accepted_values", "min", "max"}:
-        return _row_level_failure_samples(connection, check, limit=limit)
+        column_name = _resolve_column_name(check.table, check.column, column_names_by_table)
+        return _row_level_failure_samples(connection, check, column_name, limit=limit)
     if check.type == "unique":
-        return _unique_failure_samples(connection, check, limit=limit)
+        column_name = _resolve_column_name(check.table, check.column, column_names_by_table)
+        return _unique_failure_samples(connection, check, column_name, limit=limit)
     if check.type == "row_count_between":
         return (_row_count_between_failure_sample(connection, check),)
     if check.type == "foreign_key":
-        return _foreign_key_failure_samples(connection, check, limit=limit)
+        reference = check.references
+        if reference is None:
+            raise ProjectConfigError(
+                f"{_check_context(check)} must define a foreign key reference.",
+                suggestion="Add a referenced table and column for foreign_key checks.",
+            )
+        child_column = _resolve_column_name(check.table, check.column, column_names_by_table)
+        parent_column = _resolve_column_name(
+            reference.table,
+            reference.column,
+            column_names_by_table,
+        )
+        return _foreign_key_failure_samples(
+            connection,
+            check,
+            child_column,
+            parent_column,
+            limit=limit,
+        )
     raise AssertionError(f"Unhandled check type: {check.type}")
 
 
 def _row_level_failure_samples(
     connection: duckdb.DuckDBPyConnection,
     check: ConfiguredCheck,
+    column_name: str,
     *,
     limit: int,
 ) -> tuple[CheckFailureSample, ...]:
-    query = _row_level_failure_sql(check)
+    query = _row_level_failure_sql(check, column_name)
     rows = _fetch_rows(connection, query, _row_level_failure_parameters(check, limit))
     samples: list[CheckFailureSample] = []
     for row in rows:
@@ -247,7 +326,7 @@ def _row_level_failure_samples(
         samples.append(
             CheckFailureSample(
                 row_number=row_number,
-                value=row_dict[check.column or ""],
+                value=row_dict[column_name],
                 row=row_dict,
             )
         )
@@ -257,10 +336,11 @@ def _row_level_failure_samples(
 def _unique_failure_samples(
     connection: duckdb.DuckDBPyConnection,
     check: ConfiguredCheck,
+    column_name: str,
     *,
     limit: int,
 ) -> tuple[CheckFailureSample, ...]:
-    rows = _fetch_rows(connection, _unique_failure_samples_sql(check), (limit,))
+    rows = _fetch_rows(connection, _unique_failure_samples_sql(check, column_name), (limit,))
     return tuple(
         CheckFailureSample(value=row["value"], observed=_as_int(row["observed"])) for row in rows
     )
@@ -290,15 +370,21 @@ def _row_count_between_failure_sample(
 def _foreign_key_failure_samples(
     connection: duckdb.DuckDBPyConnection,
     check: ConfiguredCheck,
+    child_column: str,
+    parent_column: str,
     *,
     limit: int,
 ) -> tuple[CheckFailureSample, ...]:
-    rows = _fetch_rows(connection, _foreign_key_samples_sql(check), (limit,))
+    rows = _fetch_rows(
+        connection,
+        _foreign_key_samples_sql(check, child_column, parent_column),
+        (limit,),
+    )
     reference = check.references
     return tuple(
         CheckFailureSample(
             row_number=_as_int(row[CHECK_ROW_NUMBER_COLUMN]),
-            value=row[check.column or ""],
+            value=row[child_column],
             row={name: value for name, value in row.items() if name != CHECK_ROW_NUMBER_COLUMN},
             reference_table=reference.table if reference is not None else None,
             reference_column=reference.column if reference is not None else None,
@@ -331,15 +417,15 @@ def _fetch_rows(
     )
 
 
-def _not_null_count_sql(check: ConfiguredCheck) -> str:
+def _not_null_count_sql(check: ConfiguredCheck, column_name: str) -> str:
     return (
         f"SELECT COUNT(*) FROM {quote_identifier(_view_name(check.table))} "
-        f"WHERE {quote_identifier(check.column or '')} IS NULL"
+        f"WHERE {quote_identifier(column_name)} IS NULL"
     )
 
 
-def _unique_count_sql(check: ConfiguredCheck) -> str:
-    column = quote_identifier(check.column or "")
+def _unique_count_sql(check: ConfiguredCheck, column_name: str) -> str:
+    column = quote_identifier(column_name)
     view_name = quote_identifier(_view_name(check.table))
     return (
         f"SELECT COALESCE(SUM(duplicate_count - 1), 0) "
@@ -357,8 +443,8 @@ def _accepted_values_parameters(check: ConfiguredCheck) -> tuple[object, ...]:
     return tuple(check.values)
 
 
-def _accepted_values_count_sql(check: ConfiguredCheck) -> str:
-    column = quote_identifier(check.column or "")
+def _accepted_values_count_sql(check: ConfiguredCheck, column_name: str) -> str:
+    column = quote_identifier(column_name)
     view_name = quote_identifier(_view_name(check.table))
     values = _accepted_values_values_clause(check)
     accepted_column = quote_identifier("value")
@@ -376,14 +462,14 @@ def _accepted_values_values_clause(check: ConfiguredCheck) -> str:
     return ", ".join("(?)" for _ in check.values)
 
 
-def _min_count_sql(check: ConfiguredCheck) -> str:
-    column = quote_identifier(check.column or "")
+def _min_count_sql(check: ConfiguredCheck, column_name: str) -> str:
+    column = quote_identifier(column_name)
     view_name = quote_identifier(_view_name(check.table))
     return f"SELECT COUNT(*) FROM {view_name} WHERE {column} IS NOT NULL AND {column} < ?"
 
 
-def _max_count_sql(check: ConfiguredCheck) -> str:
-    column = quote_identifier(check.column or "")
+def _max_count_sql(check: ConfiguredCheck, column_name: str) -> str:
+    column = quote_identifier(column_name)
     view_name = quote_identifier(_view_name(check.table))
     return f"SELECT COUNT(*) FROM {view_name} WHERE {column} IS NOT NULL AND {column} > ?"
 
@@ -403,25 +489,30 @@ def _row_count_between_failure_count(
     return 0
 
 
-def _foreign_key_count_sql(check: ConfiguredCheck) -> str:
+def _foreign_key_count_sql(
+    check: ConfiguredCheck,
+    child_column: str,
+    parent_column: str,
+) -> str:
     reference = check.references
     child_view = quote_identifier(_view_name(check.table))
     parent_view = quote_identifier(_view_name(reference.table if reference is not None else ""))
     child_alias = quote_identifier("child")
     parent_alias = quote_identifier("parent")
-    child_column = quote_identifier(check.column or "")
-    parent_column = quote_identifier(reference.column if reference is not None else "")
+    child_column_name = quote_identifier(child_column)
+    parent_column_name = quote_identifier(parent_column)
     return (
         f"SELECT COUNT(*) FROM {child_view} AS {child_alias} "
-        f"WHERE {child_alias}.{child_column} IS NOT NULL "
+        f"WHERE {child_alias}.{child_column_name} IS NOT NULL "
         f"AND NOT EXISTS ("
         f"SELECT 1 FROM {parent_view} AS {parent_alias} "
-        f"WHERE {parent_alias}.{parent_column} IS NOT DISTINCT FROM {child_alias}.{child_column}"
+        f"WHERE {parent_alias}.{parent_column_name} IS NOT DISTINCT FROM "
+        f"{child_alias}.{child_column_name}"
         f")"
     )
 
 
-def _row_level_failure_sql(check: ConfiguredCheck) -> str:
+def _row_level_failure_sql(check: ConfiguredCheck, column_name: str) -> str:
     view_name = quote_identifier(_view_name(check.table))
     rows_alias = quote_identifier(CHECK_ROWS_ALIAS)
     row_number_column = quote_identifier(CHECK_ROW_NUMBER_COLUMN)
@@ -430,7 +521,7 @@ def _row_level_failure_sql(check: ConfiguredCheck) -> str:
         f"SELECT row_number() OVER () AS {row_number_column}, * "
         f"FROM {view_name}"
         f") AS {rows_alias} "
-        f"WHERE {_row_level_failure_predicate(check, rows_alias)} "
+        f"WHERE {_row_level_failure_predicate(check, rows_alias, column_name)} "
         f"ORDER BY {rows_alias}.{row_number_column} "
         f"LIMIT ?"
     )
@@ -447,26 +538,34 @@ def _row_level_failure_parameters(
     return (limit,)
 
 
-def _row_level_failure_predicate(check: ConfiguredCheck, rows_alias: str) -> str:
+def _row_level_failure_predicate(
+    check: ConfiguredCheck,
+    rows_alias: str,
+    column_name: str,
+) -> str:
     if check.type == "not_null":
-        return f"{rows_alias}.{quote_identifier(check.column or '')} IS NULL"
+        return f"{rows_alias}.{quote_identifier(column_name)} IS NULL"
     if check.type == "accepted_values":
-        return _accepted_values_failure_predicate(check, rows_alias)
+        return _accepted_values_failure_predicate(check, rows_alias, column_name)
     if check.type == "min":
         return (
-            f"{rows_alias}.{quote_identifier(check.column or '')} IS NOT NULL "
-            f"AND {rows_alias}.{quote_identifier(check.column or '')} < ?"
+            f"{rows_alias}.{quote_identifier(column_name)} IS NOT NULL "
+            f"AND {rows_alias}.{quote_identifier(column_name)} < ?"
         )
     if check.type == "max":
         return (
-            f"{rows_alias}.{quote_identifier(check.column or '')} IS NOT NULL "
-            f"AND {rows_alias}.{quote_identifier(check.column or '')} > ?"
+            f"{rows_alias}.{quote_identifier(column_name)} IS NOT NULL "
+            f"AND {rows_alias}.{quote_identifier(column_name)} > ?"
         )
     raise AssertionError(f"Unhandled row-level check type: {check.type}")
 
 
-def _accepted_values_failure_predicate(check: ConfiguredCheck, rows_alias: str) -> str:
-    column = quote_identifier(check.column or "")
+def _accepted_values_failure_predicate(
+    check: ConfiguredCheck,
+    rows_alias: str,
+    column_name: str,
+) -> str:
+    column = quote_identifier(column_name)
     accepted_column = quote_identifier("value")
     values = _accepted_values_values_clause(check)
     return (
@@ -478,33 +577,38 @@ def _accepted_values_failure_predicate(check: ConfiguredCheck, rows_alias: str) 
     )
 
 
-def _foreign_key_samples_sql(check: ConfiguredCheck) -> str:
+def _foreign_key_samples_sql(
+    check: ConfiguredCheck,
+    child_column: str,
+    parent_column: str,
+) -> str:
     reference = check.references
     child_view = quote_identifier(_view_name(check.table))
     parent_view = quote_identifier(_view_name(reference.table if reference is not None else ""))
     rows_alias = quote_identifier(CHECK_ROWS_ALIAS)
     row_number_column = quote_identifier(CHECK_ROW_NUMBER_COLUMN)
     parent_alias = quote_identifier("parent")
-    child_column = quote_identifier(check.column or "")
-    parent_column = quote_identifier(reference.column if reference is not None else "")
+    child_column_name = quote_identifier(child_column)
+    parent_column_name = quote_identifier(parent_column)
     return (
         f"SELECT * FROM ("
         f"SELECT row_number() OVER () AS {row_number_column}, * "
         f"FROM {child_view}"
         f") AS {rows_alias} "
-        f"WHERE {rows_alias}.{child_column} IS NOT NULL "
+        f"WHERE {rows_alias}.{child_column_name} IS NOT NULL "
         f"AND NOT EXISTS ("
         f"SELECT 1 FROM {parent_view} AS {parent_alias} "
-        f"WHERE {parent_alias}.{parent_column} IS NOT DISTINCT FROM {rows_alias}.{child_column}"
+        f"WHERE {parent_alias}.{parent_column_name} IS NOT DISTINCT FROM "
+        f"{rows_alias}.{child_column_name}"
         f") "
         f"ORDER BY {rows_alias}.{row_number_column} "
         f"LIMIT ?"
     )
 
 
-def _unique_failure_samples_sql(check: ConfiguredCheck) -> str:
+def _unique_failure_samples_sql(check: ConfiguredCheck, column_name: str) -> str:
     view_name = quote_identifier(_view_name(check.table))
-    column = quote_identifier(check.column or "")
+    column = quote_identifier(column_name)
     value_column = quote_identifier("value")
     observed_column = quote_identifier("observed")
     return (
@@ -515,6 +619,40 @@ def _unique_failure_samples_sql(check: ConfiguredCheck) -> str:
         f"HAVING COUNT(*) > 1 "
         f"ORDER BY {observed_column} DESC, {value_column} "
         f"LIMIT ?"
+    )
+
+
+def _resolve_column_name(
+    table_name: str,
+    configured_column: str | None,
+    column_names_by_table: dict[str, tuple[str, ...]],
+) -> str:
+    if configured_column is None:
+        raise ProjectConfigError(
+            f"Project catalog table '{table_name}' must define a column.",
+            suggestion="Add a column for column-level checks.",
+        )
+
+    actual_columns = column_names_by_table.get(table_name.lower())
+    if actual_columns is None:
+        raise ProjectConfigError(
+            f"Project catalog table '{table_name}' is not registered for data quality checks.",
+            suggestion="Register the table before running csvql check.",
+        )
+
+    if configured_column in actual_columns:
+        return configured_column
+
+    stripped_column = configured_column.strip()
+    if stripped_column in actual_columns:
+        return stripped_column
+
+    raise ProjectConfigError(
+        (
+            f"Could not resolve column '{configured_column}' for project catalog table "
+            f"'{table_name}'."
+        ),
+        suggestion="Check the CSV header spelling and surrounding whitespace.",
     )
 
 

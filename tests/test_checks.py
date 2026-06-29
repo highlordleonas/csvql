@@ -158,6 +158,38 @@ def test_run_configured_checks_validates_core_semantics_and_identifier_quoting(
     }
 
 
+def test_run_configured_checks_handles_whitespace_header_names(
+    tmp_path: Path,
+) -> None:
+    orders = tmp_path / "orders.csv"
+    orders.write_text(
+        '" total amount ",order_id\n10,ORD-1\n,ORD-2\n',
+        encoding="utf-8",
+    )
+    context = _context(
+        tmp_path,
+        (
+            ProjectTable(
+                "orders",
+                "orders.csv",
+                checks=(
+                    _check(
+                        "total_amount_required",
+                        "orders",
+                        "not_null",
+                        column=" total amount ",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    result = run_configured_checks(context, table_name=None, show_failures=False, failure_limit=5)
+
+    assert result.status == "failed"
+    assert result.checks[0].failed_count == 1
+
+
 def test_run_configured_checks_includes_capped_failure_samples(tmp_path: Path) -> None:
     orders = tmp_path / "orders.csv"
     orders.write_text(
@@ -212,6 +244,43 @@ def test_run_configured_checks_reports_row_count_between_sample(tmp_path: Path) 
     assert result.checks[0].failures[0].observed == 2
     assert result.checks[0].failures[0].min_value == 4
     assert result.checks[0].failures[0].max_value == 6
+
+
+@pytest.mark.parametrize(
+    ("min_value", "max_value"),
+    [
+        (None, None),
+        (10, 1),
+    ],
+)
+def test_run_configured_checks_rejects_invalid_row_count_between_bounds(
+    tmp_path: Path,
+    min_value: object | None,
+    max_value: object | None,
+) -> None:
+    orders = tmp_path / "orders.csv"
+    orders.write_text("order_id\nORD-1\n", encoding="utf-8")
+    context = _context(
+        tmp_path,
+        (
+            ProjectTable(
+                "orders",
+                "orders.csv",
+                checks=(
+                    _check(
+                        "expected_rows",
+                        "orders",
+                        "row_count_between",
+                        min_value=min_value,
+                        max_value=max_value,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(ProjectConfigError):
+        run_configured_checks(context, table_name=None, show_failures=False, failure_limit=5)
 
 
 def test_run_configured_checks_reports_foreign_key_failures_and_null_child_passes(
