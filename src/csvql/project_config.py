@@ -511,6 +511,11 @@ def _parse_project_check_entry(
                 f"{check_context} must define a non-empty values list.",
                 suggestion="Use values: [paid, pending] or another non-empty list.",
             )
+        if not all(_is_yaml_scalar(value) for value in raw_values):
+            raise ProjectConfigError(
+                f"{check_context} must define values as YAML scalar entries.",
+                suggestion="Use scalar values such as strings, numbers, booleans, or null.",
+            )
         values = tuple(raw_values)
 
     value = None
@@ -519,6 +524,11 @@ def _parse_project_check_entry(
             raise ProjectConfigError(
                 f"{check_context} must define value.",
                 suggestion="Use value: <scalar> for min and max checks.",
+            )
+        if not _is_yaml_scalar(raw_check["value"]):
+            raise ProjectConfigError(
+                f"{check_context} must define value as a YAML scalar.",
+                suggestion="Use a scalar value such as a string, number, boolean, or null.",
             )
         value = raw_check["value"]
 
@@ -723,6 +733,10 @@ def _project_check_context(*, table_name: str, check_name: str, config_path: Pat
 
 def _sorted_key_display(keys: set[object]) -> list[str]:
     return sorted(str(key) for key in keys)
+
+
+def _is_yaml_scalar(value: object) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
 
 
 def _validate_project_table_check_names(

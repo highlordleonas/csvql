@@ -262,8 +262,17 @@ def test_load_project_rejects_missing_foreign_key_reference_table(tmp_path: Path
         "checks:\n  - name: bad name\n    type: not_null\n    column: order_id\n",
         "checks:\n  - name: bad\n    type: not_null\n",
         "checks:\n  - name: bad\n    type: accepted_values\n    column: status\n    values: []\n",
+        (
+            "checks:\n  - name: bad\n    type: accepted_values\n    column: status\n"
+            "    values: [paid, {bad: shape}]\n"
+        ),
         "checks:\n  - name: bad\n    type: row_count_between\n",
         "checks:\n  - name: bad\n    type: row_count_between\n    min: 10\n    max: 1\n",
+        (
+            "checks:\n  - name: bad\n    type: min\n    column: total_amount\n"
+            "    value: {bad: shape}\n"
+        ),
+        "checks:\n  - name: bad\n    type: max\n    column: total_amount\n    value: [1, 2]\n",
         "checks:\n  - name: bad\n    type: foreign_key\n    column: customer_id\n",
         (
             "checks:\n  - name: bad\n    type: foreign_key\n    column: customer_id\n"
@@ -425,6 +434,39 @@ def test_save_project_persists_sorted_tables(tmp_path: Path) -> None:
     assert config_path.read_text(encoding="utf-8") == (
         "version: 1\ntables:\n  alpha:\n    path: alpha.csv\n  zeta:\n    path: zeta.csv\n"
     )
+
+
+def test_add_project_table_replace_preserves_checks_for_same_table(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    orders_path = project_root / "data" / "orders_v2.csv"
+    orders_path.parent.mkdir(parents=True)
+    orders_path.write_text("order_id,total_amount\nORD-1,12.34\n", encoding="utf-8")
+    config_path = project_root / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\n"
+        "tables:\n"
+        "  orders:\n"
+        "    path: data/orders.csv\n"
+        "    checks:\n"
+        "      - name: order_id_required\n"
+        "        type: not_null\n"
+        "        column: order_id\n",
+        encoding="utf-8",
+    )
+
+    context = load_project(project_root)
+    updated_context = add_project_table(
+        context,
+        "orders",
+        "data/orders_v2.csv",
+        replace=True,
+        invocation_dir=project_root,
+    )
+
+    orders = updated_context.config.tables[0]
+    assert orders.path == "data/orders_v2.csv"
+    assert [check.name for check in orders.checks] == ["order_id_required"]
 
 
 def test_add_project_table_stores_project_relative_path_for_internal_file(
