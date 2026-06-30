@@ -167,3 +167,68 @@ def test_doctor_missing_csv_returns_failed_probe_and_exit_12(
         and probe["table"] == "orders"
         for probe in payload["probes"]
     )
+
+
+def test_doctor_unreadable_csv_returns_failed_probe_and_exit_12(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    csv_path = tmp_path / "data" / "orders.csv"
+    csv_path.write_text("order_id,status\nORD-1,paid\n", encoding="utf-8")
+    _write_project_config(
+        tmp_path,
+        """
+        version: 1
+        tables:
+          orders:
+            path: data/orders.csv
+        """,
+    )
+
+    try:
+        csv_path.chmod(0)
+        result = runner.invoke(app, ["doctor", "--output", "json"])
+    finally:
+        csv_path.chmod(0o600)
+
+    assert result.exit_code == 12, result.output
+    payload = json.loads(result.output)
+    assert payload["status"] == "failed"
+    assert any(
+        probe["name"] == "table_readiness"
+        and probe["status"] == "failed"
+        and probe["table"] == "orders"
+        for probe in payload["probes"]
+    )
+
+
+def test_doctor_invalid_utf8_csv_returns_failed_probe_and_exit_12(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "orders.csv").write_bytes(b"a,b\n\xff,1\n")
+    _write_project_config(
+        tmp_path,
+        """
+        version: 1
+        tables:
+          orders:
+            path: data/orders.csv
+        """,
+    )
+
+    result = runner.invoke(app, ["doctor", "--output", "json"])
+
+    assert result.exit_code == 12, result.output
+    payload = json.loads(result.output)
+    assert payload["status"] == "failed"
+    assert any(
+        probe["name"] == "table_readiness"
+        and probe["status"] == "failed"
+        and probe["table"] == "orders"
+        for probe in payload["probes"]
+    )
