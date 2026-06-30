@@ -326,6 +326,7 @@ CSVQL is currently a local developer tool for trusted SQL. DuckDB executes the S
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Benchmarking](docs/benchmarking.md)
+- [JSON contracts](docs/json-contracts.md)
 - [Product direction](docs/PRODUCT_DIRECTION.md)
 - [Release readiness](docs/release-readiness.md)
 - [Roadmap](docs/ROADMAP.md)
