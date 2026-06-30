@@ -150,13 +150,18 @@ def run_doctor(start_dir: Path | None = None) -> DoctorRunResult:
     try:
         context = load_project(start_dir)
         validate_table_aliases(context)
-    except ProjectConfigError as exc:
+    except (ProjectConfigError, OSError) as exc:
+        message = (
+            exc.message
+            if isinstance(exc, ProjectConfigError)
+            else f"Failed to read project catalog {config_path}: {exc.strerror or str(exc)}."
+        )
         probes.append(
             DoctorProbeResult(
                 name="config_load",
                 scope="project",
                 status="failed",
-                message=exc.message,
+                message=message,
                 path=config_path,
                 resolved_path=config_path,
             )

@@ -51,6 +51,34 @@ def test_doctor_invalid_yaml_returns_failed_json_and_exit_12(
     assert "Invalid YAML" in payload["probes"][1]["message"]
 
 
+def test_doctor_unreadable_config_returns_failed_json_and_exit_12(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text("version: 1\ntables: {}\n", encoding="utf-8")
+
+    try:
+        config_path.chmod(0)
+        result = runner.invoke(app, ["doctor", "--output", "json"])
+    finally:
+        config_path.chmod(0o600)
+
+    assert result.exit_code == 12, result.output
+    payload = json.loads(result.output)
+    assert payload["status"] == "failed"
+    assert [probe["name"] for probe in payload["probes"]] == [
+        "project_discovery",
+        "config_load",
+    ]
+    assert payload["probes"][1]["status"] == "failed"
+    assert (
+        "Permission denied" in payload["probes"][1]["message"]
+        or "Failed to read project catalog" in payload["probes"][1]["message"]
+    )
+
+
 def test_doctor_empty_project_catalog_returns_warning(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -398,6 +426,44 @@ def test_doctor_emits_passed_check_schema_resolution_probe(
     assert passing_probe["table"] == "orders"
     assert passing_probe["check"] == "order_id_required"
     assert passing_probe["column"] == "order_id"
+
+
+def test_doctor_check_schema_resolution_ignores_surrounding_whitespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "orders.csv").write_text(
+        "order_id,status\nORD-1,paid\n",
+        encoding="utf-8",
+    )
+    _write_project_config(
+        tmp_path,
+        """
+        version: 1
+        tables:
+          orders:
+            path: data/orders.csv
+            checks:
+              - name: order_id_required
+                type: not_null
+                column: " order_id "
+        """,
+    )
+
+    result = runner.invoke(app, ["doctor", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    passing_probe = next(
+        probe
+        for probe in payload["probes"]
+        if probe["scope"] == "check"
+        and probe["name"] == "check_schema_resolution"
+        and probe["check"] == "order_id_required"
+    )
+    assert passing_probe["status"] == "passed"
 
 
 def test_doctor_fails_config_load_for_case_colliding_table_aliases(
