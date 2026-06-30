@@ -25,7 +25,8 @@ Not covered here:
 - `elapsed_ms` is part of the current query-shaped runtime output, but its exact numeric value is volatile.
 - `source.resolved_path`, `source.modified_at`, and `source.fingerprint.modified_at` are machine-local values and are redacted in the examples below.
 - `source.size_bytes` reflects the specific input file used in each example and can vary if the input changes.
-- Field names, nesting, omission behavior, and scalar types are the stable part of the contract.
+- Field presence, top-level nesting, and omission behavior are the stable part of the contract.
+- Individual row values and some nested values remain data-dependent, and non-JSON-native values may be stringified by the serializer.
 
 ## Current v0.8 Contract
 
@@ -286,6 +287,8 @@ Failure example captured from `/private/tmp/csvql-json-contracts/check-failure.j
 ```
 
 `check.failures` is conditional and omitted unless failure samples are requested and present.
+When it is present, it is a sampled subset of the total failures for that check, capped by `--failure-limit`. In the example above, `failed_count` is `2`, but only one sampled failure object is returned because the capture used `--failure-limit 1`.
+Failure sample objects also vary by check type. The not-null example above includes `row_number`, `row`, and `value`, but other checks can emit different fields. For example, `unique` and `row_count_between` checks can include `observed` plus `min` and `max` bounds, and `foreign_key` can add `reference_table` and `reference_column`.
 
 ## Cross-Command Rules In v0.8
 
@@ -293,6 +296,7 @@ Failure example captured from `/private/tmp/csvql-json-contracts/check-failure.j
 - `inspect`, `profile`, and `check` always include `warnings`, even when empty.
 - `inspect.row_count` is structured metadata, but `profile.row_count` is an integer.
 - `check.failures` is conditional and omitted unless `--show-failures` is requested and failures are present.
+- When `check.failures` is present, it is a sampled, `--failure-limit`-capped subset rather than a complete enumeration of every failure.
 - Current source metadata can include absolute paths, timestamps, and file fingerprints that vary per machine and run.
 
 ## Ideal v1 Normalized Contract
