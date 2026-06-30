@@ -28,6 +28,43 @@ def test_inspect_outputs_json_without_counting_rows(tmp_path: Path) -> None:
     assert payload["columns"][0]["name"] == "order_id"
 
 
+def test_inspect_json_contract_includes_source_dialect_columns_row_count_and_warnings(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "orders.csv"
+    csv_path.write_text(
+        "order_id,status\nORD-1,paid\nORD-2,pending\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["inspect", str(csv_path), "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert set(payload) == {"source", "dialect", "columns", "row_count", "warnings"}
+    assert payload["dialect"] == {
+        "delimiter": ",",
+        "quote": '"',
+        "escape": None,
+        "header": True,
+        "encoding": "utf-8",
+    }
+    assert payload["columns"][0] == {
+        "name": "order_id",
+        "duckdb_type": "VARCHAR",
+    }
+    assert payload["row_count"] == {
+        "mode": "not_counted",
+        "value": None,
+        "exact": False,
+    }
+    assert payload["warnings"] == []
+    assert payload["source"]["display_path"] == str(csv_path)
+    assert payload["source"]["resolved_path"] == str(csv_path.resolve())
+    assert payload["source"]["size_bytes"] == csv_path.stat().st_size
+    assert payload["source"]["fingerprint"]["version"] == 1
+
+
 def test_inspect_exact_outputs_exact_row_count(tmp_path: Path) -> None:
     csv_path = tmp_path / "orders.csv"
     csv_path.write_text(

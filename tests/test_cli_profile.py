@@ -28,6 +28,38 @@ def test_profile_outputs_json_for_direct_path(tmp_path: Path) -> None:
     assert payload["columns"][1]["null_percentage"] == 66.667
 
 
+def test_profile_json_contract_includes_source_counts_columns_and_warnings(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "orders.csv"
+    csv_path.write_text(
+        "order_id,status\nORD-1,paid\nORD-2,\nORD-2,\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["profile", str(csv_path), "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert set(payload) == {
+        "source",
+        "row_count",
+        "column_count",
+        "duplicate_row_count",
+        "columns",
+        "warnings",
+    }
+    assert payload["source"]["display_path"] == str(csv_path)
+    assert payload["source"]["resolved_path"] == str(csv_path.resolve())
+    assert payload["source"]["fingerprint"]["version"] == 1
+    assert payload["row_count"] == 3
+    assert payload["column_count"] == 2
+    assert payload["duplicate_row_count"] == 1
+    assert payload["warnings"] == []
+    assert payload["columns"][1]["name"] == "status"
+    assert payload["columns"][1]["null_percentage"] == 66.667
+
+
 def test_profile_outputs_table_by_default(tmp_path: Path) -> None:
     csv_path = tmp_path / "orders.csv"
     csv_path.write_text("order_id,status\nORD-1,paid\n", encoding="utf-8")

@@ -48,6 +48,50 @@ def test_check_outputs_json_for_passing_checks(
     assert payload["checks"][0]["failed_count"] == 0
 
 
+def test_check_json_contract_omits_failures_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "orders.csv").write_text(
+        "order_id,status\nORD-1,paid\nORD-2,pending\n",
+        encoding="utf-8",
+    )
+    _write_project_config(
+        tmp_path,
+        """
+        version: 1
+        tables:
+          orders:
+            path: data/orders.csv
+            checks:
+              - name: order_id_required
+                type: not_null
+                column: order_id
+        """,
+    )
+
+    result = runner.invoke(app, ["check", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert set(payload) == {
+        "status",
+        "check_count",
+        "passed_count",
+        "failed_count",
+        "checks",
+        "warnings",
+    }
+    assert payload["status"] == "passed"
+    assert payload["check_count"] == 1
+    assert payload["passed_count"] == 1
+    assert payload["failed_count"] == 0
+    assert payload["warnings"] == []
+    assert "failures" not in payload["checks"][0]
+
+
 def test_check_outputs_table_and_exits_11_for_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -148,6 +192,58 @@ def test_check_show_failures_honors_failure_limit_in_json(
     assert payload["checks"][0]["failed_count"] == 2
     assert len(payload["checks"][0]["failures"]) == 1
     assert payload["checks"][0]["failures"][0]["row_number"] == 2
+
+
+def test_check_json_contract_includes_failure_samples_when_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "orders.csv").write_text(
+        "order_id,status\nORD-1,paid\n,unknown\n,\n",
+        encoding="utf-8",
+    )
+    _write_project_config(
+        tmp_path,
+        """
+        version: 1
+        tables:
+          orders:
+            path: data/orders.csv
+            checks:
+              - name: order_id_required
+                type: not_null
+                column: order_id
+        """,
+    )
+
+    result = runner.invoke(
+        app,
+        ["check", "--output", "json", "--show-failures", "--failure-limit", "1"],
+    )
+
+    assert result.exit_code == 11, result.output
+    payload = json.loads(result.output)
+    assert set(payload) == {
+        "status",
+        "check_count",
+        "passed_count",
+        "failed_count",
+        "checks",
+        "warnings",
+    }
+    assert payload["status"] == "failed"
+    assert payload["check_count"] == 1
+    assert payload["passed_count"] == 0
+    assert payload["failed_count"] == 1
+    assert payload["warnings"] == []
+    assert payload["checks"][0]["failed_count"] == 2
+    assert payload["checks"][0]["failures"][0]["row_number"] == 2
+    assert payload["checks"][0]["failures"][0]["row"] == {
+        "order_id": None,
+        "status": "unknown",
+    }
 
 
 def test_check_without_configured_checks_returns_zero_and_warns(
