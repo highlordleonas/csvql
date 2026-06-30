@@ -19,6 +19,14 @@ from csvql.sql_utils import quote_identifier
 DoctorScope = Literal["project", "table", "check"]
 DoctorStatus = Literal["passed", "warning", "failed"]
 DOCTOR_VIEW_PREFIX = "__csvql_doctor_"
+EXPECTED_TABLE_READINESS_ERRORS = (
+    FileMissingError,
+    OSError,
+    duckdb.IOException,
+    duckdb.InvalidInputException,
+    duckdb.ParserException,
+    duckdb.ConversionException,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,8 +207,7 @@ def run_doctor(start_dir: Path | None = None) -> DoctorRunResult:
         )
     )
 
-    table_probes, _ = _run_table_readiness_probes(context, tables)
-    probes.extend(table_probes)
+    probes.extend(_run_table_readiness_probes(context, tables))
     return DoctorRunResult(
         project_root=context.project_root,
         config_path=context.config_path,
@@ -211,9 +218,8 @@ def run_doctor(start_dir: Path | None = None) -> DoctorRunResult:
 def _run_table_readiness_probes(
     context: ProjectContext,
     tables: tuple[ProjectTable, ...],
-) -> tuple[tuple[DoctorProbeResult, ...], dict[str, tuple[str, ...]]]:
+) -> tuple[DoctorProbeResult, ...]:
     probes: list[DoctorProbeResult] = []
-    column_names_by_table: dict[str, tuple[str, ...]] = {}
     connection: duckdb.DuckDBPyConnection | None = None
     try:
         connection = duckdb.connect(database=":memory:")
@@ -229,7 +235,7 @@ def _run_table_readiness_probes(
                 connection.execute(
                     f"SELECT * FROM {quote_identifier(_doctor_view_name(table.name))} LIMIT 1"
                 ).fetchall()
-            except (FileMissingError, OSError, duckdb.Error) as exc:
+            except EXPECTED_TABLE_READINESS_ERRORS as exc:
                 probes.append(
                     DoctorProbeResult(
                         name="table_readiness",
@@ -241,9 +247,6 @@ def _run_table_readiness_probes(
                 )
                 continue
 
-            column_names_by_table[table.name.lower()] = tuple(
-                str(column) for column in relation.columns
-            )
             probes.append(
                 DoctorProbeResult(
                     name="table_readiness",
@@ -259,7 +262,7 @@ def _run_table_readiness_probes(
         if connection is not None:
             connection.close()
 
-    return tuple(probes), column_names_by_table
+    return tuple(probes)
 
 
 def _doctor_view_name(table_name: str) -> str:
