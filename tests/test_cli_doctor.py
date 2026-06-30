@@ -232,3 +232,83 @@ def test_doctor_invalid_utf8_csv_returns_failed_probe_and_exit_12(
         and probe["table"] == "orders"
         for probe in payload["probes"]
     )
+
+
+def test_doctor_fails_when_configured_check_column_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "orders.csv").write_text(
+        "actual_order_id\nORD-1\n",
+        encoding="utf-8",
+    )
+    _write_project_config(
+        tmp_path,
+        """
+        version: 1
+        tables:
+          orders:
+            path: data/orders.csv
+            checks:
+              - name: order_id_required
+                type: not_null
+                column: order_id
+        """,
+    )
+
+    result = runner.invoke(app, ["doctor", "--output", "json"])
+
+    assert result.exit_code == 12, result.output
+    payload = json.loads(result.output)
+    failing_probe = next(probe for probe in payload["probes"] if probe["scope"] == "check")
+    assert failing_probe["name"] == "check_schema_resolution"
+    assert failing_probe["status"] == "failed"
+    assert failing_probe["table"] == "orders"
+    assert failing_probe["check"] == "order_id_required"
+    assert failing_probe["column"] == "order_id"
+
+
+def test_doctor_fails_when_foreign_key_reference_column_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "customers.csv").write_text(
+        "customer_key\nC-1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "data" / "subscriptions.csv").write_text(
+        "subscription_id,customer_id\nSUB-1,C-1\n",
+        encoding="utf-8",
+    )
+    _write_project_config(
+        tmp_path,
+        """
+        version: 1
+        tables:
+          customers:
+            path: data/customers.csv
+          subscriptions:
+            path: data/subscriptions.csv
+            checks:
+              - name: customer_exists
+                type: foreign_key
+                column: customer_id
+                references:
+                  table: customers
+                  column: customer_id
+        """,
+    )
+
+    result = runner.invoke(app, ["doctor", "--output", "json"])
+
+    assert result.exit_code == 12, result.output
+    payload = json.loads(result.output)
+    failing_probe = next(probe for probe in payload["probes"] if probe["scope"] == "check")
+    assert failing_probe["name"] == "check_schema_resolution"
+    assert failing_probe["status"] == "failed"
+    assert failing_probe["reference_table"] == "customers"
+    assert failing_probe["reference_column"] == "customer_id"

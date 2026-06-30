@@ -6,6 +6,7 @@ from typing import Literal
 
 import duckdb
 
+from csvql.checks import resolve_configured_column_name
 from csvql.exceptions import FileMissingError, ProjectConfigError
 from csvql.project_config import (
     ProjectContext,
@@ -207,7 +208,9 @@ def run_doctor(start_dir: Path | None = None) -> DoctorRunResult:
         )
     )
 
-    probes.extend(_run_table_readiness_probes(context, tables))
+    table_probes, column_names_by_table = _run_table_readiness_probes(context, tables)
+    probes.extend(table_probes)
+    probes.extend(_run_check_schema_probes(context, column_names_by_table))
     return DoctorRunResult(
         project_root=context.project_root,
         config_path=context.config_path,
@@ -218,8 +221,9 @@ def run_doctor(start_dir: Path | None = None) -> DoctorRunResult:
 def _run_table_readiness_probes(
     context: ProjectContext,
     tables: tuple[ProjectTable, ...],
-) -> tuple[DoctorProbeResult, ...]:
+) -> tuple[tuple[DoctorProbeResult, ...], dict[str, tuple[str, ...]]]:
     probes: list[DoctorProbeResult] = []
+    column_names_by_table: dict[str, tuple[str, ...]] = {}
     connection: duckdb.DuckDBPyConnection | None = None
     try:
         connection = duckdb.connect(database=":memory:")
@@ -232,6 +236,9 @@ def _run_table_readiness_probes(
                     header=True,
                 )
                 relation.create_view(_doctor_view_name(table.name), replace=True)
+                column_names_by_table[table.name.lower()] = tuple(
+                    str(column) for column in relation.columns
+                )
                 connection.execute(
                     f"SELECT * FROM {quote_identifier(_doctor_view_name(table.name))} LIMIT 1"
                 ).fetchall()
@@ -262,6 +269,63 @@ def _run_table_readiness_probes(
         if connection is not None:
             connection.close()
 
+    return tuple(probes), column_names_by_table
+
+
+def _run_check_schema_probes(
+    context: ProjectContext,
+    column_names_by_table: dict[str, tuple[str, ...]],
+) -> tuple[DoctorProbeResult, ...]:
+    probes: list[DoctorProbeResult] = []
+    for table in sorted(context.config.tables, key=lambda item: (item.name.lower(), item.name)):
+        if table.name.lower() not in column_names_by_table:
+            continue
+        for check in table.checks:
+            reference = check.references
+            if reference is not None and reference.table.lower() not in column_names_by_table:
+                continue
+            try:
+                if check.column is not None:
+                    resolve_configured_column_name(
+                        check.table,
+                        check.column,
+                        column_names_by_table,
+                    )
+                if reference is not None:
+                    resolve_configured_column_name(
+                        reference.table,
+                        reference.column,
+                        column_names_by_table,
+                    )
+            except ProjectConfigError as exc:
+                probes.append(
+                    DoctorProbeResult(
+                        name="check_schema_resolution",
+                        scope="check",
+                        status="failed",
+                        message=exc.message,
+                        table=check.table,
+                        check=check.name,
+                        column=check.column,
+                        reference_table=reference.table if reference is not None else None,
+                        reference_column=reference.column if reference is not None else None,
+                    )
+                )
+                continue
+
+            probes.append(
+                DoctorProbeResult(
+                    name="check_schema_resolution",
+                    scope="check",
+                    status="passed",
+                    message="Resolved configured check columns against discovered schema.",
+                    table=check.table,
+                    check=check.name,
+                    column=check.column,
+                    reference_table=reference.table if reference is not None else None,
+                    reference_column=reference.column if reference is not None else None,
+                )
+            )
     return tuple(probes)
 
 

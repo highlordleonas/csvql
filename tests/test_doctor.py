@@ -1,9 +1,15 @@
 from pathlib import Path
+from textwrap import dedent
 
 import duckdb
 import pytest
 
-from csvql.doctor import DoctorProbeResult, DoctorRunResult, _run_table_readiness_probes
+from csvql.doctor import (
+    DoctorProbeResult,
+    DoctorRunResult,
+    _run_table_readiness_probes,
+    run_doctor,
+)
 from csvql.project_config import ProjectConfig, ProjectContext, ProjectTable
 
 
@@ -86,3 +92,32 @@ def test_table_readiness_propagates_internal_duckdb_failures(
 
     with pytest.raises(duckdb.InternalException, match="simulated internal failure"):
         _run_table_readiness_probes(context, context.config.tables)
+
+
+def test_run_doctor_omits_check_probes_when_table_readiness_failed(tmp_path: Path) -> None:
+    (tmp_path / ".csvql.yml").write_text(
+        dedent(
+            """
+            version: 1
+            tables:
+              orders:
+                path: missing.csv
+                checks:
+                  - name: order_id_required
+                    type: not_null
+                    column: order_id
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+
+    result = run_doctor(start_dir=tmp_path)
+
+    assert result.status == "failed"
+    assert [probe.name for probe in result.probes] == [
+        "project_discovery",
+        "config_load",
+        "catalog_tables_present",
+        "table_readiness",
+    ]
+    assert all(probe.scope != "check" for probe in result.probes)

@@ -678,6 +678,16 @@ def _unique_failure_samples_sql(check: ConfiguredCheck, column_name: str) -> str
     )
 
 
+def resolve_configured_column_name(
+    table_name: str,
+    configured_column: str | None,
+    column_names_by_table: dict[str, tuple[str, ...]],
+) -> str:
+    """Resolve a configured column name using CSVQL's existing check semantics."""
+
+    return _resolve_column_name(table_name, configured_column, column_names_by_table)
+
+
 def _resolve_column_name(
     table_name: str,
     configured_column: str | None,
