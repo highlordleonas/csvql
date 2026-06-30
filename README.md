@@ -70,6 +70,23 @@ Run the CLI from the repo:
 uv run csvql --help
 ```
 
+## Python API Example
+
+CSVQL also exposes a small project-backed Python API:
+
+```python
+from csvql import CSVQLSession
+
+session = CSVQLSession.from_config("examples/saas_revenue")
+result = session.run_file("queries/revenue_health.sql")
+
+for row in result.as_records():
+    print(row)
+```
+
+The Python API is intentionally small: project-backed SQL, saved SQL files,
+profiling, and configured checks only.
+
 ## Query Examples
 
 Query one CSV with the single-file shortcut. The table name is derived from the file stem, so `revenue_movements.csv` becomes `revenue_movements`.
