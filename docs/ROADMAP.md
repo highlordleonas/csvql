@@ -97,7 +97,7 @@ Implemented:
 - polished example project with reproducible data and commands
 - walkthrough documentation for the example project
 - stable JSON contract documentation for automation-oriented command outputs
-- common failure gallery covering missing files, invalid aliases, invalid config, failed checks, and overwrite protection
+- common failure gallery covering missing files, invalid aliases, invalid config, failed checks, overwrite protection, missing SQL files, and doctor failures
 - focused `csvql doctor` command for local project health checks
 - `CSVQLSession.from_config(".csvql.yml")`
 - `session.query(sql)`
