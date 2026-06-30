@@ -4,7 +4,8 @@ import pytest
 
 from csvql.api import CSVQLSession
 from csvql.exceptions import ProjectConfigError, QueryExecutionError, SQLFileError
-from csvql.models import QueryResult
+from csvql.models import ProfileResult, QueryResult
+from csvql.quality import CheckRunResult
 
 
 def _write_project(root: Path, *, rows: str = "ORD-001,paid\nORD-002,pending\n") -> None:
@@ -84,3 +85,40 @@ def test_session_run_file_propagates_missing_sql_file_error(tmp_path: Path) -> N
 
     with pytest.raises(SQLFileError):
         session.run_file("queries/missing.sql")
+
+
+def test_session_profile_returns_profile_result_for_catalog_alias(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_project(project_root)
+    session = CSVQLSession.from_config(project_root)
+
+    result = session.profile("orders")
+
+    assert isinstance(result, ProfileResult)
+    assert result.source["display_path"] == "orders"
+    assert result.row_count == 2
+    assert result.column_count == 2
+
+
+def test_session_check_returns_failed_result_without_raising(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_project(project_root, rows="ORD-001,paid\n,pending\n")
+    session = CSVQLSession.from_config(project_root)
+
+    result = session.check(show_failures=True, failure_limit=1)
+
+    assert isinstance(result, CheckRunResult)
+    assert result.status == "failed"
+    assert result.check_count == 1
+    assert result.failed_count == 1
+    assert result.checks[0].failed_count == 1
+    assert len(result.checks[0].failures) == 1
+
+
+def test_session_profile_propagates_invalid_table_alias_error(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_project(project_root)
+    session = CSVQLSession.from_config(project_root)
+
+    with pytest.raises(ProjectConfigError):
+        session.profile("missing")
