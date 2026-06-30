@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from csvql.doctor import DoctorProbeResult, DoctorRunResult
 from csvql.models import (
     ColumnInfo,
     ColumnProfile,
@@ -16,6 +17,8 @@ from csvql.models import (
 from csvql.output import (
     format_check_result_json,
     format_check_result_table,
+    format_doctor_result_json,
+    format_doctor_result_table,
     format_inspect_result_json,
     format_inspect_result_table,
     format_json_result,
@@ -110,6 +113,54 @@ def test_format_sample_result_table_contains_rows() -> None:
 
     assert "ORD-1" in output
     assert "paid" in output
+
+
+def _doctor_warning_result() -> DoctorRunResult:
+    return DoctorRunResult(
+        project_root=None,
+        config_path=None,
+        probes=(
+            DoctorProbeResult(
+                name="project_discovery",
+                scope="project",
+                status="warning",
+                message="No .csvql.yml project catalog found.",
+            ),
+        ),
+    )
+
+
+def test_format_doctor_result_json_is_deterministic() -> None:
+    payload = json.loads(format_doctor_result_json(_doctor_warning_result()))
+
+    assert payload == {
+        "status": "warning",
+        "probe_count": 1,
+        "passed_count": 0,
+        "warning_count": 1,
+        "failed_count": 0,
+        "project": {
+            "config_path": None,
+            "project_root": None,
+        },
+        "probes": [
+            {
+                "name": "project_discovery",
+                "scope": "project",
+                "status": "warning",
+                "message": "No .csvql.yml project catalog found.",
+            }
+        ],
+    }
+
+
+def test_format_doctor_result_table_contains_summary_and_probe_row() -> None:
+    output = format_doctor_result_table(_doctor_warning_result())
+
+    assert "Status: warning" in output
+    assert "Probes: 1 | Passed: 0 | Warnings: 1 | Failed: 0" in output
+    assert "project_discovery" in output
+    assert "No .csvql.yml project catalog found." in output
 
 
 def test_format_json_result_is_deterministic() -> None:

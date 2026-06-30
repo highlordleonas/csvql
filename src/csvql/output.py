@@ -7,6 +7,7 @@ from io import StringIO
 from rich.console import Console
 from rich.table import Table
 
+from csvql.doctor import DoctorProbeResult, DoctorRunResult
 from csvql.models import InspectResult, ProfileResult, QueryResult, RowCountInfo, SampleResult
 from csvql.project_config import ProjectTablesResult
 from csvql.quality import CheckRunResult
@@ -58,6 +59,12 @@ def format_check_result_json(result: CheckRunResult, *, include_failures: bool) 
         indent=2,
         sort_keys=True,
     )
+
+
+def format_doctor_result_json(result: DoctorRunResult) -> str:
+    """Format a doctor result as deterministic JSON."""
+
+    return json.dumps(result.as_dict(), indent=2, sort_keys=True)
 
 
 def format_project_tables_json(result: ProjectTablesResult) -> str:
@@ -210,6 +217,35 @@ def format_check_result_table(result: CheckRunResult, *, include_failures: bool)
     return console.export_text(clear=True)
 
 
+def format_doctor_result_table(result: DoctorRunResult) -> str:
+    """Format a doctor result as Rich table text."""
+
+    console = Console(color_system=None, force_terminal=False, record=True, width=140)
+    console.print(f"Status: {result.status}")
+    console.print(
+        "Probes: "
+        f"{result.probe_count} | Passed: {result.passed_count} | "
+        f"Warnings: {result.warning_count} | Failed: {result.failed_count}"
+    )
+
+    table = Table(show_header=True)
+    table.add_column("scope")
+    table.add_column("name")
+    table.add_column("status")
+    table.add_column("target")
+    table.add_column("message")
+    for probe in result.probes:
+        table.add_row(
+            probe.scope,
+            probe.name,
+            probe.status,
+            _format_doctor_target(probe),
+            probe.message,
+        )
+    console.print(table)
+    return console.export_text(clear=True)
+
+
 def format_project_tables_table(result: ProjectTablesResult) -> str:
     """Format a project catalog table listing as Rich table text."""
 
@@ -254,3 +290,11 @@ def _format_failure_value(value: object) -> str:
     if isinstance(value, (dict, list, tuple)):
         return json.dumps(value, default=str, sort_keys=True, separators=(",", ":"))
     return _format_cell(value)
+
+
+def _format_doctor_target(probe: DoctorProbeResult) -> str:
+    if probe.scope == "table":
+        return probe.table or ""
+    if probe.scope == "check":
+        return f"{probe.table}.{probe.check}".strip(".")
+    return str(probe.path or ".csvql.yml")
