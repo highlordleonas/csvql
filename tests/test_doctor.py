@@ -121,3 +121,56 @@ def test_run_doctor_omits_check_probes_when_table_readiness_failed(tmp_path: Pat
         "table_readiness",
     ]
     assert all(probe.scope != "check" for probe in result.probes)
+
+
+def test_run_doctor_omits_check_probes_when_readiness_fails_after_column_discovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    csv_path = tmp_path / "orders.csv"
+    csv_path.write_text("order_id,status\nORD-1,paid\n", encoding="utf-8")
+    (tmp_path / ".csvql.yml").write_text(
+        dedent(
+            """
+            version: 1
+            tables:
+              orders:
+                path: orders.csv
+                checks:
+                  - name: order_id_required
+                    type: not_null
+                    column: order_id
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+
+    class FakeRelation:
+        columns = ("order_id", "status")
+
+        def create_view(self, name: str, *, replace: bool) -> None:
+            return None
+
+    class FakeConnection:
+        def read_csv(self, path: str, *, auto_detect: bool, header: bool) -> FakeRelation:
+            return FakeRelation()
+
+        def execute(self, query: str) -> None:
+            raise duckdb.InvalidInputException("simulated readiness failure")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(duckdb, "connect", lambda database: FakeConnection())
+
+    result = run_doctor(start_dir=tmp_path)
+
+    assert result.status == "failed"
+    assert any(
+        probe.name == "table_readiness"
+        and probe.status == "failed"
+        and probe.table == "orders"
+        and "simulated readiness failure" in probe.message
+        for probe in result.probes
+    )
+    assert all(probe.scope != "check" for probe in result.probes)

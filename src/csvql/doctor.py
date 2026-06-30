@@ -236,12 +236,11 @@ def _run_table_readiness_probes(
                     header=True,
                 )
                 relation.create_view(_doctor_view_name(table.name), replace=True)
-                column_names_by_table[table.name.lower()] = tuple(
-                    str(column) for column in relation.columns
-                )
+                discovered_columns = tuple(str(column) for column in relation.columns)
                 connection.execute(
                     f"SELECT * FROM {quote_identifier(_doctor_view_name(table.name))} LIMIT 1"
                 ).fetchall()
+                column_names_by_table[table.name.lower()] = discovered_columns
             except EXPECTED_TABLE_READINESS_ERRORS as exc:
                 probes.append(
                     DoctorProbeResult(
@@ -285,7 +284,7 @@ def _run_check_schema_probes(
             if reference is not None and reference.table.lower() not in column_names_by_table:
                 continue
             try:
-                if check.column is not None:
+                if check.type != "row_count_between":
                     resolve_configured_column_name(
                         check.table,
                         check.column,

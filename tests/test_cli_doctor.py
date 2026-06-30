@@ -312,3 +312,89 @@ def test_doctor_fails_when_foreign_key_reference_column_is_missing(
     assert failing_probe["status"] == "failed"
     assert failing_probe["reference_table"] == "customers"
     assert failing_probe["reference_column"] == "customer_id"
+
+
+def test_doctor_suppresses_foreign_key_check_probe_when_reference_table_readiness_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "subscriptions.csv").write_text(
+        "subscription_id,customer_id\nSUB-1,C-1\n",
+        encoding="utf-8",
+    )
+    _write_project_config(
+        tmp_path,
+        """
+        version: 1
+        tables:
+          customers:
+            path: data/customers.csv
+          subscriptions:
+            path: data/subscriptions.csv
+            checks:
+              - name: customer_exists
+                type: foreign_key
+                column: customer_id
+                references:
+                  table: customers
+                  column: customer_id
+        """,
+    )
+
+    result = runner.invoke(app, ["doctor", "--output", "json"])
+
+    assert result.exit_code == 12, result.output
+    payload = json.loads(result.output)
+    assert payload["status"] == "failed"
+    assert any(
+        probe["name"] == "table_readiness"
+        and probe["status"] == "failed"
+        and probe["table"] == "customers"
+        for probe in payload["probes"]
+    )
+    assert not any(
+        probe["scope"] == "check" and probe.get("check") == "customer_exists"
+        for probe in payload["probes"]
+    )
+
+
+def test_doctor_emits_passed_check_schema_resolution_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "orders.csv").write_text(
+        "order_id,status\nORD-1,paid\n",
+        encoding="utf-8",
+    )
+    _write_project_config(
+        tmp_path,
+        """
+        version: 1
+        tables:
+          orders:
+            path: data/orders.csv
+            checks:
+              - name: order_id_required
+                type: not_null
+                column: order_id
+        """,
+    )
+
+    result = runner.invoke(app, ["doctor", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    passing_probe = next(
+        probe
+        for probe in payload["probes"]
+        if probe["scope"] == "check"
+        and probe["name"] == "check_schema_resolution"
+        and probe["status"] == "passed"
+    )
+    assert passing_probe["table"] == "orders"
+    assert passing_probe["check"] == "order_id_required"
+    assert passing_probe["column"] == "order_id"
