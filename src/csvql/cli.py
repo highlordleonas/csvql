@@ -8,8 +8,9 @@ from rich.console import Console
 
 from csvql import __version__
 from csvql.checks import run_configured_checks
+from csvql.doctor import run_doctor
 from csvql.engine import CSVQLEngine
-from csvql.exceptions import CSVQLError, DataQualityCheckFailure
+from csvql.exceptions import CSVQLError, DataQualityCheckFailure, DoctorFailure
 from csvql.export import (
     ExportFormat,
     format_query_result_for_export,
@@ -21,6 +22,8 @@ from csvql.output import (
     OutputFormat,
     format_check_result_json,
     format_check_result_table,
+    format_doctor_result_json,
+    format_doctor_result_table,
     format_inspect_result_json,
     format_inspect_result_table,
     format_json_result,
@@ -226,6 +229,29 @@ def check(
             raise typer.Exit(DataQualityCheckFailure.exit_code)
     except CSVQLError as exc:
         _exit_with_error(exc)
+
+
+@app.command()
+def doctor(
+    output: Annotated[
+        OutputFormat,
+        typer.Option(
+            "--output",
+            "-o",
+            case_sensitive=False,
+            help="Doctor output format.",
+        ),
+    ] = OutputFormat.table,
+) -> None:
+    """Check local CSVQL project health without running user-authored SQL."""
+
+    result = run_doctor(start_dir=Path.cwd())
+    if output is OutputFormat.json:
+        typer.echo(format_doctor_result_json(result))
+    else:
+        typer.echo(format_doctor_result_table(result), nl=False)
+    if result.status == "failed":
+        raise typer.Exit(DoctorFailure.exit_code)
 
 
 @app.command()

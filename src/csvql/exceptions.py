@@ -58,3 +58,9 @@ class DataQualityCheckFailure(CSVQLError):
     """Raised when configured data-quality checks fail."""
 
     exit_code = 11
+
+
+class DoctorFailure(CSVQLError):
+    """Raised when `csvql doctor` finds project-health failures."""
+
+    exit_code = 12

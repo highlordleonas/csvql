@@ -1,11 +1,24 @@
-"""Project-health result objects for `csvql doctor`."""
+"""Project-health result objects and workflow for `csvql doctor`."""
 
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import duckdb
+
+from csvql.exceptions import FileMissingError, ProjectConfigError
+from csvql.project_config import (
+    ProjectContext,
+    ProjectTable,
+    discover_project,
+    load_project,
+    resolve_catalog_path,
+)
+from csvql.sql_utils import quote_identifier
+
 DoctorScope = Literal["project", "table", "check"]
 DoctorStatus = Literal["passed", "warning", "failed"]
+DOCTOR_VIEW_PREFIX = "__csvql_doctor_"
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,3 +106,161 @@ class DoctorRunResult:
             },
             "probes": [probe.as_dict() for probe in self.probes],
         }
+
+
+def run_doctor(start_dir: Path | None = None) -> DoctorRunResult:
+    """Run project-health probes for the nearest CSVQL project."""
+
+    try:
+        project_root, config_path = discover_project(start_dir)
+    except ProjectConfigError as exc:
+        return DoctorRunResult(
+            project_root=None,
+            config_path=None,
+            probes=(
+                DoctorProbeResult(
+                    name="project_discovery",
+                    scope="project",
+                    status="warning",
+                    message=exc.message,
+                ),
+            ),
+        )
+
+    probes: list[DoctorProbeResult] = [
+        DoctorProbeResult(
+            name="project_discovery",
+            scope="project",
+            status="passed",
+            message="Discovered project catalog.",
+            path=config_path,
+            resolved_path=config_path,
+        )
+    ]
+
+    try:
+        context = load_project(start_dir)
+    except ProjectConfigError as exc:
+        probes.append(
+            DoctorProbeResult(
+                name="config_load",
+                scope="project",
+                status="failed",
+                message=exc.message,
+                path=config_path,
+                resolved_path=config_path,
+            )
+        )
+        return DoctorRunResult(
+            project_root=project_root,
+            config_path=config_path,
+            probes=tuple(probes),
+        )
+
+    probes.append(
+        DoctorProbeResult(
+            name="config_load",
+            scope="project",
+            status="passed",
+            message="Loaded project catalog.",
+            path=context.config_path,
+            resolved_path=context.config_path,
+        )
+    )
+
+    tables = tuple(
+        sorted(context.config.tables, key=lambda table: (table.name.lower(), table.name))
+    )
+    if not tables:
+        probes.append(
+            DoctorProbeResult(
+                name="catalog_tables_present",
+                scope="project",
+                status="warning",
+                message="Project catalog has no configured tables.",
+                path=context.config_path,
+                resolved_path=context.config_path,
+            )
+        )
+        return DoctorRunResult(
+            project_root=context.project_root,
+            config_path=context.config_path,
+            probes=tuple(probes),
+        )
+
+    probes.append(
+        DoctorProbeResult(
+            name="catalog_tables_present",
+            scope="project",
+            status="passed",
+            message=f"Project catalog has {len(tables)} configured table(s).",
+            path=context.config_path,
+            resolved_path=context.config_path,
+        )
+    )
+
+    table_probes, _ = _run_table_readiness_probes(context, tables)
+    probes.extend(table_probes)
+    return DoctorRunResult(
+        project_root=context.project_root,
+        config_path=context.config_path,
+        probes=tuple(probes),
+    )
+
+
+def _run_table_readiness_probes(
+    context: ProjectContext,
+    tables: tuple[ProjectTable, ...],
+) -> tuple[tuple[DoctorProbeResult, ...], dict[str, tuple[str, ...]]]:
+    probes: list[DoctorProbeResult] = []
+    column_names_by_table: dict[str, tuple[str, ...]] = {}
+    connection: duckdb.DuckDBPyConnection | None = None
+    try:
+        connection = duckdb.connect(database=":memory:")
+        for table in tables:
+            try:
+                resolved_path = resolve_catalog_path(table, context)
+                relation = connection.read_csv(
+                    str(resolved_path),
+                    auto_detect=True,
+                    header=True,
+                )
+                relation.create_view(_doctor_view_name(table.name), replace=True)
+                connection.execute(
+                    f"SELECT * FROM {quote_identifier(_doctor_view_name(table.name))} LIMIT 1"
+                ).fetchall()
+            except (FileMissingError, OSError, duckdb.Error) as exc:
+                probes.append(
+                    DoctorProbeResult(
+                        name="table_readiness",
+                        scope="table",
+                        status="failed",
+                        message=str(exc),
+                        table=table.name,
+                    )
+                )
+                continue
+
+            column_names_by_table[table.name.lower()] = tuple(
+                str(column) for column in relation.columns
+            )
+            probes.append(
+                DoctorProbeResult(
+                    name="table_readiness",
+                    scope="table",
+                    status="passed",
+                    message="Registered and read configured CSV through DuckDB.",
+                    table=table.name,
+                    path=Path(table.path),
+                    resolved_path=resolved_path,
+                )
+            )
+    finally:
+        if connection is not None:
+            connection.close()
+
+    return tuple(probes), column_names_by_table
+
+
+def _doctor_view_name(table_name: str) -> str:
+    return f"{DOCTOR_VIEW_PREFIX}{table_name.lower()}"
