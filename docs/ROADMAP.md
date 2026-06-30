@@ -94,6 +94,8 @@ Implemented:
 
 ## v0.8.0 - Portfolio Polish And Python API
 
+Implemented:
+
 - polished example project with reproducible data and commands
 - walkthrough documentation for the example project
 - stable JSON contract documentation for automation-oriented command outputs
@@ -107,16 +109,27 @@ Implemented:
 - small typed result objects that wrap existing CLI-tested internals
 - no dataframe framework, notebook integration, async API, plugin API, or second execution engine
 
+Remaining before v1:
+
+- final documentation pass that keeps README, architecture, JSON contracts,
+  release readiness, roadmap, and product direction aligned
+- explicit contract-stabilization decision for current JSON shapes, exit-code
+  policy, config schema, and the small Python API
+- refreshed benchmark and release-readiness proof before release claims
+- release workflow and changelog or release-note material
+- full local gate passing through `uv run`
+
 ## v1.0.0 - Stable Release
 
 - stable CLI contract
 - stable config schema
 - stable small Python API contract
 - full documentation
-- benchmark report
+- refreshed benchmark report or documented local benchmark artifact
 - release workflow
-- changelog
+- changelog or release notes
 - polished examples with reproducible data and commands
+- full local gate passing through `uv run`
 
 ## Post-v1 - Future Expansion Candidates
 

@@ -4,26 +4,45 @@
 
 CSVQL is a Python CLI and package for querying local CSV files through DuckDB. DuckDB owns SQL execution; this repo owns CLI workflow, table aliasing, output formatting, tests, docs, and later project configuration.
 
-## Current Implementation Target
+## Current Release Lane
 
-The active implementation target is v0.1:
+The active lane is post-v0.7/v0.8 hardening toward v1. CSVQL already has the
+core local workflow implemented:
 
-- `csvql query --table name=path "SELECT ..."`
-- single-file shortcut: `csvql query data/orders.csv "SELECT ..."`
-- DuckDB in-memory execution
-- Rich table output and JSON output
-- typed internal boundaries and clear CLI errors
-- focused unit and CLI integration tests
+- `csvql query --table name=path "SELECT ..."` and the single-file shortcut
+- `csvql inspect`, `csvql sample`, `csvql profile`, and `csvql check`
+- `.csvql.yml` project catalogs with `init`, `add`, `tables`, saved SQL `run`,
+  and explicit `export`
+- `csvql doctor` for local project-health checks
+- repo-local benchmark and release-readiness proof scripts
+- a small project-backed Python API through `CSVQLSession`
 
-Do not implement project config, profiling, data quality checks, exports, shell, doctor, persistent cache, safe mode, or Python API until the v0.1 surface is stable.
+Current work should harden and reconcile the product for v1, not widen it. The
+remaining lane is authority alignment, release workflow and changelog work,
+contract stabilization decisions, benchmark and release-readiness proof
+refreshes, and final full-gate verification. Failure-gallery documentation is
+implemented and should be kept aligned with runtime behavior.
 
-`v0.1-stable` means:
+Do not add a web app, cloud connectors, dashboard surface, notebook framework,
+NLP execution, dataframe-first API, plugin system, hidden cache/materialization,
+safe mode, or broader file-format platform without explicit scope approval and
+new evidence.
 
-- CLI behavior is documented in `README.md`.
-- Missing-file, bad-mapping, invalid-alias, and query-failure errors are covered by tests.
-- JSON and Rich table output behavior are covered by tests.
-- `uv run ruff format --check .`, `uv run ruff check .`, `uv run mypy src`, and `uv run pytest` pass.
-- Docs make no unsupported sandbox, security-isolation, production-readiness, or large-file performance claims.
+`v1-stable` means:
+
+- CLI behavior is documented in `README.md` and supporting docs.
+- The roadmap, product direction, architecture docs, JSON contracts, and current
+  source agree on what is implemented and what remains future work.
+- Common failure cases are documented with deterministic CLI behavior.
+- CLI, config, JSON, exit-code, and small Python API contracts are either stable
+  as-is or have explicit migration notes.
+- Benchmark and release-readiness workflows have fresh local proof.
+- Release workflow and changelog or release-note material exist for the
+  implemented surfaces.
+- `uv run ruff format --check .`, `uv run ruff check .`, `uv run mypy src`, and
+  `uv run pytest` pass.
+- Docs make no unsupported sandbox, security-isolation, production-readiness, or
+  large-file performance claims.
 
 ## Tooling
 
@@ -115,10 +134,10 @@ Codex operating model:
 - Prefer one accountable implementer for code changes. Use subagents or reviewer roles only for bounded scouting, test drafting, or read-only final review.
 - Keep product direction, JSON contract shape, exit-code policy, security posture, and roadmap sequencing in the main agent's synthesis.
 - Do not add repo-local `.codex/hooks`, `.codex/agents`, `.agents/skills`, Codex GitHub Actions, or broad verification scripts until a repeated failure is documented and the user explicitly approves that new authority surface.
-- Determinism and trustworthy contracts are the moat, but contract machinery must stay proportional to the current lane. Do not build a full JSON-contract, exit-code, hook, or agent framework before `v0.1` is stable.
+- Determinism and trustworthy contracts are the moat, but contract machinery must stay proportional to the current lane. Do not build a broad JSON-contract, exit-code, hook, or agent framework without a repeated failure pattern and explicit approval.
 
 Readiness and proof language:
 
-- Use precise labels: `docs-ready`, `local-cli-proof-ready`, `test-backed`, `benchmark-backed`, `release-candidate`, `v0.1-stable`.
+- Use precise labels: `docs-ready`, `local-cli-proof-ready`, `test-backed`, `benchmark-backed`, `v1-hardening`, `release-candidate`, `v1-stable`.
 - Do not claim `production-safe`, `sandbox-safe`, `large-file-proven`, `portfolio-grade`, or `v1-ready` from docs, fixtures, or one happy-path query.
 - A feature is not stable until CLI behavior, errors, JSON/table output where relevant, docs, and tests agree.

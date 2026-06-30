@@ -11,7 +11,12 @@ This document records the current `v0.8` JSON output for CSVQL's automation-orie
 - `csvql check --output json`
 - `csvql export --format json`
 
-Runtime truth wins. The `Current v0.8 Contract` sections below describe the JSON exactly as the CLI emits it today. The `Ideal v1 Normalized Contract` section is future-facing design guidance only; it is not the current runtime envelope.
+Runtime truth wins. The `Current v0.8 Contract` sections below describe the JSON exactly as the CLI emits it today. The `Possible Future Normalized Contract` section is future-facing design guidance only; it is not the current runtime envelope.
+
+Open v1 decision: the current v0.8 JSON shapes remain the active runtime
+contract until a separate compatibility decision changes them. A normalized
+envelope is not implemented in the current runtime and must not be described as
+current behavior.
 
 Not covered here:
 
@@ -299,9 +304,9 @@ Failure sample objects also vary by check type. The not-null example above inclu
 - When `check.failures` is present, it is a sampled, `--failure-limit`-capped subset rather than a complete enumeration of every failure.
 - Current source metadata can include absolute paths, timestamps, and file fingerprints that vary per machine and run.
 
-## Ideal v1 Normalized Contract
+## Possible Future Normalized Contract
 
-Recommended future envelope:
+Illustrative future envelope:
 
 ```json
 {
@@ -323,7 +328,7 @@ Recommended future envelope:
 }
 ```
 
-Recommended rules:
+If adopted, normalization could use these rules:
 
 - `data` contains the semantic result the caller actually wants.
 - `warnings` is always present and always a list.
@@ -331,7 +336,7 @@ Recommended rules:
 - Query-shaped results converge under one shared table-result family.
 - `inspect` and `profile` stop diverging about where count and source metadata live.
 
-## Delta From Current v0.8 To Ideal v1
+## Potential Migration Delta From Current v0.8
 
 ### query, run, and export --format json
 
@@ -339,7 +344,7 @@ Current:
 
 - top-level `columns`, `rows`, `row_count`, `elapsed_ms`
 
-Ideal v1:
+Possible future shape:
 
 - move `columns`, `rows`, and `row_count` under `data`
 - move `elapsed_ms` under `meta`
@@ -351,7 +356,7 @@ Current:
 
 - top-level `source`, `dialect`, `columns`, `row_count`, `warnings`
 
-Ideal v1:
+Possible future shape:
 
 - move `dialect`, `columns`, and `row_count` under `data`
 - move machine-local source provenance under `meta`
@@ -362,7 +367,7 @@ Current:
 
 - top-level `source`, `row_count`, `column_count`, `duplicate_row_count`, `columns`, `warnings`
 
-Ideal v1:
+Possible future shape:
 
 - move result metrics under `data`
 - move source provenance under `meta`
@@ -375,7 +380,7 @@ Current:
 - top-level run verdict and counts
 - conditional `checks[*].failures`
 
-Ideal v1:
+Possible future shape:
 
 - move verdict and counts under `data`
 - keep `warnings` top-level

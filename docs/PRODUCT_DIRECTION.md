@@ -3,6 +3,7 @@
 Status: advisory steering artifact
 
 Date: 2026-06-26
+Updated: 2026-06-30
 
 Source: reconciles three external research passes and local adversarial review. This
 document does not override `AGENTS.md`, the current release lane, accepted ADRs, or
@@ -33,85 +34,54 @@ connectors, or natural-language SQL.
 
 ## Current Lane
 
-The active implementation target remains `v0.1`: query local CSV files through
-DuckDB with table aliases, JSON/table output, typed boundaries, clear CLI
-errors, and focused tests.
+The active implementation lane is post-v0.7/v0.8 hardening toward v1. The repo
+has already implemented the core local workflow: query, inspect/sample, project
+catalogs, saved SQL, export, profile, configured checks, benchmark and
+release-readiness scripts, JSON contract documentation, a polished example
+project, `csvql doctor`, and a small project-backed Python API.
 
-Do not use this document to pull later features into `v0.1`.
+Current work should not add broad new product surface. It should reconcile
+authority and stabilize the existing product for v1:
 
-`v0.1` should become stable by proving:
-
-- missing-file, bad-mapping, invalid-alias, and query-failure behavior
-- JSON and Rich table output behavior
-- README examples and security language
-- `uv run ruff format --check .`
-- `uv run ruff check .`
-- `uv run mypy src`
-- `uv run pytest`
-
-Before calling `v0.1` stable, decide whether current query JSON should gain a
-minimal `schema_version` or remain intentionally unversioned until the
-inspect/sample contract. Do not let this decision expand into a full JSON
-framework.
+- align `AGENTS.md`, README, roadmap, architecture, product direction, release
+  readiness, and JSON-contract docs with the runtime surface
+- keep the completed failure gallery aligned with deterministic runtime behavior
+- decide whether v1 keeps the current v0.8 JSON shapes for compatibility or
+  introduces the documented normalized envelope with migration notes
+- refresh benchmark and release-readiness proof before release claims
+- add release workflow and changelog material without pretending publishing is
+  already automated
+- run the full local gate before any `release-candidate` or `v1-stable` claim
 
 ## Near-Term Direction
 
-After `v0.1` is stable, the next useful vertical is Inspect and Sample.
+The strongest next vertical is v1 hardening, not new command work.
 
 That slice should include:
 
-- a resolved CSV source model
-- cheap default source fingerprint fields, such as version, size, and modified
-  timestamp
-- explicit opt-in for content hashing because it reads the file
-- `csvql inspect <path>`
-- `csvql sample <path>`
-- DuckDB-backed dialect and column inference
-- bounded/default row-count status, with exact row count only by explicit flag
-- table and JSON output
-- typed sniff/parse/source errors
-- focused messy CSV fixtures
-- docs that preserve the trusted-SQL boundary
+- authority repair for stale v0.1-era instructions and docs
+- release-readiness checklist work that builds on `docs/release-readiness.md`
+- changelog or release-note preparation for the implemented surfaces
+- explicit contract decisions for CLI JSON, exit codes, config schema, and the
+  small Python API
+- a proof refresh using the standard `uv run` gates, release-readiness script,
+  and benchmark workflow before benchmark-backed or performance claims
 
 That slice must not include:
 
-- `.csvql.yml`
-- project catalog commands
-- saved SQL execution
-- export commands
-- profiling
-- data quality checks
-- cache or materialization
+- new public CLI commands
+- new config schema features
+- runtime JSON normalization without an explicit compatibility decision
 - safe mode
-- Markdown/report output
-- Python API
+- hidden cache or materialization
+- dataframe, notebook, async, plugin, cloud, AI, or web scope
 
 ## Later Direction
 
-After Inspect and Sample, the strongest order remains:
-
-1. Project catalog and saved SQL: `.csvql.yml`, table registration, project root
-   discovery, `csvql run`.
-2. Export: explicit user-requested CSV, JSON, Markdown, or Parquet artifacts.
-3. Profiling: lightweight deterministic summaries only after inspect/sample and
-   catalog behavior are stable.
-4. Checks: SQL/configured checks with stable JSON and exit codes; avoid building
-   a Great Expectations, Soda, Frictionless, or dbt clone.
-5. Benchmark and release hardening: only publish performance or large-file
-   claims after reproducible benchmark evidence exists.
-6. Portfolio polish and a small Python API: make the repository easy to
-   understand, demo, and evaluate without changing the product category.
-
-The small Python API is now part of the v1 target, but only as a thin library
-boundary over the same internals that power the CLI. It should expose project
-configuration, trusted SQL execution, saved SQL files, profiling, and checks
-without introducing dataframe integrations, notebook helpers, plugins, async
-execution, a query builder, cloud access, or a second execution engine.
-
-Portfolio polish should demonstrate product maturity rather than add broad new
-features. Favor a polished example project, stable JSON contract documentation,
-common failure examples, and a focused project-health command over UI, cloud, AI,
-or framework scope.
+After v1 stabilization, the project should pause for real usage feedback before
+expanding. Valid post-v1 candidates remain explicit cache/materialization,
+additional export formats, broader local file formats, or a richer Python API,
+but only after the small v1 surface proves useful.
 
 ## Non-Negotiable Guardrails
 
@@ -136,11 +106,11 @@ or framework scope.
 
 DuckDB remains the sole engine for the foreseeable future.
 
-Future `inspect` work is likely to use DuckDB CSV sniffing. A past DuckDB
-`sniff_csv` vulnerability was fixed after affected `1.0.0` releases. The
+Inspect, profile, check, and doctor now rely on DuckDB CSV handling. A past
+DuckDB `sniff_csv` vulnerability was fixed after affected `1.0.0` releases. The
 current lockfile resolves DuckDB `1.5.4`, but `pyproject.toml` currently allows
-`duckdb>=1.0.0`. Before shipping sniff-based inspect behavior, raise or document
-the minimum supported DuckDB version so vulnerable versions are not accepted.
+`duckdb>=1.0.0`. Before v1, raise or document the minimum supported DuckDB
+version so vulnerable versions are not accepted.
 
 This does not make CSVQL a sandbox. DuckDB SQL can read and write files and may
 access external resources depending on settings and extensions. CSVQL is a local
@@ -176,8 +146,9 @@ JSON-contract framework before the current lane is stable.
 
 Future Codex sessions should use this order:
 
-1. Stabilize the active `v0.1` query lane.
-2. State command, JSON, exit-code, docs, and test impact before implementation.
+1. Treat the current runtime as post-v0.7/v0.8 and hardening toward v1.
+2. State command, JSON, exit-code, config, docs, and test impact before
+   implementation.
 3. Use one accountable implementer, with bounded read-only review when useful.
 4. Add deterministic scripts, hooks, repo-local skills, or custom agents only
    after repeated failures show that existing repo authority is insufficient.
@@ -205,7 +176,7 @@ Reject or defer these unless the user explicitly opens a new product strategy:
 
 Every future implementation plan should include a short direction check:
 
-- Target lane: `v0.1`, `v0.2`, later roadmap, or explicit new scope.
+- Target lane: v1 hardening, v1 release, post-v1 backlog, or explicit new scope.
 - Wedge strengthened: repeatability, source identity, deterministic output,
   stable errors, or local trusted workflow.
 - Scope rejected: specific tempting items not included in this slice.

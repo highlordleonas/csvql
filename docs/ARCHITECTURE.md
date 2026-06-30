@@ -77,7 +77,7 @@ CLI arguments
 
 ## Current Design Choices
 
-- DuckDB runs in memory for v0.1.
+- DuckDB runs in memory for current CLI and Python API execution.
 - CSV files are registered as views using DuckDB's CSV reader.
 - Table aliases must match `^[A-Za-z_][A-Za-z0-9_]*$`.
 - Project catalog discovery is optional and only used for commands that support `.csvql.yml`.
@@ -102,7 +102,10 @@ CLI arguments
 
 ## Deferred Decisions
 
-- Whether persistent DuckDB cache is worth adding.
-- Whether named parameters should be supported before v1.
-- Whether safe mode belongs later; it requires a separate ADR, threat model, implementation plan, and tests.
-- How export should share execution paths with stdout output.
+- Whether v1 keeps the current v0.8 JSON shapes as stable or introduces a
+  documented migration path.
+- Whether persistent DuckDB cache is worth adding after v1 usage evidence.
+- Whether named parameters belong in a post-v1 workflow.
+- Whether safe mode belongs later; it requires a separate ADR, threat model,
+  implementation plan, and tests.
+- Whether additional export formats deserve post-v1 scope.

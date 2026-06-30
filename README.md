@@ -21,10 +21,13 @@ CSVQL does not implement a SQL engine. DuckDB executes SQL; CSVQL owns the local
 
 ## Status
 
-This repository has the v0.1 query workflow, the first inspect/sample vertical,
-the v0.3 project catalog workflow, the v0.4 saved-workflow surfaces, the v0.5
-profiling surface, the v0.6 data-quality check surface, and the v0.7 benchmark
-and release-hardening workflows implemented for local CLI use.
+This repository has the core local workflow implemented for local CLI use:
+query, inspect/sample, project catalogs, saved SQL, export, profile, configured
+checks, doctor, benchmark and release-readiness proof scripts, JSON contract
+documentation, the failure gallery, the polished example project, and the small
+project-backed Python API. The current lane is v1 hardening: authority
+alignment, release workflow and changelog work, contract stabilization,
+benchmark and release-readiness proof refresh, and final full-gate proof.
 
 Implemented now:
 
