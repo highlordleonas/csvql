@@ -10,7 +10,7 @@ CLI arguments
   -> explicit table mapping parser or project catalog discovery
   -> validated table aliases and resolved CSV paths
   -> in-memory DuckDB engine
-  -> query/inspect/sample/profile/check/export output
+  -> query/inspect/sample/profile/check/doctor/export output
 ```
 
 ## Boundaries
@@ -48,6 +48,12 @@ CLI arguments
 `checks.py`
 : Run CSVQL-controlled DuckDB validation queries for configured project catalog checks. The check path uses generated SQL only, quotes identifiers, and resolves CSV files through the project catalog.
 
+`doctor.py`
+: Run project-health probes for the nearest `.csvql.yml`, returning tri-state
+  pass/warning/fail results for project discovery, config load, table readability,
+  and static configured-check schema audit without executing user-authored SQL or
+  configured checks.
+
 `engine.py`
 : Own DuckDB connection lifecycle, CSV registration, SQL execution, and DuckDB error conversion.
 
@@ -55,7 +61,8 @@ CLI arguments
 : Validate export output paths and serialize query results to CSV, JSON, or Markdown.
 
 `output.py`
-: Convert query, inspect, sample, project catalog, profile, and check results into human-readable table output or automation-friendly JSON.
+: Convert query, inspect, sample, project catalog, profile, check, and doctor
+  results into human-readable table output or automation-friendly JSON.
 
 `models.py`
 : Small typed value objects shared across services.
@@ -82,6 +89,9 @@ CLI arguments
 - `check` uses full-file DuckDB validation queries and exits `11` when checks fail.
 - `check` does not run user-authored SQL; it builds CSVQL-controlled validation SQL from validated config and DuckDB-registered CSV views.
 - `--show-failures` adds capped sampled failing rows or values for failed checks.
+- `doctor` discovers the nearest project catalog and returns a warning result, not a hard CLI error, when no `.csvql.yml` is present.
+- `doctor` proves table readiness with CSVQL-controlled DuckDB registration plus a one-row read and treats zero-row readable CSVs as healthy.
+- `doctor` statically audits configured check columns against discovered schema without executing configured checks and exits `12` when concrete project-health failures are found.
 - `--output` controls stdout formatting for query results.
 
 ## Deferred Decisions

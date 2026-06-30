@@ -44,6 +44,7 @@ Implemented now:
 - catalog-backed `csvql profile alias`
 - configured data-quality checks in `.csvql.yml`
 - `csvql check [table] --output json`
+- `csvql doctor --output json`
 - sampled failure output with `csvql check --show-failures`
 - repeated `--table` mappings for joins
 - single-file shortcut mode
@@ -286,6 +287,25 @@ uv run csvql check revenue_movements --output json --show-failures --failure-lim
 ```
 
 `csvql check` exits `0` when checks pass or no checks are configured. It exits `11` when configured checks run successfully and find data-quality failures. Missing catalogs, missing files, invalid config, and DuckDB execution errors use the existing CLI error path.
+
+## Project Health Examples
+
+Run project doctor from a directory with a `.csvql.yml` project catalog:
+
+```bash
+uv run csvql doctor
+```
+
+Return doctor results as JSON for automation:
+
+```bash
+uv run csvql doctor --output json
+```
+
+`csvql doctor` exits `0` for `passed` and `warning` results. It exits `12` when the
+project catalog exists but CSVQL finds concrete project-health failures such as invalid
+config, missing configured CSV files, unreadable CSV inputs, or configured checks that
+reference missing columns.
 
 ## Benchmark And Release Hardening
 
