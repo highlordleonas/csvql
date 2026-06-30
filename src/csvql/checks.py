@@ -45,7 +45,7 @@ def run_configured_checks(
             suggestion="Pass a failure limit of 1 or greater.",
         )
 
-    _validate_table_aliases(context)
+    validate_table_aliases(context)
     selected_tables = _select_tables(context, table_name)
     checks = tuple(check for table in selected_tables for check in table.checks)
     if not checks:
@@ -114,7 +114,9 @@ def _select_tables(
     return (match,)
 
 
-def _validate_table_aliases(context: ProjectContext) -> None:
+def validate_table_aliases(context: ProjectContext) -> None:
+    """Reject project catalogs whose table aliases differ only by case."""
+
     seen: dict[str, str] = {}
     collisions: list[tuple[str, str]] = []
     for table in context.config.tables:

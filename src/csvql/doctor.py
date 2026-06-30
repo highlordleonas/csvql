@@ -6,7 +6,7 @@ from typing import Literal
 
 import duckdb
 
-from csvql.checks import resolve_configured_column_name
+from csvql.checks import resolve_configured_column_name, validate_table_aliases
 from csvql.exceptions import FileMissingError, ProjectConfigError
 from csvql.project_config import (
     ProjectContext,
@@ -149,6 +149,7 @@ def run_doctor(start_dir: Path | None = None) -> DoctorRunResult:
 
     try:
         context = load_project(start_dir)
+        validate_table_aliases(context)
     except ProjectConfigError as exc:
         probes.append(
             DoctorProbeResult(

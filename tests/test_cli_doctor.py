@@ -398,3 +398,48 @@ def test_doctor_emits_passed_check_schema_resolution_probe(
     assert passing_probe["table"] == "orders"
     assert passing_probe["check"] == "order_id_required"
     assert passing_probe["column"] == "order_id"
+
+
+def test_doctor_fails_config_load_for_case_colliding_table_aliases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "orders.csv").write_text(
+        "order_id\nORD-1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "data" / "orders_upper.csv").write_text(
+        "actual_order_id\nORD-2\n",
+        encoding="utf-8",
+    )
+    _write_project_config(
+        tmp_path,
+        """
+        version: 1
+        tables:
+          orders:
+            path: data/orders.csv
+          Orders:
+            path: data/orders_upper.csv
+            checks:
+              - name: uppercase_order_id_required
+                type: not_null
+                column: actual_order_id
+        """,
+    )
+
+    result = runner.invoke(app, ["doctor", "--output", "json"])
+
+    assert result.exit_code == 12, result.output
+    payload = json.loads(result.output)
+    assert payload["status"] == "failed"
+    assert [probe["name"] for probe in payload["probes"]] == [
+        "project_discovery",
+        "config_load",
+    ]
+    assert payload["probes"][1]["status"] == "failed"
+    assert "differ only by case" in payload["probes"][1]["message"]
+    assert not any(probe["name"] == "table_readiness" for probe in payload["probes"])
+    assert not any(probe["scope"] == "check" for probe in payload["probes"])
