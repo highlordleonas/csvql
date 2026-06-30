@@ -111,13 +111,11 @@ Implemented:
 
 Remaining before v1:
 
-- final documentation pass that keeps README, architecture, JSON contracts,
-  release readiness, roadmap, and product direction aligned
+- final documentation pass that keeps AGENTS.md, README, architecture, JSON
+  contracts, release readiness, roadmap, and product direction aligned
 - explicit contract-stabilization decision for current JSON shapes, exit-code
   policy, config schema, and the small Python API
-- refreshed benchmark and release-readiness proof before release claims
 - release workflow and changelog or release-note material
-- full local gate passing through `uv run`
 
 ## v1.0.0 - Stable Release
 

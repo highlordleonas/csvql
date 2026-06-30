@@ -26,8 +26,7 @@ query, inspect/sample, project catalogs, saved SQL, export, profile, configured
 checks, doctor, benchmark and release-readiness proof scripts, JSON contract
 documentation, the failure gallery, the polished example project, and the small
 project-backed Python API. The current lane is v1 hardening: authority
-alignment, release workflow and changelog work, contract stabilization,
-benchmark and release-readiness proof refresh, and final full-gate proof.
+alignment, release workflow and changelog work, and contract stabilization.
 
 Implemented now:
 

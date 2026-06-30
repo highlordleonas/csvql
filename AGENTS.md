@@ -19,9 +19,10 @@ core local workflow implemented:
 
 Current work should harden and reconcile the product for v1, not widen it. The
 remaining lane is authority alignment, release workflow and changelog work,
-contract stabilization decisions, benchmark and release-readiness proof
-refreshes, and final full-gate verification. Failure-gallery documentation is
-implemented and should be kept aligned with runtime behavior.
+and contract stabilization decisions. Fresh benchmark, release-readiness, and
+full-gate proof should stay available and be rerun when release-candidate state
+changes. Failure-gallery documentation is implemented and should be kept aligned
+with runtime behavior.
 
 Do not add a web app, cloud connectors, dashboard surface, notebook framework,
 NLP execution, dataframe-first API, plugin system, hidden cache/materialization,

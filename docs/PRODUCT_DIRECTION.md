@@ -48,10 +48,10 @@ authority and stabilize the existing product for v1:
 - keep the completed failure gallery aligned with deterministic runtime behavior
 - decide whether v1 keeps the current v0.8 JSON shapes for compatibility or
   introduces the documented normalized envelope with migration notes
-- refresh benchmark and release-readiness proof before release claims
+- keep benchmark and release-readiness proof current before release claims
 - add release workflow and changelog material without pretending publishing is
   already automated
-- run the full local gate before any `release-candidate` or `v1-stable` claim
+- rerun the full local gate before any `release-candidate` or `v1-stable` claim
 
 ## Near-Term Direction
 
@@ -64,8 +64,8 @@ That slice should include:
 - changelog or release-note preparation for the implemented surfaces
 - explicit contract decisions for CLI JSON, exit codes, config schema, and the
   small Python API
-- a proof refresh using the standard `uv run` gates, release-readiness script,
-  and benchmark workflow before benchmark-backed or performance claims
+- authority alignment against the refreshed `uv run` gates, release-readiness
+  proof, and benchmark workflow before benchmark-backed or performance claims
 
 That slice must not include:
 

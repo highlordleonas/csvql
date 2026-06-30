@@ -45,12 +45,12 @@ performance beyond the recorded datasets.
 ## Label Rules
 
 Use `v1-hardening` for the current lane while authority docs, release notes,
-contract decisions, benchmark proof, and final gates are still being reconciled.
+and contract decisions are still being reconciled.
 
 Use `release-candidate` only after:
 
-- README, roadmap, product direction, architecture, JSON contracts, and release
-  readiness agree with the runtime surface
+- AGENTS.md, README, roadmap, product direction, architecture, JSON contracts,
+  and release readiness agree with the runtime surface
 - the release-readiness script passes on the candidate state
 - benchmark proof is refreshed or a current local benchmark artifact is cited
 - the full local gate passes
