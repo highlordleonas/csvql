@@ -132,25 +132,25 @@ def _doctor_warning_result() -> DoctorRunResult:
 
 def test_format_doctor_result_json_is_deterministic() -> None:
     assert format_doctor_result_json(_doctor_warning_result()) == (
-        '{\n'
+        "{\n"
         '  "failed_count": 0,\n'
         '  "passed_count": 0,\n'
         '  "probe_count": 1,\n'
         '  "probes": [\n'
-        '    {\n'
+        "    {\n"
         '      "message": "No .csvql.yml project catalog found.",\n'
         '      "name": "project_discovery",\n'
         '      "scope": "project",\n'
         '      "status": "warning"\n'
-        '    }\n'
-        '  ],\n'
+        "    }\n"
+        "  ],\n"
         '  "project": {\n'
         '    "config_path": null,\n'
         '    "project_root": null\n'
-        '  },\n'
+        "  },\n"
         '  "status": "warning",\n'
         '  "warning_count": 1\n'
-        '}'
+        "}"
     )
 
 
