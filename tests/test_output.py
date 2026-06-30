@@ -9,6 +9,7 @@ from csvql.models import (
     DialectInfo,
     InspectResult,
     ProfileResult,
+    QueryResult,
     RowCountInfo,
     SampleResult,
 )
@@ -17,6 +18,7 @@ from csvql.output import (
     format_check_result_table,
     format_inspect_result_json,
     format_inspect_result_table,
+    format_json_result,
     format_profile_result_json,
     format_profile_result_table,
     format_project_tables_json,
@@ -108,6 +110,23 @@ def test_format_sample_result_table_contains_rows() -> None:
 
     assert "ORD-1" in output
     assert "paid" in output
+
+
+def test_format_json_result_is_deterministic() -> None:
+    result = QueryResult(
+        columns=("name", "amount"),
+        rows=(("Alex", 20.5),),
+        elapsed_ms=1.23456,
+    )
+
+    payload = json.loads(format_json_result(result))
+
+    assert payload == {
+        "columns": ["name", "amount"],
+        "elapsed_ms": 1.235,
+        "row_count": 1,
+        "rows": [{"name": "Alex", "amount": 20.5}],
+    }
 
 
 def test_format_profile_result_json_is_deterministic() -> None:

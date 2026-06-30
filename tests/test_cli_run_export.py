@@ -39,6 +39,29 @@ def test_run_sql_file_uses_catalog_tables(
     assert payload["rows"] == [{"order_count": 2}]
 
 
+def test_run_json_contract_matches_query_result_shape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_catalog(tmp_path, monkeypatch)
+    orders = tmp_path / "data" / "orders.csv"
+    query = tmp_path / "queries" / "count_orders.sql"
+    _write_csv(orders, "order_id,total_amount\nORD-001,20.00\nORD-002,10.00\n")
+    query.parent.mkdir()
+    query.write_text("SELECT COUNT(*) AS order_count FROM orders", encoding="utf-8")
+    assert runner.invoke(app, ["add", "orders", "data/orders.csv"]).exit_code == 0
+
+    result = runner.invoke(app, ["run", "queries/count_orders.sql", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert set(payload) == {"columns", "rows", "row_count", "elapsed_ms"}
+    assert payload["columns"] == ["order_count"]
+    assert payload["rows"] == [{"order_count": 2}]
+    assert payload["row_count"] == 1
+    assert isinstance(payload["elapsed_ms"], float)
+
+
 def test_run_sql_file_with_explicit_table_works_without_catalog(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -118,6 +141,33 @@ def test_export_sql_file_writes_json(tmp_path: Path, monkeypatch) -> None:
     assert result.exit_code == 0, result.output
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["rows"] == [{"order_count": 1}]
+
+
+def test_export_json_contract_matches_query_result_shape_on_disk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_catalog(tmp_path, monkeypatch)
+    orders = tmp_path / "data" / "orders.csv"
+    query = tmp_path / "queries" / "count_orders.sql"
+    output_path = tmp_path / "result.json"
+    _write_csv(orders, "order_id,total_amount\nORD-001,20.00\n")
+    query.parent.mkdir()
+    query.write_text("SELECT COUNT(*) AS order_count FROM orders", encoding="utf-8")
+    assert runner.invoke(app, ["add", "orders", "data/orders.csv"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["export", "queries/count_orders.sql", "--format", "json", "--out", "result.json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert set(payload) == {"columns", "rows", "row_count", "elapsed_ms"}
+    assert payload["columns"] == ["order_count"]
+    assert payload["rows"] == [{"order_count": 1}]
+    assert payload["row_count"] == 1
+    assert isinstance(payload["elapsed_ms"], float)
 
 
 def test_export_sql_file_writes_markdown(tmp_path: Path, monkeypatch) -> None:

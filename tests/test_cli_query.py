@@ -59,6 +59,34 @@ def test_query_multiple_tables_as_json(tmp_path: Path) -> None:
     assert payload["rows"][0]["revenue"] == 200.5
 
 
+def test_query_json_contract_includes_query_result_fields(tmp_path: Path) -> None:
+    orders = tmp_path / "orders.csv"
+    orders.write_text(
+        "order_id,total_amount\nORD-001,20.00\nORD-002,10.00\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "--table",
+            f"orders={orders}",
+            "--output",
+            "json",
+            "SELECT COUNT(*) AS order_count FROM orders",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert set(payload) == {"columns", "rows", "row_count", "elapsed_ms"}
+    assert payload["columns"] == ["order_count"]
+    assert payload["rows"] == [{"order_count": 2}]
+    assert payload["row_count"] == 1
+    assert isinstance(payload["elapsed_ms"], float)
+
+
 def test_query_inline_sql_uses_catalog_tables_from_project_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
