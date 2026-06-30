@@ -4,23 +4,27 @@ CSVQL is a lightweight DuckDB-powered CLI for querying local CSV files like SQL 
 
 ```bash
 csvql query \
-  --table customers=examples/sales/data/customers.csv \
-  --table orders=examples/sales/data/orders.csv \
+  --table customers=examples/saas_revenue/data/customers.csv \
+  --table subscriptions=examples/saas_revenue/data/subscriptions.csv \
   "SELECT
-      c.email,
-      COUNT(o.order_id) AS orders,
-      SUM(o.total_amount) AS lifetime_value
+      c.segment,
+      COUNT(*) AS active_subscriptions,
+      SUM(s.current_mrr) AS current_mrr
    FROM customers c
-   JOIN orders o USING (customer_id)
-   GROUP BY c.email
-   ORDER BY lifetime_value DESC"
+   JOIN subscriptions s USING (customer_id)
+   WHERE s.status = 'active'
+   GROUP BY c.segment
+   ORDER BY current_mrr DESC"
 ```
 
 CSVQL does not implement a SQL engine. DuckDB executes SQL; CSVQL owns the local workflow around table aliases, readable output, validation, and project catalog configuration.
 
 ## Status
 
-This repository has the v0.1 query workflow, the first inspect/sample vertical, the v0.3 project catalog workflow, the v0.4 saved-workflow surfaces, the v0.5 profiling surface, and the v0.6 data-quality check surface implemented for local CLI use.
+This repository has the v0.1 query workflow, the first inspect/sample vertical,
+the v0.3 project catalog workflow, the v0.4 saved-workflow surfaces, the v0.5
+profiling surface, the v0.6 data-quality check surface, and the v0.7 benchmark
+and release-hardening workflows implemented for local CLI use.
 
 Implemented now:
 
@@ -47,9 +51,11 @@ Implemented now:
 - DuckDB in-memory execution
 - focused tests, Ruff, mypy, and GitHub Actions scaffolding
 
-Planned later:
+Repo-local hardening now:
 
-- benchmarks and release workflow
+- benchmark harness with JSON artifact and Markdown summary
+- release-readiness verification for version consistency, build smoke, and installed-wheel smoke
+- local output under `output/`
 
 ## Install For Development
 
@@ -65,40 +71,43 @@ uv run csvql --help
 
 ## Query Examples
 
-Query one CSV with the single-file shortcut. The table name is derived from the file stem, so `orders.csv` becomes `orders`.
+Query one CSV with the single-file shortcut. The table name is derived from the file stem, so `revenue_movements.csv` becomes `revenue_movements`.
 
 ```bash
-uv run csvql query examples/sales/data/orders.csv \
-  "SELECT status, COUNT(*) AS order_count
-   FROM orders
-   GROUP BY status
-   ORDER BY status"
+uv run csvql query examples/saas_revenue/data/revenue_movements.csv \
+  "SELECT movement_type, SUM(mrr_delta) AS net_mrr_change
+   FROM revenue_movements
+   GROUP BY movement_type
+   ORDER BY movement_type"
 ```
 
 Query multiple CSV files:
 
 ```bash
 uv run csvql query \
-  --table customers=examples/sales/data/customers.csv \
-  --table orders=examples/sales/data/orders.csv \
+  --table customers=examples/saas_revenue/data/customers.csv \
+  --table subscriptions=examples/saas_revenue/data/subscriptions.csv \
   "SELECT
       c.customer_id,
-      c.email,
-      COUNT(o.order_id) AS order_count,
-      SUM(o.total_amount) AS revenue
+      c.company_name,
+      s.plan_name,
+      s.current_mrr
    FROM customers c
-   JOIN orders o USING (customer_id)
-   GROUP BY c.customer_id, c.email
-   ORDER BY revenue DESC"
+   JOIN subscriptions s USING (customer_id)
+   WHERE s.status = 'active'
+   ORDER BY s.current_mrr DESC"
 ```
 
 Return JSON for automation:
 
 ```bash
 uv run csvql query \
-  --table orders=examples/sales/data/orders.csv \
+  --table revenue_movements=examples/saas_revenue/data/revenue_movements.csv \
   --output json \
-  "SELECT status, COUNT(*) AS order_count FROM orders GROUP BY status"
+  "SELECT movement_month, SUM(mrr_delta) AS net_mrr_change
+   FROM revenue_movements
+   GROUP BY movement_month
+   ORDER BY movement_month"
 ```
 
 ## Project Catalog Examples
@@ -112,7 +121,7 @@ uv run csvql init
 Register a table once:
 
 ```bash
-uv run csvql add orders examples/sales/data/orders.csv
+uv run csvql add revenue_movements examples/saas_revenue/data/revenue_movements.csv
 ```
 
 List registered tables as JSON:
@@ -124,15 +133,15 @@ uv run csvql tables --output json
 Query a registered table by alias:
 
 ```bash
-uv run csvql query "SELECT COUNT(*) AS order_count FROM orders"
+uv run csvql query "SELECT COUNT(*) AS movement_count FROM revenue_movements"
 ```
 
 For one invocation, explicit `--table` mappings still work and override catalog aliases with the same name.
 
 ```bash
 uv run csvql query \
-  --table orders=examples/sales/data/orders.csv \
-  "SELECT COUNT(*) AS order_count FROM orders"
+  --table revenue_movements=examples/saas_revenue/data/revenue_movements.csv \
+  "SELECT COUNT(*) AS movement_count FROM revenue_movements"
 ```
 
 ## Saved Workflow Examples
@@ -140,76 +149,74 @@ uv run csvql query \
 Run SQL from a file using catalog aliases:
 
 ```bash
-cd examples/sales
-uv run csvql run queries/revenue_by_month.sql --output json
+cd examples/saas_revenue
+uv run csvql run queries/revenue_health.sql --output json
 ```
 
-Inspect and sample registered catalog aliases:
+Inspect a registered catalog alias and profile it:
 
 ```bash
-uv run csvql inspect orders --output json
-uv run csvql sample orders --limit 5 --output json
+cd examples/saas_revenue
+uv run csvql inspect revenue_movements --output json
+uv run csvql profile revenue_movements --output json
 ```
 
-Export SQL-file results:
+Export the main analysis:
 
 ```bash
-mkdir -p out
-
-uv run csvql export queries/revenue_by_month.sql \
-  --format csv \
-  --out out/revenue.csv
-
-uv run csvql export queries/revenue_by_month.sql \
+cd examples/saas_revenue
+uv run csvql export queries/revenue_health.sql \
   --format json \
-  --out out/revenue.json
+  --out output/revenue-health.json \
+  --force
 
-uv run csvql export queries/revenue_by_month.sql \
+uv run csvql export queries/revenue_health.sql \
   --format markdown \
-  --out out/revenue.md
+  --out output/revenue-health.md \
+  --force
 ```
 
-`csvql export` refuses to overwrite an existing output file unless `--force` is passed. The output directory must already exist.
+See `examples/saas_revenue/README.md` for the full copy/paste walkthrough.
 
 ## Inspect And Sample Examples
 
-Inspect a CSV without running user-authored SQL:
+Inspect the core revenue-movement table:
 
 ```bash
-uv run csvql inspect examples/sales/data/orders.csv --output json
+uv run csvql inspect examples/saas_revenue/data/revenue_movements.csv --output json
 ```
 
 Calculate an exact row count when you explicitly want a full scan:
 
 ```bash
-uv run csvql inspect examples/sales/data/orders.csv --exact --output json
+uv run csvql inspect examples/saas_revenue/data/revenue_movements.csv --exact --output json
 ```
 
-Sample rows from a CSV:
+Sample rows from the same table:
 
 ```bash
-uv run csvql sample examples/sales/data/orders.csv --limit 5
+uv run csvql sample examples/saas_revenue/data/revenue_movements.csv --limit 5
 ```
 
 ## Profile Examples
 
-Profile a CSV with a full scan:
+Profile the revenue-movement CSV with a full scan:
 
 ```bash
-uv run csvql profile examples/sales/data/orders.csv
+uv run csvql profile examples/saas_revenue/data/revenue_movements.csv
 ```
 
 Return JSON profile metrics:
 
 ```bash
-uv run csvql profile examples/sales/data/orders.csv --output json
+uv run csvql profile examples/saas_revenue/data/revenue_movements.csv --output json
 ```
 
 Profile a registered catalog alias:
 
 ```bash
-cd examples/sales
-uv run csvql profile orders --output json
+cd examples/saas_revenue
+uv run csvql profile revenue_movements --output json
 ```
 
 `csvql profile` reports row and column counts, duplicate row count, per-column null counts and percentages, non-null counts, distinct counts excluding nulls, and DuckDB `min`/`max` values. String `min` and `max` use DuckDB lexicographic ordering.
@@ -221,27 +228,43 @@ Configure checks in `.csvql.yml`:
 ```yaml
 version: 1
 tables:
-  orders:
-    path: data/orders.csv
+  customers:
+    path: data/customers.csv
     checks:
-      - name: order_id_required
+      - name: customer_id_required
         type: not_null
-        column: order_id
-      - name: order_id_unique
+        column: customer_id
+      - name: customer_id_unique
         type: unique
-        column: order_id
-      - name: status_known
-        type: accepted_values
-        column: status
-        values: [paid, pending, cancelled]
-      - name: customer_exists
+        column: customer_id
+  subscriptions:
+    path: data/subscriptions.csv
+    checks:
+      - name: subscription_id_required
+        type: not_null
+        column: subscription_id
+      - name: subscription_id_unique
+        type: unique
+        column: subscription_id
+      - name: subscription_customer_exists
         type: foreign_key
         column: customer_id
         references:
           table: customers
           column: customer_id
-  customers:
-    path: data/customers.csv
+  revenue_movements:
+    path: data/revenue_movements.csv
+    checks:
+      - name: movement_id_required
+        type: not_null
+        column: movement_id
+      - name: movement_id_unique
+        type: unique
+        column: movement_id
+      - name: movement_type_known
+        type: accepted_values
+        column: movement_type
+        values: [new, expansion, contraction, churn, reactivation]
 ```
 
 Run all configured checks:
@@ -253,16 +276,32 @@ uv run csvql check
 Run checks for one registered table and return JSON:
 
 ```bash
-uv run csvql check orders --output json
+uv run csvql check revenue_movements --output json
 ```
 
 Include capped failure samples:
 
 ```bash
-uv run csvql check orders --output json --show-failures --failure-limit 5
+uv run csvql check revenue_movements --output json --show-failures --failure-limit 5
 ```
 
 `csvql check` exits `0` when checks pass or no checks are configured. It exits `11` when configured checks run successfully and find data-quality failures. Missing catalogs, missing files, invalid config, and DuckDB execution errors use the existing CLI error path.
+
+## Benchmark And Release Hardening
+
+Generate local benchmark evidence:
+
+- `uv run python scripts/benchmark_csvql.py --output-root output/benchmarks`
+
+Verify build and install proof:
+
+- `uv run python scripts/verify_release_readiness.py --work-dir output/release-readiness`
+
+Claims boundary:
+
+- Local benchmark evidence only
+- No large-file proof beyond the recorded datasets
+- No production-readiness claim
 
 ## Development Checks
 
@@ -286,7 +325,9 @@ CSVQL is currently a local developer tool for trusted SQL. DuckDB executes the S
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Benchmarking](docs/benchmarking.md)
 - [Product direction](docs/PRODUCT_DIRECTION.md)
+- [Release readiness](docs/release-readiness.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Codex capability review](docs/CODEX_CAPABILITY_REVIEW.md)
 - [v1 Quality Spine design](docs/superpowers/specs/2026-06-26-csvql-v1-quality-spine-design.md)

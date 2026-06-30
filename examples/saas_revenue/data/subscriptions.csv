@@ -1,0 +1,6 @@
+subscription_id,customer_id,plan_name,billing_period,status,started_at,ended_at,current_mrr
+SUB-001,CUST-001,starter,monthly,active,2025-01-01,,100.0
+SUB-002,CUST-002,growth,monthly,active,2025-01-01,,225.0
+SUB-003,CUST-003,scale,annual,active,2025-02-01,,375.0
+SUB-004,CUST-004,starter,monthly,cancelled,2025-03-01,2025-04-01,0.0
+SUB-005,CUST-005,growth,monthly,active,2025-03-01,,250.0

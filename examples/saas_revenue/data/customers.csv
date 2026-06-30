@@ -1,0 +1,6 @@
+customer_id,company_name,segment,created_at
+CUST-001,Acme Analytics,smb,2024-11-15
+CUST-002,BrightPath Labs,mid_market,2024-12-03
+CUST-003,Cedar Health,enterprise,2025-01-12
+CUST-004,Delta Ops,smb,2025-02-01
+CUST-005,Echo Retail,mid_market,2025-03-05

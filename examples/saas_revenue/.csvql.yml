@@ -1,0 +1,58 @@
+version: 1
+tables:
+  customers:
+    path: data/customers.csv
+    checks:
+      - name: customer_id_required
+        type: not_null
+        column: customer_id
+      - name: customer_id_unique
+        type: unique
+        column: customer_id
+  subscriptions:
+    path: data/subscriptions.csv
+    checks:
+      - name: subscription_id_required
+        type: not_null
+        column: subscription_id
+      - name: subscription_id_unique
+        type: unique
+        column: subscription_id
+      - name: subscription_customer_exists
+        type: foreign_key
+        column: customer_id
+        references:
+          table: customers
+          column: customer_id
+      - name: current_mrr_nonnegative
+        type: min
+        column: current_mrr
+        value: 0
+  revenue_movements:
+    path: data/revenue_movements.csv
+    checks:
+      - name: movement_id_required
+        type: not_null
+        column: movement_id
+      - name: movement_id_unique
+        type: unique
+        column: movement_id
+      - name: movement_customer_exists
+        type: foreign_key
+        column: customer_id
+        references:
+          table: customers
+          column: customer_id
+      - name: movement_subscription_exists
+        type: foreign_key
+        column: subscription_id
+        references:
+          table: subscriptions
+          column: subscription_id
+      - name: movement_type_known
+        type: accepted_values
+        column: movement_type
+        values: [new, expansion, contraction, churn, reactivation]
+      - name: movement_rows_present
+        type: row_count_between
+        min: 1

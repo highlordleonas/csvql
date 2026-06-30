@@ -81,10 +81,16 @@ Implemented:
 
 ## v0.7.0 - Benchmark And Release Hardening
 
+Implemented:
+
 - benchmark harness and JSON artifact
 - Markdown benchmark summary
 - reproducible synthetic and fixture-sized benchmark inputs
 - benchmark documentation that avoids large-file claims beyond the recorded artifact
+- version consistency verification
+- build smoke for sdist and wheel
+- installed-wheel smoke verification
+- release-readiness documentation
 
 ## v0.8.0 - Portfolio Polish And Python API
 

@@ -2,5 +2,32 @@ version: 1
 tables:
   customers:
     path: data/customers.csv
+    checks:
+      - name: customer_id_required
+        type: not_null
+        column: customer_id
+      - name: customer_id_unique
+        type: unique
+        column: customer_id
   orders:
     path: data/orders.csv
+    checks:
+      - name: order_id_required
+        type: not_null
+        column: order_id
+      - name: order_id_unique
+        type: unique
+        column: order_id
+      - name: customer_exists
+        type: foreign_key
+        column: customer_id
+        references:
+          table: customers
+          column: customer_id
+      - name: total_amount_nonnegative
+        type: min
+        column: total_amount
+        value: 0
+      - name: row_count_expected
+        type: row_count_between
+        min: 1
