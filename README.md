@@ -25,9 +25,12 @@ This repository has the core local workflow implemented for local CLI use:
 query, inspect/sample, project catalogs, saved SQL, export, profile, configured
 checks, doctor, benchmark and release-readiness proof scripts, JSON contract
 documentation, the failure gallery, the polished example project, and the small
-project-backed Python API. CSVQL remains in v1 hardening. The release workflow
-and release-note material now exist; the next remaining gate is final
-release-candidate eligibility proof.
+project-backed Python API. The release workflow and release-note material now
+exist. Final local proof was refreshed on 2026-07-01 at `2e84f26`, and the
+current assessment is `release-candidate eligible`.
+
+That assessment is not a tag, PyPI upload, GitHub release, package-version
+change, `release-candidate` status change, or `v1-stable` claim.
 
 Implemented now:
 
@@ -60,6 +63,13 @@ Repo-local hardening now:
 - benchmark harness with JSON artifact and Markdown summary
 - release-readiness verification for version consistency, build smoke, and installed-wheel smoke
 - local output under `output/`
+
+Current local proof evidence:
+
+- full local gate: Ruff format, Ruff lint, mypy, and `312` pytest tests passed
+- release-readiness proof: `output/release-readiness-20260701`
+- benchmark proof: `output/benchmarks/20260701T155909Z/benchmark.json`
+- benchmark summary: `output/benchmarks/20260701T155909Z/benchmark-summary.md`
 
 ## Install For Development
 

@@ -115,8 +115,8 @@ Implemented:
 
 Remaining before v1:
 
-- final release-candidate eligibility check; release workflow and release-note
-  material now exist
+- explicit user approval for release action after the 2026-07-01
+  `release-candidate eligible` local proof assessment
 
 ## v1.0.0 - Stable Release
 
