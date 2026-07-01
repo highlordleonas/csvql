@@ -8,21 +8,23 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.worker import Worker
 from textual.widgets import DataTable, Footer, Input, Static, TextArea
 
 from csvql.exceptions import CSVQLError
 from csvql.export import ExportFormat
 from csvql.models import QueryResult
-from csvql.output import format_profile_result_table, format_table_result
+from csvql.output import format_profile_result_table
 from csvql.table_mapping import parse_table_mapping
 from csvql.tui_help import WORKBENCH_HELP
-from csvql.tui_state import TUISessionState, TUISource
+from csvql.tui_results import make_result_view_state, populate_result_table
+from csvql.tui_state import TUIQueryOutcome, TUIResultViewState, TUISessionState, TUISource
 from csvql.tui_workflows import (
     build_initial_state,
     export_last_result,
     inspect_source,
     profile_source,
-    query_sources,
+    run_query_for_tui,
     sample_source,
     save_sources_to_project_catalog,
 )
@@ -108,6 +110,10 @@ class CSVQLMenuApp(App[None]):
         height: 1fr;
         overflow-y: auto;
     }
+
+    #results-message {
+        height: 1;
+    }
     """
 
     BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
@@ -160,13 +166,15 @@ class CSVQLMenuApp(App[None]):
             with Vertical(id="right-pane"):
                 yield TextArea(id="sql")
                 yield Static("", id="run-status")
-                yield Static("", id="results")
+                yield DataTable(id="results", cursor_type="cell")
+                yield Static("", id="results-message")
         yield Footer()
 
     async def on_mount(self) -> None:
         self._refresh_sources_table()
         self._refresh_history_table()
         self._set_status(self._status_message())
+        self.query_one("#run-status", Static).update("Ready.")
         self.query_one("#sql", TextArea).focus()
 
     def action_add_source(self) -> None:
@@ -216,7 +224,7 @@ class CSVQLMenuApp(App[None]):
             return
 
         column_names = ", ".join(column.name for column in result.columns) or "(none)"
-        self.query_one("#results", Static).update(f"Columns: {column_names}")
+        self._show_output_text(f"Columns: {column_names}")
         self._set_status(f"{source.name}: {len(result.columns)} columns.")
 
     def action_profile_source(self) -> None:
@@ -231,7 +239,7 @@ class CSVQLMenuApp(App[None]):
             self._show_error(exc)
             return
 
-        self.query_one("#results", Static).update(format_profile_result_table(result))
+        self._show_output_text(format_profile_result_table(result))
         self._set_status(
             f"{source.name}: {result.row_count} rows, "
             f"{result.column_count} columns, {result.duplicate_row_count} duplicate rows.",
@@ -254,24 +262,26 @@ class CSVQLMenuApp(App[None]):
             rows=result.rows,
             elapsed_ms=0.0,
         )
-        self.query_one("#results", Static).update(format_table_result(query_result))
+        view = make_result_view_state(query_result, source_result_sequence=0)
+        populate_result_table(self.query_one("#results", DataTable), view)
+        self.query_one("#results-message", Static).update(_result_message(view))
         self._set_status(f"{source.name}: {len(result.rows)} sample row(s).")
 
     def action_run_query(self) -> None:
         sql_widget = self.query_one("#sql", TextArea)
         sql = sql_widget.text.strip()
         if not sql:
-            self.state.last_result = None
+            self.state.clear_last_result()
             self._show_error(
                 CSVQLError(
                     "Enter SQL before running a query.",
-                    suggestion="Type a SQL statement in the editor and try again.",
+                    suggestion="Type SQL in the editor and try again.",
                 )
             )
             return
 
         if not self.state.sources:
-            self.state.last_result = None
+            self.state.clear_last_result()
             self._show_error(
                 CSVQLError(
                     "No sources loaded.",
@@ -281,16 +291,21 @@ class CSVQLMenuApp(App[None]):
             return
 
         try:
-            result = query_sources(self.state.sources, sql)
-        except CSVQLError as exc:
-            self.state.last_result = None
-            self._show_error(exc)
+            sequence = self.state.begin_query_run(sql)
+        except RuntimeError:
+            self._set_status("Query already running.")
             return
 
-        self.state.set_last_result(result)
-        self.query_one("#results", Static).update(format_table_result(result))
-        self._set_status(f"{result.row_count} row(s) returned.")
-        sql_widget.focus()
+        self._set_status(f"Running editor query {sequence}...")
+        self.query_one("#run-status", Static).update(f"Running editor query {sequence}...")
+        sources = self.state.sources
+        self.run_worker(
+            lambda: run_query_for_tui(sources, sql, sequence=sequence),
+            name=f"query-{sequence}",
+            group="query",
+            thread=True,
+            exit_on_error=False,
+        )
 
     def action_export_last_result(self) -> None:
         if self.state.last_result is None:
@@ -318,7 +333,15 @@ class CSVQLMenuApp(App[None]):
             return
 
         self._set_status(f"Saved sources to {context.config_path}.")
-        self.query_one("#results", Static).update(f"Saved sources to {context.config_path}.")
+        self._show_output_text(f"Saved sources to {context.config_path}.")
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        worker = event.worker
+        if worker.group != "query" or not worker.is_finished:
+            return
+        outcome = worker.result
+        if isinstance(outcome, TUIQueryOutcome):
+            self._handle_query_outcome(outcome)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if event.data_table.id == "sources":
@@ -365,13 +388,20 @@ class CSVQLMenuApp(App[None]):
     def _set_status(self, message: str) -> None:
         self.query_one("#status", Static).update(message)
 
+    def _clear_result_grid(self) -> None:
+        self.query_one("#results", DataTable).clear(columns=True)
+
+    def _show_output_text(self, message: str) -> None:
+        self._clear_result_grid()
+        self.query_one("#results-message", Static).update(message)
+
     def _show_error(self, error: CSVQLError) -> None:
         lines = [f"Error: {error.message}"]
         if error.suggestion:
             lines.append(f"Suggestion: {error.suggestion}")
         message = "\n".join(lines)
         self._set_status(message)
-        self.query_one("#results", Static).update(message)
+        self._show_output_text(message)
 
     def _handle_add_source(self, raw_mapping: str | None) -> None:
         if raw_mapping is None:
@@ -416,7 +446,7 @@ class CSVQLMenuApp(App[None]):
             return
 
         self._set_status(f"Exported to {export_path}.")
-        self.query_one("#results", Static).update(f"Exported to {export_path}.")
+        self._show_output_text(f"Exported to {export_path}.")
 
     def _selected_source_row_index(self) -> int | None:
         selected_alias = self.state.selected_alias
@@ -433,6 +463,46 @@ class CSVQLMenuApp(App[None]):
             return
         self.state.select_source(self.state.sources[row_index].name)
 
+    def _handle_query_outcome(self, outcome: TUIQueryOutcome) -> None:
+        if not self.state.is_current_query_sequence(outcome.sequence):
+            return
+        if outcome.status == "success" and outcome.result is not None:
+            view = make_result_view_state(
+                outcome.result,
+                source_result_sequence=outcome.sequence,
+            )
+            self.state.record_query_success(outcome.sequence, outcome.sql, outcome.result, view)
+            populate_result_table(self.query_one("#results", DataTable), view)
+            self._refresh_history_table()
+            self._set_status(
+                f"{outcome.result.row_count} returned row(s) in {outcome.result.elapsed_ms:.1f} ms."
+            )
+            self.query_one("#run-status", Static).update("Ready.")
+            self.query_one("#results-message", Static).update(_result_message(view))
+            self.query_one("#sql", TextArea).focus()
+            return
+        if outcome.status == "no_result":
+            self.state.record_query_no_result(outcome.sequence, outcome.sql, outcome.elapsed_ms or 0.0)
+            self.query_one("#results", DataTable).clear(columns=True)
+            message = "Statement completed; no tabular result to display."
+            self._refresh_history_table()
+            self._set_status(message)
+            self.query_one("#run-status", Static).update("Ready.")
+            self.query_one("#results-message", Static).update(message)
+            self.query_one("#sql", TextArea).focus()
+            return
+        self.state.record_query_error(
+            outcome.sequence,
+            outcome.sql,
+            outcome.error_message or "Query failed.",
+        )
+        self.query_one("#results", DataTable).clear(columns=True)
+        error = CSVQLError(outcome.error_message or "Query failed.", suggestion=outcome.suggestion)
+        self._refresh_history_table()
+        self.query_one("#run-status", Static).update("Ready.")
+        self._show_error(error)
+        self.query_one("#sql", TextArea).focus()
+
 
 def _export_format_for_path(path_value: str) -> ExportFormat:
     suffix = Path(path_value).suffix.lower()
@@ -445,3 +515,9 @@ def _export_format_for_path(path_value: str) -> ExportFormat:
 
 def _one_line_sql(sql: str) -> str:
     return " ".join(sql.split())
+
+
+def _result_message(view: TUIResultViewState) -> str:
+    if view.is_truncated:
+        return f"Showing first {view.preview_row_cap} of {view.total_row_count} returned rows."
+    return f"Showing {view.total_row_count} returned row(s)."
