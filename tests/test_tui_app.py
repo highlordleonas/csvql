@@ -468,3 +468,40 @@ def test_save_sources_surfaces_project_config_errors(tmp_path: Path) -> None:
 
     assert "Error:" in status
     assert "Error:" in results
+
+
+def test_workbench_history_pane_mounts_with_editor_focused(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[object | None, int]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            history = app.query_one("#history", DataTable)
+            return app.focused, history.row_count
+
+    focused, history_rows = asyncio.run(_inner())
+
+    assert isinstance(focused, TextArea)
+    assert history_rows == 0
+
+
+def test_help_action_opens_and_escape_restores_editor_focus(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, object | None]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_show_help()
+            await pilot.pause()
+            help_text = app.screen.query_one("#help-text", Static).content
+            await pilot.press("escape")
+            await pilot.pause()
+            return help_text, app.focused
+
+    help_text, focused = asyncio.run(_inner())
+
+    assert "Run Editor" in help_text
+    assert "F4" in help_text
+    assert isinstance(focused, TextArea)

@@ -6,6 +6,7 @@ from typing import ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, Static, TextArea
 
@@ -14,6 +15,7 @@ from csvql.export import ExportFormat
 from csvql.models import QueryResult
 from csvql.output import format_profile_result_table, format_table_result
 from csvql.table_mapping import parse_table_mapping
+from csvql.tui_help import WORKBENCH_HELP
 from csvql.tui_state import TUISessionState, TUISource
 from csvql.tui_workflows import (
     build_initial_state,
@@ -52,6 +54,20 @@ class _PromptInputScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class _HelpScreen(ModalScreen[None]):
+    """Workbench help modal."""
+
+    BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
+        Binding("escape", "cancel", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Static(WORKBENCH_HELP, id="help-text")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class CSVQLMenuApp(App[None]):
     """Minimal interactive menu for loading sources and running SQL."""
 
@@ -62,6 +78,26 @@ class CSVQLMenuApp(App[None]):
 
     #sources {
         height: 5;
+    }
+
+    #workbench {
+        height: 1fr;
+    }
+
+    #left-pane {
+        width: 32%;
+    }
+
+    #right-pane {
+        width: 68%;
+    }
+
+    #history {
+        height: 1fr;
+    }
+
+    #run-status {
+        height: 1;
     }
 
     #sql {
@@ -117,13 +153,19 @@ class CSVQLMenuApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Static("", id="status")
-        yield DataTable(id="sources", cursor_type="row")
-        yield TextArea(id="sql")
-        yield Static("", id="results")
+        with Horizontal(id="workbench"):
+            with Vertical(id="left-pane"):
+                yield DataTable(id="sources", cursor_type="row")
+                yield DataTable(id="history", cursor_type="row")
+            with Vertical(id="right-pane"):
+                yield TextArea(id="sql")
+                yield Static("", id="run-status")
+                yield Static("", id="results")
         yield Footer()
 
     async def on_mount(self) -> None:
         self._refresh_sources_table()
+        self._refresh_history_table()
         self._set_status(self._status_message())
         self.query_one("#sql", TextArea).focus()
 
@@ -132,6 +174,12 @@ class CSVQLMenuApp(App[None]):
             _PromptInputScreen("Enter a name=path mapping.", input_id="mapping-input"),
             callback=self._handle_add_source,
         )
+
+    def action_show_help(self) -> None:
+        self.push_screen(_HelpScreen())
+
+    def action_show_contextual_help(self) -> None:
+        self.push_screen(_HelpScreen())
 
     def action_focus_sources(self) -> None:
         self.query_one("#sources", DataTable).focus()
@@ -291,6 +339,19 @@ class CSVQLMenuApp(App[None]):
         elif self.state.sources:
             sources_table.move_cursor(row=0)
 
+    def _refresh_history_table(self) -> None:
+        history_table = self.query_one("#history", DataTable)
+        history_table.clear(columns=True)
+        history_table.add_columns("seq", "status", "rows", "sql")
+        for item in self.state.query_history:
+            rows = "" if item.row_count is None else str(item.row_count)
+            history_table.add_row(
+                str(item.sequence),
+                item.status,
+                rows,
+                _one_line_sql(item.sql),
+            )
+
     def _status_message(self) -> str:
         source_count = len(self.state.sources)
         if source_count == 0:
@@ -378,3 +439,7 @@ def _export_format_for_path(path_value: str) -> ExportFormat:
     if suffix == ".md":
         return ExportFormat.markdown
     return ExportFormat.json
+
+
+def _one_line_sql(sql: str) -> str:
+    return " ".join(sql.split())
