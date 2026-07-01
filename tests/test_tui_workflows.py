@@ -324,6 +324,22 @@ def test_run_query_for_tui_returns_no_result_for_empty_columns(
     assert outcome.elapsed_ms == 3.25
 
 
+def test_run_query_for_tui_returns_success_for_empty_rows_with_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_query_sources(sources: object, sql: str) -> QueryResult:
+        return QueryResult(columns=("id",), rows=(), elapsed_ms=4.5)
+
+    monkeypatch.setattr("csvql.tui_workflows.query_sources", fake_query_sources)
+
+    outcome = run_query_for_tui((), "SELECT id FROM orders WHERE 1 = 0", sequence=10)
+
+    assert outcome.sequence == 10
+    assert outcome.status == "success"
+    assert outcome.result is not None
+    assert outcome.result.row_count == 0
+
+
 def test_run_query_for_tui_returns_error_outcome(tmp_path: Path) -> None:
     csv_path = _write_csv(tmp_path / "orders.csv", "id,value\n1,alpha\n")
     source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
