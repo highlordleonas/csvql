@@ -9,8 +9,7 @@ or `v1-stable` claim.
 
 ## v1.0.0 - Pending
 
-Status: `release-candidate eligible` as of the 2026-07-01 local proof run on
-`2e84f26`.
+Status: `release-candidate eligible` as of the 2026-07-01 local proof run.
 
 ### Added
 

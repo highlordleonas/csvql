@@ -26,8 +26,8 @@ query, inspect/sample, project catalogs, saved SQL, export, profile, configured
 checks, doctor, benchmark and release-readiness proof scripts, JSON contract
 documentation, the failure gallery, the polished example project, and the small
 project-backed Python API. The release workflow and release-note material now
-exist. Final local proof was refreshed on 2026-07-01 at `2e84f26`, and the
-current assessment is `release-candidate eligible`.
+exist. Final local proof was refreshed on 2026-07-01, and the current
+assessment is `release-candidate eligible`.
 
 That assessment is not a tag, PyPI upload, GitHub release, package-version
 change, `release-candidate` status change, or `v1-stable` claim.
