@@ -956,9 +956,15 @@ def test_stale_worker_outcome_is_ignored(tmp_path: Path) -> None:
 
 def test_history_enter_reopens_query_in_editor(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
-    sequence = state.begin_query_run("SELECT * FROM customers")
+    first_sequence = state.begin_query_run("SELECT 1")
     state.record_query_success(
-        sequence,
+        first_sequence,
+        "SELECT 1",
+        QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+    )
+    second_sequence = state.begin_query_run("SELECT * FROM customers")
+    state.record_query_success(
+        second_sequence,
         "SELECT * FROM customers",
         QueryResult(columns=("customer_id",), rows=(("CUST-001",),), elapsed_ms=1.0),
     )
@@ -967,7 +973,9 @@ def test_history_enter_reopens_query_in_editor(tmp_path: Path) -> None:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.query_one("#history", DataTable).focus()
+            history = app.query_one("#history", DataTable)
+            history.focus()
+            history.move_cursor(row=1)
             await pilot.press("enter")
             await pilot.pause()
             sql = app.query_one("#sql", TextArea)
@@ -981,23 +989,44 @@ def test_history_enter_reopens_query_in_editor(tmp_path: Path) -> None:
 
 def test_history_rerun_uses_current_session_sources(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
-    sequence = state.begin_query_run("SELECT COUNT(*) AS count FROM customers")
+    first_sequence = state.begin_query_run("SELECT 1")
     state.record_query_success(
-        sequence,
+        first_sequence,
+        "SELECT 1",
+        QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+    )
+    second_sequence = state.begin_query_run("SELECT COUNT(*) AS count FROM customers")
+    state.record_query_success(
+        second_sequence,
         "SELECT COUNT(*) AS count FROM customers",
         QueryResult(columns=("count",), rows=((2,),), elapsed_ms=1.0),
     )
+    state.remove_source("customers")
+    replacement_path = _create_csv(
+        tmp_path,
+        "orders.csv",
+        "order_id,total\nORD-001,10\n",
+    )
+    state.add_source(TUISource(name="orders", path=replacement_path, origin="session"))
 
-    async def _inner() -> tuple[str, list[str]]:
+    async def _inner() -> tuple[str, str, list[str]]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.query_one("#history", DataTable).focus()
+            history = app.query_one("#history", DataTable)
+            history.focus()
+            history.move_cursor(row=1)
             await pilot.press("r")
             await pilot.pause(0.2)
-            return app.query_one("#status", Static).content, app_history_statuses(app.state)
+            sql = app.query_one("#sql", TextArea).text
+            return (
+                sql,
+                app.query_one("#status", Static).content,
+                app_history_statuses(app.state),
+            )
 
-    status, history_statuses = asyncio.run(_inner())
+    sql, status, history_statuses = asyncio.run(_inner())
 
-    assert "1 returned row(s)" in status
-    assert history_statuses == ["success", "success"]
+    assert sql == "SELECT COUNT(*) AS count FROM customers"
+    assert "customers" in status
+    assert history_statuses == ["success", "success", "error"]
