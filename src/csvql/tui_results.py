@@ -13,6 +13,7 @@ class _ResultTable(Protocol):
 
     def add_row(self, *cells: str) -> object: ...
 
+
 DEFAULT_RESULT_PREVIEW_ROWS = 1000
 DEFAULT_CELL_CHAR_CAP = 120
 

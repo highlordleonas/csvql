@@ -60,9 +60,7 @@ def test_result_view_preserves_all_columns_for_horizontal_scroll() -> None:
         (3, "abc"),
     ],
 )
-def test_result_view_handles_tiny_cell_char_caps(
-    cell_char_cap: int, expected: str
-) -> None:
+def test_result_view_handles_tiny_cell_char_caps(cell_char_cap: int, expected: str) -> None:
     result = QueryResult(
         columns=("payload",),
         rows=(("abcdef",),),
