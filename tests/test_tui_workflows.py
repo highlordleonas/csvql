@@ -14,6 +14,7 @@ from csvql.tui_workflows import (
     inspect_source,
     profile_source,
     query_sources,
+    run_query_for_tui,
     sample_source,
     save_sources_to_project_catalog,
 )
@@ -292,3 +293,45 @@ def test_export_last_result_refuses_overwrite_without_force(tmp_path: Path) -> N
         )
 
     assert output_path.read_text(encoding="utf-8") == first_content
+
+
+def test_run_query_for_tui_returns_success_outcome(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path / "orders.csv", "id,value\n1,alpha\n")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
+
+    outcome = run_query_for_tui((source,), "SELECT * FROM orders", sequence=4)
+
+    assert outcome.sequence == 4
+    assert outcome.status == "success"
+    assert outcome.result is not None
+    assert outcome.result.columns == ("id", "value")
+    assert outcome.error_message is None
+
+
+def test_run_query_for_tui_returns_no_result_for_empty_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_query_sources(sources: object, sql: str) -> QueryResult:
+        return QueryResult(columns=(), rows=(), elapsed_ms=3.25)
+
+    monkeypatch.setattr("csvql.tui_workflows.query_sources", fake_query_sources)
+
+    outcome = run_query_for_tui((), "CREATE TABLE scratch(id INTEGER)", sequence=8)
+
+    assert outcome.sequence == 8
+    assert outcome.status == "no_result"
+    assert outcome.result is None
+    assert outcome.elapsed_ms == 3.25
+
+
+def test_run_query_for_tui_returns_error_outcome(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path / "orders.csv", "id,value\n1,alpha\n")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
+
+    outcome = run_query_for_tui((source,), "SELECT * FROM missing_alias", sequence=9)
+
+    assert outcome.sequence == 9
+    assert outcome.status == "error"
+    assert outcome.result is None
+    assert "DuckDB query failed" in (outcome.error_message or "")
+    assert outcome.suggestion == "Check table names, column names, and SQL syntax."

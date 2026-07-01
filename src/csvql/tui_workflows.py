@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from csvql.engine import CSVQLEngine
-from csvql.exceptions import ProjectConfigError
+from csvql.exceptions import CSVQLError, ProjectConfigError
 from csvql.export import (
     ExportFormat,
     format_query_result_for_export,
@@ -26,7 +26,7 @@ from csvql.project_config import (
 )
 from csvql.source import CSVSource, source_from_path
 from csvql.table_mapping import parse_table_mapping, source_from_single_csv
-from csvql.tui_state import TUISessionState, TUISource
+from csvql.tui_state import TUIQueryOutcome, TUISessionState, TUISource
 
 _MISSING_PROJECT_PREFIX = "No .csvql.yml project catalog found."
 
@@ -87,6 +87,33 @@ def query_sources(sources: Sequence[TUISource], sql: str) -> QueryResult:
     with CSVQLEngine() as engine:
         engine.register_tables(source.as_table_source() for source in sources)
         return engine.query(sql)
+
+
+def run_query_for_tui(
+    sources: Sequence[TUISource],
+    sql: str,
+    *,
+    sequence: int,
+) -> TUIQueryOutcome:
+    """Run trusted local SQL and return a TUI-local typed outcome."""
+
+    try:
+        result = query_sources(sources, sql)
+    except CSVQLError as exc:
+        return TUIQueryOutcome.error(
+            sequence=sequence,
+            sql=sql,
+            error_message=exc.message,
+            suggestion=exc.suggestion,
+        )
+
+    if not result.columns:
+        return TUIQueryOutcome.no_result(
+            sequence=sequence,
+            sql=sql,
+            elapsed_ms=result.elapsed_ms,
+        )
+    return TUIQueryOutcome.success(sequence=sequence, sql=sql, result=result)
 
 
 def export_last_result(
