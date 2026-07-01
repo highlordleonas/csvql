@@ -2,26 +2,30 @@
 
 ## Scope And Guarantees
 
-This document records the current `v0.8` JSON output for CSVQL's automation-oriented command surfaces:
+This document records the current `v1` JSON output contract for CSVQL's
+automation-oriented command surfaces:
 
 - `csvql query --output json`
 - `csvql run --output json`
 - `csvql inspect --output json`
+- `csvql sample --output json`
 - `csvql profile --output json`
 - `csvql check --output json`
+- `csvql doctor --output json`
+- `csvql tables --output json`
 - `csvql export --format json`
 
-Runtime truth wins. The `Current v0.8 Contract` sections below describe the JSON exactly as the CLI emits it today. The `Possible Future Normalized Contract` section is future-facing design guidance only; it is not the current runtime envelope.
+Runtime truth wins. The `Current v0.8 Contract` sections below describe the
+JSON exactly as the CLI emits it today. The `Possible Post-v1 Normalized
+Contract` section is future-facing design guidance only; it is not the current
+runtime envelope.
 
-Open v1 decision: the current v0.8 JSON shapes remain the active runtime
-contract until a separate compatibility decision changes them. A normalized
-envelope is not implemented in the current runtime and must not be described as
-current behavior.
+V1 decision: the current v0.8 JSON shapes are the stable v1 runtime contract. A
+normalized envelope is not implemented in the current runtime and must not be
+described as current behavior.
 
 Not covered here:
 
-- `csvql sample --output json`
-- `csvql tables --output json`
 - benchmark artifact JSON
 - Python API result objects
 
@@ -143,6 +147,50 @@ Example captured from `/private/tmp/csvql-json-contracts/inspect.json`:
     "mode": "not_counted",
     "value": null
   },
+  "source": {
+    "display_path": "data/orders.csv",
+    "fingerprint": {
+      "modified_at": "<modified-at>",
+      "size_bytes": 64,
+      "version": 1
+    },
+    "modified_at": "<modified-at>",
+    "resolved_path": "<tmp>/csvql-json-contracts-fixture/data/orders.csv",
+    "size_bytes": 64
+  },
+  "warnings": []
+}
+```
+
+### sample --output json
+
+Current top-level fields:
+
+- `source`
+- `limit`
+- `columns`
+- `rows`
+- `warnings`
+
+`sample.rows` is record-oriented JSON keyed by column name. `limit` is the
+requested maximum row count, not a guarantee that the source contains that many
+rows.
+
+Example shape:
+
+```json
+{
+  "columns": [
+    "order_id",
+    "status"
+  ],
+  "limit": 1,
+  "rows": [
+    {
+      "order_id": "ORD-1",
+      "status": "paid"
+    }
+  ],
   "source": {
     "display_path": "data/orders.csv",
     "fingerprint": {
@@ -295,16 +343,51 @@ Failure example captured from `/private/tmp/csvql-json-contracts/check-failure.j
 When it is present, it is a sampled subset of the total failures for that check, capped by `--failure-limit`. In the example above, `failed_count` is `2`, but only one sampled failure object is returned because the capture used `--failure-limit 1`.
 Failure sample objects also vary by check type. The not-null example above includes `row_number`, `row`, and `value`, but other checks can emit different fields. For example, `unique` and `row_count_between` checks can include `observed` plus `min` and `max` bounds, and `foreign_key` can add `reference_table` and `reference_column`.
 
+### doctor --output json
+
+Current top-level fields:
+
+- `status`
+- `probe_count`
+- `passed_count`
+- `warning_count`
+- `failed_count`
+- `project`
+- `probes`
+
+`doctor` exits `0` for `passed` and `warning` results. It exits `12` when
+concrete project-health failures are found.
+
+### tables --output json
+
+Current top-level fields:
+
+- `config_path`
+- `project_root`
+- `tables`
+
+Each `tables` entry includes:
+
+- `name`
+- `path`
+- `resolved_path`
+
+`config_path`, `project_root`, and `resolved_path` are machine-local absolute
+paths.
+
 ## Cross-Command Rules In v0.8
 
 - `query`, `run`, and `export --format json` currently share one query-shaped family.
 - `inspect`, `profile`, and `check` always include `warnings`, even when empty.
+- `sample`, `inspect`, `profile`, `check`, and `doctor` include `warnings` or warning counts in their current shape.
 - `inspect.row_count` is structured metadata, but `profile.row_count` is an integer.
 - `check.failures` is conditional and omitted unless `--show-failures` is requested and failures are present.
 - When `check.failures` is present, it is a sampled, `--failure-limit`-capped subset rather than a complete enumeration of every failure.
+- `tables` exposes machine-local absolute paths because it is a project catalog listing.
+- `doctor` has a status-bearing JSON shape separate from `check`.
 - Current source metadata can include absolute paths, timestamps, and file fingerprints that vary per machine and run.
 
-## Possible Future Normalized Contract
+## Possible Post-v1 Normalized Contract
 
 Illustrative future envelope:
 
@@ -328,7 +411,8 @@ Illustrative future envelope:
 }
 ```
 
-If adopted, normalization could use these rules:
+If a post-v1 compatibility break adopts normalization, it should use these
+rules:
 
 - `data` contains the semantic result the caller actually wants.
 - `warnings` is always present and always a list.

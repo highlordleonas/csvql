@@ -44,13 +44,15 @@ performance beyond the recorded datasets.
 
 ## Label Rules
 
-Use `v1-hardening` for the current lane while authority docs, release notes,
-and contract decisions are still being reconciled.
+Use `v1-hardening` for the current lane while release workflow, release notes,
+and final candidate proof are still being reconciled.
 
 Use `release-candidate` only after:
 
 - AGENTS.md, README, roadmap, product direction, architecture, JSON contracts,
   and release readiness agree with the runtime surface
+- current JSON shapes, exit codes, config schema, DuckDB dependency floor, and
+  Python API surface are documented and test-backed
 - the release-readiness script passes on the candidate state
 - benchmark proof is refreshed or a current local benchmark artifact is cited
 - the full local gate passes
