@@ -100,3 +100,39 @@ def test_last_result_tracking(tmp_path: Path) -> None:
     state.set_last_result(result)
 
     assert state.last_result == result
+
+
+def test_query_history_records_success_error_and_no_result(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
+    result = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=7.5)
+
+    sequence = state.begin_query_run("SELECT COUNT(*) FROM orders")
+    state.record_query_success(sequence, "SELECT COUNT(*) FROM orders", result)
+    no_result_sequence = state.begin_query_run("CREATE TABLE scratch AS SELECT 1")
+    state.record_query_no_result(no_result_sequence, "CREATE TABLE scratch AS SELECT 1", 2.5)
+    error_sequence = state.begin_query_run("SELECT * FROM missing")
+    state.record_query_error(error_sequence, "SELECT * FROM missing", "missing table")
+
+    assert [item.status for item in state.query_history] == ["success", "no_result", "error"]
+    assert state.query_history[0].row_count == 1
+    assert state.query_history[0].elapsed_ms == 7.5
+    assert state.query_history[1].row_count is None
+    assert state.query_history[1].error_message is None
+    assert state.query_history[2].error_message == "missing table"
+    assert state.query_run.is_running is False
+    assert state.last_result is None
+
+
+def test_begin_query_run_prevents_overlapping_runs(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
+
+    sequence = state.begin_query_run("SELECT * FROM orders")
+
+    assert sequence == 1
+    assert state.query_run.is_running is True
+    assert state.query_run.sequence == 1
+
+    with pytest.raises(RuntimeError, match="query is already running"):
+        state.begin_query_run("SELECT COUNT(*) FROM orders")

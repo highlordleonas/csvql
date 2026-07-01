@@ -9,6 +9,86 @@ from csvql.models import QueryResult, TableSource
 from csvql.table_mapping import validate_table_alias
 
 SourceOrigin = Literal["argument", "catalog", "session"]
+TUIFocusPane = Literal["sources", "editor", "results", "history"]
+TUIQueryHistoryStatus = Literal["success", "no_result", "error"]
+TUIQueryOutcomeStatus = Literal["success", "no_result", "error"]
+
+
+@dataclass(frozen=True, slots=True)
+class TUIQueryHistoryItem:
+    """One in-memory query attempt in the current TUI session."""
+
+    sequence: int
+    sql: str
+    status: TUIQueryHistoryStatus
+    row_count: int | None = None
+    elapsed_ms: float | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TUIResultViewState:
+    """Display state for the visible results grid."""
+
+    columns: tuple[str, ...] = ()
+    display_rows: tuple[tuple[str, ...], ...] = ()
+    total_row_count: int = 0
+    preview_row_cap: int = 1000
+    cell_char_cap: int = 120
+    is_truncated: bool = False
+    source_result_sequence: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TUIQueryRunState:
+    """Current query-worker state."""
+
+    is_running: bool = False
+    sequence: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TUIQueryOutcome:
+    """TUI-local worker outcome wrapper around existing query behavior."""
+
+    sequence: int
+    sql: str
+    status: TUIQueryOutcomeStatus
+    result: QueryResult | None = None
+    elapsed_ms: float | None = None
+    error_message: str | None = None
+    suggestion: str | None = None
+
+    @classmethod
+    def success(cls, *, sequence: int, sql: str, result: QueryResult) -> "TUIQueryOutcome":
+        return cls(
+            sequence=sequence,
+            sql=sql,
+            status="success",
+            result=result,
+            elapsed_ms=result.elapsed_ms,
+        )
+
+    @classmethod
+    def no_result(cls, *, sequence: int, sql: str, elapsed_ms: float) -> "TUIQueryOutcome":
+        return cls(sequence=sequence, sql=sql, status="no_result", elapsed_ms=elapsed_ms)
+
+    @classmethod
+    def error(
+        cls,
+        *,
+        sequence: int,
+        sql: str,
+        error_message: str,
+        suggestion: str | None,
+    ) -> "TUIQueryOutcome":
+        return cls(
+            sequence=sequence,
+            sql=sql,
+            status="error",
+            error_message=error_message,
+            suggestion=suggestion,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +115,12 @@ class TUISessionState:
 
     _sources: list[TUISource] = field(default_factory=list)
     _selected_alias: str | None = None
+    _query_history: list[TUIQueryHistoryItem] = field(default_factory=list)
+    _next_query_sequence: int = 1
+    active_pane: TUIFocusPane = "editor"
     last_result: QueryResult | None = None
+    result_view: TUIResultViewState = field(default_factory=TUIResultViewState)
+    query_run: TUIQueryRunState = field(default_factory=TUIQueryRunState)
 
     @property
     def sources(self) -> tuple[TUISource, ...]:
@@ -93,10 +178,90 @@ class TUISessionState:
             return None
         return self.get_source(self._selected_alias)
 
+    @property
+    def query_history(self) -> tuple[TUIQueryHistoryItem, ...]:
+        return tuple(self._query_history)
+
     def set_last_result(self, result: QueryResult) -> None:
         """Store the most recent query result."""
 
         self.last_result = result
+
+    def begin_query_run(self, sql: str) -> int:
+        """Start a query run and return its sequence id."""
+
+        if self.query_run.is_running:
+            raise RuntimeError("A query is already running.")
+        sequence = self._next_query_sequence
+        self._next_query_sequence += 1
+        self.query_run = TUIQueryRunState(is_running=True, sequence=sequence)
+        return sequence
+
+    def clear_last_result(self) -> None:
+        """Clear stored exportable result and visible result state."""
+
+        self.last_result = None
+        self.result_view = TUIResultViewState()
+
+    def record_query_success(
+        self,
+        sequence: int,
+        sql: str,
+        result: QueryResult,
+        result_view: TUIResultViewState | None = None,
+    ) -> None:
+        """Record a successful query and store its result."""
+
+        self.last_result = result
+        self.result_view = result_view or TUIResultViewState(
+            columns=result.columns,
+            display_rows=tuple(tuple(str(value) for value in row) for row in result.rows),
+            total_row_count=result.row_count,
+            source_result_sequence=sequence,
+        )
+        self._query_history.append(
+            TUIQueryHistoryItem(
+                sequence=sequence,
+                sql=sql,
+                status="success",
+                row_count=result.row_count,
+                elapsed_ms=result.elapsed_ms,
+            )
+        )
+        self.query_run = TUIQueryRunState()
+
+    def record_query_no_result(self, sequence: int, sql: str, elapsed_ms: float) -> None:
+        """Record a successful statement with no tabular result."""
+
+        self.clear_last_result()
+        self._query_history.append(
+            TUIQueryHistoryItem(
+                sequence=sequence,
+                sql=sql,
+                status="no_result",
+                elapsed_ms=elapsed_ms,
+            )
+        )
+        self.query_run = TUIQueryRunState()
+
+    def record_query_error(self, sequence: int, sql: str, error_message: str) -> None:
+        """Record a failed query attempt."""
+
+        self.clear_last_result()
+        self._query_history.append(
+            TUIQueryHistoryItem(
+                sequence=sequence,
+                sql=sql,
+                status="error",
+                error_message=error_message,
+            )
+        )
+        self.query_run = TUIQueryRunState()
+
+    def is_current_query_sequence(self, sequence: int) -> bool:
+        """Return true when a worker result belongs to the active query run."""
+
+        return self.query_run.is_running and self.query_run.sequence == sequence
 
     def _find_source_index(self, alias: str) -> int | None:
         alias_key = alias.casefold()
