@@ -321,10 +321,12 @@ class CSVQLMenuApp(App[None]):
         self.query_one("#results", Static).update(f"Saved sources to {context.config_path}.")
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        self._select_source_at_row(event.cursor_row)
+        if event.data_table.id == "sources":
+            self._select_source_at_row(event.cursor_row)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        self._select_source_at_row(event.cursor_row)
+        if event.data_table.id == "sources":
+            self._select_source_at_row(event.cursor_row)
 
     def _refresh_sources_table(self) -> None:
         sources_table = self.query_one("#sources", DataTable)

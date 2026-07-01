@@ -486,6 +486,56 @@ def test_workbench_history_pane_mounts_with_editor_focused(tmp_path: Path) -> No
     assert history_rows == 0
 
 
+def test_history_cursor_movement_does_not_change_source_selection(tmp_path: Path) -> None:
+    alpha_path = _create_csv(
+        tmp_path,
+        "alpha.csv",
+        "customer_id,email\nCUST-001,alex@example.com\n",
+    )
+    beta_path = _create_csv(
+        tmp_path,
+        "beta.csv",
+        "customer_id,email\nCUST-002,bob@example.com\n",
+    )
+    state = TUISessionState()
+    state.add_source(TUISource(name="alpha", path=alpha_path, origin="argument"))
+    state.add_source(TUISource(name="beta", path=beta_path, origin="argument"))
+    state.record_query_success(
+        sequence=1,
+        sql="SELECT * FROM alpha",
+        result=QueryResult(
+            columns=("customer_id", "email"),
+            rows=(("CUST-001", "alex@example.com"),),
+            elapsed_ms=1.0,
+        ),
+    )
+    state.record_query_success(
+        sequence=2,
+        sql="SELECT * FROM beta",
+        result=QueryResult(
+            columns=("customer_id", "email"),
+            rows=(("CUST-002", "bob@example.com"),),
+            elapsed_ms=2.0,
+        ),
+    )
+
+    async def _inner() -> str | None:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            history = app.query_one("#history", DataTable)
+            history.focus()
+
+            await pilot.press("down")
+            await pilot.pause()
+
+            return app.state.selected_alias
+
+    selected_alias = asyncio.run(_inner())
+
+    assert selected_alias == "alpha"
+
+
 def test_help_action_opens_and_escape_restores_editor_focus(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
