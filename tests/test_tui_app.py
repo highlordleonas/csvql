@@ -214,6 +214,55 @@ def test_ctrl_enter_runs_query_from_sql_editor(tmp_path: Path) -> None:
     assert row_count == 2
 
 
+def test_run_editor_reads_settled_editor_text_after_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    seen_sql: list[str] = []
+
+    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
+        from csvql.tui_state import TUIQueryOutcome
+
+        seen_sql.append(sql)
+        return TUIQueryOutcome.success(
+            sequence=sequence,
+            sql=sql,
+            result=QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+        )
+
+    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+
+    async def _inner() -> tuple[bool, tuple[object, ...], list[str], str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.load_text("SELECT * FROM custo")
+
+            app.action_run_query()
+            synchronous_is_running = app.state.query_run.is_running
+            synchronous_history = app.state.query_history
+
+            sql.load_text("SELECT * FROM customers")
+            await pilot.pause(0.2)
+
+            return (
+                synchronous_is_running,
+                synchronous_history,
+                seen_sql,
+                app.query_one("#status", Static).content,
+            )
+
+    synchronous_is_running, synchronous_history, run_sql, status = asyncio.run(_inner())
+
+    assert synchronous_is_running is False
+    assert synchronous_history == ()
+    assert run_sql == ["SELECT * FROM customers"]
+    assert "1 returned row(s)" in status
+
+
 def test_query_run_returns_focus_to_sql_editor(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 

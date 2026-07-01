@@ -161,6 +161,7 @@ class CSVQLMenuApp(App[None]):
         super().__init__()
         self.start_dir = (start_dir or Path.cwd()).resolve()
         self._active_query_sql: dict[int, str] = {}
+        self._run_editor_pending = False
         if initial_state is not None:
             self.state = initial_state
         else:
@@ -295,6 +296,23 @@ class CSVQLMenuApp(App[None]):
         self._set_status(f"{source.name}: {len(result.rows)} sample row(s).")
 
     def action_run_query(self) -> None:
+        if self._run_editor_pending or self.state.query_run.is_running:
+            self._set_status("Query already running.")
+            return
+
+        self._run_editor_pending = True
+        self.query_one("#run-status", Static).update("Preparing editor query...")
+        if not self.call_after_refresh(self._run_query_from_editor):
+            self._run_editor_pending = False
+            self._show_error(
+                CSVQLError(
+                    "Unable to schedule query run.",
+                    suggestion="Try running the query again.",
+                )
+            )
+
+    def _run_query_from_editor(self) -> None:
+        self._run_editor_pending = False
         sql_widget = self.query_one("#sql", TextArea)
         sql = sql_widget.text.strip()
         if not sql:
