@@ -70,8 +70,9 @@ The first Workbench Lite implementation should fix the core interactive loop.
 Required behavior:
 
 - The SQL editor is the primary working pane.
-- `Ctrl+Enter`, `Ctrl+J`, and `F4` run SQL.
-- `Ctrl+J` exists because some terminals do not emit `Ctrl+Enter` reliably.
+- `Ctrl+Enter` and `F4` run the whole editor contents.
+- `F4` is the reliable fallback because some terminals do not emit
+  `Ctrl+Enter` reliably.
 - Successful query results render in a navigable Textual `DataTable`, not as
   static formatted text.
 - The status area shows row count and elapsed time after a successful query.
@@ -81,14 +82,68 @@ Required behavior:
   session.
 - The history view can reopen a prior query in the SQL editor.
 - The history view can rerun a prior query without requiring a restart.
-- `Ctrl+N` creates a fresh query working area or clears the current editor,
-  whichever is simpler to ship cleanly in the first implementation.
+- `Ctrl+N` clears the editor for a new query while keeping history and the last
+  result view visible.
 - The user can run several queries back to back without losing the editor,
   source context, or navigation state.
 
 The first slice may keep one SQL editor buffer if multiple buffers would make
 the implementation fragile. The product requirement is a reliable repeated
-query loop, not tabs for their own sake.
+query loop, not named buffers or tabs.
+
+## Query Execution Semantics
+
+The first Workbench Lite slice runs the whole SQL editor contents.
+
+The run action should be labeled **Run Editor** or equivalent in help, footer,
+and status text. It should not be labeled in a way that implies IDE-style
+current-statement or selected-SQL execution.
+
+When the user invokes Run Editor with `Ctrl+Enter` or `F4`, the TUI should:
+
+- read the complete editor text
+- trim leading and trailing whitespace for empty-query detection
+- pass the editor text through the existing CSVQL query workflow
+- register all currently loaded session sources before execution
+- display the `QueryResult` returned by the existing workflow
+
+The first slice should not implement selected-SQL execution or current-statement
+execution. If the editor has a selection, the run action still runs the whole
+editor. This is deliberate: robust statement-boundary behavior should be
+designed with editor semantics and DuckDB behavior instead of guessed as part
+of the initial workbench loop.
+
+Multiple SQL statements are passed through to the existing DuckDB-backed query
+execution behavior. The TUI displays the final `QueryResult` returned by CSVQL.
+It should not add its own transaction wrapper, SQL parser, statement splitter,
+or safety layer.
+
+If an earlier statement fails, the run fails. The worker should return a typed
+error, history should record an error item, stale last-result state should be
+cleared, export should be disabled, and the result panel/status should show the
+error message and suggestion where available.
+
+If the final statement completes successfully but does not produce a tabular
+result, such as DDL, DML, `COPY`, or `CREATE TABLE`, the run is still a
+successful history item with a `no_result` outcome. Prior last-result state
+should be cleared, export should be disabled, and the result panel/status
+should show a clear message such as "Statement completed; no tabular result to
+display." It should not leave a previous query result visible as if it belonged
+to the no-result statement.
+
+`no_result` is a TUI-local worker/result outcome wrapper. It does not change
+the public `QueryResult` model, existing CLI behavior, existing JSON/table
+contracts, or the `CSVQLSession` API unless a separate design explicitly
+approves that change.
+
+Follow-up editor-quality work should add explicit actions for:
+
+- run selected SQL
+- run current statement
+- run whole editor
+
+Those actions should have distinct labels and tests so users never have to
+guess which SQL was executed.
 
 ## Layout
 
@@ -110,7 +165,7 @@ Recommended first layout:
 |   name               | GROUP BY name                            |
 |   created_at         | LIMIT 20;                                |
 |                      +------------------------------------------+
-| History              | Run/status: F4/Ctrl+Enter/Ctrl+J Run     |
+| History              | Run/status: F4/Ctrl+Enter Run Editor     |
 | 14:22 count payloads | 20 rows | 18 ms | F7 export | ? help     |
 | 14:24 sample names   +------------------------------------------+
 |                      | Results                                  |
@@ -128,16 +183,54 @@ because aliases are the SQL contract for joins.
 
 The TUI should have a clear pane focus model.
 
-Required shortcuts:
+The Workbench keymap should reconcile the current MVP function-key actions with
+the new pane-oriented layout. The first Workbench slice should prefer
+focus-aware commands over global single-letter actions so normal typing in the
+SQL editor remains safe.
 
-- `F2`: focus SQL editor
-- `F5`: focus results
-- `F6`: focus sources
-- `F8`: focus history
-- `F10`: toggle fullscreen for the focused pane if practical
-- `?`: open help/keybindings
-- `Esc`: close modals, search, or help and return to the previous pane
-- arrow keys: move within the focused pane
+Recommended global bindings:
+
+| Intent | Current MVP binding | Workbench first-slice binding |
+| --- | --- | --- |
+| Run editor | `F4`, `Ctrl+Enter` | `F4`, `Ctrl+Enter` |
+| New query | `F10`, `Ctrl+N` | `F10`, `Ctrl+N` |
+| Export last result | `F7` | `F7` |
+| Quit | `F9`, hidden `q` | `F9`, hidden `q` |
+| Focus SQL editor | `Ctrl+Down` | `F2`, `Ctrl+Down`, non-editor `Tab` cycle |
+| Focus results | none | `F5`, non-editor `Tab` cycle |
+| Focus sources | `Ctrl+Up` | `F6`, `Ctrl+Up`, non-editor `Tab` cycle |
+| Focus history | none | `F8`, non-editor `Tab` cycle |
+| Help/keybindings | none | `F1` globally, `?` outside SQL editor |
+
+Recommended focus-specific source actions:
+
+| Intent | Current MVP binding | Workbench first-slice binding |
+| --- | --- | --- |
+| Inspect source | `F1` | `i` while sources are focused |
+| Sample source | `F2` | `s` while sources are focused |
+| Profile source | `F3` | `p` while sources are focused |
+| Add source | `F5` | `a` while sources are focused |
+| Remove source | `F6` | `d` while sources are focused |
+| Save sources | `F8` | `w` while sources are focused |
+
+Recommended focus-specific history actions:
+
+| Intent | Workbench first-slice binding |
+| --- | --- |
+| Reopen selected query in editor | `Enter` |
+| Rerun selected query | `r` |
+
+Other required navigation behavior:
+
+- `Tab` and `Shift+Tab` may cycle panes only when the SQL editor is not
+  focused.
+- While the SQL editor is focused, `Tab` is reserved for editor text input or
+  indentation behavior. If indentation is not implemented in the first slice,
+  the app still must not steal `Tab` for pane cycling from the focused editor.
+- `Esc` closes modals, search, or help and returns to the previous pane.
+- Arrow keys move within the focused pane.
+- `F10` may toggle fullscreen only if it does not conflict with the accepted
+  `F10`/`Ctrl+N` new-query behavior; otherwise fullscreen should be deferred.
 
 The footer should show the useful active bindings for the current context. It
 should not require the user to remember invisible modes.
@@ -145,6 +238,19 @@ should not require the user to remember invisible modes.
 The TUI should never trap the user in the result view. After running SQL, the
 user must be able to immediately edit/run another query, navigate results, or
 return to sources/history with predictable keys.
+
+## Text Entry Safety
+
+Printable keys must be safe while the SQL editor is focused.
+
+While the SQL editor is focused, printable characters must type into SQL, not
+trigger app actions. This includes `?`, `q`, `i`, `s`, `p`, `a`, `d`, `w`, and
+`r`.
+
+Source and history letter actions apply only when their panes are focused. The
+hidden `q` quit binding must not fire while SQL text entry owns focus. If bare
+`?` cannot be made safe in the SQL editor, help must use only a non-printable
+binding such as `F1` while the editor is focused.
 
 ## Results Grid
 
@@ -154,13 +260,38 @@ Required behavior:
 
 - columns are visible as table headers
 - rows are keyboard navigable
+- horizontal scrolling is supported for wide result sets
 - large values do not break the whole layout
 - empty result sets show a clear empty-state message
 - result metadata includes row count and elapsed time
 - export uses the existing explicit export workflow and last-result state
+- the grid displays at most 1,000 rows by default
+- the grid labels capped output clearly, such as "showing first 1,000 of
+  12,345 returned rows"
+- cell display text is truncated for layout, with a first-slice target of 120
+  visible characters per cell
+- truncation affects only the grid display, not the stored query result
 
-The first implementation should prefer a bounded preview over trying to render
-huge result sets in full. CSVQL must not claim large-file or large-result TUI
+The first implementation should treat the row cap as a display cap, not a new
+query-execution guarantee. CSVQL's existing `QueryResult` may still hold the
+full query result in memory. Users should use SQL `LIMIT` for large exploratory
+queries until streaming or preview-limited execution is deliberately designed.
+Any row-count label refers only to rows present in the stored `QueryResult`; it
+must not imply a source-table count, table scan, or knowledge of rows that were
+not returned by the query workflow.
+
+The first slice should not cap visible columns by silently dropping them.
+Instead, the result grid should support horizontal scrolling for columns that do
+not fit in the terminal. This is a usability requirement for ordinary wide
+results, not a claim that CSVQL handles arbitrary wide CSVs well.
+
+Export should write the stored last `QueryResult`, not the truncated grid
+display. In the first slice, that means export writes the full result returned
+by the existing query workflow. If a future implementation changes query
+execution to fetch only a preview, the export contract must be revisited and
+documented before shipping.
+
+CSVQL must not claim large-file, large-result, streaming, or memory-safe TUI
 performance without benchmark evidence.
 
 ## Query History
@@ -183,8 +314,24 @@ Required actions:
 - reopen selected SQL in the editor
 - rerun selected SQL
 
+Rerunning a history item uses the current session sources. History stores SQL
+and run metadata, not a snapshot of the original source state. If aliases are
+missing, removed, or changed since the original run, normal current-session
+query errors apply.
+
 History should not write files by default. Persisted query history or saved SQL
 files belong to a later query-persistence slice.
+
+History privacy rules:
+
+- no query history persistence by default
+- no history file writes
+- no logs containing SQL or query-history records
+- no telemetry
+- history clears when the TUI process exits
+- SQL and error text may include local paths, private identifiers, or sensitive
+  business terms, so help text and docs should describe history as local
+  in-memory session state only
 
 ## Help And Discovery
 
@@ -192,7 +339,10 @@ The workbench needs a help surface.
 
 Required behavior:
 
-- `?` opens a keybindings/help screen.
+- `F1` opens a keybindings/help screen from any pane and is the primary global
+  help key.
+- `?` opens help only when a non-editor pane is focused and remains documented
+  as a fallback because some terminals intercept function keys.
 - Help lists pane focus keys, query execution keys, history actions, source
   actions, result actions, export, save sources, and quit.
 - `Esc` exits help and returns focus to the previous pane.
@@ -222,12 +372,30 @@ failure into an empty successful result.
 
 ## Responsiveness
 
-Long-running query, inspect, profile, or export work should move toward Textual
-workers so the interface does not freeze.
+Query execution must use a Textual worker in the first Workbench Lite slice so
+the interface does not freeze while DuckDB runs.
 
-The first slice may implement workers for query execution immediately if the
-implementation remains small. If workers are deferred, the implementation plan
-must state that blocking behavior remains a known UX risk.
+Required behavior:
+
+- entering a running state updates the status bar
+- the run action should not launch overlapping query workers
+- each run gets a monotonically increasing sequence id
+- workers return typed success, no-result, or error outcomes
+- UI mutation happens on the Textual app/UI thread
+- worker success updates result state, result grid, status, and history
+- worker failure updates error state, status, and history
+- stale worker outcomes must be ignored if a newer run sequence has superseded
+  them
+- cancellation may be deferred if DuckDB cancellation is not already supported
+  cleanly
+- quitting during an active query worker is allowed
+- quitting during an active query exits the app, persists no history, and writes
+  no files unless an explicit export or save action already completed
+- no cancellation guarantee is claimed for active DuckDB work in the first slice
+
+Inspect, profile, and export workers may be sequenced after query workers unless
+the implementation touches those paths heavily. If they remain synchronous, the
+implementation plan must record that as a known UX risk.
 
 ## Explicitly Sequenced Later
 
@@ -311,8 +479,68 @@ Possible new focused modules:
 - `src/csvql/tui_results.py` for result-grid population and formatting
 - `src/csvql/tui_help.py` for help screen content
 
+Recommended internal state contracts:
+
+`TUIFocusPane`
+: enum or `Literal` for `sources`, `editor`, `results`, `history`, and modal or
+  help states where needed. The app should use this instead of scattered string
+  checks.
+
+`TUIQueryHistoryItem`
+: immutable record for one query attempt. Recommended fields: `sequence`,
+  `sql`, `status`, `row_count`, `elapsed_ms`, `error_message`, and
+  `created_at` or monotonic session timestamp. It is session-local only.
+
+`TUIResultViewState`
+: state for the visible result grid. Recommended fields: `columns`,
+  `display_rows`, `total_row_count`, `preview_row_cap`, `cell_char_cap`,
+  `is_truncated`, and `source_result_id` or sequence link back to the stored
+  last result.
+
+`TUIQueryRunState`
+: state for active execution. Recommended fields: `is_running`, active worker
+  id or handle, started timestamp, and SQL sequence. This prevents overlapping
+  runs and stale worker results from updating the wrong view.
+
+These contracts should keep `tui_app.py` from becoming state soup. The app may
+own composition and event dispatch, but durable behavior should sit in typed
+state helpers that can be tested without running the full Textual app.
+
 The TUI should consume typed result/error objects. It should not scrape CLI
 stdout.
+
+## Skill Activation Contract
+
+Before implementation, read `AGENTS.md`, this spec, current TUI source/tests,
+and the relevant skill files.
+
+If this spec conflicts with `AGENTS.md` or higher-priority repo instructions,
+those instructions win unless the user explicitly approves a spec revision.
+
+Required skills by change type:
+
+- Python modules, Textual app code, typing, packaging, or tests:
+  `python-codebase-standards`
+- SQL execution, DuckDB behavior, table aliasing, CSV path handling, or
+  trusted/untrusted SQL boundaries:
+  `python-codebase-standards` and `security-best-practices`
+- TUI UX, keybindings, help text, README, roadmap, or user-facing errors:
+  `documentation` or `readme`
+- Test strategy, Textual app tests, regression coverage, or manual proof:
+  `testing-strategy` or `qa-test-planner`
+- Long-running queries, result-size behavior, workers, or performance claims:
+  `performance-engineering`
+- Implementation planning is mandatory before implementation and must use:
+  `superpowers:writing-plans`
+- Implementation work:
+  `superpowers:test-driven-development`
+- Debugging broken TUI behavior:
+  `superpowers:systematic-debugging`
+- Completion claim:
+  `superpowers:verification-before-completion`
+
+If a required skill is unavailable, stop and state the missing skill unless the
+user explicitly approves a fallback.
 
 ## Testing Strategy
 
@@ -320,17 +548,40 @@ The implementation plan should include focused tests before broad app changes.
 
 Required proof points:
 
-- run keys work from the SQL editor: `Ctrl+Enter`, `Ctrl+J`, and `F4`
+- run keys work from the SQL editor: `Ctrl+Enter` and `F4`
+- run keys execute the whole editor text, not a hidden selected/current
+  statement mode
+- run labels/help say "Run Editor" or equivalent
+- `Ctrl+N` clears the editor while leaving history and last result view visible
+- printable SQL text keys do not trigger app actions while the editor is
+  focused
+- `Tab` does not cycle panes while the editor is focused
 - repeated queries work without restarting the TUI
 - successful results populate a `DataTable`
+- final no-result statements clear stale results, disable export, and record a
+  successful no-result history item
+- earlier statement failures record an error, clear stale results, and disable
+  export
 - empty result sets show a clear state
+- result display caps rows and truncates wide cells without mutating the stored
+  result
+- result row-count labels refer to returned rows, not total source rows
+- wide result columns remain reachable through horizontal scrolling
 - query failures record history and do not leave stale successful result state
 - history records success and failure metadata
 - history can reopen a prior query
 - history can rerun a prior query
+- history reruns use current session sources and surface normal errors when
+  aliases have changed
 - pane focus shortcuts move to editor, results, sources, and history
 - help opens and closes with predictable focus restoration
+- query workers use sequence ids and ignore stale outcomes
+- quitting during an active query exits without persisting history or creating
+  implicit files
 - export still uses explicit last-result behavior
+- `csvql menu --help` remains accurate
+- plain `csvql` behavior remains unchanged
+- README and in-TUI help document the accepted Workbench keymap
 
 Recommended verification:
 
@@ -351,10 +602,29 @@ result explicitly.
 Workbench Lite query-loop implementation is acceptable when:
 
 - `csvql menu` still starts with project, path, and repeated `--table` sources.
+- `csvql menu --help` documents startup arguments and does not regress.
+- Plain `csvql` still shows the existing root help behavior.
 - The editor, sources, results, and history are reachable by documented keys.
+- README and TUI help agree on the Workbench keymap.
 - The user can run multiple SQL queries in one session without restarting.
+- `Ctrl+N` clears the editor for a new query without hiding history or the last
+  result view.
+- Run commands execute the whole editor text in the first slice.
+- Run commands are visibly labeled as whole-editor execution.
+- Printable keys type into SQL while the editor is focused.
+- Final no-result statements and earlier statement failures have deterministic
+  history, result-state, export, panel, and status behavior.
+- Query workers cannot update the UI with stale superseded results.
 - Results are navigable as a table.
+- Result display is capped and wide cells are truncated without changing export
+  data.
+- Wide result columns remain reachable through horizontal scrolling.
 - Query history is visible and useful in the current session.
+- Query history remains in memory only, clears on quit, and is not logged or
+  persisted by default.
+- History reruns use current session sources, not source snapshots.
+- Quitting during active query work does not create implicit history, save, or
+  export files.
 - Errors are visible, recoverable, and do not masquerade as empty success.
 - No implicit `.csvql.yml`, query-history, cache, or export file writes occur.
 - Existing non-TUI CLI commands and the public Python API remain unchanged.
