@@ -49,11 +49,11 @@ from csvql.query_workflow import (
 )
 from csvql.source_resolver import resolve_path_or_catalog_source
 from csvql.sql_file import load_sql_file
+from csvql.tui_launcher import run_menu_command
 
 app = typer.Typer(
     add_completion=False,
     help="Query local CSV files with DuckDB SQL.",
-    no_args_is_help=True,
 )
 
 
@@ -63,8 +63,9 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def _root(
+    ctx: typer.Context,
     version: Annotated[
         bool,
         typer.Option(
@@ -76,6 +77,10 @@ def _root(
     ] = False,
 ) -> None:
     """CSVQL command group."""
+
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit()
 
 
 @app.command()
@@ -176,6 +181,33 @@ def profile(
             typer.echo(format_profile_result_json(result))
         else:
             typer.echo(format_profile_result_table(result), nl=False)
+    except CSVQLError as exc:
+        _exit_with_error(exc)
+
+
+@app.command()
+def menu(
+    csv_path: Annotated[
+        str | None,
+        typer.Argument(help="CSV file to preload into the TUI session."),
+    ] = None,
+    table: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--table",
+            "-t",
+            help="Table mapping in name=path form. Repeat for multiple CSV files.",
+        ),
+    ] = None,
+) -> None:
+    """Open the interactive CSVQL terminal menu."""
+
+    try:
+        run_menu_command(
+            csv_path=csv_path,
+            table_mappings=tuple(table or ()),
+            start_dir=Path.cwd(),
+        )
     except CSVQLError as exc:
         _exit_with_error(exc)
 
@@ -480,7 +512,7 @@ def _exit_with_error(error: CSVQLError) -> None:
     console = Console(stderr=True, color_system=None)
     console.print(f"Error: {error.message}")
     if error.suggestion:
-        console.print(f"Suggestion: {error.suggestion}")
+        console.print(f"Suggestion: {error.suggestion}", markup=False)
     raise typer.Exit(error.exit_code)
 
 
