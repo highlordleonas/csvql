@@ -25,9 +25,9 @@ This repository has the core local workflow implemented for local CLI use:
 query, inspect/sample, project catalogs, saved SQL, export, profile, configured
 checks, doctor, benchmark and release-readiness proof scripts, JSON contract
 documentation, the failure gallery, the polished example project, and the small
-project-backed Python API. The current lane is v1 hardening: with the v1
-release package applied, the remaining gate is final release-candidate
-eligibility proof.
+project-backed Python API. CSVQL remains in v1 hardening. The release workflow
+and release-note material now exist; the next remaining gate is final
+release-candidate eligibility proof.
 
 Implemented now:
 
