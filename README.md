@@ -100,6 +100,15 @@ The menu is session-backed by default. Sources added inside the TUI live only
 for the current session unless you explicitly save them to a `.csvql.yml`
 project catalog. Exports are written only when you choose the export action.
 
+The SQL editor is focused when the menu opens. Type SQL directly, then press
+`Ctrl+Enter` or `F4` to run it. Use `Ctrl+Up` to focus the source table and
+`Ctrl+Down` to return to the SQL editor. Arrow keys move the cursor in the SQL
+editor or move through sources when the source table is focused. The footer
+shows the main actions: `F1` inspect, `F2` sample, `F3` profile, `F4` run SQL,
+`F5` add source, `F6` remove source, `F7` export, `F8` save sources, and `F9`
+quit. Use `Ctrl+N` or `F10` to clear the editor for another query. `F4` is the
+reliable fallback if your terminal does not emit `Ctrl+Enter`.
+
 The SQL editor uses the same trusted local DuckDB execution posture as the rest
 of CSVQL. Do not run untrusted SQL.
 

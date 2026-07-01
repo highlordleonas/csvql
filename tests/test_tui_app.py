@@ -95,6 +95,180 @@ def test_app_clears_stale_result_on_failed_query(tmp_path: Path) -> None:
     assert "missing_table" in results or "missing_table" in status
 
 
+def test_sql_editor_keeps_regular_text_keys_for_typing(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+    config_path = tmp_path / ".csvql.yml"
+
+    async def _inner() -> tuple[str, bool, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+
+            await pilot.press("s")
+            await pilot.pause()
+
+            status = app.query_one("#status", Static).content
+            return sql.text, config_path.exists(), status
+
+    sql_text, config_exists, status = asyncio.run(_inner())
+
+    assert sql_text == "s"
+    assert config_exists is False
+    assert "Saved sources to" not in status
+
+
+def test_function_key_runs_query_from_sql_editor(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.load_text("SELECT * FROM customers")
+
+            await pilot.press("f4")
+            await pilot.pause()
+
+            status = app.query_one("#status", Static).content
+            results = app.query_one("#results", Static).content
+            return status, results
+
+    status, results = asyncio.run(_inner())
+
+    assert "2 row(s) returned." in status
+    assert "alex@example.com" in results
+
+
+def test_ctrl_enter_runs_query_from_sql_editor(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.load_text("SELECT * FROM customers")
+
+            await pilot.press("ctrl+enter")
+            await pilot.pause()
+
+            status = app.query_one("#status", Static).content
+            results = app.query_one("#results", Static).content
+            return status, results
+
+    status, results = asyncio.run(_inner())
+
+    assert "2 row(s) returned." in status
+    assert "alex@example.com" in results
+
+
+def test_query_run_returns_focus_to_sql_editor(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> object | None:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.load_text("SELECT * FROM customers")
+
+            await pilot.press("ctrl+enter")
+            await pilot.pause()
+
+            return app.focused
+
+    focused = asyncio.run(_inner())
+
+    assert isinstance(focused, TextArea)
+
+
+def test_new_query_shortcut_clears_sql_and_refocuses_editor(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, str, object | None]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.load_text("SELECT * FROM customers")
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            status = app.query_one("#status", Static).content
+            return sql.text, status, app.focused
+
+    sql_text, status, focused = asyncio.run(_inner())
+
+    assert sql_text == ""
+    assert "Ready for next query." in status
+    assert isinstance(focused, TextArea)
+
+
+def test_can_run_another_query_after_starting_new_query(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.load_text("SELECT * FROM customers")
+            await pilot.press("ctrl+enter")
+            await pilot.pause()
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            sql.load_text("SELECT COUNT(*) AS row_count FROM customers")
+            await pilot.press("ctrl+enter")
+            await pilot.pause()
+
+            status = app.query_one("#status", Static).content
+            results = app.query_one("#results", Static).content
+            return status, results
+
+    status, results = asyncio.run(_inner())
+
+    assert "1 row(s) returned." in status
+    assert "row_count" in results
+    assert "2" in results
+
+
+def test_focus_shortcuts_move_between_sources_and_sql(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[object | None, object | None, object | None]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            initial_focus = app.focused
+
+            await pilot.press("ctrl+up")
+            await pilot.pause()
+            source_focus = app.focused
+
+            await pilot.press("ctrl+down")
+            await pilot.pause()
+            sql_focus = app.focused
+
+            return initial_focus, source_focus, sql_focus
+
+    initial_focus, source_focus, sql_focus = asyncio.run(_inner())
+
+    assert isinstance(initial_focus, TextArea)
+    assert isinstance(source_focus, DataTable)
+    assert isinstance(sql_focus, TextArea)
+
+
 def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> None:
     csv_path = _create_csv(
         tmp_path,
@@ -106,7 +280,7 @@ def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> Non
         app = CSVQLMenuApp(start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("a")
+            await pilot.press("f5")
             await pilot.pause()
 
             mapping_input = app.screen.query_one("#mapping-input", Input)
@@ -132,7 +306,7 @@ def test_export_action_requires_last_result(tmp_path: Path) -> None:
         app = CSVQLMenuApp(start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("e")
+            await pilot.press("f7")
             await pilot.pause()
             status = app.query_one("#status", Static).content
             results = app.query_one("#results", Static).content
@@ -151,7 +325,7 @@ def test_remove_selected_source_updates_state_and_table(tmp_path: Path) -> None:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("d")
+            await pilot.press("f6")
             await pilot.pause()
             sources = app.query_one("#sources", DataTable)
             status = app.query_one("#status", Static).content
@@ -172,17 +346,17 @@ def test_inspect_sample_and_profile_selected_source_update_output(tmp_path: Path
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            await pilot.press("i")
+            await pilot.press("f1")
             await pilot.pause()
             inspect_status = app.query_one("#status", Static).content
             inspect_results = app.query_one("#results", Static).content
 
-            await pilot.press("m")
+            await pilot.press("f2")
             await pilot.pause()
             sample_status = app.query_one("#status", Static).content
             sample_results = app.query_one("#results", Static).content
 
-            await pilot.press("p")
+            await pilot.press("f3")
             await pilot.pause()
             profile_status = app.query_one("#status", Static).content
             profile_results = app.query_one("#results", Static).content
@@ -233,7 +407,7 @@ def test_export_last_result_writes_file_when_result_exists(tmp_path: Path) -> No
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("e")
+            await pilot.press("f7")
             await pilot.pause()
 
             export_input = app.screen.query_one("#export-path", Input)
@@ -263,7 +437,7 @@ def test_save_sources_creates_catalog_only_when_invoked(tmp_path: Path) -> None:
         async with app.run_test() as pilot:
             await pilot.pause()
             before = config_path.exists()
-            await pilot.press("s")
+            await pilot.press("f8")
             await pilot.pause()
             after = config_path.exists()
             status = app.query_one("#status", Static).content
@@ -284,7 +458,7 @@ def test_save_sources_surfaces_project_config_errors(tmp_path: Path) -> None:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("s")
+            await pilot.press("f8")
             await pilot.pause()
             status = app.query_one("#status", Static).content
             results = app.query_one("#results", Static).content

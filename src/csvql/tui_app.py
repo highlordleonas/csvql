@@ -7,7 +7,7 @@ from typing import ClassVar
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Input, Static, TextArea
+from textual.widgets import DataTable, Footer, Input, Static, TextArea
 
 from csvql.exceptions import CSVQLError
 from csvql.export import ExportFormat
@@ -55,16 +55,45 @@ class _PromptInputScreen(ModalScreen[str | None]):
 class CSVQLMenuApp(App[None]):
     """Minimal interactive menu for loading sources and running SQL."""
 
+    CSS = """
+    #status {
+        height: 1;
+    }
+
+    #sources {
+        height: 5;
+    }
+
+    #sql {
+        height: 8;
+    }
+
+    #results {
+        height: 1fr;
+        overflow-y: auto;
+    }
+    """
+
     BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
-        Binding("q", "quit", "Quit"),
-        Binding("a", "add_source", "Add source"),
-        Binding("d", "remove_source", "Remove source"),
-        Binding("i", "inspect_source", "Inspect source"),
-        Binding("p", "profile_source", "Profile source"),
-        Binding("m", "sample_source", "Sample source"),
-        Binding("r", "run_query", "Run query"),
-        Binding("e", "export_last_result", "Export result"),
-        Binding("s", "save_sources", "Save sources"),
+        Binding("q", "quit", "Quit", show=False),
+        Binding("f1", "inspect_source", "Inspect", priority=True),
+        Binding("f2", "sample_source", "Sample", priority=True),
+        Binding("f3", "profile_source", "Profile", priority=True),
+        Binding(
+            "f4,ctrl+enter",
+            "run_query",
+            "Run SQL",
+            key_display="F4/Ctrl+Enter",
+            priority=True,
+        ),
+        Binding("f5", "add_source", "Add source", priority=True),
+        Binding("f6", "remove_source", "Remove source", priority=True),
+        Binding("f7", "export_last_result", "Export result", priority=True),
+        Binding("f8", "save_sources", "Save sources", priority=True),
+        Binding("f9", "quit", "Quit", priority=True),
+        Binding("f10,ctrl+n", "new_query", "New query", priority=True),
+        Binding("ctrl+up", "focus_sources", "Sources", priority=True),
+        Binding("ctrl+down", "focus_sql", "SQL", priority=True),
     ]
 
     def __init__(
@@ -91,16 +120,30 @@ class CSVQLMenuApp(App[None]):
         yield DataTable(id="sources", cursor_type="row")
         yield TextArea(id="sql")
         yield Static("", id="results")
+        yield Footer()
 
     async def on_mount(self) -> None:
         self._refresh_sources_table()
         self._set_status(self._status_message())
+        self.query_one("#sql", TextArea).focus()
 
     def action_add_source(self) -> None:
         self.push_screen(
             _PromptInputScreen("Enter a name=path mapping.", input_id="mapping-input"),
             callback=self._handle_add_source,
         )
+
+    def action_focus_sources(self) -> None:
+        self.query_one("#sources", DataTable).focus()
+
+    def action_focus_sql(self) -> None:
+        self.query_one("#sql", TextArea).focus()
+
+    def action_new_query(self) -> None:
+        sql_widget = self.query_one("#sql", TextArea)
+        sql_widget.load_text("")
+        sql_widget.focus()
+        self._set_status("Ready for next query.")
 
     def action_remove_source(self) -> None:
         selected_source = self.state.selected_source()
@@ -199,6 +242,7 @@ class CSVQLMenuApp(App[None]):
         self.state.set_last_result(result)
         self.query_one("#results", Static).update(format_table_result(result))
         self._set_status(f"{result.row_count} row(s) returned.")
+        sql_widget.focus()
 
     def action_export_last_result(self) -> None:
         if self.state.last_result is None:
