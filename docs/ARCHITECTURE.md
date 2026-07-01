@@ -19,9 +19,10 @@ CLI arguments
 : Typer command definitions and process-exit behavior. Keep this thin.
 
 `api.py`
-: Small public Python wrapper around project-backed query, saved SQL, profile,
-  and check services. It stores resolved project context, not a persistent
-  DuckDB connection, and does not own CLI formatting or exit behavior.
+: Small public Python wrapper around project-backed table listing, query, saved
+  SQL, inspect, sample, profile, configured checks, and export services. It
+  stores resolved project context, not a persistent DuckDB connection, and does
+  not own CLI formatting or process-exit behavior.
 
 `table_mapping.py`
 : Parse `name=path`, validate table aliases, resolve CSV paths, and support single-file alias derivation.
@@ -86,7 +87,7 @@ CLI arguments
 - Explicit `--table` mappings override catalog aliases with the same name for a single query invocation.
 - User SQL is passed through to DuckDB and treated as trusted local input.
 - CSVQL does not restrict DuckDB capabilities or sandbox filesystem access.
-- The small Python API is project-config-only and uses short-lived execution per method.
+- The small Python API is project-config-only and uses short-lived execution per method for table listing, query, saved SQL, inspect, sample, profile, configured checks, and export.
 - `inspect` does not run an exact row count by default; `--exact` is the explicit full-scan mode.
 - `sample` reads a bounded row count and shares source resolution with `inspect` and `query`.
 - `profile` intentionally performs a full scan and shares source resolution with `inspect` and `sample`.

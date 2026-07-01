@@ -102,20 +102,22 @@ Implemented:
 - common failure gallery covering missing files, invalid aliases, invalid config, failed checks, overwrite protection, missing SQL files, and doctor failures
 - focused `csvql doctor` command for local project health checks
 - `CSVQLSession.from_config(".csvql.yml")`
+- `session.tables()`
 - `session.query(sql)`
 - `session.run_file(path)`
+- `session.inspect(table, exact=False)`
+- `session.sample(table, limit=10)`
 - `session.profile(table)`
 - `session.check(table=None)`
+- `session.export(sql_file, out, format="json", force=False)`
 - small typed result objects that wrap existing CLI-tested internals
-- no dataframe framework, notebook integration, async API, plugin API, or second execution engine
+- no direct-path session mode, dataframe framework, notebook integration, async API, plugin API, config mutation helpers, or second execution engine
 
 Remaining before v1:
 
-- final documentation pass that keeps AGENTS.md, README, architecture, JSON
-  contracts, release readiness, roadmap, and product direction aligned
-- explicit contract-stabilization decision for current JSON shapes, exit-code
-  policy, config schema, and the small Python API
 - release workflow and changelog or release-note material
+- final release-candidate eligibility check after release workflow and release
+  notes exist
 
 ## v1.0.0 - Stable Release
 

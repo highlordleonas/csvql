@@ -74,20 +74,32 @@ uv run csvql --help
 
 ## Python API Example
 
-CSVQL also exposes a small project-backed Python API:
+CSVQL also exposes a project-backed Python API:
 
 ```python
 from csvql import CSVQLSession
 
 session = CSVQLSession.from_config("examples/saas_revenue")
+
+tables = session.tables()
+sample = session.sample("revenue_movements", limit=5)
+profile = session.profile("revenue_movements")
 result = session.run_file("queries/revenue_health.sql")
+output_path = session.export(
+    "queries/revenue_health.sql",
+    "output/revenue-health.json",
+    format="json",
+    force=True,
+)
 
 for row in result.as_records():
     print(row)
 ```
 
-The Python API is intentionally small: project-backed SQL, saved SQL files,
-profiling, and configured checks only.
+The Python API is intentionally project-backed: table listing, trusted SQL,
+saved SQL files, inspect, sample, profile, configured checks, and export. It
+does not provide direct-path sessions, ad hoc table mappings, config mutation,
+dataframe helpers, async execution, plugins, or a second execution engine.
 
 ## Query Examples
 

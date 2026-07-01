@@ -108,9 +108,10 @@ DuckDB remains the sole engine for the foreseeable future.
 
 Inspect, profile, check, and doctor now rely on DuckDB CSV handling. A past
 DuckDB `sniff_csv` vulnerability was fixed after affected `1.0.0` releases. The
-current lockfile resolves DuckDB `1.5.4`, but `pyproject.toml` currently allows
-`duckdb>=1.0.0`. Before v1, raise or document the minimum supported DuckDB
-version so vulnerable versions are not accepted.
+v1 contract-stabilization slice raises the package dependency floor to
+`duckdb>=1.5.0,<2`, matching the current DuckDB 1.5.x lockfile family while
+avoiding silent acceptance of old 1.0-era engines or a future DuckDB major
+version.
 
 This does not make CSVQL a sandbox. DuckDB SQL can read and write files and may
 access external resources depending on settings and extensions. CSVQL is a local
