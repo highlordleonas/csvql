@@ -358,6 +358,21 @@ Current top-level fields:
 `doctor` exits `0` for `passed` and `warning` results. It exits `12` when
 concrete project-health failures are found.
 
+`project` is always present. Its `config_path` and `project_root` fields are
+machine-local absolute paths when a project catalog is found, and `null` when
+project discovery only emits a warning.
+
+Each `probes` entry always includes:
+
+- `name`
+- `scope`
+- `status`
+- `message`
+
+Probe entries can also include conditional context fields such as `table`,
+`check`, `path`, `resolved_path`, `column`, `reference_table`, and
+`reference_column`.
+
 ### tables --output json
 
 Current top-level fields:
