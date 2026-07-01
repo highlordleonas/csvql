@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from pathlib import Path
 
 import pytest
@@ -622,6 +623,173 @@ def test_no_result_outcome_clears_last_result_and_disables_export(
     assert "no tabular result" in status
     assert "no tabular result" in message
     assert app_history_statuses(state) == ["no_result"]
+
+
+def test_unexpected_worker_failure_records_error_and_allows_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    original_run_query_for_tui = __import__(
+        "csvql.tui_app", fromlist=["run_query_for_tui"]
+    ).run_query_for_tui
+    calls = {"count": 0}
+
+    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("boom")
+        return original_run_query_for_tui(sources, sql, sequence=sequence)
+
+    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+
+    async def _inner() -> tuple[bool, str, str, str, object | None, list[str], str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT * FROM customers")
+
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+
+            first_status = app.query_one("#status", Static).content
+            first_message = app.query_one("#results-message", Static).content
+            run_status = app.query_one("#run-status", Static).content
+
+            sql.load_text("SELECT COUNT(*) AS row_count FROM customers")
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+
+            second_status = app.query_one("#status", Static).content
+            return (
+                app.state.query_run.is_running,
+                first_status,
+                first_message,
+                run_status,
+                app.state.last_result,
+                app_history_statuses(app.state),
+                second_status,
+            )
+
+    (
+        is_running,
+        first_status,
+        first_message,
+        run_status,
+        last_result,
+        history_statuses,
+        second_status,
+    ) = asyncio.run(_inner())
+
+    assert is_running is False
+    assert "Unexpected worker failure" in first_status
+    assert "Unexpected worker failure" in first_message
+    assert run_status == "Ready."
+    assert last_result is not None
+    assert history_statuses == ["error", "success"]
+    assert "1 returned row(s)" in second_status
+
+
+def test_sample_after_query_clears_exportable_result_and_export_refuses(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[object | None, tuple[str, ...], str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT * FROM customers")
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+
+            await pilot.press("f2")
+            await pilot.pause()
+
+            await pilot.press("f7")
+            await pilot.pause()
+
+            return (
+                app.state.last_result,
+                app.state.result_view.columns,
+                app.query_one("#status", Static).content,
+                app.query_one("#results-message", Static).content,
+                app.query_one("#run-status", Static).content,
+            )
+
+    last_result, result_view_columns, status, message, run_status = asyncio.run(_inner())
+
+    assert last_result is None
+    assert result_view_columns == ()
+    assert "Run a query before exporting." in status
+    assert "Run a query before exporting." in message
+    assert run_status == "Ready."
+
+
+def test_second_run_while_worker_active_shows_already_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+
+    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
+        worker_started.set()
+        assert release_worker.wait(timeout=1.0)
+        return QueryResult(
+            columns=("customer_id",),
+            rows=(("CUST-001",),),
+            elapsed_ms=5.0,
+        )
+
+    def fake_run_query_for_tui_outcome(sources: object, sql: str, *, sequence: int):
+        result = fake_run_query_for_tui(sources, sql, sequence=sequence)
+        from csvql.tui_state import TUIQueryOutcome
+
+        return TUIQueryOutcome.success(sequence=sequence, sql=sql, result=result)
+
+    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui_outcome)
+
+    async def _inner() -> tuple[str, str, bool, int | None, str, list[str]]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text("SELECT * FROM customers")
+
+            await pilot.press("f4")
+            await pilot.pause(0.05)
+            assert worker_started.is_set()
+
+            await pilot.press("f4")
+            await pilot.pause(0.05)
+
+            status = app.query_one("#status", Static).content
+            run_status = app.query_one("#run-status", Static).content
+            is_running = app.state.query_run.is_running
+            sequence = app.state.query_run.sequence
+
+            release_worker.set()
+            await pilot.pause(0.2)
+
+            final_status = app.query_one("#status", Static).content
+            return (
+                status,
+                run_status,
+                is_running,
+                sequence,
+                final_status,
+                app_history_statuses(app.state),
+            )
+
+    status, run_status, is_running, sequence, final_status, history_statuses = asyncio.run(_inner())
+
+    assert status == "Query already running."
+    assert run_status == "Running editor query 1..."
+    assert is_running is True
+    assert sequence == 1
+    assert "1 returned row(s)" in final_status
+    assert history_statuses == ["success"]
 
 
 def test_successful_query_populates_results_datatable(tmp_path: Path) -> None:

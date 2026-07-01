@@ -8,8 +8,8 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.worker import Worker
 from textual.widgets import DataTable, Footer, Input, Static, TextArea
+from textual.worker import Worker, WorkerState
 
 from csvql.exceptions import CSVQLError
 from csvql.export import ExportFormat
@@ -148,6 +148,7 @@ class CSVQLMenuApp(App[None]):
     ) -> None:
         super().__init__()
         self.start_dir = (start_dir or Path.cwd()).resolve()
+        self._active_query_sql: dict[int, str] = {}
         if initial_state is not None:
             self.state = initial_state
         else:
@@ -223,6 +224,7 @@ class CSVQLMenuApp(App[None]):
             self._show_error(exc)
             return
 
+        self.state.clear_last_result()
         column_names = ", ".join(column.name for column in result.columns) or "(none)"
         self._show_output_text(f"Columns: {column_names}")
         self._set_status(f"{source.name}: {len(result.columns)} columns.")
@@ -239,6 +241,7 @@ class CSVQLMenuApp(App[None]):
             self._show_error(exc)
             return
 
+        self.state.clear_last_result()
         self._show_output_text(format_profile_result_table(result))
         self._set_status(
             f"{source.name}: {result.row_count} rows, "
@@ -257,6 +260,7 @@ class CSVQLMenuApp(App[None]):
             self._show_error(exc)
             return
 
+        self.state.clear_last_result()
         query_result = QueryResult(
             columns=result.columns,
             rows=result.rows,
@@ -298,6 +302,7 @@ class CSVQLMenuApp(App[None]):
 
         self._set_status(f"Running editor query {sequence}...")
         self.query_one("#run-status", Static).update(f"Running editor query {sequence}...")
+        self._active_query_sql[sequence] = sql
         sources = self.state.sources
         self.run_worker(
             lambda: run_query_for_tui(sources, sql, sequence=sequence),
@@ -339,9 +344,21 @@ class CSVQLMenuApp(App[None]):
         worker = event.worker
         if worker.group != "query" or not worker.is_finished:
             return
+        if event.state == WorkerState.ERROR:
+            self._handle_query_worker_failure(worker, worker.error)
+            return
+        if event.state != WorkerState.SUCCESS:
+            return
+
         outcome = worker.result
         if isinstance(outcome, TUIQueryOutcome):
             self._handle_query_outcome(outcome)
+            return
+
+        self._handle_query_worker_failure(
+            worker,
+            RuntimeError(f"Unexpected worker result type: {type(outcome).__name__}"),
+        )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if event.data_table.id == "sources":
@@ -466,6 +483,7 @@ class CSVQLMenuApp(App[None]):
     def _handle_query_outcome(self, outcome: TUIQueryOutcome) -> None:
         if not self.state.is_current_query_sequence(outcome.sequence):
             return
+        self._active_query_sql.pop(outcome.sequence, None)
         if outcome.status == "success" and outcome.result is not None:
             view = make_result_view_state(
                 outcome.result,
@@ -482,7 +500,9 @@ class CSVQLMenuApp(App[None]):
             self.query_one("#sql", TextArea).focus()
             return
         if outcome.status == "no_result":
-            self.state.record_query_no_result(outcome.sequence, outcome.sql, outcome.elapsed_ms or 0.0)
+            self.state.record_query_no_result(
+                outcome.sequence, outcome.sql, outcome.elapsed_ms or 0.0
+            )
             self.query_one("#results", DataTable).clear(columns=True)
             message = "Statement completed; no tabular result to display."
             self._refresh_history_table()
@@ -502,6 +522,41 @@ class CSVQLMenuApp(App[None]):
         self.query_one("#run-status", Static).update("Ready.")
         self._show_error(error)
         self.query_one("#sql", TextArea).focus()
+
+    def _handle_query_worker_failure(
+        self,
+        worker: Worker[object],
+        error: BaseException | None,
+    ) -> None:
+        sequence = self._sequence_from_worker(worker)
+        if sequence is None or not self.state.is_current_query_sequence(sequence):
+            return
+
+        sql = self._active_query_sql.pop(sequence, "<unknown>")
+        error_message = "Unexpected worker failure while running query."
+        if error is not None:
+            error_message = f"{error_message} {error}"
+
+        self.state.record_query_error(sequence, sql, error_message)
+        self._refresh_history_table()
+        self.query_one("#run-status", Static).update("Ready.")
+        self._clear_result_grid()
+        self._show_error(
+            CSVQLError(
+                error_message,
+                suggestion="Try running the query again.",
+            )
+        )
+        self.query_one("#sql", TextArea).focus()
+
+    def _sequence_from_worker(self, worker: Worker[object]) -> int | None:
+        worker_name = worker.name or ""
+        if not worker_name.startswith("query-"):
+            return None
+        try:
+            return int(worker_name.removeprefix("query-"))
+        except ValueError:
+            return None
 
 
 def _export_format_for_path(path_value: str) -> ExportFormat:
