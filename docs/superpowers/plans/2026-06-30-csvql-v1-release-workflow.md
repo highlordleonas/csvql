@@ -530,6 +530,13 @@ Release-note surfaces:
 - [Changelog](../CHANGELOG.md)
 - [v1 release notes](release-notes/v1.md)
 
+For this lane, the release package means these tracked docs exist and agree:
+
+- `CHANGELOG.md`
+- `docs/release-notes/v1.md`
+- this local candidate workflow in `docs/release-readiness.md`
+- README and roadmap discoverability updates
+
 ## Release-Readiness Script
 
 Run:
@@ -595,6 +602,11 @@ Run candidate evaluation from a clean worktree on `main`.
 3. Run the full local gate.
 4. Run release-readiness proof.
 5. Run benchmark proof or explicitly cite a current local benchmark artifact.
+   A current local benchmark artifact must come from the same candidate-state
+   `HEAD`; record both `output/benchmarks/<run-id>/benchmark.json` and
+   `output/benchmarks/<run-id>/benchmark-summary.md`. Rerunning
+   `uv run python scripts/benchmark_csvql.py --output-root output/benchmarks`
+   during final candidate evaluation is preferred.
 6. Scan for unsupported current claims:
 
    ```bash
@@ -611,8 +623,9 @@ Run candidate evaluation from a clean worktree on `main`.
      run, or blocked by remaining work.
    - `release-candidate eligible`: release package exists, full local gate
      passes, release-readiness proof passes, benchmark proof is refreshed or a
-     current local benchmark artifact is cited, authority docs agree, and
-     unsupported claims are absent.
+     same-HEAD local benchmark artifact is cited with benchmark JSON and
+     Markdown summary paths, authority docs agree, and unsupported claims are
+     absent.
    - `blocked`: a named proof, contract, docs, environment, dependency, or
      tooling blocker prevents honest candidate classification.
 
@@ -632,7 +645,8 @@ Use `release-candidate eligible` only as an assessment result after:
 - current JSON shapes, exit codes, config schema, DuckDB dependency floor, and
   Python API surface are documented and test-backed
 - the release-readiness script passes on the candidate state
-- benchmark proof is refreshed or a current local benchmark artifact is cited
+- benchmark proof is refreshed or a same-HEAD local benchmark artifact is cited
+  with benchmark JSON and Markdown summary paths
 - the full local gate passes
 - changelog and release-note material exists for the implemented surfaces
 - docs make no unsupported sandbox, security-isolation, production-readiness,
