@@ -28,6 +28,7 @@ from csvql.output import (
     format_project_tables_table,
     format_sample_result_json,
     format_sample_result_table,
+    format_table_result,
 )
 from csvql.project_config import ProjectTableListing, ProjectTablesResult
 from csvql.quality import CheckFailureSample, CheckResult, CheckRunResult
@@ -178,6 +179,70 @@ def test_format_json_result_is_deterministic() -> None:
         "row_count": 1,
         "rows": [{"name": "Alex", "amount": 20.5}],
     }
+
+
+def test_table_formatters_do_not_write_to_stdout(capsys: pytest.CaptureFixture[str]) -> None:
+    outputs = [
+        format_table_result(
+            QueryResult(
+                columns=("name", "amount"),
+                rows=(("Alex", 20.5),),
+                elapsed_ms=1.23456,
+            )
+        ),
+        format_inspect_result_table(_inspect_result()),
+        format_sample_result_table(
+            SampleResult(
+                source={"display_path": "orders.csv"},
+                limit=1,
+                columns=("order_id", "status"),
+                rows=(("ORD-1", "paid"),),
+                warnings=(),
+            )
+        ),
+        format_profile_result_table(
+            ProfileResult(
+                source={"display_path": "orders.csv"},
+                row_count=2,
+                column_count=1,
+                duplicate_row_count=0,
+                columns=(
+                    ColumnProfile(
+                        name="status",
+                        duckdb_type="VARCHAR",
+                        non_null_count=1,
+                        null_count=1,
+                        null_percentage=50.0,
+                        distinct_count=1,
+                        min="paid",
+                        max="paid",
+                    ),
+                ),
+                warnings=(),
+            )
+        ),
+        format_check_result_table(_check_run_result(), include_failures=True),
+        format_doctor_result_table(_doctor_warning_result()),
+        format_project_tables_table(
+            ProjectTablesResult(
+                project_root=Path("/path/to/project"),
+                config_path=Path("/path/to/project/.csvql.yml"),
+                tables=(
+                    ProjectTableListing(
+                        name="orders",
+                        path="data/orders.csv",
+                        resolved_path=Path("/path/to/project/data/orders.csv"),
+                    ),
+                ),
+            )
+        ),
+    ]
+
+    captured = capsys.readouterr()
+
+    assert all(outputs)
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_format_profile_result_json_is_deterministic() -> None:

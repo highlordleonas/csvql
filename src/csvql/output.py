@@ -88,7 +88,7 @@ def format_project_tables_json(result: ProjectTablesResult) -> str:
 def format_table_result(result: QueryResult) -> str:
     """Format a query result as a Rich table exported to plain text."""
 
-    console = Console(color_system=None, force_terminal=False, record=True, width=120)
+    console = _recording_console(width=120)
     table = Table(show_header=True)
     for column in result.columns:
         table.add_column(column)
@@ -102,7 +102,7 @@ def format_table_result(result: QueryResult) -> str:
 def format_inspect_result_table(result: InspectResult) -> str:
     """Format an inspect result as Rich table text."""
 
-    console = Console(color_system=None, force_terminal=False, record=True, width=120)
+    console = _recording_console(width=120)
     source = result.source
     console.print(f"Source: {source.get('display_path', '')}")
     console.print(f"Rows: {_format_row_count(result.row_count)}")
@@ -124,7 +124,7 @@ def format_inspect_result_table(result: InspectResult) -> str:
 def format_sample_result_table(result: SampleResult) -> str:
     """Format a sample result as Rich table text."""
 
-    console = Console(color_system=None, force_terminal=False, record=True, width=120)
+    console = _recording_console(width=120)
     table = Table(show_header=True)
     for column in result.columns:
         table.add_column(column)
@@ -143,7 +143,7 @@ def format_sample_result_table(result: SampleResult) -> str:
 def format_profile_result_table(result: ProfileResult) -> str:
     """Format a profile result as Rich table text."""
 
-    console = Console(color_system=None, force_terminal=False, record=True, width=140)
+    console = _recording_console(width=140)
     source = result.source
     console.print(f"Source: {source.get('display_path', '')}")
     console.print(f"Rows: {result.row_count}")
@@ -182,8 +182,7 @@ def format_profile_result_table(result: ProfileResult) -> str:
 def format_check_result_table(result: CheckRunResult, *, include_failures: bool) -> str:
     """Format a data-quality check result as Rich table text."""
 
-    buffer = StringIO()
-    console = Console(color_system=None, force_terminal=False, record=True, width=140, file=buffer)
+    console = _recording_console(width=140)
     console.print(f"Status: {result.status}")
     console.print(
         "Checks: "
@@ -220,7 +219,7 @@ def format_check_result_table(result: CheckRunResult, *, include_failures: bool)
 def format_doctor_result_table(result: DoctorRunResult) -> str:
     """Format a doctor result as Rich table text."""
 
-    console = Console(color_system=None, force_terminal=False, record=True, width=140)
+    console = _recording_console(width=140)
     console.print(f"Status: {result.status}")
     console.print(
         "Probes: "
@@ -249,7 +248,7 @@ def format_doctor_result_table(result: DoctorRunResult) -> str:
 def format_project_tables_table(result: ProjectTablesResult) -> str:
     """Format a project catalog table listing as Rich table text."""
 
-    console = Console(color_system=None, force_terminal=False, record=True, width=120)
+    console = _recording_console(width=120)
     table = Table(show_header=True)
     table.add_column("name")
     table.add_column("path")
@@ -258,6 +257,14 @@ def format_project_tables_table(result: ProjectTablesResult) -> str:
         table.add_row(listing.name, listing.path, str(listing.resolved_path))
     console.print(table)
     return console.export_text(clear=True)
+
+
+def _recording_console(*, width: int) -> Console:
+    """Return a Rich console that records output without writing to stdout."""
+
+    return Console(
+        color_system=None, force_terminal=False, record=True, width=width, file=StringIO()
+    )
 
 
 def _format_cell(value: object) -> str:
