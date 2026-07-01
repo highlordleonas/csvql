@@ -75,6 +75,8 @@ Run candidate evaluation from a clean worktree on `main`.
    - `docs/ROADMAP.md`
    - `docs/ARCHITECTURE.md`
    - `docs/json-contracts.md`
+   - `docs/benchmarking.md`
+   - `docs/failure-gallery.md`
    - `docs/release-readiness.md`
    - `docs/release-notes/v1.md`
 
@@ -89,12 +91,13 @@ Run candidate evaluation from a clean worktree on `main`.
 6. Scan for unsupported current claims:
 
    ```bash
-   rg -n "v1-ready|production-safe|sandbox-safe|large-file-proven|production-ready" AGENTS.md README.md CHANGELOG.md docs/PRODUCT_DIRECTION.md docs/ROADMAP.md docs/ARCHITECTURE.md docs/json-contracts.md docs/release-readiness.md docs/release-notes/v1.md
+   rg -n "v1-ready|v1 ready|production-safe|production ready|production-readiness|production readiness|sandbox-safe|sandbox safety|sandbox|large-file-proven|large file proven|large-file performance|large file performance" AGENTS.md README.md CHANGELOG.md docs/PRODUCT_DIRECTION.md docs/ROADMAP.md docs/ARCHITECTURE.md docs/json-contracts.md docs/benchmarking.md docs/failure-gallery.md docs/release-readiness.md docs/release-notes/v1.md
    ```
 
-   Any match must be a guardrail, non-claim, or conditional label rule. A current
-   claim that CSVQL is v1-ready, production-safe, sandbox-safe,
-   production-ready, or large-file-proven blocks candidate eligibility.
+   Matches are expected for guardrails and other non-claims, but each match must
+   be classified. A current claim that CSVQL is v1-ready, production-safe,
+   production-ready, sandbox-safe or sandboxed, or large-file-proven blocks
+   candidate eligibility.
 
 7. Classify the result:
 
@@ -119,8 +122,8 @@ complete, and reviewed.
 Use `release-candidate eligible` only as an assessment result after:
 
 - AGENTS.md, README, changelog, release notes, roadmap, product direction,
-  architecture, JSON contracts, and release readiness agree with the runtime
-  surface
+  architecture, JSON contracts, benchmarking, failure gallery, and release
+  readiness agree with the runtime surface
 - current JSON shapes, exit codes, config schema, DuckDB dependency floor, and
   Python API surface are documented and test-backed
 - the release-readiness script passes on the candidate state
