@@ -84,13 +84,14 @@ class CSVQLSession:
         format: ExportFormat | str,
         force: bool = False,
     ) -> Path:
+        export_format = _export_format(format)
         output_path = resolve_export_path(
             str(out),
             base_dir=self._context.project_root,
             force=force,
         )
         result = self.run_file(sql_file)
-        content = format_query_result_for_export(result, _export_format(format))
+        content = format_query_result_for_export(result, export_format)
         write_export_file(output_path, content)
         return output_path
 

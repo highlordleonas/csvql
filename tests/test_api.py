@@ -244,7 +244,33 @@ def test_session_export_rejects_unknown_format(tmp_path: Path) -> None:
     session = CSVQLSession.from_config(project_root)
 
     with pytest.raises(ExportError, match="Unsupported export format"):
-        session.export("queries/count_orders.sql", "output/count-orders.txt", format="txt")
+        session.export("queries/missing.sql", "output/missing.csv", format="txt")
+
+
+def test_session_export_anchors_output_to_project_root_from_outside_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    _write_project(project_root)
+
+    monkeypatch.chdir(outside_dir)
+    session = CSVQLSession.from_config(project_root)
+
+    output_path = session.export(
+        "queries/count_orders.sql",
+        "output/from-outside.json",
+        format="json",
+    )
+
+    assert output_path == (project_root / "output" / "from-outside.json").resolve()
+    assert output_path.exists()
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["columns"] == ["order_count"]
+    assert payload["rows"] == [{"order_count": 2}]
+    assert payload["row_count"] == 1
 
 
 def test_session_from_config_propagates_missing_project_error(tmp_path: Path) -> None:
