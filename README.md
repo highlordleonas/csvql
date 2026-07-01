@@ -101,13 +101,23 @@ for the current session unless you explicitly save them to a `.csvql.yml`
 project catalog. Exports are written only when you choose the export action.
 
 The SQL editor is focused when the menu opens. Type SQL directly, then press
-`Ctrl+Enter` or `F4` to run it. Use `Ctrl+Up` to focus the source table and
-`Ctrl+Down` to return to the SQL editor. Arrow keys move the cursor in the SQL
-editor or move through sources when the source table is focused. The footer
-shows the main actions: `F1` inspect, `F2` sample, `F3` profile, `F4` run SQL,
-`F5` add source, `F6` remove source, `F7` export, `F8` save sources, and `F9`
-quit. Use `Ctrl+N` or `F10` to clear the editor for another query. `F4` is the
-reliable fallback if your terminal does not emit `Ctrl+Enter`.
+`Ctrl+Enter` or `F4` to run the whole editor. The action is labeled "Run
+Editor" because selected-SQL and current-statement execution are not part of
+this slice. `F4` is the reliable fallback if your terminal does not emit
+`Ctrl+Enter`.
+
+Use `F2` or `Ctrl+Down` for the SQL editor, `F5` for results, `F6` or
+`Ctrl+Up` for sources, and `F8` for history. Printable keys type into SQL while
+the editor is focused. Source actions use letters only when the source pane is
+focused: `i` inspect, `s` sample, `p` profile, `a` add, `d` remove, and `w`
+save sources. History actions use `Enter` to reopen a query and `r` to rerun a
+query against the current session sources. `F1` opens help; `?` is a help
+fallback only outside the SQL editor.
+
+`Ctrl+N` or `F10` clears the editor for a new query while keeping history and
+the last result view visible. Query history is in-memory session state only: it
+is not written to disk, logged, or sent anywhere by CSVQL, and it clears when
+the TUI exits.
 
 The SQL editor uses the same trusted local DuckDB execution posture as the rest
 of CSVQL. Do not run untrusted SQL.

@@ -651,6 +651,25 @@ def test_help_action_opens_and_escape_restores_editor_focus(tmp_path: Path) -> N
     assert isinstance(focused, TextArea)
 
 
+def test_help_text_documents_workbench_keymap(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f1")
+            await pilot.pause()
+            return app.screen.query_one("#help-text", Static).content
+
+    help_text = asyncio.run(_inner())
+
+    assert "Run Editor" in help_text
+    assert "F4 / Ctrl+Enter" in help_text
+    assert "F6 / Ctrl+Up" in help_text
+    assert "History pane" in help_text
+
+
 def test_question_mark_help_only_outside_sql_editor(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
