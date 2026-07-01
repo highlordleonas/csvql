@@ -113,6 +113,18 @@ Implemented:
 - small typed result objects that wrap existing CLI-tested internals
 - no direct-path session mode, dataframe framework, notebook integration, async API, plugin API, config mutation helpers, or second execution engine
 
+## v0.9.0 - Optional Terminal Menu
+
+Implemented:
+
+- optional Textual-powered `csvql menu` TUI
+- session-backed source management
+- startup from `.csvql.yml`, one CSV path, or repeated `--table` mappings
+- inspect, sample, profile, and trusted local SQL querying from the menu
+- explicit project catalog save action
+- explicit export action
+- optional `tui` package extra so the core CLI install does not require Textual
+
 Remaining before v1 publication:
 
 - explicit user approval for external release actions after the `1.0.0` local

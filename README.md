@@ -79,6 +79,30 @@ Run the CLI from the repo:
 uv run csvql --help
 ```
 
+## Interactive Terminal Menu
+
+CSVQL can also run an optional Textual-powered terminal menu:
+
+```bash
+uv run --all-extras csvql menu
+uv run --all-extras csvql menu /path/to/orders.csv
+uv run --all-extras csvql menu --table customers=customers.csv --table orders=orders.csv
+```
+
+Install the optional TUI dependency before using the menu from an installed
+package:
+
+```bash
+pip install "csvql[tui]"
+```
+
+The menu is session-backed by default. Sources added inside the TUI live only
+for the current session unless you explicitly save them to a `.csvql.yml`
+project catalog. Exports are written only when you choose the export action.
+
+The SQL editor uses the same trusted local DuckDB execution posture as the rest
+of CSVQL. Do not run untrusted SQL.
+
 ## Python API Example
 
 CSVQL also exposes a project-backed Python API:
