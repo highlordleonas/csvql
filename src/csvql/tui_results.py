@@ -1,9 +1,17 @@
 """Result-grid display helpers for the CSVQL Workbench TUI."""
 
-from textual.widgets import DataTable
+from typing import Protocol
 
 from csvql.models import QueryResult
 from csvql.tui_state import TUIResultViewState
+
+
+class _ResultTable(Protocol):
+    def clear(self, *, columns: bool = False) -> object: ...
+
+    def add_columns(self, *labels: str) -> object: ...
+
+    def add_row(self, *cells: str) -> object: ...
 
 DEFAULT_RESULT_PREVIEW_ROWS = 1000
 DEFAULT_CELL_CHAR_CAP = 120
@@ -34,7 +42,7 @@ def make_result_view_state(
     )
 
 
-def populate_result_table(table: DataTable[object], view: TUIResultViewState) -> None:
+def populate_result_table(table: _ResultTable, view: TUIResultViewState) -> None:
     """Populate a Textual table from display state."""
 
     table.clear(columns=True)
