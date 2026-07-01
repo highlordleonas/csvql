@@ -888,6 +888,8 @@ Expected:
 - Read: `docs/ROADMAP.md`
 - Read: `docs/ARCHITECTURE.md`
 - Read: `docs/json-contracts.md`
+- Read: `docs/benchmarking.md`
+- Read: `docs/failure-gallery.md`
 - Read: `docs/release-readiness.md`
 - Read: `docs/release-notes/v1.md`
 
@@ -909,20 +911,20 @@ Expected:
 Run:
 
 ```bash
-rg -n "v1-ready|production-safe|sandbox-safe|large-file-proven|production-ready" AGENTS.md README.md CHANGELOG.md docs/PRODUCT_DIRECTION.md docs/ROADMAP.md docs/ARCHITECTURE.md docs/json-contracts.md docs/release-readiness.md docs/release-notes/v1.md
+rg -n "v1-ready|v1 ready|production-safe|production ready|production-readiness|production readiness|sandbox-safe|sandbox safety|sandbox|large-file-proven|large file proven|large-file performance|large file performance" AGENTS.md README.md CHANGELOG.md docs/PRODUCT_DIRECTION.md docs/ROADMAP.md docs/ARCHITECTURE.md docs/json-contracts.md docs/benchmarking.md docs/failure-gallery.md docs/release-readiness.md docs/release-notes/v1.md
 ```
 
 Expected:
 
 - Any matches are only guardrails, non-claims, or examples of claims CSVQL does not make.
-- There is no current claim that CSVQL is v1-ready, production-safe, sandbox-safe, large-file-proven, or production-ready.
+- There is no current claim that CSVQL is v1-ready, production-safe, production-ready, sandbox-safe, sandboxed, large-file-proven, or broadly large-file performant.
 
 - [ ] **Step 3: Scan release status language**
 
 Run:
 
 ```bash
-rg -n "release-candidate|v1-stable|v1-hardening" AGENTS.md README.md CHANGELOG.md docs/PRODUCT_DIRECTION.md docs/ROADMAP.md docs/ARCHITECTURE.md docs/json-contracts.md docs/release-readiness.md docs/release-notes/v1.md
+rg -n "release-candidate|v1-stable|v1-hardening" AGENTS.md README.md CHANGELOG.md docs/PRODUCT_DIRECTION.md docs/ROADMAP.md docs/ARCHITECTURE.md docs/json-contracts.md docs/benchmarking.md docs/failure-gallery.md docs/release-readiness.md docs/release-notes/v1.md
 ```
 
 Expected:
