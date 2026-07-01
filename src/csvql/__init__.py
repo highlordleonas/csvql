@@ -2,8 +2,22 @@
 
 from csvql.api import CSVQLSession
 from csvql.engine import CSVQLEngine
-from csvql.models import QueryResult, TableSource
+from csvql.export import ExportFormat
+from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult, TableSource
+from csvql.project_config import ProjectTablesResult
+from csvql.quality import CheckRunResult
 
-__all__ = ["CSVQLEngine", "CSVQLSession", "QueryResult", "TableSource"]
+__all__ = [
+    "CSVQLEngine",
+    "CSVQLSession",
+    "CheckRunResult",
+    "ExportFormat",
+    "InspectResult",
+    "ProfileResult",
+    "ProjectTablesResult",
+    "QueryResult",
+    "SampleResult",
+    "TableSource",
+]
 
 __version__ = "0.1.0"
