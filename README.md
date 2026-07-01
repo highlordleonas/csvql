@@ -26,11 +26,11 @@ query, inspect/sample, project catalogs, saved SQL, export, profile, configured
 checks, doctor, benchmark and release-readiness proof scripts, JSON contract
 documentation, the failure gallery, the polished example project, and the small
 project-backed Python API. The release workflow and release-note material now
-exist. Final local proof was refreshed on 2026-07-01, and the current
-assessment is `release-candidate eligible`.
+exist. The package version is prepared as `1.0.0` for the local v1 release
+state.
 
-That assessment is not a tag, PyPI upload, GitHub release, package-version
-change, `release-candidate` status change, or `v1-stable` claim.
+This local release state is not a tag, PyPI upload, GitHub release, artifact
+upload, or external publication.
 
 Implemented now:
 
@@ -64,12 +64,8 @@ Repo-local hardening now:
 - release-readiness verification for version consistency, build smoke, and installed-wheel smoke
 - local output under `output/`
 
-Current local proof evidence:
-
-- full local gate: Ruff format, Ruff lint, mypy, and `312` pytest tests passed
-- release-readiness proof: `output/release-readiness-20260701`
-- benchmark proof: `output/benchmarks/20260701T155909Z/benchmark.json`
-- benchmark summary: `output/benchmarks/20260701T155909Z/benchmark-summary.md`
+Current local proof evidence is generated under ignored `output/` directories
+when the release-readiness and benchmark workflows are rerun.
 
 ## Install For Development
 

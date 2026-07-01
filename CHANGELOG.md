@@ -2,14 +2,13 @@
 
 All notable CSVQL changes are summarized here.
 
-CSVQL is currently `release-candidate eligible` as a local proof assessment.
-The `v1.0.0` section records implemented surfaces for release preparation; it
-is not a publication, tag, PyPI upload, GitHub release, package-version change,
-or `v1-stable` claim.
+CSVQL package metadata is prepared for `v1.0.0`. The `v1.0.0` section records
+implemented surfaces for release preparation; it is not a publication, tag,
+PyPI upload, GitHub release, artifact upload, or `v1-stable` claim.
 
-## v1.0.0 - Pending
+## v1.0.0 - 2026-07-01
 
-Status: `release-candidate eligible` as of the 2026-07-01 local proof run.
+Status: local v1 release state prepared.
 
 ### Added
 
@@ -58,17 +57,12 @@ Status: `release-candidate eligible` as of the 2026-07-01 local proof run.
 
 ### Release Proof
 
-Candidate eligibility was proven locally on the candidate state:
+Candidate eligibility is proven locally by running the release workflow on the
+current release state:
 
-- full local gate through Ruff, mypy, and `312` pytest tests
+- full local gate through Ruff, mypy, and pytest
 - release-readiness proof through `scripts/verify_release_readiness.py`
 - benchmark proof through `scripts/benchmark_csvql.py`
 - unsupported-claim scan with matches classified as guardrails, non-claims, or
   conditional label rules
 - generated proof artifacts remained ignored under `output/`
-
-Recorded local evidence:
-
-- `output/release-readiness-20260701`
-- `output/benchmarks/20260701T155909Z/benchmark.json`
-- `output/benchmarks/20260701T155909Z/benchmark-summary.md`

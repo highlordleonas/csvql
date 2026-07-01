@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "csvql"
-version = "0.1.0"
+version = "1.0.0"
 description = "A lightweight DuckDB-powered CLI for querying local CSV files like SQL tables."
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -12,7 +12,6 @@ license = { text = "MIT" }
 authors = [{ name = "Richard Demke" }]
 keywords = ["csv", "duckdb", "sql", "cli", "data-engineering"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",

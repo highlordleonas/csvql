@@ -113,10 +113,10 @@ Implemented:
 - small typed result objects that wrap existing CLI-tested internals
 - no direct-path session mode, dataframe framework, notebook integration, async API, plugin API, config mutation helpers, or second execution engine
 
-Remaining before v1:
+Remaining before v1 publication:
 
-- explicit user approval for release action after the 2026-07-01
-  `release-candidate eligible` local proof assessment
+- explicit user approval for external release actions after the `1.0.0` local
+  release state is proven
 
 ## v1.0.0 - Stable Release
 
