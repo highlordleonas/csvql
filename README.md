@@ -25,8 +25,9 @@ This repository has the core local workflow implemented for local CLI use:
 query, inspect/sample, project catalogs, saved SQL, export, profile, configured
 checks, doctor, benchmark and release-readiness proof scripts, JSON contract
 documentation, the failure gallery, the polished example project, and the small
-project-backed Python API. The current lane is v1 hardening: authority
-alignment, release workflow and changelog work, and contract stabilization.
+project-backed Python API. The current lane is v1 hardening: with the v1
+release package applied, the remaining gate is final release-candidate
+eligibility proof.
 
 Implemented now:
 
@@ -348,11 +349,19 @@ Verify build and install proof:
 
 - `uv run python scripts/verify_release_readiness.py --work-dir output/release-readiness`
 
+Release workflow and notes:
+
+- [Changelog](CHANGELOG.md)
+- [v1 release notes](docs/release-notes/v1.md)
+- [Release readiness](docs/release-readiness.md)
+
 Claims boundary:
 
 - Local benchmark evidence only
 - No large-file proof beyond the recorded datasets
 - No production-readiness claim
+- No sandbox-safety claim
+- No publish, tag, or upload action without separate explicit approval
 
 ## Development Checks
 
@@ -377,10 +386,12 @@ CSVQL is currently a local developer tool for trusted SQL. DuckDB executes the S
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Benchmarking](docs/benchmarking.md)
+- [Changelog](CHANGELOG.md)
 - [JSON contracts](docs/json-contracts.md)
 - [Failure gallery](docs/failure-gallery.md)
 - [Product direction](docs/PRODUCT_DIRECTION.md)
 - [Release readiness](docs/release-readiness.md)
+- [v1 release notes](docs/release-notes/v1.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Codex capability review](docs/CODEX_CAPABILITY_REVIEW.md)
 - [v1 Quality Spine design](docs/superpowers/specs/2026-06-26-csvql-v1-quality-spine-design.md)

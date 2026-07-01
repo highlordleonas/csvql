@@ -115,7 +115,6 @@ Implemented:
 
 Remaining before v1:
 
-- release workflow and release-note material
 - final release-candidate eligibility check after release workflow and release
   notes exist
 
