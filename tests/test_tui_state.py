@@ -14,6 +14,28 @@ def test_tui_source_as_table_source_returns_table_source(tmp_path: Path) -> None
     assert source.as_table_source() == TableSource(name="orders", path=csv_path)
 
 
+def test_tui_source_defaults_to_csv_kind(tmp_path: Path) -> None:
+    source = TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument")
+
+    assert source.kind == "csv"
+    assert source.as_table_source() == TableSource(name="orders", path=tmp_path / "orders.csv")
+
+
+def test_tui_source_accepts_derived_kind(tmp_path: Path) -> None:
+    source = TUISource(
+        name="order_names",
+        path=tmp_path / ".csvql" / "results" / "order_names.csv",
+        origin="session",
+        kind="derived",
+    )
+
+    assert source.kind == "derived"
+    assert source.as_table_source() == TableSource(
+        name="order_names",
+        path=tmp_path / ".csvql" / "results" / "order_names.csv",
+    )
+
+
 def test_session_add_source_preserves_order_and_selects_first_by_default(
     tmp_path: Path,
 ) -> None:
@@ -100,6 +122,32 @@ def test_last_result_tracking(tmp_path: Path) -> None:
     state.set_last_result(result)
 
     assert state.last_result == result
+
+
+def test_last_result_status_tracks_query_no_result_and_error(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
+    result = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=7.5)
+
+    assert state.last_result_status == "none"
+
+    sequence = state.begin_query_run("SELECT COUNT(*) FROM orders")
+    state.record_query_success(sequence, "SELECT COUNT(*) FROM orders", result)
+
+    assert state.last_result_status == "query"
+    assert state.last_result == result
+
+    no_result_sequence = state.begin_query_run("CREATE TABLE scratch AS SELECT 1")
+    state.record_query_no_result(no_result_sequence, "CREATE TABLE scratch AS SELECT 1", 2.5)
+
+    assert state.last_result_status == "no_result"
+    assert state.last_result is None
+
+    error_sequence = state.begin_query_run("SELECT * FROM missing")
+    state.record_query_error(error_sequence, "SELECT * FROM missing", "missing table")
+
+    assert state.last_result_status == "error"
+    assert state.last_result is None
 
 
 def test_query_history_records_success_error_and_no_result(tmp_path: Path) -> None:

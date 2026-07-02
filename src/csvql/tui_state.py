@@ -9,6 +9,8 @@ from csvql.models import QueryResult, TableSource
 from csvql.table_mapping import validate_table_alias
 
 SourceOrigin = Literal["argument", "catalog", "session"]
+SourceKind = Literal["csv", "derived"]
+TUILastResultStatus = Literal["none", "query", "no_result", "error"]
 TUIFocusPane = Literal["sources", "editor", "results", "history"]
 TUIQueryHistoryStatus = Literal["success", "no_result", "error"]
 TUIQueryOutcomeStatus = Literal["success", "no_result", "error"]
@@ -98,6 +100,7 @@ class TUISource:
     name: str
     path: Path
     origin: SourceOrigin
+    kind: SourceKind = "csv"
 
     def __post_init__(self) -> None:
         validated_name = validate_table_alias(self.name)
@@ -119,6 +122,7 @@ class TUISessionState:
     _next_query_sequence: int = 1
     active_pane: TUIFocusPane = "editor"
     last_result: QueryResult | None = None
+    last_result_status: TUILastResultStatus = "none"
     result_view: TUIResultViewState = field(default_factory=TUIResultViewState)
     query_run: TUIQueryRunState = field(default_factory=TUIQueryRunState)
 
@@ -186,6 +190,7 @@ class TUISessionState:
         """Store the most recent query result."""
 
         self.last_result = result
+        self.last_result_status = "query"
 
     def begin_query_run(self, sql: str) -> int:
         """Start a query run and return its sequence id."""
@@ -201,6 +206,7 @@ class TUISessionState:
         """Clear stored exportable result and visible result state."""
 
         self.last_result = None
+        self.last_result_status = "none"
         self.result_view = TUIResultViewState()
 
     def record_query_success(
@@ -213,6 +219,7 @@ class TUISessionState:
         """Record a successful query and store its result."""
 
         self.last_result = result
+        self.last_result_status = "query"
         self.result_view = result_view or TUIResultViewState(
             columns=result.columns,
             display_rows=tuple(tuple(str(value) for value in row) for row in result.rows),
@@ -234,6 +241,7 @@ class TUISessionState:
         """Record a successful statement with no tabular result."""
 
         self.clear_last_result()
+        self.last_result_status = "no_result"
         self._query_history.append(
             TUIQueryHistoryItem(
                 sequence=sequence,
@@ -248,6 +256,7 @@ class TUISessionState:
         """Record a failed query attempt."""
 
         self.clear_last_result()
+        self.last_result_status = "error"
         self._query_history.append(
             TUIQueryHistoryItem(
                 sequence=sequence,
