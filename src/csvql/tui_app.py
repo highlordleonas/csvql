@@ -24,12 +24,15 @@ from csvql.tui_state import (
     TUIResultViewState,
     TUISessionState,
     TUISource,
+    TUISourceColumn,
 )
 from csvql.tui_workflows import (
     build_initial_state,
     export_last_result,
     inspect_source,
+    inspect_source_columns,
     profile_source,
+    render_duckdb_identifier,
     run_query_for_tui,
     sample_source,
     save_derived_result_source,
@@ -154,6 +157,9 @@ class CSVQLMenuApp(App[None]):
         Binding("a", "add_source", "Add source", show=False),
         Binding("d", "remove_source", "Remove source", show=False),
         Binding("w", "save_sources", "Save sources", show=False),
+        Binding("c", "show_source_columns", "Columns", show=False),
+        Binding("l", "insert_source_alias", "Insert alias", show=False),
+        Binding("x", "insert_starter_select", "Starter select", show=False),
         Binding("r", "rerun_history", "Rerun", show=False),
         Binding("enter", "reopen_history", "Open query", show=False),
     ]
@@ -302,6 +308,46 @@ class CSVQLMenuApp(App[None]):
         populate_result_table(self.query_one("#results", DataTable), view)
         self.query_one("#results-message", Static).update(_result_message(view))
         self._set_status(f"{source.name}: {len(result.rows)} sample row(s).")
+
+    def action_show_source_columns(self) -> None:
+        self.state.clear_last_result()
+        source = self.state.selected_source()
+        if source is None:
+            self._show_error(CSVQLError("No source selected."))
+            return
+
+        try:
+            columns = inspect_source_columns(source)
+        except CSVQLError as exc:
+            self._show_error(exc)
+            return
+
+        self.state.set_source_columns(source.name, columns)
+        if not columns:
+            self._show_error(CSVQLError(f"Source '{source.name}' has no columns."))
+            return
+
+        self._show_output_text(_format_source_columns(source.name, columns))
+        self._set_status(f"{source.name}: {len(columns)} columns loaded.")
+
+    def action_insert_source_alias(self) -> None:
+        source = self.state.selected_source()
+        if source is None:
+            self.state.clear_last_result()
+            self._show_error(CSVQLError("No source selected."))
+            return
+
+        self._append_sql_text(render_duckdb_identifier(source.name))
+
+    def action_insert_starter_select(self) -> None:
+        source = self.state.selected_source()
+        if source is None:
+            self.state.clear_last_result()
+            self._show_error(CSVQLError("No source selected."))
+            return
+
+        alias = render_duckdb_identifier(source.name)
+        self._append_sql_text(f"SELECT *\nFROM {alias}\nLIMIT 10;")
 
     def action_run_query(self) -> None:
         if self._run_editor_pending or self.state.query_run.is_running:
@@ -464,6 +510,9 @@ class CSVQLMenuApp(App[None]):
                 "add_source",
                 "remove_source",
                 "save_sources",
+                "show_source_columns",
+                "insert_source_alias",
+                "insert_starter_select",
                 "rerun_history",
                 "reopen_history",
             }
@@ -476,6 +525,9 @@ class CSVQLMenuApp(App[None]):
             "add_source",
             "remove_source",
             "save_sources",
+            "show_source_columns",
+            "insert_source_alias",
+            "insert_starter_select",
         }
         if action in source_actions and not self._is_focused("#sources"):
             return False
@@ -541,6 +593,17 @@ class CSVQLMenuApp(App[None]):
         message = "\n".join(lines)
         self._set_status(message)
         self._show_output_text(message)
+
+    def _append_sql_text(self, text: str) -> None:
+        sql = self.query_one("#sql", TextArea)
+        current = sql.text
+        if not current:
+            sql.load_text(text)
+        elif current[-1].isspace():
+            sql.load_text(f"{current}{text}")
+        else:
+            sql.load_text(f"{current}\n{text}")
+        sql.focus()
 
     def _handle_add_source(self, raw_mapping: str | None) -> None:
         if raw_mapping is None:
@@ -735,6 +798,12 @@ def _export_format_for_path(path_value: str) -> ExportFormat:
 
 def _one_line_sql(sql: str) -> str:
     return " ".join(sql.split())
+
+
+def _format_source_columns(alias: str, columns: tuple[TUISourceColumn, ...]) -> str:
+    lines = [f"{alias} columns"]
+    lines.extend(f"  {column.name} {column.duckdb_type}" for column in columns)
+    return "\n".join(lines)
 
 
 def _result_message(view: TUIResultViewState) -> str:
