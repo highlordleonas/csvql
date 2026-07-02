@@ -94,6 +94,14 @@ class TUIQueryOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class TUISourceColumn:
+    """Column metadata loaded for a TUI source in the current session."""
+
+    name: str
+    duckdb_type: str
+
+
+@dataclass(frozen=True, slots=True)
 class TUISource:
     """A source available to the TUI session."""
 
@@ -117,6 +125,7 @@ class TUISessionState:
     """Mutable session state for the CSVQL menu TUI."""
 
     _sources: list[TUISource] = field(default_factory=list)
+    _source_columns: dict[str, tuple[TUISourceColumn, ...]] = field(default_factory=dict)
     _selected_alias: str | None = None
     _query_history: list[TUIQueryHistoryItem] = field(default_factory=list)
     _next_query_sequence: int = 1
@@ -156,12 +165,28 @@ class TUISessionState:
 
         index = self._require_source_index(alias)
         removed_source = self._sources.pop(index)
+        self._source_columns.pop(removed_source.name.casefold(), None)
         if (
             self._selected_alias is not None
             and self._selected_alias.casefold() == removed_source.name.casefold()
         ):
             self._selected_alias = self._sources[0].name if self._sources else None
         return removed_source
+
+    def set_source_columns(self, alias: str, columns: tuple[TUISourceColumn, ...]) -> None:
+        """Store session-local columns for a source alias."""
+
+        source = self.get_source(alias)
+        self._source_columns[source.name.casefold()] = columns
+
+    def source_columns(self, alias: str) -> tuple[TUISourceColumn, ...]:
+        """Return cached source columns by alias, if any."""
+
+        try:
+            source = self.get_source(alias)
+        except TableMappingError:
+            return ()
+        return self._source_columns.get(source.name.casefold(), ())
 
     def get_source(self, alias: str) -> TUISource:
         """Return a source by alias."""

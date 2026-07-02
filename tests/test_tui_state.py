@@ -4,7 +4,7 @@ import pytest
 
 from csvql.exceptions import TableMappingError
 from csvql.models import QueryResult, TableSource
-from csvql.tui_state import TUIResultViewState, TUISessionState, TUISource
+from csvql.tui_state import TUISourceColumn, TUIResultViewState, TUISessionState, TUISource
 
 
 def test_tui_source_as_table_source_returns_table_source(tmp_path: Path) -> None:
@@ -206,3 +206,47 @@ def test_begin_query_run_prevents_overlapping_runs(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="query is already running"):
         state.begin_query_run("SELECT COUNT(*) FROM orders")
+
+
+def test_tui_source_column_stores_name_and_duckdb_type() -> None:
+    column = TUISourceColumn(name="Customer ID", duckdb_type="VARCHAR")
+
+    assert column.name == "Customer ID"
+    assert column.duckdb_type == "VARCHAR"
+
+
+def test_session_source_columns_are_case_insensitive_by_alias(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
+    columns = (
+        TUISourceColumn(name="order_id", duckdb_type="VARCHAR"),
+        TUISourceColumn(name="total", duckdb_type="DOUBLE"),
+    )
+
+    state.set_source_columns("ORDERS", columns)
+
+    assert state.source_columns("orders") == columns
+    assert state.source_columns("ORDERS") == columns
+
+
+def test_removing_source_clears_cached_columns_for_that_alias(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
+    state.add_source(
+        TUISource(name="customers", path=tmp_path / "customers.csv", origin="argument")
+    )
+    state.set_source_columns(
+        "orders",
+        (TUISourceColumn(name="order_id", duckdb_type="VARCHAR"),),
+    )
+    state.set_source_columns(
+        "customers",
+        (TUISourceColumn(name="customer_id", duckdb_type="VARCHAR"),),
+    )
+
+    state.remove_source("ORDERS")
+
+    assert state.source_columns("orders") == ()
+    assert state.source_columns("customers") == (
+        TUISourceColumn(name="customer_id", duckdb_type="VARCHAR"),
+    )
