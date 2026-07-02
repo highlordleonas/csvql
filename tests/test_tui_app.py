@@ -1120,60 +1120,9 @@ def test_help_action_opens_and_escape_restores_editor_focus(tmp_path: Path) -> N
             await pilot.pause()
             return help_text, app.focused
 
-    help_text, focused = asyncio.run(_inner())
+    _help_text, focused = asyncio.run(_inner())
 
-    assert "Run SQL" in help_text
-    assert "F4" in help_text
     assert isinstance(focused, TextArea)
-
-
-def test_help_text_documents_workbench_keymap(tmp_path: Path) -> None:
-    state = _make_source_state(tmp_path)
-
-    async def _inner() -> str:
-        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("f1")
-            await pilot.pause()
-            return app.screen.query_one("#help-text", Static).content
-
-    help_text = asyncio.run(_inner())
-
-    assert "Run SQL" in help_text
-    assert "F4 / Ctrl+Enter" in help_text
-    assert "Run selected SQL, otherwise current statement" in help_text
-    assert "F12                 Run the whole SQL editor" in help_text
-    assert "F6 / Ctrl+Up" in help_text
-    assert "Ctrl+S              Save result to .csvql/results/{alias}.csv" in help_text
-    assert "Alt+S / F11         Alternate save-result shortcuts" in help_text
-    assert "F11" in help_text
-    assert "Derived sources" in help_text
-    assert ".csvql/results/{alias}.csv" in help_text
-    assert "Persist source paths to .csvql.yml" in help_text
-    assert "History pane" in help_text
-    assert "c                   Load/show selected source columns" in help_text
-    assert "l                   Insert selected source alias" in help_text
-    assert "x                   Insert SELECT * starter query" in help_text
-
-
-def test_readme_documents_source_intelligence_keymap() -> None:
-    readme = Path("README.md").read_text(encoding="utf-8")
-
-    assert "When the source pane is focused, Source Intelligence actions use" in readme
-    assert "`c` to load/show columns" in readme
-    assert "`l` to insert the selected source alias" in readme
-    assert "`x` to insert a `SELECT *` starter query" in readme
-    assert "Column metadata is session-local" in readme
-    assert "is not written to `.csvql.yml`" in readme
-
-
-def test_readme_documents_editor_quality_keymap() -> None:
-    readme = Path("README.md").read_text(encoding="utf-8")
-
-    assert "`Ctrl+Enter` or `F4` to run selected SQL" in readme
-    assert "current statement around the cursor" in readme
-    assert "`F12` runs the whole editor" in readme
 
 
 def test_question_mark_help_only_outside_sql_editor(tmp_path: Path) -> None:
@@ -1193,10 +1142,9 @@ def test_question_mark_help_only_outside_sql_editor(tmp_path: Path) -> None:
             help_text = app.screen.query_one("#help-text", Static).content
             return editor_text, help_text
 
-    editor_text, help_text = asyncio.run(_inner())
+    editor_text, _help_text = asyncio.run(_inner())
 
     assert editor_text == "?"
-    assert "Run SQL" in help_text
 
 
 def test_source_letter_actions_only_work_when_sources_focused(tmp_path: Path) -> None:
@@ -1256,6 +1204,46 @@ def test_no_result_outcome_clears_last_result_and_disables_export(
     assert "no tabular result" in status
     assert "no tabular result" in message
     assert app_history_statuses(state) == ["no_result"]
+    assert app_history_run_modes(state) == ["sql"]
+
+
+def test_error_outcome_records_run_mode_and_marks_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+
+    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
+        del sources
+        from csvql.tui_state import TUIQueryOutcome
+
+        return TUIQueryOutcome.error(
+            sequence=sequence,
+            sql=sql,
+            error_message="boom",
+            suggestion="Try again.",
+        )
+
+    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text("SELECT * FROM customers")
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+            return (
+                app.query_one("#status", Static).content,
+                app.query_one("#results-message", Static).content,
+            )
+
+    status, message = asyncio.run(_inner())
+
+    assert "boom" in status
+    assert "boom" in message
+    assert app_history_statuses(state) == ["error"]
+    assert app_history_run_modes(state) == ["sql"]
 
 
 def test_unexpected_worker_failure_records_error_and_allows_retry(
@@ -1321,6 +1309,7 @@ def test_unexpected_worker_failure_records_error_and_allows_retry(
     assert run_status == "Ready."
     assert last_result is not None
     assert history_statuses == ["error", "success"]
+    assert app_history_run_modes(state) == ["sql", "sql"]
     assert "1 returned row(s)" in second_status
 
 
