@@ -16,6 +16,7 @@ from csvql.tui_workflows import (
     query_sources,
     run_query_for_tui,
     sample_source,
+    save_derived_result_source,
     save_sources_to_project_catalog,
 )
 
@@ -293,6 +294,143 @@ def test_export_last_result_refuses_overwrite_without_force(tmp_path: Path) -> N
         )
 
     assert output_path.read_text(encoding="utf-8") == first_content
+
+
+def test_save_derived_result_source_writes_project_local_csv_and_returns_source(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    initialize_project(project_root)
+    result = QueryResult(
+        columns=("id", "name"),
+        rows=((1, "Ada"), (2, "Bea")),
+        elapsed_ms=1.0,
+    )
+
+    source = save_derived_result_source(
+        result,
+        "order_names",
+        existing_sources=(),
+        start_dir=project_root,
+    )
+
+    output_path = project_root / ".csvql" / "results" / "order_names.csv"
+    assert output_path.read_text(encoding="utf-8") == "id,name\n1,Ada\n2,Bea\n"
+    assert source == TUISource(
+        name="order_names",
+        path=output_path.resolve(),
+        origin="session",
+        kind="derived",
+    )
+
+
+def test_save_derived_result_source_uses_start_dir_without_project_catalog(
+    tmp_path: Path,
+) -> None:
+    result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
+
+    source = save_derived_result_source(
+        result,
+        "scratch_ids",
+        existing_sources=(),
+        start_dir=tmp_path,
+    )
+
+    output_path = tmp_path / ".csvql" / "results" / "scratch_ids.csv"
+    assert output_path.exists()
+    assert source.path == output_path.resolve()
+    assert source.kind == "derived"
+
+
+def test_save_derived_result_source_preserves_empty_result_headers(tmp_path: Path) -> None:
+    result = QueryResult(columns=("id", "name"), rows=(), elapsed_ms=1.0)
+
+    source = save_derived_result_source(
+        result,
+        "empty_names",
+        existing_sources=(),
+        start_dir=tmp_path,
+    )
+
+    assert source.kind == "derived"
+    assert (tmp_path / ".csvql" / "results" / "empty_names.csv").read_text(
+        encoding="utf-8"
+    ) == "id,name\n"
+
+
+def test_save_derived_result_source_refuses_duplicate_session_alias(tmp_path: Path) -> None:
+    result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
+    existing = (
+        TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"),
+    )
+
+    with pytest.raises(TableMappingError, match=r"Source alias 'orders' is already loaded"):
+        save_derived_result_source(
+            result,
+            "ORDERS",
+            existing_sources=existing,
+            start_dir=tmp_path,
+        )
+
+    assert not (tmp_path / ".csvql" / "results").exists()
+
+
+def test_save_derived_result_source_refuses_existing_output_file(tmp_path: Path) -> None:
+    result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
+    output_dir = tmp_path / ".csvql" / "results"
+    output_dir.mkdir(parents=True)
+    output_path = output_dir / "orders.csv"
+    output_path.write_text("id\nexisting\n", encoding="utf-8")
+
+    with pytest.raises(ExportError, match=r"Derived result already exists"):
+        save_derived_result_source(
+            result,
+            "orders",
+            existing_sources=(),
+            start_dir=tmp_path,
+        )
+
+    assert output_path.read_text(encoding="utf-8") == "id\nexisting\n"
+
+
+def test_build_initial_state_does_not_create_results_directory(tmp_path: Path) -> None:
+    state = build_initial_state(csv_path=None, table_mappings=(), start_dir=tmp_path)
+
+    assert state == TUISessionState()
+    assert not (tmp_path / ".csvql" / "results").exists()
+
+
+def test_query_sources_can_join_derived_csv_source(tmp_path: Path) -> None:
+    orders_csv = _write_csv(
+        tmp_path / "orders.csv",
+        "id,total\n1,10\n2,20\n",
+    )
+    result = QueryResult(
+        columns=("id", "name"),
+        rows=((1, "Ada"), (2, "Bea")),
+        elapsed_ms=1.0,
+    )
+    derived = save_derived_result_source(
+        result,
+        "order_names",
+        existing_sources=(),
+        start_dir=tmp_path,
+    )
+    orders = TUISource(name="orders", path=orders_csv.resolve(), origin="argument")
+
+    joined = query_sources(
+        (orders, derived),
+        """
+        SELECT orders.id, order_names.name, orders.total
+        FROM orders
+        JOIN order_names ON order_names.id = orders.id
+        ORDER BY orders.id
+        """,
+    )
+
+    assert joined.columns == ("id", "name", "total")
+    assert joined.rows == ((1, "Ada", 10), (2, "Bea", 20))
 
 
 def test_run_query_for_tui_returns_success_outcome(tmp_path: Path) -> None:

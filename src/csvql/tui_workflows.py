@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from csvql.engine import CSVQLEngine
-from csvql.exceptions import CSVQLError, ProjectConfigError
+from csvql.exceptions import CSVQLError, ExportError, ProjectConfigError, TableMappingError
 from csvql.export import (
     ExportFormat,
     format_query_result_for_export,
@@ -25,10 +25,11 @@ from csvql.project_config import (
     save_project,
 )
 from csvql.source import CSVSource, source_from_path
-from csvql.table_mapping import parse_table_mapping, source_from_single_csv
+from csvql.table_mapping import parse_table_mapping, source_from_single_csv, validate_table_alias
 from csvql.tui_state import TUIQueryOutcome, TUISessionState, TUISource
 
 _MISSING_PROJECT_PREFIX = "No .csvql.yml project catalog found."
+_DERIVED_RESULTS_DIR = Path(".csvql") / "results"
 
 
 def build_initial_state(
@@ -132,6 +133,57 @@ def export_last_result(
     return output_path
 
 
+def save_derived_result_source(
+    result: QueryResult,
+    alias: str,
+    *,
+    existing_sources: Sequence[TUISource],
+    start_dir: Path,
+) -> TUISource:
+    """Write a query result as a project-local CSV and return a derived source."""
+
+    source_name = validate_table_alias(alias)
+    for source in existing_sources:
+        if source.name.casefold() == source_name.casefold():
+            raise TableMappingError(
+                f"Source alias '{source.name}' is already loaded in the TUI session.",
+                suggestion="Choose a unique alias for the derived result source.",
+            )
+
+    result_root = _derived_result_root(start_dir)
+    result_dir = result_root / _DERIVED_RESULTS_DIR
+    output_path = (result_dir / f"{source_name}.csv").resolve(strict=False)
+    if output_path.exists():
+        raise ExportError(
+            f"Derived result already exists at {output_path}.",
+            suggestion="Choose a different alias for this derived result source.",
+        )
+
+    try:
+        result_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ExportError(
+            f"Failed to create derived results directory: {result_dir}",
+            suggestion="Check that the project directory is writable.",
+        ) from exc
+
+    content = format_query_result_for_export(result, ExportFormat.csv)
+    try:
+        write_export_file(output_path, content)
+    except ExportError as exc:
+        raise ExportError(
+            f"Failed to write derived source to {output_path}.",
+            suggestion="Check that the derived results directory is writable.",
+        ) from exc
+
+    return TUISource(
+        name=source_name,
+        path=output_path,
+        origin="session",
+        kind="derived",
+    )
+
+
 def save_sources_to_project_catalog(
     sources: Sequence[TUISource],
     *,
@@ -231,4 +283,13 @@ def _load_or_initialize_project(start_dir: Path) -> ProjectContext:
                 config_path=project_root / ".csvql.yml",
                 config=ProjectConfig(version=SUPPORTED_VERSION, tables=()),
             )
+        raise
+
+
+def _derived_result_root(start_dir: Path) -> Path:
+    try:
+        return load_project(start_dir).project_root
+    except ProjectConfigError as exc:
+        if exc.message.startswith(_MISSING_PROJECT_PREFIX):
+            return start_dir.expanduser().resolve()
         raise
