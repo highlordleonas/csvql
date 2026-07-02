@@ -369,9 +369,7 @@ class CSVQLMenuApp(App[None]):
         result = self.state.last_result
         if result is None:
             if self.state.last_result_status == "no_result":
-                self._show_error(
-                    CSVQLError("The last statement did not produce a tabular result.")
-                )
+                self._show_error(CSVQLError("The last statement did not produce a tabular result."))
                 return
             self._show_error(CSVQLError("Run a query before saving a result as a source."))
             return

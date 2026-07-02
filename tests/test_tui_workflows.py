@@ -361,9 +361,7 @@ def test_save_derived_result_source_preserves_empty_result_headers(tmp_path: Pat
 
 def test_save_derived_result_source_refuses_duplicate_session_alias(tmp_path: Path) -> None:
     result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
-    existing = (
-        TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"),
-    )
+    existing = (TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"),)
 
     with pytest.raises(TableMappingError, match=r"Source alias 'ORDERS' is already loaded"):
         save_derived_result_source(
