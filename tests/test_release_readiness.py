@@ -5,6 +5,8 @@ import pytest
 
 from csvql.release_readiness import (
     ReleaseReadinessCommandError,
+    ReleaseReadinessResult,
+    format_release_readiness_summary,
     run_release_command,
     select_built_wheel,
     verify_release_readiness,
@@ -69,8 +71,11 @@ version = "0.1.0"
         encoding="utf-8",
     )
 
+    seen_commands: list[list[str]] = []
+
     def fake_run(args, *, cwd, capture_output, text, check):
         command = [str(part) for part in args]
+        seen_commands.append(command)
         if command == ["/fake/python", "-m", "csvql", "--version"]:
             return CompletedProcess(args=args, returncode=0, stdout="0.1.0\n", stderr="")
         if command[:2] == ["uv", "build"]:
@@ -82,8 +87,21 @@ version = "0.1.0"
             return CompletedProcess(args=args, returncode=0, stdout="", stderr="")
         if command[:2] == ["uv", "pip"]:
             return CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        if command[:3] == [
+            str(repo_root / "out" / "smoke-venv" / "bin" / "python"),
+            "-c",
+            "import textual; import csvql.tui_app; print('tui-extra-ok')",
+        ]:
+            return CompletedProcess(args=args, returncode=0, stdout="tui-extra-ok\n", stderr="")
         if command[-1] == "--version":
             return CompletedProcess(args=args, returncode=0, stdout="0.1.0\n", stderr="")
+        if command[-2:] == ["menu", "--help"]:
+            return CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="Open the interactive CSVQL terminal menu.\n",
+                stderr="",
+            )
         if command[1:3] == ["inspect", str(repo_root / "out" / "smoke" / "orders.csv")]:
             return CompletedProcess(
                 args=args,
@@ -101,5 +119,34 @@ version = "0.1.0"
     )
 
     assert result.inspect_output == '{"row_count":{"mode":"not_counted"}}'
+    assert result.tui_import_output == "tui-extra-ok"
+    assert "interactive CSVQL terminal menu" in result.menu_help_output
     assert result.wheel_path.name == "csvql-0.1.0-py3-none-any.whl"
     assert (repo_root / "out" / "smoke" / "orders.csv").exists()
+    assert [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        str(repo_root / "out" / "smoke-venv" / "bin" / "python"),
+        f"{repo_root / 'out' / 'dist' / 'csvql-0.1.0-py3-none-any.whl'}[tui]",
+    ] in seen_commands
+
+
+def test_format_release_readiness_summary_includes_tui_proof(tmp_path: Path) -> None:
+    result = ReleaseReadinessResult(
+        pyproject_version="0.1.0",
+        package_version="0.1.0",
+        cli_version="0.1.0",
+        wheel_path=tmp_path / "dist" / "csvql-0.1.0-py3-none-any.whl",
+        inspect_output='{"row_count":{"mode":"not_counted"}}',
+        tui_import_output="tui-extra-ok",
+        menu_help_output="Open the interactive CSVQL terminal menu.",
+    )
+
+    summary = format_release_readiness_summary(result)
+
+    assert "Release readiness proof passed." in summary
+    assert "csvql-0.1.0-py3-none-any.whl" in summary
+    assert "tui-extra-ok" in summary
+    assert "Open the interactive CSVQL terminal menu." in summary

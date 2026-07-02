@@ -121,6 +121,8 @@ Implemented:
 - session-backed source management
 - startup from `.csvql.yml`, one CSV path, or repeated `--table` mappings
 - inspect, sample, profile, and trusted local SQL querying from the menu
+- session-local query history with reopen and rerun actions
+- explicit derived result source save under `.csvql/results/{alias}.csv`
 - explicit project catalog save action
 - explicit export action
 - optional `tui` package extra so the core CLI install does not require Textual

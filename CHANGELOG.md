@@ -26,6 +26,16 @@ Status: local v1 release state prepared.
 - CSV profiling through `csvql profile`.
 - Configured data-quality checks through `csvql check`.
 - Project health checks through `csvql doctor`.
+- Optional Textual-powered `csvql menu` terminal workbench through the `tui`
+  extra.
+- TUI startup from `.csvql.yml`, one CSV path, or repeated `--table` mappings.
+- TUI source manager, SQL editor, results grid, session-local query history,
+  help view, source actions, explicit export action, and explicit project
+  catalog save action.
+- TUI derived result sources: `Ctrl+S`, `Alt+S`, or `F11` saves the last successful tabular
+  result to `.csvql/results/{alias}.csv` and adds it to the current Sources pane
+  with kind `derived`; the alias is session-local unless sources are explicitly
+  saved to `.csvql.yml`.
 - Table and JSON output modes for automation-oriented commands.
 - Stable v1 JSON contract documentation for current runtime shapes.
 - Common failure gallery for deterministic CLI behavior and exit-code examples.
@@ -51,6 +61,9 @@ Status: local v1 release state prepared.
 - CSVQL does not claim production readiness.
 - CSVQL does not claim broad large-file performance beyond recorded benchmark
   artifacts.
+- TUI query history is session-local and not persisted by CSVQL.
+- Derived result sources are explicit user-created CSV files, not hidden cache or
+  automatic materialization.
 - CSVQL does not include a web app, cloud connector platform, dashboard,
   notebook framework, natural-language SQL engine, dataframe-first API, plugin
   system, safe mode, hidden cache, or automatic materialization.

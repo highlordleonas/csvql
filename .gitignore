@@ -17,6 +17,7 @@ output/
 !examples/saas_revenue/output/
 examples/saas_revenue/output/*
 !examples/saas_revenue/output/.gitkeep
+keys.log
 
 csvql_project_pack/
 csvql_project_pack.zip

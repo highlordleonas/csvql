@@ -660,7 +660,52 @@ def test_save_result_as_source_writes_csv_and_adds_derived_source(tmp_path: Path
     assert selected_alias == "customer_emails"
     assert "Saved result as derived source customer_emails" in status
     assert "Saved result as derived source customer_emails" in message
+    assert "Use Save sources to persist the alias in .csvql.yml." in status
+    assert "Use Save sources to persist the alias in .csvql.yml." in message
     assert content == "customer_id,email\nCUST-001,alex@example.com\n"
+
+
+@pytest.mark.parametrize("key", ["ctrl+s", "alt+s"])
+def test_save_result_source_shortcuts(tmp_path: Path, key: str) -> None:
+    state = TUISessionState()
+    state.set_last_result(
+        QueryResult(
+            columns=("customer_id",),
+            rows=(("CUST-001",),),
+            elapsed_ms=12.345,
+        )
+    )
+
+    async def _inner() -> tuple[tuple[TUISource, ...], str | None, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press(key)
+            await pilot.pause()
+
+            alias_input = app.screen.query_one("#derived-source-alias", Input)
+            alias_input.value = "customer_ids"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            return (
+                app.state.sources,
+                app.state.selected_alias,
+                (tmp_path / ".csvql" / "results" / "customer_ids.csv").read_text(encoding="utf-8"),
+            )
+
+    sources, selected_alias, content = asyncio.run(_inner())
+
+    assert sources == (
+        TUISource(
+            name="customer_ids",
+            path=(tmp_path / ".csvql" / "results" / "customer_ids.csv").resolve(),
+            origin="session",
+            kind="derived",
+        ),
+    )
+    assert selected_alias == "customer_ids"
+    assert content == "customer_id\nCUST-001\n"
 
 
 def test_save_result_as_source_refuses_after_no_result_statement(
@@ -875,6 +920,8 @@ def test_help_text_documents_workbench_keymap(tmp_path: Path) -> None:
     assert "Run Editor" in help_text
     assert "F4 / Ctrl+Enter" in help_text
     assert "F6 / Ctrl+Up" in help_text
+    assert "Ctrl+S              Save last tabular result as a derived source" in help_text
+    assert "Alt+S / F11         Alternate save-result shortcuts" in help_text
     assert "F11" in help_text
     assert "Save last tabular result as a derived source" in help_text
     assert "History pane" in help_text

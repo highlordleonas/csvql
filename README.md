@@ -25,8 +25,9 @@ This repository has the core local workflow implemented for local CLI use:
 query, inspect/sample, project catalogs, saved SQL, export, profile, configured
 checks, doctor, benchmark and release-readiness proof scripts, JSON contract
 documentation, the failure gallery, the polished example project, and the small
-project-backed Python API. The release workflow and release-note material now
-exist. The package version is prepared as `1.0.0` for the local v1 release
+project-backed Python API. It also includes an optional Textual-powered terminal
+menu for local interactive work. The release workflow and release-note material
+now exist. The package version is prepared as `1.0.0` for the local v1 release
 state.
 
 This local release state is not a tag, PyPI upload, GitHub release, artifact
@@ -54,6 +55,14 @@ Implemented now:
 - sampled failure output with `csvql check --show-failures`
 - repeated `--table` mappings for joins
 - single-file shortcut mode
+- optional `csvql menu` terminal workbench through the `tui` extra
+- TUI startup from a project catalog, one CSV path, or repeated `--table`
+  mappings
+- TUI source actions for inspect, sample, profile, add, remove, and explicit
+  project catalog save
+- TUI query history for the current session only
+- TUI explicit result export and explicit derived result sources under
+  `.csvql/results/{alias}.csv`
 - table and JSON stdout output
 - DuckDB in-memory execution
 - focused tests, Ruff, mypy, and GitHub Actions scaffolding
@@ -119,12 +128,16 @@ the last result view visible. Query history is in-memory session state only: it
 is not written to disk, logged, or sent anywhere by CSVQL, and it clears when
 the TUI exits.
 
-`F11` saves the last successful tabular query result as a derived source. CSVQL
-prompts for an alias, writes `.csvql/results/{alias}.csv`, and adds that alias
-to the Sources pane with kind `derived` so it can be queried or joined later in
-the same TUI session. Derived result sources are explicit CSV-backed artifacts,
-not hidden cache. They use the same trusted local DuckDB SQL posture as other
-CSVQL sources.
+`Ctrl+S` saves the last successful tabular query result as a derived source.
+`Alt+S` is also bound for terminals that emit Alt key events, and `F11` is
+available where it is not intercepted by the OS. macOS may intercept `F11` for
+Show Desktop. CSVQL prompts for an alias, writes
+`.csvql/results/{alias}.csv`, and adds that alias to the Sources pane with kind
+`derived` so it can be queried or joined later in the same TUI session. The CSV
+file remains on disk; the alias becomes durable across TUI sessions only if you
+explicitly save sources to `.csvql.yml`. Derived result sources are explicit
+CSV-backed artifacts, not hidden cache or automatic materialization. They use
+the same trusted local DuckDB SQL posture as other CSVQL sources.
 
 The SQL editor uses the same trusted local DuckDB execution posture as the rest
 of CSVQL. Do not run untrusted SQL.
@@ -424,8 +437,8 @@ Claims boundary:
 ```bash
 uv run ruff format --check .
 uv run ruff check .
-uv run mypy src
-uv run pytest
+uv run --all-extras mypy src
+uv run --all-extras pytest
 ```
 
 Or run the combined local gate:

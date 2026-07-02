@@ -13,9 +13,9 @@ lint:
 	uv run ruff check .
 
 typecheck:
-	uv run mypy src
+	uv run --all-extras mypy src
 
 test:
-	uv run pytest
+	uv run --all-extras pytest
 
 ci: format-check lint typecheck test

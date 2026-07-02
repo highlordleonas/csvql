@@ -28,6 +28,78 @@ Examples use `uv run csvql ...`. Absolute temporary paths are normalized as
 Typer usage errors, such as an invalid option value, use Typer's own CLI path
 and are outside this gallery.
 
+## Interactive Menu Failures
+
+`csvql menu` uses the same CSVQL error path for startup failures, then surfaces
+interactive errors in the TUI status and results message areas. TUI history is
+session-local; it is not part of the CLI exit-code contract.
+
+### Missing TUI extra
+
+Scenario: `csvql menu` is run from an installed package without the optional
+Textual dependency.
+
+Command:
+
+```bash
+csvql menu
+```
+
+Expected exit code: `1`
+
+Expected message shape:
+
+```text
+Error: CSVQL TUI dependency is not installed.
+Suggestion: Install with pip install "csvql[tui]" or run uv sync --all-extras.
+```
+
+How to fix: install the optional `tui` extra, or run from the repo with
+`uv sync --all-extras`.
+
+Covered by:
+`tests/test_cli_menu.py::test_menu_launcher_raises_helpful_error_when_textual_is_missing`
+
+### Derived result source save failures
+
+Scenario: `Ctrl+S`, `Alt+S`, or `F11` is pressed before a successful tabular result exists.
+
+Expected TUI message shape:
+
+```text
+Run a query before saving a result as a source.
+```
+
+Scenario: the derived source alias is already loaded in the current TUI session.
+
+Expected TUI message shape:
+
+```text
+Source alias 'customers' is already loaded in the TUI session.
+Suggestion: Choose a unique alias for the derived result source.
+```
+
+Scenario: a matching `.csvql/results/{alias}.csv` file already exists, including
+case variants on case-insensitive filesystems.
+
+Expected TUI message shape:
+
+```text
+Derived result already exists at <project-root>/.csvql/results/<alias>.csv.
+Suggestion: Choose a different alias for this derived result source.
+```
+
+Why it fails: derived source saves are explicit local artifact writes. CSVQL
+does not overwrite an existing derived result or silently replace an already
+loaded source alias.
+
+Covered by:
+
+- `tests/test_tui_app.py::test_save_result_as_source_requires_query_result`
+- `tests/test_tui_app.py::test_save_result_as_source_refuses_duplicate_alias`
+- `tests/test_tui_workflows.py::test_save_derived_result_source_refuses_existing_output_file`
+- `tests/test_tui_workflows.py::test_save_derived_result_source_refuses_case_variant_output_file`
+
 ## Missing CSV Path
 
 ### Direct CSV argument
@@ -564,6 +636,6 @@ Before claiming this page is current, run:
 uv run pytest tests/test_failure_gallery.py -q
 uv run ruff format --check .
 uv run ruff check .
-uv run mypy src
-uv run pytest
+uv run --all-extras mypy src
+uv run --all-extras pytest
 ```

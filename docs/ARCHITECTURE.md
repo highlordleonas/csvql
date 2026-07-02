@@ -11,6 +11,14 @@ CLI arguments
   -> validated table aliases and resolved CSV paths
   -> in-memory DuckDB engine
   -> query/inspect/sample/profile/check/doctor/export output
+
+Optional terminal menu flow:
+csvql menu startup arguments
+  -> lazy Textual dependency boundary
+  -> TUI session state from catalog, one CSV path, or --table mappings
+  -> existing inspect/sample/profile/query/export services
+  -> in-memory history, visible results, explicit exports, and explicit
+     project-local derived result CSVs
 ```
 
 ## Boundaries
@@ -76,6 +84,26 @@ CLI arguments
 `exceptions.py`
 : CLI-friendly failures with stable exit codes.
 
+`tui_launcher.py`
+: Lazy optional dependency boundary for `csvql menu`. It converts missing
+  Textual dependency errors into normal CSVQL CLI errors.
+
+`tui_state.py`
+: In-memory state for the current terminal menu session: loaded sources,
+  selected source, query history, last result status, result preview state, and
+  active worker state.
+
+`tui_workflows.py`
+: TUI workflow adapter around existing CSVQL services. It loads startup
+  sources, runs trusted local SQL through `engine.py`, delegates inspect/sample/
+  profile/export behavior, saves sources to `.csvql.yml`, and writes explicit
+  derived result CSVs under `.csvql/results/`.
+
+`tui_app.py`, `tui_results.py`, `tui_help.py`
+: Textual UI composition, keybindings, result display helpers, and in-app help.
+  These modules own terminal interaction only; DuckDB execution stays in the
+  engine/workflow layers.
+
 ## Current Design Choices
 
 - DuckDB runs in memory for current CLI and Python API execution.
@@ -100,6 +128,20 @@ CLI arguments
 - `doctor` proves table readiness with CSVQL-controlled DuckDB registration plus a one-row read and treats zero-row readable CSVs as healthy.
 - `doctor` statically audits configured check columns against discovered schema without executing configured checks and exits `12` when concrete project-health failures are found.
 - `--output` controls stdout formatting for query results.
+- `csvql menu` is optional and requires the `tui` package extra; the core CLI
+  install does not require Textual.
+- The TUI keeps query history in memory for the current terminal session only.
+- The TUI writes files only on explicit user actions: result export, project
+  catalog save, or derived result source save.
+- TUI derived result sources are CSV files under project-root or start-directory
+  `.csvql/results/{alias}.csv`. They are loaded back into the current TUI
+  Sources pane with kind `derived` and can be queried like other local CSV
+  sources. The file persists on disk, but the alias is session-local unless the
+  user explicitly saves sources to `.csvql.yml`.
+- Derived result sources are explicit user-created artifacts, not hidden cache
+  or automatic materialization.
+- When DuckDB returns column metadata for statements such as DDL, CSVQL treats
+  the response as a tabular result instead of classifying SQL by statement text.
 
 ## Deferred Decisions
 
@@ -107,6 +149,10 @@ CLI arguments
   documented migration path.
 - Whether persistent DuckDB cache is worth adding after v1 usage evidence.
 - Whether named parameters belong in a post-v1 workflow.
+- Whether the TUI editor should support selected-SQL or current-statement
+  execution after v1 usage evidence.
+- Whether TUI query history should ever have explicit opt-in persistence after
+  v1 usage evidence.
 - Whether safe mode belongs later; it requires a separate ADR, threat model,
   implementation plan, and tests.
 - Whether additional export formats deserve post-v1 scope.

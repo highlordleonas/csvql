@@ -26,6 +26,30 @@ class ReleaseReadinessResult:
     cli_version: str
     wheel_path: Path
     inspect_output: str
+    tui_import_output: str
+    menu_help_output: str
+
+
+def format_release_readiness_summary(result: ReleaseReadinessResult) -> str:
+    """Return a human-readable summary for release-readiness proof output."""
+
+    return "\n".join(
+        (
+            "Release readiness proof passed.",
+            (
+                "Versions: "
+                f"pyproject={result.pyproject_version}, "
+                f"package={result.package_version}, "
+                f"cli={result.cli_version}"
+            ),
+            f"Wheel: {result.wheel_path}",
+            "Inspect smoke output:",
+            result.inspect_output,
+            f"TUI extra import: {result.tui_import_output}",
+            "Menu help smoke output:",
+            result.menu_help_output,
+        )
+    )
 
 
 def read_pyproject_version(pyproject_path: Path) -> str:
@@ -140,10 +164,31 @@ def verify_release_readiness(
         cwd=repo_root,
         run_command=run_command,
     )
+    run_release_command(
+        ("uv", "pip", "install", "--python", python_path, f"{wheel}[tui]"),
+        cwd=repo_root,
+        run_command=run_command,
+    )
+    tui_import_output = run_release_command(
+        (
+            python_path,
+            "-c",
+            "import textual; import csvql.tui_app; print('tui-extra-ok')",
+        ),
+        cwd=repo_root,
+        run_command=run_command,
+    )
+    menu_help_output = run_release_command(
+        (csvql_path, "menu", "--help"),
+        cwd=repo_root,
+        run_command=run_command,
+    )
     return ReleaseReadinessResult(
         pyproject_version=pyproject_version,
         package_version=package_version,
         cli_version=cli_version,
         wheel_path=wheel,
         inspect_output=inspect_output,
+        tui_import_output=tui_import_output,
+        menu_help_output=menu_help_output,
     )

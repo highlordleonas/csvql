@@ -3,7 +3,7 @@
 Status: advisory steering artifact
 
 Date: 2026-06-26
-Updated: 2026-06-30
+Updated: 2026-07-01
 
 Source: reconciles three external research passes and local adversarial review. This
 document does not override `AGENTS.md`, the current release lane, accepted ADRs, or
@@ -32,13 +32,21 @@ CSV/query/profile/check space. CSVQL should not compete on command breadth,
 interactive exploration, enterprise data quality, notebooks, dashboards, cloud
 connectors, or natural-language SQL.
 
+The optional `csvql menu` TUI stays inside the defensible wedge only as a thin
+terminal workbench for the same local CSV catalog, trusted SQL, explicit export,
+and explicit derived-result-source workflows. It is not a dashboard, notebook,
+or broad interactive exploration platform.
+
 ## Current Lane
 
-The active implementation lane is post-v0.7/v0.8 hardening toward v1. The repo
-has already implemented the core local workflow: query, inspect/sample, project
+The active implementation lane is post-v0.9 hardening toward v1. The repo has
+already implemented the core local workflow: query, inspect/sample, project
 catalogs, saved SQL, export, profile, configured checks, benchmark and
 release-readiness scripts, JSON contract documentation, a polished example
-project, `csvql doctor`, and a small project-backed Python API.
+project, `csvql doctor`, a small project-backed Python API, and the optional
+Textual-powered `csvql menu` terminal workbench with session-local history,
+explicit project catalog save, explicit result export, and explicit derived
+result sources under `.csvql/results/{alias}.csv`.
 
 Current work should not add broad new product surface. It should reconcile
 authority and stabilize the existing product for v1:
@@ -55,7 +63,8 @@ authority and stabilize the existing product for v1:
 
 ## Near-Term Direction
 
-The strongest next vertical is v1 hardening, not new command work.
+The strongest next vertical is v1 release authority and proof hardening, not
+more feature expansion.
 
 That slice should include:
 
@@ -69,19 +78,22 @@ That slice should include:
 
 That slice must not include:
 
-- new public CLI commands
+- additional public CLI commands beyond stabilizing the already documented
+  optional `csvql menu` surface
 - new config schema features
 - runtime JSON normalization without an explicit compatibility decision
 - safe mode
-- hidden cache or materialization
+- hidden cache or automatic materialization
 - dataframe, notebook, async, plugin, cloud, AI, or web scope
 
 ## Later Direction
 
 After v1 stabilization, the project should pause for real usage feedback before
-expanding. Valid post-v1 candidates remain explicit cache/materialization,
-additional export formats, broader local file formats, or a richer Python API,
-but only after the small v1 surface proves useful.
+expanding. Valid post-v1 candidates remain broader explicit
+cache/materialization, additional export formats, broader local file formats, or
+a richer Python API, but only after the small v1 surface proves useful. The v1
+derived result source action is a narrow explicit CSV artifact workflow, not a
+hidden cache layer or dataframe runtime.
 
 ## Non-Negotiable Guardrails
 
@@ -95,8 +107,9 @@ but only after the small v1 surface proves useful.
   isolation, or large-file performance without proof.
 - Do not implement safe mode without a separate ADR, threat model,
   implementation plan, and tests.
-- Do not implement hidden automatic cache or materialization. Later cache work
-  must be explicit user-controlled behavior.
+- Do not implement hidden automatic cache or materialization. The implemented
+  TUI derived result source flow is explicit user-controlled CSV artifact
+  creation; broader cache/materialization remains later.
 - Keep public positioning CSV-focused until the repo actually supports broader
   local data files.
 - Keep the v1 Python API small and boring. It should wrap CSVQL's existing
@@ -147,7 +160,7 @@ JSON-contract framework before the current lane is stable.
 
 Future Codex sessions should use this order:
 
-1. Treat the current runtime as post-v0.7/v0.8 and hardening toward v1.
+1. Treat the current runtime as post-v0.9 and hardening toward v1.
 2. State command, JSON, exit-code, config, docs, and test impact before
    implementation.
 3. Use one accountable implementer, with bounded read-only review when useful.

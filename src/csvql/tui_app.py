@@ -141,7 +141,13 @@ class CSVQLMenuApp(App[None]):
         Binding("f8", "focus_history", "History", priority=True),
         Binding("f9", "quit", "Quit", priority=True),
         Binding("f10,ctrl+n", "new_query", "New query", priority=True),
-        Binding("f11", "save_result_as_source", "Save result source", priority=True),
+        Binding(
+            "ctrl+s,alt+s,f11",
+            "save_result_as_source",
+            "Save result source",
+            key_display="Ctrl+S/Alt+S",
+            priority=True,
+        ),
         Binding("i", "inspect_source", "Inspect", show=False),
         Binding("s", "sample_source", "Sample", show=False),
         Binding("p", "profile_source", "Profile", show=False),
@@ -604,7 +610,10 @@ class CSVQLMenuApp(App[None]):
             return
 
         self._refresh_sources_table()
-        message = f"Saved result as derived source {source.name} at {source.path}."
+        message = (
+            f"Saved result as derived source {source.name} at {source.path}. "
+            "Use Save sources to persist the alias in .csvql.yml."
+        )
         self._set_status(message)
         self.query_one("#results-message", Static).update(message)
 

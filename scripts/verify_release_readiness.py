@@ -8,12 +8,13 @@ from pathlib import Path
 
 from csvql.release_readiness import (
     ReleaseReadinessCommandError,
+    format_release_readiness_summary,
     verify_release_readiness,
 )
 
 
 def main() -> None:
-    """Run the repo-local release-readiness proof and print smoke JSON."""
+    """Run the repo-local release-readiness proof and print a proof summary."""
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--work-dir", default="output/release-readiness")
@@ -30,7 +31,7 @@ def main() -> None:
     except (ReleaseReadinessCommandError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
 
-    print(result.inspect_output)
+    print(format_release_readiness_summary(result))
 
 
 if __name__ == "__main__":

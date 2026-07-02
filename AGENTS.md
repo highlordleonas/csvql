@@ -6,8 +6,8 @@ CSVQL is a Python CLI and package for querying local CSV files through DuckDB. D
 
 ## Current Release Lane
 
-The active lane is post-v0.7/v0.8 hardening toward v1. CSVQL already has the
-core local workflow implemented:
+The active lane is post-v0.9 hardening toward v1. CSVQL already has the core
+local workflow implemented:
 
 - `csvql query --table name=path "SELECT ..."` and the single-file shortcut
 - `csvql inspect`, `csvql sample`, `csvql profile`, and `csvql check`
@@ -16,6 +16,9 @@ core local workflow implemented:
 - `csvql doctor` for local project-health checks
 - repo-local benchmark and release-readiness proof scripts
 - a small project-backed Python API through `CSVQLSession`
+- optional Textual-powered `csvql menu` terminal workbench, including
+  session-local query history, explicit exports, explicit project catalog save,
+  and explicit derived result sources under `.csvql/results/{alias}.csv`
 
 Current work should harden and reconcile the product for v1, not widen it. The
 remaining lane is authority alignment, release workflow and changelog work,
@@ -27,7 +30,8 @@ with runtime behavior.
 Do not add a web app, cloud connectors, dashboard surface, notebook framework,
 NLP execution, dataframe-first API, plugin system, hidden cache/materialization,
 safe mode, or broader file-format platform without explicit scope approval and
-new evidence.
+new evidence. TUI derived result sources are explicit user-created CSV
+artifacts, not hidden cache or automatic materialization.
 
 `v1-stable` means:
 
@@ -40,8 +44,8 @@ new evidence.
 - Benchmark and release-readiness workflows have fresh local proof.
 - Release workflow and changelog or release-note material exist for the
   implemented surfaces.
-- `uv run ruff format --check .`, `uv run ruff check .`, `uv run mypy src`, and
-  `uv run pytest` pass.
+- `uv run ruff format --check .`, `uv run ruff check .`,
+  `uv run --all-extras mypy src`, and `uv run --all-extras pytest` pass.
 - Docs make no unsupported sandbox, security-isolation, production-readiness, or
   large-file performance claims.
 
@@ -57,8 +61,8 @@ Expected local gates:
 ```bash
 uv run ruff format --check .
 uv run ruff check .
-uv run mypy src
-uv run pytest
+uv run --all-extras mypy src
+uv run --all-extras pytest
 ```
 
 ## Architecture Rules

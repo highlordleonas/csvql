@@ -1,6 +1,6 @@
 # Release Readiness
 
-CSVQL is in post-v0.7/v0.8 hardening toward v1. This document defines the
+CSVQL is in post-v0.9 hardening toward v1. This document defines the
 local proof path for `release-candidate` and `v1-stable` labels. It does not
 publish packages, create tags, upload artifacts, or claim a release by itself.
 
@@ -24,12 +24,17 @@ Run:
 uv run python scripts/verify_release_readiness.py --work-dir output/release-readiness
 ```
 
+On success, the script prints a proof summary with version agreement, built
+wheel path, inspect smoke output, TUI extra import output, and menu help output.
+
 This workflow verifies:
 
 - `pyproject.toml`, `src/csvql/__init__.py`, and `csvql --version` agree
 - `uv build --sdist --wheel` succeeds
 - an isolated wheel install can run `csvql --version`
 - the installed wheel can run a tiny `inspect` command
+- the installed wheel can install the optional `tui` extra, import the
+  Textual-backed TUI app, and show `csvql menu --help`
 
 ## Full Local Gate
 
@@ -38,8 +43,8 @@ Before any `release-candidate` or `v1-stable` claim, run:
 ```bash
 uv run ruff format --check .
 uv run ruff check .
-uv run mypy src
-uv run pytest
+uv run --all-extras mypy src
+uv run --all-extras pytest
 ```
 
 ## Benchmark Proof

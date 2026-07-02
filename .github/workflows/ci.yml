@@ -27,6 +27,6 @@ jobs:
       - name: Lint
         run: uv run ruff check .
       - name: Type check
-        run: uv run mypy src
+        run: uv run --all-extras mypy src
       - name: Test
-        run: uv run pytest
+        run: uv run --all-extras pytest
