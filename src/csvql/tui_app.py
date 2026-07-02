@@ -32,6 +32,7 @@ from csvql.tui_workflows import (
     profile_source,
     run_query_for_tui,
     sample_source,
+    save_derived_result_source,
     save_sources_to_project_catalog,
 )
 
@@ -140,6 +141,7 @@ class CSVQLMenuApp(App[None]):
         Binding("f8", "focus_history", "History", priority=True),
         Binding("f9", "quit", "Quit", priority=True),
         Binding("f10,ctrl+n", "new_query", "New query", priority=True),
+        Binding("f11", "save_result_as_source", "Save result source", priority=True),
         Binding("i", "inspect_source", "Inspect", show=False),
         Binding("s", "sample_source", "Sample", show=False),
         Binding("p", "profile_source", "Profile", show=False),
@@ -363,6 +365,25 @@ class CSVQLMenuApp(App[None]):
             callback=self._handle_export_last_result,
         )
 
+    def action_save_result_as_source(self) -> None:
+        result = self.state.last_result
+        if result is None:
+            if self.state.last_result_status == "no_result":
+                self._show_error(
+                    CSVQLError("The last statement did not produce a tabular result.")
+                )
+                return
+            self._show_error(CSVQLError("Run a query before saving a result as a source."))
+            return
+
+        self.push_screen(
+            _PromptInputScreen(
+                "Enter a derived source alias.",
+                input_id="derived-source-alias",
+            ),
+            callback=self._handle_save_result_as_source,
+        )
+
     def action_save_sources(self) -> None:
         if not self.state.sources:
             self._show_error(CSVQLError("No sources loaded to save."))
@@ -464,9 +485,9 @@ class CSVQLMenuApp(App[None]):
     def _refresh_sources_table(self) -> None:
         sources_table = self.query_one("#sources", DataTable)
         sources_table.clear(columns=True)
-        sources_table.add_columns("alias", "path", "origin")
+        sources_table.add_columns("alias", "kind", "path", "origin")
         for source in self.state.sources:
-            sources_table.add_row(source.name, str(source.path), source.origin)
+            sources_table.add_row(source.name, source.kind, str(source.path), source.origin)
 
         selected_row = self._selected_source_row_index()
         if selected_row is not None:
@@ -561,6 +582,33 @@ class CSVQLMenuApp(App[None]):
 
         self._set_status(f"Exported to {export_path}.")
         self._show_output_text(f"Exported to {export_path}.")
+
+    def _handle_save_result_as_source(self, alias: str | None) -> None:
+        if alias is None:
+            return
+
+        result = self.state.last_result
+        if result is None:
+            self._show_error(CSVQLError("Run a query before saving a result as a source."))
+            return
+
+        try:
+            source = save_derived_result_source(
+                result,
+                alias,
+                existing_sources=self.state.sources,
+                start_dir=self.start_dir,
+            )
+            self.state.add_source(source)
+            self.state.select_source(source.name)
+        except CSVQLError as exc:
+            self._show_error(exc)
+            return
+
+        self._refresh_sources_table()
+        message = f"Saved result as derived source {source.name} at {source.path}."
+        self._set_status(message)
+        self.query_one("#results-message", Static).update(message)
 
     def _selected_source_row_index(self) -> int | None:
         selected_alias = self.state.selected_alias

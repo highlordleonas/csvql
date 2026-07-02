@@ -569,6 +569,165 @@ def test_export_last_result_writes_file_when_result_exists(tmp_path: Path) -> No
     assert "Exported to" in results
 
 
+def test_sources_pane_shows_source_kind(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
+    state.add_source(
+        TUISource(
+            name="order_names",
+            path=tmp_path / ".csvql" / "results" / "order_names.csv",
+            origin="session",
+            kind="derived",
+        )
+    )
+
+    async def _inner() -> tuple[tuple[str, ...], int]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sources = app.query_one("#sources", DataTable)
+            return (
+                tuple(str(column.label) for column in sources.columns.values()),
+                sources.row_count,
+            )
+
+    columns, row_count = asyncio.run(_inner())
+
+    assert columns == ("alias", "kind", "path", "origin")
+    assert row_count == 2
+
+
+def test_save_result_as_source_requires_query_result(tmp_path: Path) -> None:
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f11")
+            await pilot.pause()
+            return (
+                app.query_one("#status", Static).content,
+                app.query_one("#results-message", Static).content,
+            )
+
+    status, message = asyncio.run(_inner())
+
+    assert "Run a query before saving a result as a source." in status
+    assert "Run a query before saving a result as a source." in message
+    assert not (tmp_path / ".csvql" / "results").exists()
+
+
+def test_save_result_as_source_writes_csv_and_adds_derived_source(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.set_last_result(
+        QueryResult(
+            columns=("customer_id", "email"),
+            rows=(("CUST-001", "alex@example.com"),),
+            elapsed_ms=12.345,
+        )
+    )
+
+    async def _inner() -> tuple[tuple[TUISource, ...], str | None, str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f11")
+            await pilot.pause()
+
+            alias_input = app.screen.query_one("#derived-source-alias", Input)
+            alias_input.value = "customer_emails"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            output_path = tmp_path / ".csvql" / "results" / "customer_emails.csv"
+            return (
+                app.state.sources,
+                app.state.selected_alias,
+                app.query_one("#status", Static).content,
+                app.query_one("#results-message", Static).content,
+                output_path.read_text(encoding="utf-8"),
+            )
+
+    sources, selected_alias, status, message, content = asyncio.run(_inner())
+
+    assert sources == (
+        TUISource(
+            name="customer_emails",
+            path=(tmp_path / ".csvql" / "results" / "customer_emails.csv").resolve(),
+            origin="session",
+            kind="derived",
+        ),
+    )
+    assert selected_alias == "customer_emails"
+    assert "Saved result as derived source customer_emails" in status
+    assert "Saved result as derived source customer_emails" in message
+    assert content == "customer_id,email\nCUST-001,alex@example.com\n"
+
+
+def test_save_result_as_source_refuses_after_no_result_statement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    state.set_last_result(QueryResult(columns=("old",), rows=(("stale",),), elapsed_ms=1.0))
+
+    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
+        from csvql.tui_state import TUIQueryOutcome
+
+        return TUIQueryOutcome.no_result(sequence=sequence, sql=sql, elapsed_ms=4.0)
+
+    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text("CREATE TABLE scratch(id INTEGER)")
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+
+            await pilot.press("f11")
+            await pilot.pause()
+
+            return (
+                app.query_one("#status", Static).content,
+                app.query_one("#results-message", Static).content,
+            )
+
+    status, message = asyncio.run(_inner())
+
+    assert "The last statement did not produce a tabular result." in status
+    assert "The last statement did not produce a tabular result." in message
+    assert not (tmp_path / ".csvql" / "results").exists()
+
+
+def test_save_result_as_source_refuses_duplicate_alias(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+    state.set_last_result(QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0))
+
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f11")
+            await pilot.pause()
+
+            alias_input = app.screen.query_one("#derived-source-alias", Input)
+            alias_input.value = "customers"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            return (
+                app.query_one("#status", Static).content,
+                app.query_one("#results-message", Static).content,
+            )
+
+    status, message = asyncio.run(_inner())
+
+    assert "Source alias 'customers' is already loaded" in status
+    assert "Source alias 'customers' is already loaded" in message
+    assert not (tmp_path / ".csvql" / "results").exists()
+
+
 def test_save_sources_creates_catalog_only_when_invoked(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
     config_path = tmp_path / ".csvql.yml"
