@@ -7,13 +7,15 @@ from csvql.exceptions import ExportError, ProjectConfigError, TableMappingError
 from csvql.export import ExportFormat
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
 from csvql.project_config import CONFIG_FILENAME, initialize_project, load_project
-from csvql.tui_state import TUISessionState, TUISource
+from csvql.tui_state import TUISessionState, TUISource, TUISourceColumn
 from csvql.tui_workflows import (
     build_initial_state,
     export_last_result,
     inspect_source,
+    inspect_source_columns,
     profile_source,
     query_sources,
+    render_duckdb_identifier,
     run_query_for_tui,
     sample_source,
     save_derived_result_source,
@@ -149,6 +151,38 @@ def test_inspect_sample_profile_wrappers_use_alias_display_path(tmp_path: Path) 
     assert inspect_result.source["display_path"] == "orders"
     assert sample_result.source["display_path"] == "orders"
     assert profile_result.source["display_path"] == "orders"
+
+
+def test_inspect_source_columns_returns_names_and_duckdb_types(tmp_path: Path) -> None:
+    csv_path = _write_csv(
+        tmp_path / "orders.csv",
+        "Customer ID,select,total\nC-1,paid,12.5\n",
+    )
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
+
+    columns = inspect_source_columns(source)
+
+    assert columns == (
+        TUISourceColumn(name="Customer ID", duckdb_type="VARCHAR"),
+        TUISourceColumn(name="select", duckdb_type="VARCHAR"),
+        TUISourceColumn(name="total", duckdb_type="DOUBLE"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("identifier", "expected"),
+    [
+        ("orders", '"orders"'),
+        ("Customer ID", '"Customer ID"'),
+        ("select", '"select"'),
+        ('a"b', '"a""b"'),
+    ],
+)
+def test_render_duckdb_identifier_quotes_generated_sql_identifiers(
+    identifier: str,
+    expected: str,
+) -> None:
+    assert render_duckdb_identifier(identifier) == expected
 
 
 def test_query_sources_supports_join_across_tui_aliases(tmp_path: Path) -> None:

@@ -26,7 +26,7 @@ from csvql.project_config import (
 )
 from csvql.source import CSVSource, source_from_path
 from csvql.table_mapping import parse_table_mapping, source_from_single_csv, validate_table_alias
-from csvql.tui_state import TUIQueryOutcome, TUISessionState, TUISource
+from csvql.tui_state import TUIQueryOutcome, TUISessionState, TUISource, TUISourceColumn
 
 _MISSING_PROJECT_PREFIX = "No .csvql.yml project catalog found."
 _DERIVED_RESULTS_DIR = Path(".csvql") / "results"
@@ -68,6 +68,23 @@ def inspect_source(source: TUISource, *, exact: bool = False) -> InspectResult:
     """Inspect a TUI source using the existing CSV inspection service."""
 
     return inspect_csv_source(_csv_source(source), exact=exact)
+
+
+def inspect_source_columns(source: TUISource) -> tuple[TUISourceColumn, ...]:
+    """Inspect a TUI source and return its columns for source intelligence."""
+
+    result = inspect_source(source)
+    return tuple(
+        TUISourceColumn(name=column.name, duckdb_type=column.duckdb_type)
+        for column in result.columns
+    )
+
+
+def render_duckdb_identifier(identifier: str) -> str:
+    """Render one DuckDB delimited identifier for generated SQL snippets."""
+
+    escaped_identifier = identifier.replace('"', '""')
+    return f'"{escaped_identifier}"'
 
 
 def sample_source(source: TUISource, *, limit: int = 10) -> SampleResult:
