@@ -152,12 +152,6 @@ def save_derived_result_source(
 
     result_root = _derived_result_root(start_dir).resolve()
     result_dir = result_root / _DERIVED_RESULTS_DIR
-    output_path = (result_dir / f"{source_name}.csv").resolve(strict=False)
-    if output_path.exists():
-        raise ExportError(
-            f"Derived result already exists at {output_path}.",
-            suggestion="Choose a different alias for this derived result source.",
-        )
 
     csvql_dir = result_root / ".csvql"
     if csvql_dir.exists():
@@ -209,9 +203,16 @@ def save_derived_result_source(
             suggestion="Use a real project-local .csvql/results directory.",
         )
 
+    output_path = resolved_result_dir / f"{source_name}.csv"
+    if output_path.exists():
+        raise ExportError(
+            f"Derived result already exists at {output_path}.",
+            suggestion="Choose a different alias for this derived result source.",
+        )
+
     content = format_query_result_for_export(result, ExportFormat.csv)
     try:
-        _write_derived_result_file(resolved_result_dir / f"{source_name}.csv", content)
+        _write_derived_result_file(output_path, content)
     except OSError as exc:
         raise ExportError(
             f"Failed to write derived source to {output_path}.",
