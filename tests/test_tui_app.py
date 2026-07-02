@@ -939,6 +939,7 @@ def test_readme_documents_source_intelligence_keymap() -> None:
     assert "`l` to insert the selected source alias" in readme
     assert "`x` to insert a `SELECT *` starter query" in readme
     assert "Column metadata is session-local" in readme
+    assert "is not written to `.csvql.yml`" in readme
 
 
 def test_question_mark_help_only_outside_sql_editor(tmp_path: Path) -> None:
