@@ -88,6 +88,31 @@ Run the CLI from the repo:
 uv run csvql --help
 ```
 
+## First 10 Minutes
+
+Start with the CLI path. Query one CSV, then decide whether you want the
+optional terminal workbench.
+
+```bash
+uv run csvql query examples/saas_revenue/data/revenue_movements.csv \
+  "SELECT movement_type, SUM(mrr_delta) AS net_mrr_change
+   FROM revenue_movements
+   GROUP BY movement_type
+   ORDER BY movement_type"
+```
+
+For repeatable work, initialize a project catalog, add sources once, and keep
+SQL in files:
+
+```bash
+cd examples/saas_revenue
+uv run csvql tables
+uv run csvql run queries/revenue_health.sql --output json
+```
+
+Use `csvql menu` only when an interactive terminal workbench helps. The CLI
+remains the complete core workflow.
+
 ## Interactive Terminal Menu
 
 CSVQL can also run an optional Textual-powered terminal menu:
@@ -280,6 +305,38 @@ uv run csvql export queries/revenue_health.sql \
 
 See `examples/saas_revenue/README.md` for the full copy/paste walkthrough.
 
+## Reusable Result Sources
+
+You can turn a saved SQL result into a reusable CSV source without opening the
+TUI. This is normal CSV reuse: export a result, add the exported CSV as a table
+alias, then query it like any other CSVQL source.
+
+```bash
+cd examples/saas_revenue
+mkdir -p .csvql/results
+uv run csvql export queries/revenue_health.sql \
+  --format csv \
+  --out .csvql/results/revenue_health.csv \
+  --force
+
+uv run csvql add revenue_health_result .csvql/results/revenue_health.csv --replace
+uv run csvql query "SELECT COUNT(*) AS result_rows FROM revenue_health_result"
+```
+
+For one command without catalog persistence, pass the exported result with
+`--table`:
+
+```bash
+cd examples/saas_revenue
+uv run csvql query \
+  --table revenue_health_result=.csvql/results/revenue_health.csv \
+  "SELECT * FROM revenue_health_result"
+```
+
+This CLI path is practical parity with the TUI's Save Result As Source action,
+but it is not a typed derived-source catalog feature. The current project
+catalog stores table paths; it does not store source-kind metadata.
+
 ## Inspect And Sample Examples
 
 Inspect the core revenue-movement table:
@@ -458,6 +515,7 @@ CSVQL is currently a local developer tool for trusted SQL. DuckDB executes the S
 - [Changelog](CHANGELOG.md)
 - [JSON contracts](docs/json-contracts.md)
 - [Failure gallery](docs/failure-gallery.md)
+- [Manual v1 QA matrix](docs/v1-manual-qa.md)
 - [Product direction](docs/PRODUCT_DIRECTION.md)
 - [Release readiness](docs/release-readiness.md)
 - [v1 release notes](docs/release-notes/v1.md)
