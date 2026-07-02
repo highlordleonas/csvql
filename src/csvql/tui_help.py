@@ -28,8 +28,11 @@ General
   F1                  Help
   ?                   Help outside the SQL editor
   F7                  Export last tabular result
-  Ctrl+S              Save last tabular result as a derived source
-  Alt+S / F11         Alternate save-result shortcuts
   F9                  Quit
   Esc                 Close help or modal
+
+Derived sources
+  Ctrl+S              Save result to .csvql/results/{alias}.csv
+  Alt+S / F11         Alternate save-result shortcuts
+  w in Sources        Persist source paths to .csvql.yml
 """

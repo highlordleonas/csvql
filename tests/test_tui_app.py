@@ -920,10 +920,12 @@ def test_help_text_documents_workbench_keymap(tmp_path: Path) -> None:
     assert "Run Editor" in help_text
     assert "F4 / Ctrl+Enter" in help_text
     assert "F6 / Ctrl+Up" in help_text
-    assert "Ctrl+S              Save last tabular result as a derived source" in help_text
+    assert "Ctrl+S              Save result to .csvql/results/{alias}.csv" in help_text
     assert "Alt+S / F11         Alternate save-result shortcuts" in help_text
     assert "F11" in help_text
-    assert "Save last tabular result as a derived source" in help_text
+    assert "Derived sources" in help_text
+    assert ".csvql/results/{alias}.csv" in help_text
+    assert "Persist source paths to .csvql.yml" in help_text
     assert "History pane" in help_text
 
 
