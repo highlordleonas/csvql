@@ -146,7 +146,7 @@ def save_derived_result_source(
     for source in existing_sources:
         if source.name.casefold() == source_name.casefold():
             raise TableMappingError(
-                f"Source alias '{source.name}' is already loaded in the TUI session.",
+                f"Source alias '{source_name}' is already loaded in the TUI session.",
                 suggestion="Choose a unique alias for the derived result source.",
             )
 

@@ -365,7 +365,7 @@ def test_save_derived_result_source_refuses_duplicate_session_alias(tmp_path: Pa
         TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"),
     )
 
-    with pytest.raises(TableMappingError, match=r"Source alias 'orders' is already loaded"):
+    with pytest.raises(TableMappingError, match=r"Source alias 'ORDERS' is already loaded"):
         save_derived_result_source(
             result,
             "ORDERS",
