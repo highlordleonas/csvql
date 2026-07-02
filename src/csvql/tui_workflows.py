@@ -203,13 +203,14 @@ def save_derived_result_source(
             suggestion="Use a real project-local .csvql/results directory.",
         )
 
-    output_path = resolved_result_dir / f"{source_name}.csv"
-    if output_path.exists():
+    existing_output_path = _existing_derived_result_path(resolved_result_dir, source_name)
+    if existing_output_path is not None:
         raise ExportError(
-            f"Derived result already exists at {output_path}.",
+            f"Derived result already exists at {existing_output_path}.",
             suggestion="Choose a different alias for this derived result source.",
         )
 
+    output_path = resolved_result_dir / f"{source_name}.csv"
     content = format_query_result_for_export(result, ExportFormat.csv)
     try:
         _write_derived_result_file(output_path, content)
@@ -336,6 +337,20 @@ def _derived_result_root(start_dir: Path) -> Path:
         if exc.message.startswith(_MISSING_PROJECT_PREFIX):
             return start_dir.expanduser().resolve()
         raise
+
+
+def _existing_derived_result_path(result_dir: Path, source_name: str) -> Path | None:
+    target_name = f"{source_name}.csv".casefold()
+    try:
+        for candidate in result_dir.iterdir():
+            if candidate.name.casefold() == target_name:
+                return candidate
+    except OSError as exc:
+        raise ExportError(
+            f"Failed to inspect derived results directory: {result_dir}",
+            suggestion="Check that the derived results directory is readable.",
+        ) from exc
+    return None
 
 
 def _write_derived_result_file(path: Path, content: str) -> None:

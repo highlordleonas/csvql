@@ -394,6 +394,46 @@ def test_save_derived_result_source_refuses_existing_output_file(tmp_path: Path)
     assert output_path.read_text(encoding="utf-8") == "id\nexisting\n"
 
 
+def test_save_derived_result_source_refuses_case_variant_output_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
+    output_dir = tmp_path / ".csvql" / "results"
+    output_dir.mkdir(parents=True)
+    output_path = output_dir / "orders.csv"
+    output_path.write_text("id\nexisting\n", encoding="utf-8")
+    uppercase_output_path = output_dir.resolve() / "ORDERS.csv"
+    original_exists = Path.exists
+    write_attempts: list[Path] = []
+
+    def case_sensitive_exists(path: Path) -> bool:
+        if path == uppercase_output_path:
+            return False
+        return original_exists(path)
+
+    def fake_write_derived_result_file(path: Path, content: str) -> None:
+        del content
+        write_attempts.append(path)
+
+    monkeypatch.setattr(Path, "exists", case_sensitive_exists)
+    monkeypatch.setattr(
+        "csvql.tui_workflows._write_derived_result_file",
+        fake_write_derived_result_file,
+    )
+
+    with pytest.raises(ExportError, match=r"Derived result already exists"):
+        save_derived_result_source(
+            result,
+            "ORDERS",
+            existing_sources=(),
+            start_dir=tmp_path,
+        )
+
+    assert output_path.read_text(encoding="utf-8") == "id\nexisting\n"
+    assert write_attempts == []
+
+
 def test_save_derived_result_source_uses_project_root_from_nested_start_dir(
     tmp_path: Path,
 ) -> None:
@@ -501,19 +541,20 @@ def test_save_derived_result_source_refuses_file_created_during_save(
 ) -> None:
     result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
     output_path = tmp_path / ".csvql" / "results" / "race.csv"
-    original_exists = Path.exists
     created_during_check = False
 
-    def racing_exists(path: Path) -> bool:
+    def racing_existing_derived_result_path(result_dir: Path, source_name: str) -> None:
         nonlocal created_during_check
-        if path == output_path and not created_during_check:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+        assert result_dir == output_path.parent.resolve()
+        assert source_name == "race"
+        if not created_during_check:
             output_path.write_text("id\nexisting\n", encoding="utf-8")
             created_during_check = True
-            return False
-        return original_exists(path)
 
-    monkeypatch.setattr(Path, "exists", racing_exists)
+    monkeypatch.setattr(
+        "csvql.tui_workflows._existing_derived_result_path",
+        racing_existing_derived_result_path,
+    )
 
     with pytest.raises(ExportError, match="Derived result already exists"):
         save_derived_result_source(
