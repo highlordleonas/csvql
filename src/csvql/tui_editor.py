@@ -30,6 +30,11 @@ def current_statement_at_offset(text: str, cursor_offset: int) -> str:
 
     current_segment = segments[current_segment_index]
     if _cursor_is_in_leading_whitespace(text, current_segment, bounded_offset):
+        if current_segment_index == 0:
+            statement = _segment_text(text, current_segment)
+            if statement:
+                return statement
+            return ""
         for index in range(current_segment_index - 1, -1, -1):
             statement = _segment_text(text, segments[index])
             if statement:
