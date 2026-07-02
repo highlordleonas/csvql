@@ -935,6 +935,7 @@ def test_help_text_documents_workbench_keymap(tmp_path: Path) -> None:
 def test_readme_documents_source_intelligence_keymap() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
+    assert "When the source pane is focused, Source Intelligence actions use" in readme
     assert "`c` to load/show columns" in readme
     assert "`l` to insert the selected source alias" in readme
     assert "`x` to insert a `SELECT *` starter query" in readme

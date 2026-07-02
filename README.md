@@ -148,7 +148,9 @@ save sources. History actions use `Enter` to reopen a query and `r` to rerun a
 query against the current session sources. `F1` opens help; `?` is a help
 fallback only outside the SQL editor.
 
-Source Intelligence actions use `c` to load/show columns, `l` to insert the selected source alias, and `x` to insert a `SELECT *` starter query. Column metadata is session-local and is not written to `.csvql.yml`.
+When the source pane is focused, Source Intelligence actions use `c` to load/show columns,
+`l` to insert the selected source alias, and `x` to insert a `SELECT *` starter query.
+Column metadata is session-local and is not written to `.csvql.yml`.
 
 `Ctrl+N` or `F10` clears the editor for a new query while keeping history and
 the last result view visible. Query history is in-memory session state only: it
