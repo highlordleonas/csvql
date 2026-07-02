@@ -4,7 +4,7 @@ import pytest
 
 from csvql.exceptions import TableMappingError
 from csvql.models import QueryResult, TableSource
-from csvql.tui_state import TUISourceColumn, TUIResultViewState, TUISessionState, TUISource
+from csvql.tui_state import TUIResultViewState, TUISessionState, TUISource, TUISourceColumn
 
 
 def test_tui_source_as_table_source_returns_table_source(tmp_path: Path) -> None:
