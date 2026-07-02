@@ -927,6 +927,18 @@ def test_help_text_documents_workbench_keymap(tmp_path: Path) -> None:
     assert ".csvql/results/{alias}.csv" in help_text
     assert "Persist source paths to .csvql.yml" in help_text
     assert "History pane" in help_text
+    assert "c                   Load/show selected source columns" in help_text
+    assert "l                   Insert selected source alias" in help_text
+    assert "x                   Insert SELECT * starter query" in help_text
+
+
+def test_readme_documents_source_intelligence_keymap() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "`c` to load/show columns" in readme
+    assert "`l` to insert the selected source alias" in readme
+    assert "`x` to insert a `SELECT *` starter query" in readme
+    assert "Column metadata is session-local" in readme
 
 
 def test_question_mark_help_only_outside_sql_editor(tmp_path: Path) -> None:

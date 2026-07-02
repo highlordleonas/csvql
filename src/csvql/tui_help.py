@@ -16,6 +16,9 @@ Source pane
   i                   Inspect selected source
   s                   Sample selected source
   p                   Profile selected source
+  c                   Load/show selected source columns
+  l                   Insert selected source alias
+  x                   Insert SELECT * starter query
   a                   Add source
   d                   Remove source
   w                   Save sources to project catalog
