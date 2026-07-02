@@ -129,7 +129,7 @@ version = "0.1.0"
         "install",
         "--python",
         str(repo_root / "out" / "smoke-venv" / "bin" / "python"),
-        f"{repo_root / 'out' / 'dist' / 'csvql-0.1.0-py3-none-any.whl'}[tui]",
+        f"csvql[tui] @ file://{repo_root / 'out' / 'dist' / 'csvql-0.1.0-py3-none-any.whl'}",
     ] in seen_commands
 
 

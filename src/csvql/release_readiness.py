@@ -165,7 +165,14 @@ def verify_release_readiness(
         run_command=run_command,
     )
     run_release_command(
-        ("uv", "pip", "install", "--python", python_path, f"{wheel}[tui]"),
+        (
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            python_path,
+            f"csvql[tui] @ {wheel.resolve().as_uri()}",
+        ),
         cwd=repo_root,
         run_command=run_command,
     )
