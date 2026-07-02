@@ -212,8 +212,11 @@ class CSVQLMenuApp(App[None]):
         self._refresh_sources_table()
         self._refresh_history_table()
         self._set_status(self._status_message())
-        self.query_one("#run-status", Static).update("Ready.")
+        self._set_run_status_ready()
         self.query_one("#sql", TextArea).focus()
+
+    def _set_run_status_ready(self) -> None:
+        self.query_one("#run-status", Static).update("Ready.")
 
     def action_add_source(self) -> None:
         self.push_screen(
@@ -414,6 +417,7 @@ class CSVQLMenuApp(App[None]):
     ) -> None:
         if not sql:
             self.state.clear_last_result()
+            self._set_run_status_ready()
             self._show_error(
                 CSVQLError(
                     "Enter SQL before running a query.",
@@ -424,6 +428,7 @@ class CSVQLMenuApp(App[None]):
 
         if not self.state.sources:
             self.state.clear_last_result()
+            self._set_run_status_ready()
             self._show_error(
                 CSVQLError(
                     "No sources loaded.",
@@ -435,6 +440,7 @@ class CSVQLMenuApp(App[None]):
         try:
             sequence = self.state.begin_query_run(sql)
         except RuntimeError:
+            self._set_run_status_ready()
             self._set_status("Query already running.")
             return
 

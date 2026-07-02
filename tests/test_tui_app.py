@@ -90,6 +90,62 @@ def test_app_runs_query_and_updates_status_and_results(tmp_path: Path) -> None:
     assert "Showing 2 returned row(s)." in message
 
 
+@pytest.mark.parametrize("key", ["f4", "f12"])
+def test_run_shortcuts_reset_run_status_after_empty_sql(
+    tmp_path: Path,
+    key: str,
+) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, str, bool, list[str]]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text("   \n")
+            await pilot.press(key)
+            await pilot.pause(0.2)
+            return (
+                app.query_one("#status", Static).content,
+                app.query_one("#run-status", Static).content,
+                app.state.query_run.is_running,
+                app_history_statuses(app.state),
+            )
+
+    status, run_status, is_running, history_statuses = asyncio.run(_inner())
+
+    assert "Enter SQL before running a query." in status
+    assert run_status == "Ready."
+    assert is_running is False
+    assert history_statuses == []
+
+
+@pytest.mark.parametrize("key", ["f4", "f12"])
+def test_run_shortcuts_reset_run_status_after_missing_sources(
+    tmp_path: Path,
+    key: str,
+) -> None:
+    async def _inner() -> tuple[str, str, bool, list[str]]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text("SELECT 1")
+            await pilot.press(key)
+            await pilot.pause(0.2)
+            return (
+                app.query_one("#status", Static).content,
+                app.query_one("#run-status", Static).content,
+                app.state.query_run.is_running,
+                app_history_statuses(app.state),
+            )
+
+    status, run_status, is_running, history_statuses = asyncio.run(_inner())
+
+    assert "No sources loaded." in status
+    assert run_status == "Ready."
+    assert is_running is False
+    assert history_statuses == []
+
+
 def test_app_clears_stale_result_on_failed_query(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
@@ -1187,10 +1243,9 @@ def test_readme_documents_history_rerun_keymap() -> None:
     readme = _normalized_markdown_text(_read_readme_text())
 
     assert "History" in readme
-    assert "rerun" in readme
     assert (
-        "Use History to reopen previous queries or rerun them against the current session sources."
-        in readme
+        "In History, use `Enter` to reopen a query and `r` to rerun a query "
+        "against the current session sources." in readme
     )
 
 
