@@ -416,6 +416,31 @@ def test_save_derived_result_source_uses_project_root_from_nested_start_dir(
     assert not (nested / ".csvql" / "results" / "nested_ids.csv").exists()
 
 
+def test_save_derived_result_source_refuses_symlinked_csvql_dir_before_mkdir(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (project_root / ".csvql").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+    result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
+
+    with pytest.raises(ExportError, match="Derived results directory escapes"):
+        save_derived_result_source(
+            result,
+            "leak",
+            existing_sources=(),
+            start_dir=project_root,
+        )
+
+    assert not (outside / "results").exists()
+    assert not (outside / "leak.csv").exists()
+
+
 def test_save_derived_result_source_refuses_symlinked_results_dir_escape(
     tmp_path: Path,
 ) -> None:

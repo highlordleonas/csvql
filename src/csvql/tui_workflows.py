@@ -150,7 +150,7 @@ def save_derived_result_source(
                 suggestion="Choose a unique alias for the derived result source.",
             )
 
-    result_root = _derived_result_root(start_dir)
+    result_root = _derived_result_root(start_dir).resolve()
     result_dir = result_root / _DERIVED_RESULTS_DIR
     output_path = (result_dir / f"{source_name}.csv").resolve(strict=False)
     if output_path.exists():
@@ -158,6 +158,35 @@ def save_derived_result_source(
             f"Derived result already exists at {output_path}.",
             suggestion="Choose a different alias for this derived result source.",
         )
+
+    csvql_dir = result_root / ".csvql"
+    if csvql_dir.exists():
+        try:
+            resolved_csvql_dir = csvql_dir.resolve(strict=True)
+        except OSError as exc:
+            raise ExportError(
+                f"Failed to resolve derived results directory: {csvql_dir}",
+                suggestion="Use a real project-local .csvql/results directory.",
+            ) from exc
+        if not resolved_csvql_dir.is_relative_to(result_root):
+            raise ExportError(
+                f"Derived results directory escapes project root: {resolved_csvql_dir}",
+                suggestion="Use a real project-local .csvql/results directory.",
+            )
+
+    if result_dir.exists():
+        try:
+            resolved_result_dir = result_dir.resolve(strict=True)
+        except OSError as exc:
+            raise ExportError(
+                f"Failed to resolve derived results directory: {result_dir}",
+                suggestion="Use a real project-local .csvql/results directory.",
+            ) from exc
+        if not resolved_result_dir.is_relative_to(result_root):
+            raise ExportError(
+                f"Derived results directory escapes project root: {resolved_result_dir}",
+                suggestion="Use a real project-local .csvql/results directory.",
+            )
 
     try:
         result_dir.mkdir(parents=True, exist_ok=True)
