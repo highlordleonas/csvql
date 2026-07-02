@@ -875,6 +875,8 @@ def test_help_text_documents_workbench_keymap(tmp_path: Path) -> None:
     assert "Run Editor" in help_text
     assert "F4 / Ctrl+Enter" in help_text
     assert "F6 / Ctrl+Up" in help_text
+    assert "F11" in help_text
+    assert "Save last tabular result as a derived source" in help_text
     assert "History pane" in help_text
 
 

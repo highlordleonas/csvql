@@ -119,6 +119,13 @@ the last result view visible. Query history is in-memory session state only: it
 is not written to disk, logged, or sent anywhere by CSVQL, and it clears when
 the TUI exits.
 
+`F11` saves the last successful tabular query result as a derived source. CSVQL
+prompts for an alias, writes `.csvql/results/{alias}.csv`, and adds that alias
+to the Sources pane with kind `derived` so it can be queried or joined later in
+the same TUI session. Derived result sources are explicit CSV-backed artifacts,
+not hidden cache. They use the same trusted local DuckDB SQL posture as other
+CSVQL sources.
+
 The SQL editor uses the same trusted local DuckDB execution posture as the rest
 of CSVQL. Do not run untrusted SQL.
 

@@ -28,6 +28,7 @@ General
   F1                  Help
   ?                   Help outside the SQL editor
   F7                  Export last tabular result
+  F11                 Save last tabular result as a derived source
   F9                  Quit
   Esc                 Close help or modal
 """
