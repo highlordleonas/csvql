@@ -57,7 +57,9 @@ Included:
 - Make rejected-run status text say that no query ran and that the previous
   result remains available when one exists.
 - Keep rejected runs out of query history.
-- Keep `run-status` returning to `Ready.` after rejected runs.
+- Keep `run-status` returning to `Ready.` after rejected runs when no query is
+  active, and preserve the active running status when a second run is rejected
+  because a query is already running.
 - Add focused Textual app tests for rejected-run recovery behavior.
 
 Excluded:
@@ -92,7 +94,9 @@ For rejected runs:
 - Do not clear the visible results grid.
 - Do not change `state.last_result_status`.
 - Do not add a query-history item.
-- Reset `#run-status` to `Ready.`.
+- Reset `#run-status` to `Ready.` when no query is active.
+- Preserve the active `#run-status` text when the rejection is `Query already
+  running.` because the TUI is not ready yet.
 - Show the rejection reason.
 - If a previous result exists, include `Previous result is still available.` in
   the status and result-message surfaces.
@@ -150,7 +154,9 @@ Expected implementation shape:
   with the same responsibility.
 
 - The helper should:
-  - reset `#run-status` to `Ready.`;
+  - reset `#run-status` to `Ready.` when no query is active;
+  - leave `#run-status` unchanged when the rejection is caused by an active
+    query;
   - preserve result state and the result grid;
   - append `Previous result is still available.` to the suggestion when
     `self.state.last_result is not None`;
@@ -188,7 +194,9 @@ Acceptance tests should prove:
   successful result.
 - A scheduling failure preserves the previous successful result.
 - Rejected runs do not add query-history rows.
-- `#run-status` is `Ready.` after each rejected run.
+- `#run-status` is `Ready.` after rejected runs when no query is active.
+- `#run-status` still reports the active query after an already-running
+  rejection.
 - Status or result-message text includes `Previous result is still available.`
   when a previous result exists.
 - Existing completed-run behavior remains unchanged for:
