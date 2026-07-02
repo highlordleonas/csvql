@@ -394,6 +394,85 @@ def test_save_derived_result_source_refuses_existing_output_file(tmp_path: Path)
     assert output_path.read_text(encoding="utf-8") == "id\nexisting\n"
 
 
+def test_save_derived_result_source_uses_project_root_from_nested_start_dir(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    nested = project_root / "nested"
+    nested.mkdir(parents=True)
+    initialize_project(project_root)
+    result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
+
+    source = save_derived_result_source(
+        result,
+        "nested_ids",
+        existing_sources=(),
+        start_dir=nested,
+    )
+
+    output_path = project_root / ".csvql" / "results" / "nested_ids.csv"
+    assert output_path.read_text(encoding="utf-8") == "id\n1\n"
+    assert source.path == output_path.resolve()
+    assert not (nested / ".csvql" / "results" / "nested_ids.csv").exists()
+
+
+def test_save_derived_result_source_refuses_symlinked_results_dir_escape(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    csvql_dir = project_root / ".csvql"
+    csvql_dir.mkdir()
+    try:
+        (csvql_dir / "results").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+    result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
+
+    with pytest.raises(ExportError, match="Derived results directory escapes"):
+        save_derived_result_source(
+            result,
+            "leak",
+            existing_sources=(),
+            start_dir=project_root,
+        )
+
+    assert not (outside / "leak.csv").exists()
+
+
+def test_save_derived_result_source_refuses_file_created_during_save(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
+    output_path = tmp_path / ".csvql" / "results" / "race.csv"
+    original_exists = Path.exists
+    created_during_check = False
+
+    def racing_exists(path: Path) -> bool:
+        nonlocal created_during_check
+        if path == output_path and not created_during_check:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("id\nexisting\n", encoding="utf-8")
+            created_during_check = True
+            return False
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", racing_exists)
+
+    with pytest.raises(ExportError, match="Derived result already exists"):
+        save_derived_result_source(
+            result,
+            "race",
+            existing_sources=(),
+            start_dir=tmp_path,
+        )
+
+    assert output_path.read_text(encoding="utf-8") == "id\nexisting\n"
+
+
 def test_build_initial_state_does_not_create_results_directory(tmp_path: Path) -> None:
     state = build_initial_state(csv_path=None, table_mappings=(), start_dir=tmp_path)
 

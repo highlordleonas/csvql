@@ -167,10 +167,23 @@ def save_derived_result_source(
             suggestion="Check that the project directory is writable.",
         ) from exc
 
+    try:
+        resolved_result_dir = result_dir.resolve(strict=True)
+    except OSError as exc:
+        raise ExportError(
+            f"Failed to resolve derived results directory: {result_dir}",
+            suggestion="Use a real project-local .csvql/results directory.",
+        ) from exc
+    if not resolved_result_dir.is_relative_to(result_root):
+        raise ExportError(
+            f"Derived results directory escapes project root: {resolved_result_dir}",
+            suggestion="Use a real project-local .csvql/results directory.",
+        )
+
     content = format_query_result_for_export(result, ExportFormat.csv)
     try:
-        write_export_file(output_path, content)
-    except ExportError as exc:
+        _write_derived_result_file(resolved_result_dir / f"{source_name}.csv", content)
+    except OSError as exc:
         raise ExportError(
             f"Failed to write derived source to {output_path}.",
             suggestion="Check that the derived results directory is writable.",
@@ -293,3 +306,19 @@ def _derived_result_root(start_dir: Path) -> Path:
         if exc.message.startswith(_MISSING_PROJECT_PREFIX):
             return start_dir.expanduser().resolve()
         raise
+
+
+def _write_derived_result_file(path: Path, content: str) -> None:
+    try:
+        with path.open("x", encoding="utf-8", newline="") as file:
+            file.write(content)
+    except FileExistsError as exc:
+        raise ExportError(
+            f"Derived result already exists at {path}.",
+            suggestion="Choose a different alias for this derived result source.",
+        ) from exc
+    except OSError as exc:
+        raise ExportError(
+            f"Failed to write derived source to {path}.",
+            suggestion="Check that the derived results directory is writable.",
+        ) from exc
