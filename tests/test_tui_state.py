@@ -4,7 +4,7 @@ import pytest
 
 from csvql.exceptions import TableMappingError
 from csvql.models import QueryResult, TableSource
-from csvql.tui_state import TUISessionState, TUISource
+from csvql.tui_state import TUISessionState, TUISource, TUIResultViewState
 
 
 def test_tui_source_as_table_source_returns_table_source(tmp_path: Path) -> None:
@@ -122,6 +122,28 @@ def test_last_result_tracking(tmp_path: Path) -> None:
     state.set_last_result(result)
 
     assert state.last_result == result
+    assert state.last_result_status == "query"
+
+
+def test_clear_last_result_resets_result_and_status(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
+    result = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=1.2)
+
+    state.set_last_result(result)
+    state.result_view = TUIResultViewState(
+        columns=("count",),
+        display_rows=(("2",),),
+        total_row_count=1,
+        is_truncated=True,
+        source_result_sequence=7,
+    )
+
+    state.clear_last_result()
+
+    assert state.last_result is None
+    assert state.last_result_status == "none"
+    assert state.result_view == TUIResultViewState()
 
 
 def test_last_result_status_tracks_query_no_result_and_error(tmp_path: Path) -> None:
