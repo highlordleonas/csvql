@@ -1188,7 +1188,10 @@ def test_readme_documents_history_rerun_keymap() -> None:
 
     assert "History" in readme
     assert "rerun" in readme
-    assert "Use History to reopen previous queries or rerun them against the current session sources." in readme
+    assert (
+        "Use History to reopen previous queries or rerun them against the current session sources."
+        in readme
+    )
 
 
 def test_source_letter_actions_only_work_when_sources_focused(tmp_path: Path) -> None:

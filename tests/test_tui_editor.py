@@ -56,9 +56,7 @@ def test_current_statement_does_not_split_on_semicolon_inside_line_comment() -> 
 def test_current_statement_does_not_split_on_semicolon_inside_block_comment() -> None:
     sql = "SELECT /* keep ; inside comment */ 1 AS value;\nSELECT 2 AS value;"
 
-    assert current_statement_at_offset(sql, 12) == (
-        "SELECT /* keep ; inside comment */ 1 AS value"
-    )
+    assert current_statement_at_offset(sql, 12) == ("SELECT /* keep ; inside comment */ 1 AS value")
 
 
 def test_current_statement_at_end_after_trailing_semicolon_uses_previous_statement() -> None:

@@ -229,7 +229,9 @@ def test_query_history_item_defaults_to_sql_run_mode() -> None:
 
 def test_record_query_success_stores_run_mode(tmp_path: Path) -> None:
     state = TUISessionState()
-    state.add_source(TUISource(name="customers", path=tmp_path / "customers.csv", origin="argument"))
+    state.add_source(
+        TUISource(name="customers", path=tmp_path / "customers.csv", origin="argument")
+    )
     sequence = state.begin_query_run("SELECT 1")
 
     state.record_query_success(
@@ -244,7 +246,9 @@ def test_record_query_success_stores_run_mode(tmp_path: Path) -> None:
 
 def test_record_query_no_result_stores_run_mode(tmp_path: Path) -> None:
     state = TUISessionState()
-    state.add_source(TUISource(name="customers", path=tmp_path / "customers.csv", origin="argument"))
+    state.add_source(
+        TUISource(name="customers", path=tmp_path / "customers.csv", origin="argument")
+    )
     sequence = state.begin_query_run("CREATE TEMP TABLE t AS SELECT 1")
 
     state.record_query_no_result(
@@ -259,7 +263,9 @@ def test_record_query_no_result_stores_run_mode(tmp_path: Path) -> None:
 
 def test_record_query_error_stores_run_mode(tmp_path: Path) -> None:
     state = TUISessionState()
-    state.add_source(TUISource(name="customers", path=tmp_path / "customers.csv", origin="argument"))
+    state.add_source(
+        TUISource(name="customers", path=tmp_path / "customers.csv", origin="argument")
+    )
     sequence = state.begin_query_run("SELECT * FROM missing")
 
     state.record_query_error(
