@@ -135,18 +135,18 @@ for the current session unless you explicitly save them to a `.csvql.yml`
 project catalog. Exports are written only when you choose the export action.
 
 The SQL editor is focused when the menu opens. Type SQL directly, then press
-`Ctrl+Enter` or `F4` to run the whole editor. The action is labeled "Run
-Editor" because selected-SQL and current-statement execution are not part of
-this slice. `F4` is the reliable fallback if your terminal does not emit
-`Ctrl+Enter`.
+`Ctrl+Enter` or `F4` to run selected SQL. If nothing is selected, CSVQL falls
+back to the current statement around the cursor. `F12` runs the whole editor
+when you want to execute the complete SQL buffer. `F4` is the reliable fallback
+if your terminal does not emit `Ctrl+Enter`.
 
 Use `F2` or `Ctrl+Down` for the SQL editor, `F5` for results, `F6` or
 `Ctrl+Up` for sources, and `F8` for history. Printable keys type into SQL while
 the editor is focused. Source actions use letters only when the source pane is
 focused: `i` inspect, `s` sample, `p` profile, `a` add, `d` remove, and `w`
-save sources. History actions use `Enter` to reopen a query and `r` to rerun a
-query against the current session sources. `F1` opens help; `?` is a help
-fallback only outside the SQL editor.
+save sources. Use History to reopen previous queries or rerun them against the current
+session sources. `F1` opens help; `?` is a help fallback only outside
+the SQL editor.
 
 When the source pane is focused, Source Intelligence actions use `c` to load/show columns,
 `l` to insert the selected source alias, and `x` to insert a `SELECT *` starter query.

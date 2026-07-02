@@ -2,8 +2,9 @@
 
 WORKBENCH_HELP = """CSVQL Workbench Lite
 
-Run Editor
-  F4 / Ctrl+Enter     Run the whole SQL editor
+Run SQL
+  F4 / Ctrl+Enter     Run selected SQL, otherwise current statement
+  F12                 Run the whole SQL editor
   Ctrl+N / F10        Clear editor for a new query
 
 Focus

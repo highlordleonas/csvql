@@ -13,6 +13,10 @@ from csvql.tui_app import CSVQLMenuApp
 from csvql.tui_state import TUISessionState, TUISource
 
 
+def _read_readme_text() -> str:
+    return (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+
+
 def app_history_statuses(state: TUISessionState) -> list[str]:
     return [item.status for item in state.query_history]
 
@@ -1125,6 +1129,18 @@ def test_help_action_opens_and_escape_restores_editor_focus(tmp_path: Path) -> N
     assert isinstance(focused, TextArea)
 
 
+def test_help_text_documents_workbench_keymap() -> None:
+    from csvql.tui_help import WORKBENCH_HELP
+
+    help_text = WORKBENCH_HELP
+
+    assert "Run SQL" in help_text
+    assert "F4 / Ctrl+Enter" in help_text
+    assert "Run selected SQL, otherwise current statement" in help_text
+    assert "F12                 Run the whole SQL editor" in help_text
+    assert "r                   Rerun selected query with current session sources" in help_text
+
+
 def test_question_mark_help_only_outside_sql_editor(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
@@ -1145,6 +1161,26 @@ def test_question_mark_help_only_outside_sql_editor(tmp_path: Path) -> None:
     editor_text, _help_text = asyncio.run(_inner())
 
     assert editor_text == "?"
+
+
+def test_readme_documents_source_intelligence_keymap() -> None:
+    readme = _read_readme_text()
+
+    assert "`Ctrl+Enter` or `F4` to run selected SQL" in readme
+    assert "current statement around the cursor" in readme
+    assert "`F12` runs the whole editor" in readme
+
+
+def test_readme_documents_editor_quality_keymap() -> None:
+    readme = _read_readme_text()
+
+    assert "History" in readme
+    assert "rerun" in readme
+    assert (
+        "Use History to reopen previous queries or rerun them against the current\n"
+        "session sources."
+        in readme
+    )
 
 
 def test_source_letter_actions_only_work_when_sources_focused(tmp_path: Path) -> None:
