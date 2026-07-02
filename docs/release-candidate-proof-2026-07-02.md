@@ -2,104 +2,92 @@
 
 ## Verdict
 
-Verdict: blocked
+Verdict: `release-candidate eligible`
 
-CSVQL is not `release-candidate eligible` from this proof packet because the
-manual v1 QA matrix expects `CREATE TABLE scratch AS SELECT 1 AS value;` to
-produce no tabular result, while the current TUI runtime returns a tabular
-DuckDB `Count` result. The strict clean-worktree condition also needs a cleanup
-or tracked-artifact decision before a final candidate proof.
+CSVQL is `release-candidate eligible` as a local assessment for proof target
+commit `8ede1ef test: align tui ddl metadata proof`.
 
-## Follow-Up Fix Status
-
-After this proof packet, a narrow fix lane corrected the manual QA matrix to
-match the current DuckDB/TUI behavior:
-
-- `docs/v1-manual-qa.md` now uses
-  `CREATE OR REPLACE TABLE scratch AS SELECT 1 AS value;` and expects DuckDB's
-  returned `Count` metadata as a tabular result.
-- `docs/release-readiness.md` describes this as TUI DDL metadata-result
-  coverage instead of no-result SQL coverage.
-- `tests/test_v1_polish_docs.py` and `tests/test_tui_workflows.py` now assert
-  the corrected documentation and runtime behavior.
-
-Focused verification passed:
-
-```bash
-env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run --all-extras pytest tests/test_v1_polish_docs.py tests/test_tui_workflows.py -q
-env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run ruff format --check tests/test_v1_polish_docs.py tests/test_tui_workflows.py
-env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run ruff check tests/test_v1_polish_docs.py tests/test_tui_workflows.py
-git diff --check
-```
-
-This resolves the manual QA mismatch in the working tree. It does not reclassify
-this packet as `release-candidate eligible`; a final proof still needs an
-artifact-posture decision and a fresh proof rerun from the resulting candidate
-state.
+This is not a release action. It does not publish packages, create tags, upload
+artifacts, create a GitHub release, change the package version, claim
+`v1-stable`, or make unsupported production, sandbox, security-isolation, or
+large-file performance claims.
 
 ## Baseline
 
 - Date: 2026-07-02
 - Branch: `main`
-- HEAD: `21c4baf fix: reset tui run status on rejected runs`
-- Repo path: `/Users/richarddemke/LGCY Dropbox/Richard Demke/Mac/Documents/csvql`
+- Proof target HEAD: `8ede1ef test: align tui ddl metadata proof`
+- Repo path:
+  `/Users/richarddemke/LGCY Dropbox/Richard Demke/Mac/Documents/csvql`
 - Shell: `/bin/zsh`
-- Terminal app: Codex desktop PTY for live TUI launch/quit; Textual
-  `run_test()` harness for deterministic TUI behavior proof
-- Tracked files: clean at proof start
-- Untracked local state at proof start:
+- Tracked status before proof: clean
+  - `git status --short --branch` printed only `## main`
+- Ignored local state remained ignored:
   - `.local/`
   - `.superpowers/`
-  - `docs/superpowers/plans/2026-07-02-csvql-editor-quality-v2.md`
-  - `docs/superpowers/plans/2026-07-02-csvql-release-candidate-proof-packet.md`
-- Additional untracked state after proof-note creation:
-  - `docs/release-candidate-proof-2026-07-02.md`
+  - `.csvql/`
+  - `output/`
+  - generated caches and local proof outputs
 
-Ignored proof output policy was confirmed in `.gitignore` for `output/`,
-`dist/`, `build/`, and `.venv/`.
+## Artifact Posture
+
+Artifact posture was resolved before this proof:
+
+- `.local/` is ignored generated telemetry/local orchestration state.
+- `.superpowers/` is ignored generated Superpowers local state.
+- `docs/release-candidate-proof-2026-07-02.md` is the tracked proof note.
+- `docs/superpowers/plans/2026-07-02-csvql-editor-quality-v2.md` is tracked
+  planning history under the existing `docs/superpowers/plans/` convention.
+- `docs/superpowers/plans/2026-07-02-csvql-release-candidate-proof-packet.md`
+  is tracked planning history under the same convention.
+- Generated release and benchmark artifacts remain ignored local evidence.
 
 ## Automated Proof
 
 - `git diff --check`
   - Exit code: `0`
-  - Result: no output
-- `env UV_CACHE_DIR=/private/tmp/uv-cache uv run ruff format --check .`
+  - Result: no whitespace errors
+- `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run ruff format --check .`
   - Exit code: `0`
   - Result: `72 files already formatted`
-- `env UV_CACHE_DIR=/private/tmp/uv-cache uv run ruff check .`
+- `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run ruff check .`
   - Exit code: `0`
   - Result: `All checks passed!`
-- `env UV_CACHE_DIR=/private/tmp/uv-cache uv run --all-extras mypy src`
+- `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run --all-extras mypy src`
   - Exit code: `0`
   - Result: `Success: no issues found in 32 source files`
-- `env UV_CACHE_DIR=/private/tmp/uv-cache uv run --all-extras pytest`
+- `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run --all-extras pytest`
   - Exit code: `0`
-  - Result: `457 passed in 31.09s`
+  - Result: `458 passed in 34.77s`
 
-Release-readiness recovery notes:
+## Release-Readiness Proof
 
-- First release-readiness attempt with `/private/tmp/uv-cache` failed because a
-  cached PyYAML wheel metadata file was missing from the local `uv` cache.
-- Fresh-cache retry without escalation failed because the sandbox could not
-  resolve `https://pypi.org/simple/hatchling/`.
-- The same local proof command passed after escalation with
-  `UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof`.
-
-Release-readiness command:
+Command:
 
 ```bash
 env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run python scripts/verify_release_readiness.py --work-dir output/release-readiness
 ```
 
-Result:
+Result after network escalation:
 
 - Exit code: `0`
 - Summary: `Release readiness proof passed.`
 - Versions: `pyproject=1.0.0`, `package=1.0.0`, `cli=1.0.0`
+- Wheel:
+  `output/release-readiness/dist/csvql-1.0.0-py3-none-any.whl`
+- Sdist:
+  `output/release-readiness/dist/csvql-1.0.0.tar.gz`
+- Inspect smoke output: passed
 - TUI extra import: `tui-extra-ok`
-- Menu help smoke: passed
+- Menu help smoke output: passed
 
-Benchmark command:
+The first sandboxed attempt failed while resolving `hatchling` from PyPI because
+DNS/network access was unavailable in the sandbox. The same command passed after
+explicit network escalation.
+
+## Benchmark Proof
+
+Command:
 
 ```bash
 env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run python scripts/benchmark_csvql.py --output-root output/benchmarks
@@ -108,26 +96,13 @@ env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run python scripts/benchma
 Result:
 
 - Exit code: `0`
-- Benchmark JSON and Markdown summary were generated for the current HEAD.
-- Artifact inspection passed: schema version `1`, CSVQL/DuckDB/Python/platform
-  metadata present, datasets `fixture`, `synthetic_medium`, and
-  `synthetic_large`, 18 benchmark cases, and local-evidence-only note present.
+- Benchmark JSON:
+  `output/benchmarks/20260702T204101Z/benchmark.json`
+- Benchmark summary:
+  `output/benchmarks/20260702T204101Z/benchmark-summary.md`
 
-## Release-Readiness Artifacts
-
-- Wheel: `output/release-readiness/dist/csvql-1.0.0-py3-none-any.whl`
-- Sdist: `output/release-readiness/dist/csvql-1.0.0.tar.gz`
-- Smoke CSV: `output/release-readiness/smoke/orders.csv`
-- Smoke venv: `output/release-readiness/smoke-venv/`
-
-These are ignored local evidence artifacts and were not staged.
-
-## Benchmark Artifacts
-
-- Benchmark JSON: `output/benchmarks/20260702T201221Z/benchmark.json`
-- Benchmark summary: `output/benchmarks/20260702T201221Z/benchmark-summary.md`
-
-These are ignored local evidence artifacts and were not staged.
+Benchmark artifacts are local evidence only. They do not prove broad large-file
+performance beyond the recorded benchmark datasets.
 
 ## Manual QA
 
@@ -138,51 +113,40 @@ These are ignored local evidence artifacts and were not staged.
 - CLI project catalog query: passed
   - `customer_count = 5`
 - CLI export and reuse as CSV source: passed
-  - `revenue_health.csv` was written under `examples/saas_revenue/.csvql/results/`
+  - export wrote `.csvql/results/revenue_health.csv`
   - follow-up query returned `result_rows = 4`
 - Bad SQL behavior: passed
-  - Exit code `1`
-  - Error began `DuckDB query failed`
-  - Guidance suggested checking table names, column names, and SQL syntax
+  - exit code `1`
+  - error began `DuckDB query failed`
+  - suggestion advised checking table names, column names, and SQL syntax
 - Missing file behavior: passed
-  - Exit code `4`
-  - Error reported `CSV file not found: missing.csv`
+  - exit code `4`
+  - error reported `CSV file not found: missing.csv`
 - Export overwrite refusal and force: passed
+  - fresh proof path: `output/revenue-health-proof-8ede1ef.csv`
   - first export succeeded
   - second export exited `10` with overwrite guidance
   - forced export succeeded
 - TUI launch: passed
-  - Live PTY launched `csvql menu examples/saas_revenue/data/revenue_movements.csv`
-  - Source alias `revenue_movements` loaded
-- TUI repeated query: passed through Textual app harness
+  - live PTY launched `csvql menu examples/saas_revenue/data/revenue_movements.csv`
+  - status showed `1 source loaded.`
+- TUI repeated query: passed through Textual app harness against the example CSV
   - `movement_count = 11`
   - grouped movement query returned 5 movement-type rows
-  - history recorded 2 attempts
+  - history recorded 2 attempts after the two runs
 - TUI derived save and query: passed through Textual app harness
   - `Ctrl+S` saved alias `movement_counts`
-  - derived CSV was written under a temporary proof root
+  - derived CSV was written under `.csvql/results/movement_counts.csv`
   - `SELECT * FROM movement_counts;` returned 5 rows
-- TUI no-result SQL: failed the documented manual QA expectation
-  - SQL: `CREATE TABLE scratch AS SELECT 1 AS value;`
-  - Expected by `docs/v1-manual-qa.md`: prior results cleared and no tabular result reported
-  - Actual runtime: `QueryResult(columns=('Count',), rows=((1,), ...))`
-  - Actual status: `1 returned row(s) in 0.7 ms.`
-- TUI Editor Quality v2 run modes: passed through Textual app harness
-  - `F4` on the current second statement returned `proof_count = 11`
-  - `F12` on the whole editor surfaced the deliberate `missing_table` error
-- TUI Source Intelligence v1 actions: passed through Textual app harness
-  - `c` loaded `revenue_movements: 6 columns loaded.`
-  - `l` inserted `"revenue_movements"`
-  - `x` inserted:
-
-    ```sql
-    SELECT *
-    FROM "revenue_movements"
-    LIMIT 10;
-    ```
-
-- TUI quit path: passed
-  - Live PTY exited cleanly after standalone `F9`
+- TUI DDL metadata result: passed through Textual app harness
+  - SQL: `CREATE OR REPLACE TABLE scratch AS SELECT 1 AS value;`
+  - result columns: `Count`
+  - result rows: `[[1]]`
+- Quit path: passed
+  - live PTY exited cleanly after standalone `F9`
+- Mac keybinding path: passed by deterministic app harness and docs alignment
+  - `Ctrl+S` saved result as a source
+  - README/manual docs do not rely on `F11` as the only save path
 
 ## Unsupported-Claim Scan
 
@@ -196,63 +160,45 @@ Result:
 
 - Exit code: `0`
 - Blocker-classified unsupported claims: none
-- Matches classified as guardrails, label rules, or workflow instructions
-
-Read-only subagent scan agreed that no blocker-classified unsupported claims
-were present. It flagged the untracked worktree state and proof-backed status
-language as risks to disclose in this packet.
+- Matches were classified as guardrails, label rules, workflow instructions, or
+  explicit non-claims.
 
 ## Generated Artifact Policy
 
-Generated proof evidence remained local:
+Generated proof evidence remained local and ignored:
 
 - `output/release-readiness/**`
 - `output/benchmarks/**`
+- `.csvql/results/movement_counts.csv`
 - `examples/saas_revenue/.csvql/results/revenue_health.csv`
 - `examples/saas_revenue/output/revenue-health.csv`
-- temporary Textual harness proof roots under `/private/tmp/csvql-tui-proof-*`
+- `examples/saas_revenue/output/revenue-health-proof-8ede1ef.csv`
+- temporary Textual harness roots under `/private/tmp/csvql-tui-proof-*`
 
-`git status --ignored --short` showed generated output as ignored. None of the
-generated output artifacts were staged.
+None of these generated artifacts were staged.
 
 ## Risks And Caveats
 
+- `release-candidate eligible` is an assessment label only. It is not a publish,
+  tag, GitHub release, PyPI upload, or `v1-stable` action.
+- Release-readiness required network escalation after sandbox DNS failure while
+  resolving build requirements.
 - Terminal key handling varies. `F4` remains the reliable run fallback for query
   execution.
-- The live PTY proved TUI launch and `F9` quit, but did not reliably focus text
-  entry into Textual's `TextArea`. Textual's `run_test()` harness was used for
-  behavior proof of TUI actions.
-- Synthetic PTY key bursts can race. Standalone key actions and Textual pilot
-  actions are the proof authority here.
+- The live PTY proof covered TUI launch and `F9` quit. Textual `run_test()` was
+  used as the deterministic proof authority for editor, history, save, and DDL
+  behavior.
 - SQL is trusted local DuckDB SQL. CSVQL does not sandbox DuckDB or make
   untrusted SQL safe.
 - Benchmark proof is local evidence only and does not prove broad large-file
   performance.
-- Release-readiness proof required network escalation after a local `uv` cache
-  issue and sandboxed dependency-resolution failure.
-- The worktree was tracked-clean but not fully clean because local untracked
-  orchestration and plan files were present.
 
 ## Blockers
 
-1. Manual QA no-result SQL mismatch.
-
-   `docs/v1-manual-qa.md` expects `CREATE TABLE scratch AS SELECT 1 AS value;`
-   to complete with no tabular result. Current runtime returns a tabular DuckDB
-   `Count` result. This is a runtime/docs contract mismatch and blocks honest
-   release-candidate eligibility. This was resolved in the follow-up working
-   tree by documenting and testing the DDL metadata-result behavior.
-
-2. Strict clean-worktree condition not met.
-
-   The tracked tree was clean, but untracked `.local/`, `.superpowers/`, and
-   generated Superpowers plan files were present before proof. After this note
-   was written, `docs/release-candidate-proof-2026-07-02.md` was also untracked.
-   Before final candidate proof, decide whether these should be cleaned,
-   ignored, or tracked by explicit artifact decision.
+None found in this proof packet.
 
 ## Next Task
 
-Resolve the untracked artifact posture and rerun this proof packet from the
-resulting candidate HEAD. Do not classify CSVQL as `release-candidate eligible`
-until the fresh proof passes from that candidate state.
+Richard can review this proof packet and decide whether to treat the repository
+as `release-candidate` status. Do not publish, tag, upload artifacts, or claim
+`v1-stable` without separate explicit approval.
