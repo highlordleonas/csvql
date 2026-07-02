@@ -40,6 +40,15 @@ def _make_source_state(tmp_path: Path, *, alias: str = "customers") -> TUISessio
     return state
 
 
+def _result_grid_snapshot(app: CSVQLMenuApp) -> tuple[tuple[str, ...], int, str]:
+    results = app.query_one("#results", DataTable)
+    return (
+        tuple(str(column.label) for column in results.columns.values()),
+        results.row_count,
+        app.query_one("#results-message", Static).content,
+    )
+
+
 def _create_csv(tmp_path: Path, filename: str, content: str) -> Path:
     path = tmp_path / filename
     path.write_text(content, encoding="utf-8")
@@ -91,59 +100,127 @@ def test_app_runs_query_and_updates_status_and_results(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("key", ["f4", "f12"])
-def test_run_shortcuts_reset_run_status_after_empty_sql(
+def test_run_shortcuts_preserve_previous_result_after_empty_sql(
     tmp_path: Path,
     key: str,
 ) -> None:
     state = _make_source_state(tmp_path)
 
-    async def _inner() -> tuple[str, str, bool, list[str]]:
+    async def _inner() -> tuple[bool, bool, tuple[str, ...], int, str, str, str, bool, list[str]]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.query_one("#sql", TextArea).load_text("   \n")
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT * FROM customers")
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+
+            previous_result = app.state.last_result
+            previous_view = app.state.result_view
+            assert previous_result is not None
+
+            sql.load_text("   \n")
             await pilot.press(key)
             await pilot.pause(0.2)
+
+            columns, row_count, message = _result_grid_snapshot(app)
             return (
+                app.state.last_result == previous_result,
+                app.state.result_view == previous_view,
+                columns,
+                row_count,
+                message,
                 app.query_one("#status", Static).content,
                 app.query_one("#run-status", Static).content,
                 app.state.query_run.is_running,
                 app_history_statuses(app.state),
             )
 
-    status, run_status, is_running, history_statuses = asyncio.run(_inner())
+    (
+        result_preserved,
+        view_preserved,
+        columns,
+        row_count,
+        message,
+        status,
+        run_status,
+        is_running,
+        history_statuses,
+    ) = asyncio.run(_inner())
 
+    assert result_preserved is True
+    assert view_preserved is True
+    assert columns == ("customer_id", "email")
+    assert row_count == 2
     assert "Enter SQL before running a query." in status
+    assert "Previous result is still available." in status
+    assert "Previous result is still available." in message
     assert run_status == "Ready."
     assert is_running is False
-    assert history_statuses == []
+    assert history_statuses == ["success"]
 
 
 @pytest.mark.parametrize("key", ["f4", "f12"])
-def test_run_shortcuts_reset_run_status_after_missing_sources(
+def test_run_shortcuts_preserve_previous_result_after_missing_sources(
     tmp_path: Path,
     key: str,
 ) -> None:
-    async def _inner() -> tuple[str, str, bool, list[str]]:
-        app = CSVQLMenuApp(start_dir=tmp_path)
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[bool, bool, tuple[str, ...], int, str, str, str, bool, list[str]]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.query_one("#sql", TextArea).load_text("SELECT 1")
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT * FROM customers")
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+
+            previous_result = app.state.last_result
+            previous_view = app.state.result_view
+            assert previous_result is not None
+
+            app.state.remove_source("customers")
+            app._refresh_sources_table()
+            sql.load_text("SELECT * FROM customers")
             await pilot.press(key)
             await pilot.pause(0.2)
+
+            columns, row_count, message = _result_grid_snapshot(app)
             return (
+                app.state.last_result == previous_result,
+                app.state.result_view == previous_view,
+                columns,
+                row_count,
+                message,
                 app.query_one("#status", Static).content,
                 app.query_one("#run-status", Static).content,
                 app.state.query_run.is_running,
                 app_history_statuses(app.state),
             )
 
-    status, run_status, is_running, history_statuses = asyncio.run(_inner())
+    (
+        result_preserved,
+        view_preserved,
+        columns,
+        row_count,
+        message,
+        status,
+        run_status,
+        is_running,
+        history_statuses,
+    ) = asyncio.run(_inner())
 
+    assert result_preserved is True
+    assert view_preserved is True
+    assert columns == ("customer_id", "email")
+    assert row_count == 2
     assert "No sources loaded." in status
+    assert "Previous result is still available." in status
+    assert "Previous result is still available." in message
     assert run_status == "Ready."
     assert is_running is False
-    assert history_statuses == []
+    assert history_statuses == ["success"]
 
 
 def test_app_clears_stale_result_on_failed_query(tmp_path: Path) -> None:
@@ -548,6 +625,64 @@ def test_run_editor_reads_settled_editor_text_after_refresh(
     assert synchronous_history == ()
     assert run_sql == ["SELECT * FROM customers"]
     assert "1 returned row(s)" in status
+
+
+def test_schedule_failure_preserves_previous_result_and_resets_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[bool, bool, tuple[str, ...], int, str, str, str, list[str]]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT * FROM customers")
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+
+            previous_result = app.state.last_result
+            previous_view = app.state.result_view
+            assert previous_result is not None
+
+            sql.load_text("SELECT email FROM customers")
+            monkeypatch.setattr(app, "call_after_refresh", lambda callback: False)
+            app.action_run_query()
+            await pilot.pause()
+
+            columns, row_count, message = _result_grid_snapshot(app)
+            return (
+                app.state.last_result == previous_result,
+                app.state.result_view == previous_view,
+                columns,
+                row_count,
+                message,
+                app.query_one("#status", Static).content,
+                app.query_one("#run-status", Static).content,
+                app_history_statuses(app.state),
+            )
+
+    (
+        result_preserved,
+        view_preserved,
+        columns,
+        row_count,
+        message,
+        status,
+        run_status,
+        history_statuses,
+    ) = asyncio.run(_inner())
+
+    assert result_preserved is True
+    assert view_preserved is True
+    assert columns == ("customer_id", "email")
+    assert row_count == 2
+    assert "Unable to schedule query run." in status
+    assert "Previous result is still available." in status
+    assert "Previous result is still available." in message
+    assert run_status == "Ready."
+    assert history_statuses == ["success"]
 
 
 def test_query_run_returns_focus_to_sql_editor(tmp_path: Path) -> None:
@@ -1515,6 +1650,132 @@ def test_second_run_while_worker_active_shows_already_running(
     assert sequence == 1
     assert "1 returned row(s)" in final_status
     assert history_statuses == ["success"]
+
+
+def test_already_running_rejection_preserves_previous_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    calls = {"count": 0}
+
+    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
+        del sources
+        from csvql.tui_state import TUIQueryOutcome
+
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return TUIQueryOutcome.success(
+                sequence=sequence,
+                sql=sql,
+                result=QueryResult(
+                    columns=("email",),
+                    rows=(("alex@example.com",),),
+                    elapsed_ms=1.0,
+                ),
+            )
+
+        worker_started.set()
+        assert release_worker.wait(timeout=1.0)
+        return TUIQueryOutcome.success(
+            sequence=sequence,
+            sql=sql,
+            result=QueryResult(
+                columns=("customer_id",),
+                rows=(("CUST-001",),),
+                elapsed_ms=5.0,
+            ),
+        )
+
+    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+
+    async def _inner() -> tuple[
+        bool,
+        bool,
+        tuple[str, ...],
+        int,
+        str,
+        str,
+        str,
+        bool,
+        int | None,
+        list[str],
+        list[str],
+    ]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT email FROM customers LIMIT 1")
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+
+            previous_result = app.state.last_result
+            previous_view = app.state.result_view
+            assert previous_result is not None
+
+            sql.load_text("SELECT customer_id FROM customers LIMIT 1")
+            await pilot.press("f4")
+            await pilot.pause(0.05)
+            assert worker_started.is_set()
+
+            await pilot.press("f4")
+            await pilot.pause(0.05)
+
+            columns, row_count, message = _result_grid_snapshot(app)
+            status = app.query_one("#status", Static).content
+            run_status = app.query_one("#run-status", Static).content
+            is_running = app.state.query_run.is_running
+            sequence = app.state.query_run.sequence
+            history_before_release = app_history_statuses(app.state)
+            result_preserved = app.state.last_result == previous_result
+            view_preserved = app.state.result_view == previous_view
+
+            release_worker.set()
+            await pilot.pause(0.2)
+
+            return (
+                result_preserved,
+                view_preserved,
+                columns,
+                row_count,
+                message,
+                status,
+                run_status,
+                is_running,
+                sequence,
+                history_before_release,
+                app_history_statuses(app.state),
+            )
+
+    (
+        result_preserved,
+        view_preserved,
+        columns,
+        row_count,
+        message,
+        status,
+        run_status,
+        is_running,
+        sequence,
+        history_before_release,
+        final_history_statuses,
+    ) = asyncio.run(_inner())
+
+    assert result_preserved is True
+    assert view_preserved is True
+    assert columns == ("email",)
+    assert row_count == 1
+    assert "Query already running." in status
+    assert "Previous result is still available." in status
+    assert "Previous result is still available." in message
+    assert run_status == "Running SQL query 2..."
+    assert is_running is True
+    assert sequence == 2
+    assert history_before_release == ["success"]
+    assert final_history_statuses == ["success", "success"]
 
 
 def test_successful_query_populates_results_datatable(tmp_path: Path) -> None:

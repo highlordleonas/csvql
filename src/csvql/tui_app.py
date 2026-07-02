@@ -377,14 +377,21 @@ class CSVQLMenuApp(App[None]):
         preparing_message: str,
     ) -> None:
         if self._run_editor_pending or self.state.query_run.is_running:
-            self._set_status("Query already running.")
+            self._show_rejected_run(
+                CSVQLError(
+                    "Query already running.",
+                    suggestion="Wait for the current query to finish.",
+                ),
+                reset_run_status=False,
+                simple_message_without_previous=True,
+            )
             return
 
         self._run_editor_pending = True
         self.query_one("#run-status", Static).update(preparing_message)
         if not self.call_after_refresh(callback):
             self._run_editor_pending = False
-            self._show_error(
+            self._show_rejected_run(
                 CSVQLError(
                     "Unable to schedule query run.",
                     suggestion="Try running the query again.",
@@ -416,9 +423,7 @@ class CSVQLMenuApp(App[None]):
         rerun_source_sequence: int | None = None,
     ) -> None:
         if not sql:
-            self.state.clear_last_result()
-            self._set_run_status_ready()
-            self._show_error(
+            self._show_rejected_run(
                 CSVQLError(
                     "Enter SQL before running a query.",
                     suggestion="Type SQL in the editor and try again.",
@@ -427,9 +432,7 @@ class CSVQLMenuApp(App[None]):
             return
 
         if not self.state.sources:
-            self.state.clear_last_result()
-            self._set_run_status_ready()
-            self._show_error(
+            self._show_rejected_run(
                 CSVQLError(
                     "No sources loaded.",
                     suggestion="Add a source before running SQL.",
@@ -440,8 +443,14 @@ class CSVQLMenuApp(App[None]):
         try:
             sequence = self.state.begin_query_run(sql)
         except RuntimeError:
-            self._set_run_status_ready()
-            self._set_status("Query already running.")
+            self._show_rejected_run(
+                CSVQLError(
+                    "Query already running.",
+                    suggestion="Wait for the current query to finish.",
+                ),
+                reset_run_status=False,
+                simple_message_without_previous=True,
+            )
             return
 
         if run_mode == "rerun" and rerun_source_sequence is not None:
@@ -648,12 +657,32 @@ class CSVQLMenuApp(App[None]):
         self.query_one("#results-message", Static).update(message)
 
     def _show_error(self, error: CSVQLError) -> None:
-        lines = [f"Error: {error.message}"]
-        if error.suggestion:
-            lines.append(f"Suggestion: {error.suggestion}")
-        message = "\n".join(lines)
+        message = _error_message(error)
         self._set_status(message)
         self._show_output_text(message)
+
+    def _show_rejected_run(
+        self,
+        error: CSVQLError,
+        *,
+        reset_run_status: bool = True,
+        simple_message_without_previous: bool = False,
+    ) -> None:
+        if reset_run_status:
+            self._set_run_status_ready()
+
+        rejected_error = error
+        if self.state.last_result is not None:
+            rejected_error = _with_previous_result_suggestion(error)
+
+        if simple_message_without_previous and self.state.last_result is None:
+            message = rejected_error.message
+        else:
+            message = _error_message(rejected_error)
+
+        self._set_status(message)
+        self.query_one("#results-message", Static).update(message)
+        self.query_one("#sql", TextArea).focus()
 
     def _append_sql_text(self, text: str) -> None:
         sql = self.query_one("#sql", TextArea)
@@ -867,6 +896,24 @@ def _export_format_for_path(path_value: str) -> ExportFormat:
     if suffix == ".md":
         return ExportFormat.markdown
     return ExportFormat.json
+
+
+_PREVIOUS_RESULT_AVAILABLE = "Previous result is still available."
+
+
+def _error_message(error: CSVQLError) -> str:
+    lines = [f"Error: {error.message}"]
+    if error.suggestion:
+        lines.append(f"Suggestion: {error.suggestion}")
+    return "\n".join(lines)
+
+
+def _with_previous_result_suggestion(error: CSVQLError) -> CSVQLError:
+    if error.suggestion:
+        suggestion = f"{error.suggestion} {_PREVIOUS_RESULT_AVAILABLE}"
+    else:
+        suggestion = _PREVIOUS_RESULT_AVAILABLE
+    return CSVQLError(error.message, suggestion=suggestion)
 
 
 def _one_line_sql(sql: str) -> str:
