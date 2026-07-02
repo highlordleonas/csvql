@@ -13,6 +13,7 @@ SourceKind = Literal["csv", "derived"]
 TUILastResultStatus = Literal["none", "query", "no_result", "error"]
 TUIFocusPane = Literal["sources", "editor", "results", "history"]
 TUIQueryHistoryStatus = Literal["success", "no_result", "error"]
+TUIQueryRunMode = Literal["sql", "editor", "rerun"]
 TUIQueryOutcomeStatus = Literal["success", "no_result", "error"]
 
 
@@ -23,6 +24,7 @@ class TUIQueryHistoryItem:
     sequence: int
     sql: str
     status: TUIQueryHistoryStatus
+    run_mode: TUIQueryRunMode = "sql"
     row_count: int | None = None
     elapsed_ms: float | None = None
     error_message: str | None = None
@@ -240,6 +242,8 @@ class TUISessionState:
         sql: str,
         result: QueryResult,
         result_view: TUIResultViewState | None = None,
+        *,
+        run_mode: TUIQueryRunMode = "sql",
     ) -> None:
         """Record a successful query and store its result."""
 
@@ -256,13 +260,21 @@ class TUISessionState:
                 sequence=sequence,
                 sql=sql,
                 status="success",
+                run_mode=run_mode,
                 row_count=result.row_count,
                 elapsed_ms=result.elapsed_ms,
             )
         )
         self.query_run = TUIQueryRunState()
 
-    def record_query_no_result(self, sequence: int, sql: str, elapsed_ms: float) -> None:
+    def record_query_no_result(
+        self,
+        sequence: int,
+        sql: str,
+        elapsed_ms: float,
+        *,
+        run_mode: TUIQueryRunMode = "sql",
+    ) -> None:
         """Record a successful statement with no tabular result."""
 
         self.clear_last_result()
@@ -272,12 +284,20 @@ class TUISessionState:
                 sequence=sequence,
                 sql=sql,
                 status="no_result",
+                run_mode=run_mode,
                 elapsed_ms=elapsed_ms,
             )
         )
         self.query_run = TUIQueryRunState()
 
-    def record_query_error(self, sequence: int, sql: str, error_message: str) -> None:
+    def record_query_error(
+        self,
+        sequence: int,
+        sql: str,
+        error_message: str,
+        *,
+        run_mode: TUIQueryRunMode = "sql",
+    ) -> None:
         """Record a failed query attempt."""
 
         self.clear_last_result()
@@ -287,6 +307,7 @@ class TUISessionState:
                 sequence=sequence,
                 sql=sql,
                 status="error",
+                run_mode=run_mode,
                 error_message=error_message,
             )
         )

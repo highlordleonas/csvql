@@ -4,7 +4,13 @@ import pytest
 
 from csvql.exceptions import TableMappingError
 from csvql.models import QueryResult, TableSource
-from csvql.tui_state import TUIResultViewState, TUISessionState, TUISource, TUISourceColumn
+from csvql.tui_state import (
+    TUIQueryHistoryItem,
+    TUIResultViewState,
+    TUISessionState,
+    TUISource,
+    TUISourceColumn,
+)
 
 
 def test_tui_source_as_table_source_returns_table_source(tmp_path: Path) -> None:
@@ -213,6 +219,57 @@ def test_tui_source_column_stores_name_and_duckdb_type() -> None:
 
     assert column.name == "Customer ID"
     assert column.duckdb_type == "VARCHAR"
+
+
+def test_query_history_item_defaults_to_sql_run_mode() -> None:
+    item = TUIQueryHistoryItem(sequence=1, sql="SELECT 1", status="success")
+
+    assert item.run_mode == "sql"
+
+
+def test_record_query_success_stores_run_mode(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="customers", path=tmp_path / "customers.csv", origin="argument"))
+    sequence = state.begin_query_run("SELECT 1")
+
+    state.record_query_success(
+        sequence,
+        "SELECT 1",
+        QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+        run_mode="editor",
+    )
+
+    assert state.query_history[-1].run_mode == "editor"
+
+
+def test_record_query_no_result_stores_run_mode(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="customers", path=tmp_path / "customers.csv", origin="argument"))
+    sequence = state.begin_query_run("CREATE TEMP TABLE t AS SELECT 1")
+
+    state.record_query_no_result(
+        sequence,
+        "CREATE TEMP TABLE t AS SELECT 1",
+        elapsed_ms=1.0,
+        run_mode="rerun",
+    )
+
+    assert state.query_history[-1].run_mode == "rerun"
+
+
+def test_record_query_error_stores_run_mode(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="customers", path=tmp_path / "customers.csv", origin="argument"))
+    sequence = state.begin_query_run("SELECT * FROM missing")
+
+    state.record_query_error(
+        sequence,
+        "SELECT * FROM missing",
+        "Catalog Error: missing table",
+        run_mode="rerun",
+    )
+
+    assert state.query_history[-1].run_mode == "rerun"
 
 
 def test_session_source_columns_are_case_insensitive_by_alias(tmp_path: Path) -> None:
