@@ -17,6 +17,10 @@ def app_history_statuses(state: TUISessionState) -> list[str]:
     return [item.status for item in state.query_history]
 
 
+def app_history_run_modes(state: TUISessionState) -> list[str]:
+    return [item.run_mode for item in state.query_history]
+
+
 def _make_source_state(tmp_path: Path, *, alias: str = "customers") -> TUISessionState:
     csv_path = tmp_path / f"{alias}.csv"
     csv_path.write_text(
@@ -212,6 +216,225 @@ def test_ctrl_enter_runs_query_from_sql_editor(tmp_path: Path) -> None:
     assert "2 returned row(s)" in status
     assert columns == ("customer_id", "email")
     assert row_count == 2
+
+
+def test_run_shortcut_runs_selected_sql_when_editor_has_selection(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, tuple[str, ...], int]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.load_text(
+                "SELECT * FROM missing;\n"
+                "SELECT COUNT(*) AS selected_count FROM customers;\n"
+                "SELECT * FROM also_missing;"
+            )
+            sql.move_cursor((1, 0))
+            sql.move_cursor((1, 49), select=True)
+
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+
+            status = app.query_one("#status", Static).content
+            results = app.query_one("#results", DataTable)
+            return (
+                status,
+                tuple(str(column.label) for column in results.columns.values()),
+                results.row_count,
+            )
+
+    status, columns, row_count = asyncio.run(_inner())
+
+    assert "1 returned row(s)" in status
+    assert columns == ("selected_count",)
+    assert row_count == 1
+
+
+def test_run_shortcut_runs_current_statement_when_editor_has_no_selection(
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, tuple[str, ...], int]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.load_text(
+                "SELECT * FROM missing;\n"
+                "SELECT COUNT(*) AS current_count FROM customers;\n"
+                "SELECT * FROM also_missing;"
+            )
+            sql.move_cursor((1, 8))
+
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+
+            status = app.query_one("#status", Static).content
+            results = app.query_one("#results", DataTable)
+            return (
+                status,
+                tuple(str(column.label) for column in results.columns.values()),
+                results.row_count,
+            )
+
+    status, columns, row_count = asyncio.run(_inner())
+
+    assert "1 returned row(s)" in status
+    assert columns == ("current_count",)
+    assert row_count == 1
+
+
+def test_run_all_shortcut_runs_whole_editor_when_current_statement_is_not_enough(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    seen_sql: list[str] = []
+
+    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
+        from csvql.tui_state import TUIQueryOutcome
+
+        seen_sql.append(sql)
+        return TUIQueryOutcome.success(
+            sequence=sequence,
+            sql=sql,
+            result=QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+        )
+
+    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+
+    async def _inner() -> tuple[list[str], str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.load_text("SELECT 1 AS first;\nSELECT 2 AS second;")
+            sql.move_cursor((0, 8))
+
+            await pilot.press("f12")
+            await pilot.pause(0.2)
+
+            return seen_sql, app.query_one("#status", Static).content
+
+    run_sql, status = asyncio.run(_inner())
+
+    assert run_sql == ["SELECT 1 AS first;\nSELECT 2 AS second;"]
+    assert "1 returned row(s)" in status
+
+
+def test_run_shortcut_records_sql_run_mode_and_history_column(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[list[str], tuple[str, ...], str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.load_text("SELECT COUNT(*) AS count FROM customers")
+
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+
+            history = app.query_one("#history", DataTable)
+            return (
+                app_history_run_modes(app.state),
+                tuple(str(column.label) for column in history.columns.values()),
+                app.query_one("#status", Static).content,
+            )
+
+    run_modes, columns, status = asyncio.run(_inner())
+
+    assert run_modes == ["sql"]
+    assert columns == ("seq", "run", "status", "rows", "sql")
+    assert "1 returned row(s)" in status
+
+
+def test_run_all_shortcut_records_editor_run_mode(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[list[str], str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.load_text("SELECT COUNT(*) AS count FROM customers")
+
+            await pilot.press("f12")
+            await pilot.pause(0.2)
+
+            return app_history_run_modes(app.state), app.query_one("#status", Static).content
+
+    run_modes, status = asyncio.run(_inner())
+
+    assert run_modes == ["editor"]
+    assert "1 returned row(s)" in status
+
+
+def test_history_rerun_records_rerun_mode_and_status_message(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+    first_sequence = state.begin_query_run("SELECT COUNT(*) AS count FROM customers")
+    state.record_query_success(
+        first_sequence,
+        "SELECT COUNT(*) AS count FROM customers",
+        QueryResult(columns=("count",), rows=((2,),), elapsed_ms=1.0),
+    )
+    seen_sql: list[str] = []
+    release_worker = threading.Event()
+
+    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
+        del sources
+        from csvql.tui_state import TUIQueryOutcome
+
+        seen_sql.append(sql)
+        release_worker.wait(timeout=1.0)
+        return TUIQueryOutcome.success(
+            sequence=sequence,
+            sql=sql,
+            result=QueryResult(columns=("count",), rows=((2,),), elapsed_ms=1.0),
+        )
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+
+    async def _inner() -> tuple[list[str], str, str]:
+        try:
+            app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                sql = app.query_one("#sql", TextArea)
+                sql.focus()
+                sql.load_text("SELECT COUNT(*) AS edited_count FROM customers")
+                history = app.query_one("#history", DataTable)
+                history.focus()
+                history.move_cursor(row=0)
+                await pilot.press("r")
+                await pilot.pause(0.05)
+                run_status = app.query_one("#run-status", Static).content
+                release_worker.set()
+                await pilot.pause(0.2)
+                return (
+                    app_history_run_modes(app.state),
+                    run_status,
+                    app.query_one("#sql", TextArea).text,
+                    seen_sql,
+                )
+        finally:
+            monkeypatch.undo()
+
+    run_modes, run_status, sql_text, seen_sql = asyncio.run(_inner())
+
+    assert run_modes == ["sql", "rerun"]
+    assert run_status == "Rerunning query 1 as query 2..."
+    assert sql_text == "SELECT COUNT(*) AS count FROM customers"
+    assert seen_sql == ["SELECT COUNT(*) AS count FROM customers"]
 
 
 def test_run_editor_reads_settled_editor_text_after_refresh(
@@ -899,7 +1122,7 @@ def test_help_action_opens_and_escape_restores_editor_focus(tmp_path: Path) -> N
 
     help_text, focused = asyncio.run(_inner())
 
-    assert "Run Editor" in help_text
+    assert "Run SQL" in help_text
     assert "F4" in help_text
     assert isinstance(focused, TextArea)
 
@@ -917,8 +1140,10 @@ def test_help_text_documents_workbench_keymap(tmp_path: Path) -> None:
 
     help_text = asyncio.run(_inner())
 
-    assert "Run Editor" in help_text
+    assert "Run SQL" in help_text
     assert "F4 / Ctrl+Enter" in help_text
+    assert "Run selected SQL, otherwise current statement" in help_text
+    assert "F12                 Run the whole SQL editor" in help_text
     assert "F6 / Ctrl+Up" in help_text
     assert "Ctrl+S              Save result to .csvql/results/{alias}.csv" in help_text
     assert "Alt+S / F11         Alternate save-result shortcuts" in help_text
@@ -943,6 +1168,14 @@ def test_readme_documents_source_intelligence_keymap() -> None:
     assert "is not written to `.csvql.yml`" in readme
 
 
+def test_readme_documents_editor_quality_keymap() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "`Ctrl+Enter` or `F4` to run selected SQL" in readme
+    assert "current statement around the cursor" in readme
+    assert "`F12` runs the whole editor" in readme
+
+
 def test_question_mark_help_only_outside_sql_editor(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
@@ -963,7 +1196,7 @@ def test_question_mark_help_only_outside_sql_editor(tmp_path: Path) -> None:
     editor_text, help_text = asyncio.run(_inner())
 
     assert editor_text == "?"
-    assert "Run Editor" in help_text
+    assert "Run SQL" in help_text
 
 
 def test_source_letter_actions_only_work_when_sources_focused(tmp_path: Path) -> None:
@@ -1186,7 +1419,7 @@ def test_second_run_while_worker_active_shows_already_running(
     status, run_status, is_running, sequence, final_status, history_statuses = asyncio.run(_inner())
 
     assert status == "Query already running."
-    assert run_status == "Running editor query 1..."
+    assert run_status == "Running SQL query 1..."
     assert is_running is True
     assert sequence == 1
     assert "1 returned row(s)" in final_status

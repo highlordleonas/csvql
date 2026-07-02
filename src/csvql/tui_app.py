@@ -1,6 +1,6 @@
 """Minimal Textual shell for the CSVQL menu TUI."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import ClassVar
 
@@ -16,11 +16,13 @@ from csvql.export import ExportFormat
 from csvql.models import QueryResult
 from csvql.output import format_profile_result_table
 from csvql.table_mapping import parse_table_mapping
+from csvql.tui_editor import selected_or_current_sql
 from csvql.tui_help import WORKBENCH_HELP
 from csvql.tui_results import make_result_view_state, populate_result_table
 from csvql.tui_state import (
     TUIQueryHistoryItem,
     TUIQueryOutcome,
+    TUIQueryRunMode,
     TUIResultViewState,
     TUISessionState,
     TUISource,
@@ -133,9 +135,16 @@ class CSVQLMenuApp(App[None]):
         Binding("f2,ctrl+down", "focus_sql", "SQL", priority=True),
         Binding(
             "f4,ctrl+enter",
-            "run_query",
-            "Run Editor",
+            "run_selected_or_current_query",
+            "Run SQL",
             key_display="F4/Ctrl+Enter",
+            priority=True,
+        ),
+        Binding(
+            "f12",
+            "run_query",
+            "Run All",
+            key_display="F12",
             priority=True,
         ),
         Binding("f5", "focus_results", "Results", priority=True),
@@ -175,6 +184,7 @@ class CSVQLMenuApp(App[None]):
         super().__init__()
         self.start_dir = (start_dir or Path.cwd()).resolve()
         self._active_query_sql: dict[int, str] = {}
+        self._active_query_run_modes: dict[int, TUIQueryRunMode] = {}
         self._run_editor_pending = False
         if initial_state is not None:
             self.state = initial_state
@@ -350,13 +360,26 @@ class CSVQLMenuApp(App[None]):
         self._append_sql_text(f"SELECT *\nFROM {alias}\nLIMIT 10;")
 
     def action_run_query(self) -> None:
+        self._schedule_editor_query(self._run_query_from_editor, "Preparing editor query...")
+
+    def action_run_selected_or_current_query(self) -> None:
+        self._schedule_editor_query(
+            self._run_selected_or_current_query_from_editor,
+            "Preparing editor query...",
+        )
+
+    def _schedule_editor_query(
+        self,
+        callback: Callable[[], None],
+        preparing_message: str,
+    ) -> None:
         if self._run_editor_pending or self.state.query_run.is_running:
             self._set_status("Query already running.")
             return
 
         self._run_editor_pending = True
-        self.query_one("#run-status", Static).update("Preparing editor query...")
-        if not self.call_after_refresh(self._run_query_from_editor):
+        self.query_one("#run-status", Static).update(preparing_message)
+        if not self.call_after_refresh(callback):
             self._run_editor_pending = False
             self._show_error(
                 CSVQLError(
@@ -369,6 +392,26 @@ class CSVQLMenuApp(App[None]):
         self._run_editor_pending = False
         sql_widget = self.query_one("#sql", TextArea)
         sql = sql_widget.text.strip()
+        self._start_query_run(sql, run_label="editor query", run_mode="editor")
+
+    def _run_selected_or_current_query_from_editor(self) -> None:
+        self._run_editor_pending = False
+        sql_widget = self.query_one("#sql", TextArea)
+        sql = selected_or_current_sql(
+            sql_widget.text,
+            cursor_location=sql_widget.cursor_location,
+            selected_text=sql_widget.selected_text,
+        )
+        self._start_query_run(sql, run_label="SQL query", run_mode="sql")
+
+    def _start_query_run(
+        self,
+        sql: str,
+        *,
+        run_label: str,
+        run_mode: TUIQueryRunMode,
+        rerun_source_sequence: int | None = None,
+    ) -> None:
         if not sql:
             self.state.clear_last_result()
             self._show_error(
@@ -395,9 +438,15 @@ class CSVQLMenuApp(App[None]):
             self._set_status("Query already running.")
             return
 
-        self._set_status(f"Running editor query {sequence}...")
-        self.query_one("#run-status", Static).update(f"Running editor query {sequence}...")
+        if run_mode == "rerun" and rerun_source_sequence is not None:
+            message = f"Rerunning query {rerun_source_sequence} as query {sequence}..."
+        else:
+            message = f"Running {run_label} {sequence}..."
+
+        self._set_status(message)
+        self.query_one("#run-status", Static).update(message)
         self._active_query_sql[sequence] = sql
+        self._active_query_run_modes[sequence] = run_mode
         sources = self.state.sources
         self.run_worker(
             lambda: run_query_for_tui(sources, sql, sequence=sequence),
@@ -466,7 +515,12 @@ class CSVQLMenuApp(App[None]):
             return
         sql = self.query_one("#sql", TextArea)
         sql.load_text(item.sql)
-        self.action_run_query()
+        self._start_query_run(
+            item.sql,
+            run_label="query",
+            run_mode="rerun",
+            rerun_source_sequence=item.sequence,
+        )
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         worker = event.worker
@@ -555,11 +609,12 @@ class CSVQLMenuApp(App[None]):
         history_table = self.query_one("#history", DataTable)
         previous_row = history_table.cursor_row
         history_table.clear(columns=True)
-        history_table.add_columns("seq", "status", "rows", "sql")
+        history_table.add_columns("seq", "run", "status", "rows", "sql")
         for item in self.state.query_history:
             rows = "" if item.row_count is None else str(item.row_count)
             history_table.add_row(
                 str(item.sequence),
+                item.run_mode,
                 item.status,
                 rows,
                 _one_line_sql(item.sql),
@@ -712,12 +767,19 @@ class CSVQLMenuApp(App[None]):
         if not self.state.is_current_query_sequence(outcome.sequence):
             return
         self._active_query_sql.pop(outcome.sequence, None)
+        run_mode = self._active_query_run_modes.pop(outcome.sequence, "sql")
         if outcome.status == "success" and outcome.result is not None:
             view = make_result_view_state(
                 outcome.result,
                 source_result_sequence=outcome.sequence,
             )
-            self.state.record_query_success(outcome.sequence, outcome.sql, outcome.result, view)
+            self.state.record_query_success(
+                outcome.sequence,
+                outcome.sql,
+                outcome.result,
+                view,
+                run_mode=run_mode,
+            )
             populate_result_table(self.query_one("#results", DataTable), view)
             self._refresh_history_table()
             self._set_status(
@@ -729,7 +791,10 @@ class CSVQLMenuApp(App[None]):
             return
         if outcome.status == "no_result":
             self.state.record_query_no_result(
-                outcome.sequence, outcome.sql, outcome.elapsed_ms or 0.0
+                outcome.sequence,
+                outcome.sql,
+                outcome.elapsed_ms or 0.0,
+                run_mode=run_mode,
             )
             self.query_one("#results", DataTable).clear(columns=True)
             message = "Statement completed; no tabular result to display."
@@ -743,6 +808,7 @@ class CSVQLMenuApp(App[None]):
             outcome.sequence,
             outcome.sql,
             outcome.error_message or "Query failed.",
+            run_mode=run_mode,
         )
         self.query_one("#results", DataTable).clear(columns=True)
         error = CSVQLError(outcome.error_message or "Query failed.", suggestion=outcome.suggestion)
@@ -761,11 +827,12 @@ class CSVQLMenuApp(App[None]):
             return
 
         sql = self._active_query_sql.pop(sequence, "<unknown>")
+        run_mode = self._active_query_run_modes.pop(sequence, "sql")
         error_message = "Unexpected worker failure while running query."
         if error is not None:
             error_message = f"{error_message} {error}"
 
-        self.state.record_query_error(sequence, sql, error_message)
+        self.state.record_query_error(sequence, sql, error_message, run_mode=run_mode)
         self._refresh_history_table()
         self.query_one("#run-status", Static).update("Ready.")
         self._clear_result_grid()
