@@ -31,7 +31,9 @@ def test_manual_qa_matrix_covers_cli_and_tui_release_paths() -> None:
     assert "- [ ] TUI repeated query" in matrix
     assert "- [ ] TUI derived save and query" in matrix
     assert "- [ ] Bad SQL" in matrix
-    assert "- [ ] No-result SQL" in matrix
+    assert "- [ ] TUI DDL metadata result" in matrix
+    assert "CREATE OR REPLACE TABLE scratch AS SELECT 1 AS value;" in matrix
+    assert "`Count` metadata" in matrix
     assert "- [ ] Export overwrite refusal and force" in matrix
     assert "- [ ] Missing file behavior" in matrix
     assert "- [ ] Quit path" in matrix

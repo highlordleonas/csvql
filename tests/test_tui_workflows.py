@@ -683,6 +683,25 @@ def test_run_query_for_tui_returns_success_for_empty_rows_with_columns(
     assert outcome.result.row_count == 0
 
 
+def test_run_query_for_tui_treats_duckdb_ddl_metadata_as_result(
+    tmp_path: Path,
+) -> None:
+    csv_path = _write_csv(tmp_path / "orders.csv", "id,value\n1,alpha\n")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
+
+    outcome = run_query_for_tui(
+        (source,),
+        "CREATE OR REPLACE TABLE scratch AS SELECT 1 AS value;",
+        sequence=11,
+    )
+
+    assert outcome.sequence == 11
+    assert outcome.status == "success"
+    assert outcome.result is not None
+    assert outcome.result.columns == ("Count",)
+    assert outcome.result.rows == ((1,),)
+
+
 def test_run_query_for_tui_returns_error_outcome(tmp_path: Path) -> None:
     csv_path = _write_csv(tmp_path / "orders.csv", "id,value\n1,alpha\n")
     source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")

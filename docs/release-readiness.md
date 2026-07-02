@@ -54,8 +54,8 @@ Run the manual v1 QA matrix before classifying a final candidate:
 - [Manual v1 QA matrix](v1-manual-qa.md)
 
 The matrix covers CLI-only reuse, optional TUI flows, derived-source save and
-query, bad SQL, no-result SQL, export overwrite behavior, missing files, quit
-behavior, and Mac keybinding paths.
+query, bad SQL, TUI DDL metadata results, export overwrite behavior, missing
+files, quit behavior, and Mac keybinding paths.
 
 ## Benchmark Proof
 

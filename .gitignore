@@ -12,6 +12,9 @@ dist/
 build/
 *.egg-info/
 
+.local/
+.superpowers/
+
 .csvql/
 output/
 !examples/saas_revenue/output/

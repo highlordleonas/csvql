@@ -107,16 +107,16 @@ Expected: prints `1.0.0`.
   Expected: exit code `1`, an error beginning `DuckDB query failed`, and a
   suggestion to check table names, column names, and SQL syntax.
 
-- [ ] No-result SQL
+- [ ] TUI DDL metadata result
 
   In the TUI, run:
 
   ```sql
-  CREATE TABLE scratch AS SELECT 1 AS value;
+  CREATE OR REPLACE TABLE scratch AS SELECT 1 AS value;
   ```
 
-  Expected: prior results are cleared and the TUI reports that the statement
-  completed with no tabular result to display.
+  Expected: prior results are replaced and the TUI treats DuckDB's returned
+  `Count` metadata as a tabular result, showing one `Count` row.
 
 - [ ] Export overwrite refusal and force
 
