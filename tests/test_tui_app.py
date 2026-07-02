@@ -17,6 +17,10 @@ def _read_readme_text() -> str:
     return (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
 
 
+def _normalized_markdown_text(text: str) -> str:
+    return " ".join(text.split())
+
+
 def app_history_statuses(state: TUISessionState) -> list[str]:
     return [item.status for item in state.query_history]
 
@@ -1164,7 +1168,7 @@ def test_question_mark_help_only_outside_sql_editor(tmp_path: Path) -> None:
 
 
 def test_readme_documents_source_intelligence_keymap() -> None:
-    readme = _read_readme_text()
+    readme = _normalized_markdown_text(_read_readme_text())
 
     assert "`Ctrl+Enter` or `F4` to run selected SQL" in readme
     assert "current statement around the cursor" in readme
@@ -1172,15 +1176,18 @@ def test_readme_documents_source_intelligence_keymap() -> None:
 
 
 def test_readme_documents_editor_quality_keymap() -> None:
-    readme = _read_readme_text()
+    readme = _normalized_markdown_text(_read_readme_text())
+
+    assert "`F12` runs the whole editor" in readme
+    assert "current statement around the cursor" in readme
+
+
+def test_readme_documents_history_rerun_keymap() -> None:
+    readme = _normalized_markdown_text(_read_readme_text())
 
     assert "History" in readme
     assert "rerun" in readme
-    assert (
-        "Use History to reopen previous queries or rerun them against the current\n"
-        "session sources."
-        in readme
-    )
+    assert "Use History to reopen previous queries or rerun them against the current session sources." in readme
 
 
 def test_source_letter_actions_only_work_when_sources_focused(tmp_path: Path) -> None:
