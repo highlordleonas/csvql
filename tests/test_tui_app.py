@@ -1178,6 +1178,7 @@ def test_readme_documents_source_intelligence_keymap() -> None:
 def test_readme_documents_editor_quality_keymap() -> None:
     readme = _normalized_markdown_text(_read_readme_text())
 
+    assert "`Ctrl+Enter` or `F4` to run selected SQL" in readme
     assert "`F12` runs the whole editor" in readme
     assert "current statement around the cursor" in readme
 
