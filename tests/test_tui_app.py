@@ -1170,9 +1170,9 @@ def test_question_mark_help_only_outside_sql_editor(tmp_path: Path) -> None:
 def test_readme_documents_source_intelligence_keymap() -> None:
     readme = _normalized_markdown_text(_read_readme_text())
 
-    assert "`Ctrl+Enter` or `F4` to run selected SQL" in readme
-    assert "current statement around the cursor" in readme
-    assert "`F12` runs the whole editor" in readme
+    assert "Source Intelligence actions use `c` to load/show columns" in readme
+    assert "`l` to insert the selected source alias" in readme
+    assert "`x` to insert a `SELECT *` starter query" in readme
 
 
 def test_readme_documents_editor_quality_keymap() -> None:

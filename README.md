@@ -144,13 +144,14 @@ Use `F2` or `Ctrl+Down` for the SQL editor, `F5` for results, `F6` or
 `Ctrl+Up` for sources, and `F8` for history. Printable keys type into SQL while
 the editor is focused. Source actions use letters only when the source pane is
 focused: `i` inspect, `s` sample, `p` profile, `a` add, `d` remove, and `w`
-save sources. Use History to reopen previous queries or rerun them against the current
-session sources. `F1` opens help; `?` is a help fallback only outside
+save sources. Use History to reopen previous queries or rerun them against the
+current session sources. `F1` opens help; `?` is a help fallback only outside
 the SQL editor.
 
-When the source pane is focused, Source Intelligence actions use `c` to load/show columns,
-`l` to insert the selected source alias, and `x` to insert a `SELECT *` starter query.
-Column metadata is session-local and is not written to `.csvql.yml`.
+When the source pane is focused, Source Intelligence actions use `c` to
+load/show columns, `l` to insert the selected source alias, and `x` to insert a
+`SELECT *` starter query. Column metadata is session-local and is not written to
+`.csvql.yml`.
 
 `Ctrl+N` or `F10` clears the editor for a new query while keeping history and
 the last result view visible. Query history is in-memory session state only: it
