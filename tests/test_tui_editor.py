@@ -23,6 +23,12 @@ def test_current_statement_uses_cursor_location_between_semicolons() -> None:
     )
 
 
+def test_current_statement_uses_previous_statement_in_whitespace_after_semicolon() -> None:
+    sql = "SELECT 1;   \nSELECT 2;"
+
+    assert selected_or_current_sql(sql, cursor_location=(0, 10), selected_text="") == "SELECT 1"
+
+
 def test_current_statement_does_not_split_on_semicolon_inside_single_quotes() -> None:
     sql = "SELECT 'a;b' AS value;\nSELECT 2 AS value;"
 

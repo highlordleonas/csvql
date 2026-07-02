@@ -28,7 +28,15 @@ def current_statement_at_offset(text: str, cursor_offset: int) -> str:
             current_segment_index = index
             break
 
-    statement = _segment_text(text, segments[current_segment_index])
+    current_segment = segments[current_segment_index]
+    if _cursor_is_in_leading_whitespace(text, current_segment, bounded_offset):
+        for index in range(current_segment_index - 1, -1, -1):
+            statement = _segment_text(text, segments[index])
+            if statement:
+                return statement
+        return ""
+
+    statement = _segment_text(text, current_segment)
     if statement:
         return statement
 
@@ -53,6 +61,20 @@ def _statement_segments(text: str) -> tuple[tuple[int, int], ...]:
 def _segment_text(text: str, segment: tuple[int, int]) -> str:
     start_offset, end_offset = segment
     return text[start_offset:end_offset].strip()
+
+
+def _cursor_is_in_leading_whitespace(
+    text: str,
+    segment: tuple[int, int],
+    cursor_offset: int,
+) -> bool:
+    start_offset, end_offset = segment
+    raw_segment = text[start_offset:end_offset]
+    stripped_segment = raw_segment.lstrip()
+    if not stripped_segment:
+        return True
+    leading_whitespace_length = len(raw_segment) - len(stripped_segment)
+    return cursor_offset - start_offset < leading_whitespace_length
 
 
 def _offset_for_location(text: str, location: Location) -> int:
