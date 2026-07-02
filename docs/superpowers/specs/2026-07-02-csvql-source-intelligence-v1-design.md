@@ -2,20 +2,23 @@
 
 ## Status
 
-Approved design for the next CSVQL TUI polish lane.
+Hostile-review revision of the Source Intelligence brainstorming design. This
+is still a design spec, not an implementation plan. Run another hostile review
+before implementation planning.
 
-Current repo state at design time:
+Repo state at the original design baseline:
 
 - Branch: `main`
-- Baseline HEAD: `49bc46e`
+- Pre-spec baseline HEAD: `49bc46e`
+- Initial spec commit HEAD: `40e28f4`
 - Tracked tree: clean
 - Untracked generated state: `.superpowers/`
 
 ## Goal
 
 Make the optional TUI Sources pane help users write SQL faster by exposing
-selected-source columns and inserting simple source/column snippets into the
-SQL editor.
+selected-source columns and inserting simple source-aware snippets into the SQL
+editor.
 
 ## North Star
 
@@ -45,7 +48,8 @@ Included:
 
 - Session-local selected-source column metadata.
 - Explicit user action to load/show columns for the selected source.
-- Explicit user actions to insert source-aware SQL snippets into the editor.
+- Explicit user actions to insert the selected source alias or a starter query
+  into the editor.
 - Help and README updates for the new TUI keymap.
 - Focused tests for state, workflow, app behavior, and docs/help text.
 
@@ -62,7 +66,26 @@ Excluded:
 - SQL formatting.
 - Selected SQL or current-statement execution.
 - Error-recovery suggestions from failed SQL.
+- Column picker.
+- First-column insertion shortcut.
 - pandas, Polars, parquet, notebooks, dashboards, web UI, AI, or plugins.
+
+## Skill Activation Contract
+
+Before touching Source Intelligence implementation surfaces, load the relevant
+skills for the surface being edited:
+
+- TUI Python, state, workflows, tests, or typing:
+  `python-codebase-standards`, `testing-strategy`,
+  `superpowers:test-driven-development`.
+- DuckDB SQL snippets, aliases, CSV headers, paths, or trusted-SQL boundaries:
+  `python-codebase-standards`, `security-best-practices`.
+- README, help text, keymap text, user-facing docs, or error wording:
+  `documentation`, `readme`.
+- Product workflow, source-pane UX, or repeatable analytics ergonomics:
+  `analytics-product`, `data-products`, `requirements-clarity`.
+- Before completion: `code-review`,
+  `superpowers:verification-before-completion`.
 
 ## User Experience
 
@@ -75,23 +98,23 @@ The user flow is explicit and source-focused:
 5. User presses a key to insert source-aware SQL text into the existing editor.
 6. Focus returns to the SQL editor after insertion.
 
-The first version should not add a separate column picker. Without a picker,
-column insertion uses the first inspected column as the deterministic default.
-That keeps the feature small and predictable while still making simple queries
-faster to start.
+The first version should not add a separate column picker or first-column
+shortcut. Column display is for inspection, reference, and manual copy. The
+starter query uses `SELECT *` because that is a better v1 convenience than
+silently choosing one column for the user.
 
 ## Keymap
 
 New keybindings are active only when the Sources pane is focused:
 
 - `c`: load/show columns for the selected source.
-- `l`: insert selected source alias into the SQL editor.
-- `.`: insert `alias.first_column` into the SQL editor.
+- `l`: insert the rendered selected source alias into the SQL editor.
 - `x`: insert a starter select into the SQL editor:
 
   ```sql
-  SELECT alias.first_column
-  FROM alias;
+  SELECT *
+  FROM "alias"
+  LIMIT 10;
   ```
 
 Existing source actions remain:
@@ -104,8 +127,9 @@ Existing source actions remain:
 - `w`: save sources to project catalog.
 
 Printable keys must remain safe while the SQL editor is focused. Source
-intelligence actions should be disabled while focus is in the editor, matching
-the existing source-action focus rules.
+intelligence actions must be disabled while focus is in the editor, matching the
+existing source-action focus rules. This is mandatory for `c`, `l`, and `x`
+because they are ordinary printable keys.
 
 ## Architecture
 
@@ -130,8 +154,7 @@ class TUISourceColumn:
 Add session-local column metadata to `TUISessionState`, keyed by validated
 source alias. The cache is:
 
-- loaded only when the user requests source columns or an insertion action needs
-  columns;
+- loaded only when the user requests source columns;
 - cleared for a source when that source is removed;
 - not persisted to `.csvql.yml`;
 - not written to disk;
@@ -148,6 +171,36 @@ The helper should call existing `inspect_source(source)` and convert its column
 objects into `TUISourceColumn` instances. DuckDB execution and CSV inspection
 remain in existing engine/workflow layers. `cli.py` remains untouched.
 
+Add an identifier rendering helper near the TUI workflow/snippet code or in an
+existing SQL utility if one is a better local fit:
+
+```python
+def render_duckdb_identifier(identifier: str) -> str:
+    """Render one DuckDB delimited identifier for generated SQL snippets."""
+```
+
+## Identifier Rendering Contract
+
+Generated SQL snippets must render identifiers as DuckDB delimited identifiers:
+wrap the identifier in double quotes and double any embedded double quote.
+
+Examples:
+
+- `orders` -> `"orders"`
+- `Customer ID` -> `"Customer ID"`
+- `select` -> `"select"`
+- `a"b` -> `"a""b"`
+
+This applies to generated snippets even though CSVQL source aliases are already
+validated as conservative identifiers. It keeps generated SQL consistent and
+prevents broken snippets when future column insertion work uses CSV headers that
+contain spaces, reserved words, punctuation, or embedded quotes.
+
+Column display is not SQL rendering. Displayed column names should preserve the
+CSV header text and show the DuckDB type for reference. This contract is about
+generated SQL correctness under CSVQL's trusted-local-SQL posture; it is not a
+safe mode, sandbox, or untrusted-SQL protection.
+
 ## Editor Insertion
 
 The implementation should prefer a small helper in `tui_app.py` for inserting
@@ -155,15 +208,12 @@ text into the existing `TextArea`.
 
 Required v1 behavior:
 
-- Insertions append to the editor with sensible spacing if cursor insertion is
-  not straightforward through Textual's stable API.
+- Insertions are append-only.
 - If the editor is empty, inserted text becomes the editor content directly.
 - If the editor has content and does not end with whitespace, append a newline
   before the inserted text.
 - After insertion, focus returns to the SQL editor.
-
-Cursor-exact insertion can be evaluated during implementation only if Textual's
-current `TextArea` API makes it simple and testable. It is not required for v1.
+- Cursor-exact insertion is explicitly out of scope for Source Intelligence v1.
 
 ## Error Handling
 
@@ -174,16 +224,13 @@ Required failures:
 - No selected source:
   - message: `No source selected.`
 - Selected source has no columns:
-  - message: `Source '<alias>' has no columns to insert.`
+  - message: `Source '<alias>' has no columns.`
 - Inspect failure:
   - surface the existing inspection `CSVQLError` message and suggestion.
-- Insertion action needs columns and none are cached:
-  - inspect the selected source first;
-  - cache columns if inspection succeeds;
-  - insert after successful inspection;
-  - show no partial insertion if inspection fails.
+- Insert alias and starter select do not require column inspection and must not
+  fail only because columns have not been loaded.
 
-## Display
+## Display And Result State
 
 Column display should reuse the existing output text area instead of adding a
 new pane in v1.
@@ -202,6 +249,16 @@ The status line should report:
 ```text
 orders: 3 columns loaded.
 ```
+
+Loading/showing columns replaces the visible output area, so it must also clear
+`last_result`, reset exportable result state, and disable result export. This
+clear happens before column inspection so both successful column display and
+column-load errors cannot leave stale exportable data behind.
+
+Successful pure editor insertion actions (`l` and `x`) do not replace output
+and should preserve `last_result` and export state. If an insertion action
+cannot proceed and must display an error in the output area, it should clear
+exportable result state before showing that error.
 
 This keeps the UI dense and avoids adding layout churn before there is evidence
 that a dedicated column pane is needed.
@@ -223,20 +280,24 @@ Workflow tests in `tests/test_tui_workflows.py`:
 - `inspect_source_columns` returns column names and DuckDB types for a CSV.
 - wrapper keeps source display path as the alias through existing inspect
   behavior.
+- `render_duckdb_identifier` renders `orders`, `Customer ID`, `select`, and
+  `a"b` as valid DuckDB delimited identifiers.
 
 App tests in `tests/test_tui_app.py`:
 
 - `c` loads and shows selected-source columns when Sources is focused.
 - `c` is disabled while the SQL editor is focused.
-- `l` inserts selected source alias and focuses the editor.
-- `.` inspects when needed and inserts `alias.first_column`.
-- `x` inspects when needed and inserts starter select.
-- source insertion does not mutate the editor when inspect fails.
-- source insertion reports a clear error when no source is selected.
+- `c` clears `last_result` and disables export because it replaces output.
+- `l` inserts the rendered selected source alias and focuses the editor.
+- `x` inserts a rendered `SELECT * FROM "alias" LIMIT 10;` starter select.
+- `l` and `x` preserve `last_result` and export state.
+- source insertion reports a clear error and clears exportable result state when
+  no source is selected.
+- `c`, `l`, and `x` do not fire while typing in the SQL editor.
 
 Docs/help tests:
 
-- help text documents `c`, `l`, `.`, and `x`.
+- help text documents `c`, `l`, and `x`.
 - README TUI keymap text mentions source intelligence actions.
 
 ## Documentation
@@ -270,20 +331,24 @@ Manual proof target:
 - Focus Sources.
 - Load columns with `c`.
 - Insert alias with `l`.
-- Insert qualified first column with `.`.
 - Insert starter select with `x`.
 - Run the starter query with `F4`.
 
 ## Risks And Mitigations
 
-- **Terminal key conflicts:** `.` and letters are ordinary keys. Mitigation:
-  keep actions active only when Sources is focused so SQL typing stays safe.
+- **Terminal key conflicts:** source-intelligence keys are ordinary printable
+  keys. Mitigation: keep actions active only when Sources is focused so SQL
+  typing stays safe, and cover focus gating in app tests.
 - **Large CSV inspection cost:** column loading uses explicit inspect action,
   not automatic full-project scanning.
-- **No column picker yet:** v1 uses first column for qualified/starter snippets.
-  A real picker can be part of Source Intelligence v2 if this proves useful.
-- **TextArea cursor API uncertainty:** v1 requires append-with-spacing behavior,
-  not cursor-exact insertion.
+- **No column insertion yet:** v1 shows columns but inserts only aliases and a
+  starter `SELECT *`. A real column picker or current-column insertion can be
+  part of Source Intelligence v2 if there is evidence it is worth the UI weight.
+- **TextArea cursor API uncertainty:** v1 requires append-with-spacing behavior
+  and explicitly excludes cursor-exact insertion.
+- **Stale export risk:** source-intelligence actions that replace output must
+  clear exportable result state; successful insertion-only actions must preserve
+  it.
 - **User confusion around persistence:** docs and help must say column metadata
   is session-local and source paths persist only through explicit Save sources.
 
@@ -292,9 +357,13 @@ Manual proof target:
 Source Intelligence v1 is complete when:
 
 - selected-source columns can be loaded and displayed in the TUI;
-- alias, qualified first column, and starter select snippets can be inserted
-  from the Sources pane;
+- rendered alias and starter select snippets can be inserted from the Sources
+  pane;
 - source-intelligence keys do not fire while typing in the SQL editor;
+- generated SQL identifier rendering handles spaces, reserved words, and
+  embedded quotes;
+- column display clears exportable result state, while insertion-only actions
+  preserve it;
 - column metadata is session-local only;
 - docs and help describe the new actions;
 - focused and full gates pass;
