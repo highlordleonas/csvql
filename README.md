@@ -51,6 +51,11 @@ uv run csvql --help
 
 For the full copy/paste path, see [Getting started](docs/getting-started.md).
 
+Two command modes matter:
+
+- Using LocalQL: install once, then every command is `csvql ...`.
+- Developing LocalQL: work from a source checkout with `uv run ...`.
+
 ## Status
 
 This repository uses `localql` as the installable distribution name while
@@ -123,13 +128,17 @@ Run the CLI from the repo:
 uv run csvql --help
 ```
 
+Use the installed CLI examples throughout the public docs as `csvql ...`. When
+you are developing from a source checkout, prefix those same commands with
+`uv run`.
+
 ## First 10 Minutes
 
 Start with the CLI path. Query one CSV, then decide whether you want the
 optional terminal workbench.
 
 ```bash
-uv run csvql query examples/saas_revenue/data/revenue_movements.csv \
+csvql query examples/saas_revenue/data/revenue_movements.csv \
   "SELECT movement_type, SUM(mrr_delta) AS net_mrr_change
    FROM revenue_movements
    GROUP BY movement_type
@@ -141,8 +150,8 @@ SQL in files:
 
 ```bash
 cd examples/saas_revenue
-uv run csvql tables
-uv run csvql run queries/revenue_health.sql --output json
+csvql tables
+csvql run queries/revenue_health.sql --output json
 ```
 
 Use `csvql menu` only when an interactive terminal workbench helps. The CLI
@@ -150,21 +159,28 @@ remains the complete core workflow.
 
 ## Interactive Terminal Menu
 
-CSVQL can also run an optional Textual-powered terminal menu:
+CSVQL can also run an optional Textual-powered terminal menu. For installed
+usage, install the optional TUI dependency once:
 
 ```bash
-uv run --all-extras csvql menu
-uv run --all-extras csvql menu /path/to/orders.csv
-uv run --all-extras csvql menu --table customers=customers.csv --table orders=orders.csv
+pip install "localql[tui]"
+```
+
+Then launch the menu with `csvql`:
+
+```bash
+csvql menu
+csvql menu /path/to/orders.csv
+csvql menu --table customers=customers.csv --table orders=orders.csv
 ```
 
 ![Terminal screenshot of the LocalQL TUI workbench with sources, SQL, history, and results](docs/assets/localql-tui-workbench.svg)
 
-Install the optional TUI dependency before using the menu from an installed
-package:
+From a source checkout, use the repo-local environment:
 
 ```bash
-pip install "localql[tui]"
+uv sync --all-extras
+uv run --all-extras csvql menu
 ```
 
 The menu is session-backed by default. Sources added inside the TUI live only
@@ -246,7 +262,7 @@ dataframe helpers, async execution, plugins, or a second execution engine.
 Query one CSV with the single-file shortcut. The table name is derived from the file stem, so `revenue_movements.csv` becomes `revenue_movements`.
 
 ```bash
-uv run csvql query examples/saas_revenue/data/revenue_movements.csv \
+csvql query examples/saas_revenue/data/revenue_movements.csv \
   "SELECT movement_type, SUM(mrr_delta) AS net_mrr_change
    FROM revenue_movements
    GROUP BY movement_type
@@ -256,7 +272,7 @@ uv run csvql query examples/saas_revenue/data/revenue_movements.csv \
 Query multiple CSV files:
 
 ```bash
-uv run csvql query \
+csvql query \
   --table customers=examples/saas_revenue/data/customers.csv \
   --table subscriptions=examples/saas_revenue/data/subscriptions.csv \
   "SELECT
@@ -273,7 +289,7 @@ uv run csvql query \
 Return JSON for automation:
 
 ```bash
-uv run csvql query \
+csvql query \
   --table revenue_movements=examples/saas_revenue/data/revenue_movements.csv \
   --output json \
   "SELECT movement_month, SUM(mrr_delta) AS net_mrr_change
@@ -287,31 +303,31 @@ uv run csvql query \
 Initialize a local project catalog:
 
 ```bash
-uv run csvql init
+csvql init
 ```
 
 Register a table once:
 
 ```bash
-uv run csvql add revenue_movements examples/saas_revenue/data/revenue_movements.csv
+csvql add revenue_movements examples/saas_revenue/data/revenue_movements.csv
 ```
 
 List registered tables as JSON:
 
 ```bash
-uv run csvql tables --output json
+csvql tables --output json
 ```
 
 Query a registered table by alias:
 
 ```bash
-uv run csvql query "SELECT COUNT(*) AS movement_count FROM revenue_movements"
+csvql query "SELECT COUNT(*) AS movement_count FROM revenue_movements"
 ```
 
 For one invocation, explicit `--table` mappings still work and override catalog aliases with the same name.
 
 ```bash
-uv run csvql query \
+csvql query \
   --table revenue_movements=examples/saas_revenue/data/revenue_movements.csv \
   "SELECT COUNT(*) AS movement_count FROM revenue_movements"
 ```
@@ -322,27 +338,27 @@ Run SQL from a file using catalog aliases:
 
 ```bash
 cd examples/saas_revenue
-uv run csvql run queries/revenue_health.sql --output json
+csvql run queries/revenue_health.sql --output json
 ```
 
 Inspect a registered catalog alias and profile it:
 
 ```bash
 cd examples/saas_revenue
-uv run csvql inspect revenue_movements --output json
-uv run csvql profile revenue_movements --output json
+csvql inspect revenue_movements --output json
+csvql profile revenue_movements --output json
 ```
 
 Export the main analysis:
 
 ```bash
 cd examples/saas_revenue
-uv run csvql export queries/revenue_health.sql \
+csvql export queries/revenue_health.sql \
   --format json \
   --out output/revenue-health.json \
   --force
 
-uv run csvql export queries/revenue_health.sql \
+csvql export queries/revenue_health.sql \
   --format markdown \
   --out output/revenue-health.md \
   --force
@@ -359,13 +375,13 @@ alias, then query it like any other CSVQL source.
 ```bash
 cd examples/saas_revenue
 mkdir -p .csvql/results
-uv run csvql export queries/revenue_health.sql \
+csvql export queries/revenue_health.sql \
   --format csv \
   --out .csvql/results/revenue_health.csv \
   --force
 
-uv run csvql add revenue_health_result .csvql/results/revenue_health.csv --replace
-uv run csvql query "SELECT COUNT(*) AS result_rows FROM revenue_health_result"
+csvql add revenue_health_result .csvql/results/revenue_health.csv --replace
+csvql query "SELECT COUNT(*) AS result_rows FROM revenue_health_result"
 ```
 
 For one command without catalog persistence, pass the exported result with
@@ -373,7 +389,7 @@ For one command without catalog persistence, pass the exported result with
 
 ```bash
 cd examples/saas_revenue
-uv run csvql query \
+csvql query \
   --table revenue_health_result=.csvql/results/revenue_health.csv \
   "SELECT * FROM revenue_health_result"
 ```
@@ -387,19 +403,19 @@ catalog stores table paths; it does not store source-kind metadata.
 Inspect the core revenue-movement table:
 
 ```bash
-uv run csvql inspect examples/saas_revenue/data/revenue_movements.csv --output json
+csvql inspect examples/saas_revenue/data/revenue_movements.csv --output json
 ```
 
 Calculate an exact row count when you explicitly want a full scan:
 
 ```bash
-uv run csvql inspect examples/saas_revenue/data/revenue_movements.csv --exact --output json
+csvql inspect examples/saas_revenue/data/revenue_movements.csv --exact --output json
 ```
 
 Sample rows from the same table:
 
 ```bash
-uv run csvql sample examples/saas_revenue/data/revenue_movements.csv --limit 5
+csvql sample examples/saas_revenue/data/revenue_movements.csv --limit 5
 ```
 
 ## Profile Examples
@@ -407,20 +423,20 @@ uv run csvql sample examples/saas_revenue/data/revenue_movements.csv --limit 5
 Profile the revenue-movement CSV with a full scan:
 
 ```bash
-uv run csvql profile examples/saas_revenue/data/revenue_movements.csv
+csvql profile examples/saas_revenue/data/revenue_movements.csv
 ```
 
 Return JSON profile metrics:
 
 ```bash
-uv run csvql profile examples/saas_revenue/data/revenue_movements.csv --output json
+csvql profile examples/saas_revenue/data/revenue_movements.csv --output json
 ```
 
 Profile a registered catalog alias:
 
 ```bash
 cd examples/saas_revenue
-uv run csvql profile revenue_movements --output json
+csvql profile revenue_movements --output json
 ```
 
 `csvql profile` reports row and column counts, duplicate row count, per-column null counts and percentages, non-null counts, distinct counts excluding nulls, and DuckDB `min`/`max` values. String `min` and `max` use DuckDB lexicographic ordering.
@@ -474,19 +490,19 @@ tables:
 Run all configured checks:
 
 ```bash
-uv run csvql check
+csvql check
 ```
 
 Run checks for one registered table and return JSON:
 
 ```bash
-uv run csvql check revenue_movements --output json
+csvql check revenue_movements --output json
 ```
 
 Include capped failure samples:
 
 ```bash
-uv run csvql check revenue_movements --output json --show-failures --failure-limit 5
+csvql check revenue_movements --output json --show-failures --failure-limit 5
 ```
 
 `csvql check` exits `0` when checks pass or no checks are configured. It exits `11` when configured checks run successfully and find data-quality failures. Missing catalogs, missing files, invalid config, and DuckDB execution errors use the existing CLI error path.
@@ -496,13 +512,13 @@ uv run csvql check revenue_movements --output json --show-failures --failure-lim
 Run project doctor from a directory with a `.csvql.yml` project catalog:
 
 ```bash
-uv run csvql doctor
+csvql doctor
 ```
 
 Return doctor results as JSON for automation:
 
 ```bash
-uv run csvql doctor --output json
+csvql doctor --output json
 ```
 
 `csvql doctor` exits `0` for `passed` and `warning` results. It exits `12` when the

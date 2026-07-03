@@ -6,19 +6,25 @@ iterate in a terminal without repeatedly retyping source mappings.
 
 ## Launch
 
-From a source checkout:
-
-```bash
-uv run --all-extras csvql menu
-uv run --all-extras csvql menu examples/saas_revenue/data/revenue_movements.csv
-uv run --all-extras csvql menu --table customers=customers.csv --table orders=orders.csv
-```
-
 From an installed package, install the optional extra first:
 
 ```bash
 pip install "localql[tui]"
 csvql menu
+```
+
+Then open a CSV or repeated table mappings:
+
+```bash
+csvql menu examples/saas_revenue/data/revenue_movements.csv
+csvql menu --table customers=customers.csv --table orders=orders.csv
+```
+
+From a source checkout, use the repo-local environment:
+
+```bash
+uv sync --all-extras
+uv run --all-extras csvql menu
 ```
 
 ![Terminal screenshot of the LocalQL TUI workbench with project sources loaded and a query result visible](assets/localql-tui-workbench.svg)

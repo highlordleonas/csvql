@@ -15,12 +15,12 @@ export results for both automation and human review.
 ```bash
 cd examples/saas_revenue
 
-uv run csvql inspect data/revenue_movements.csv --output json
-uv run csvql profile revenue_movements --output json
-uv run csvql check --output json
-uv run csvql run queries/revenue_health.sql --output json
-uv run csvql export queries/revenue_health.sql --format json --out output/revenue-health.json --force
-uv run csvql export queries/revenue_health.sql --format markdown --out output/revenue-health.md --force
+csvql inspect data/revenue_movements.csv --output json
+csvql profile revenue_movements --output json
+csvql check --output json
+csvql run queries/revenue_health.sql --output json
+csvql export queries/revenue_health.sql --format json --out output/revenue-health.json --force
+csvql export queries/revenue_health.sql --format markdown --out output/revenue-health.md --force
 ```
 
 Expected shape:

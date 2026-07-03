@@ -12,12 +12,40 @@ def test_readme_documents_cli_reusable_result_sources() -> None:
 
     assert "## Reusable Result Sources" in readme
     assert "mkdir -p .csvql/results" in readme
-    assert "uv run csvql export queries/revenue_health.sql" in readme
+    assert "csvql export queries/revenue_health.sql" in readme
     assert "--out .csvql/results/revenue_health.csv" in readme
-    assert "uv run csvql add revenue_health_result .csvql/results/revenue_health.csv" in readme
+    assert "csvql add revenue_health_result .csvql/results/revenue_health.csv" in readme
     assert "--table revenue_health_result=.csvql/results/revenue_health.csv" in readme
     assert "normal CSV reuse" in readme
     assert "not a typed derived-source catalog feature" in readme
+
+
+def test_public_onboarding_uses_installed_cli_command() -> None:
+    public_docs = "\n".join(
+        [
+            read_doc("README.md"),
+            read_doc("docs/getting-started.md"),
+            read_doc("docs/troubleshooting.md"),
+            read_doc("examples/saas_revenue/README.md"),
+        ]
+    )
+
+    assert "Using LocalQL" in public_docs
+    assert "csvql query examples/saas_revenue/data/revenue_movements.csv" in public_docs
+    for command in (
+        "query",
+        "export",
+        "check",
+        "doctor",
+        "inspect",
+        "profile",
+        "sample",
+        "run",
+        "add",
+        "tables",
+        "init",
+    ):
+        assert f"uv run csvql {command}" not in public_docs
 
 
 def test_manual_qa_matrix_covers_cli_and_tui_release_paths() -> None:

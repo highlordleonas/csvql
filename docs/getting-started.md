@@ -22,13 +22,15 @@ uv run csvql --help
 
 The installable distribution is `localql`. The command, Python import package,
 and project config file remain `csvql` and `.csvql.yml`.
+The examples below use the installed `csvql` command; from a source checkout,
+prefix the same commands with `uv run`.
 
 ## Query One CSV
 
 Run this from the repository root:
 
 ```bash
-uv run csvql query examples/saas_revenue/data/revenue_movements.csv \
+csvql query examples/saas_revenue/data/revenue_movements.csv \
   "SELECT movement_type, SUM(mrr_delta) AS net_mrr_change
    FROM revenue_movements
    GROUP BY movement_type
@@ -46,19 +48,19 @@ The example project already includes `.csvql.yml` with registered tables:
 
 ```bash
 cd examples/saas_revenue
-uv run csvql tables
+csvql tables
 ```
 
 Query a registered table without passing file paths:
 
 ```bash
-uv run csvql query "SELECT COUNT(*) AS customer_count FROM customers"
+csvql query "SELECT COUNT(*) AS customer_count FROM customers"
 ```
 
 Add or replace a table in your own project with:
 
 ```bash
-uv run csvql add customers data/customers.csv --replace
+csvql add customers data/customers.csv --replace
 ```
 
 The project path also supports joined SQL and configured checks:
@@ -70,7 +72,7 @@ The project path also supports joined SQL and configured checks:
 Keep repeatable analysis in SQL files:
 
 ```bash
-uv run csvql run queries/revenue_health.sql --output json
+csvql run queries/revenue_health.sql --output json
 ```
 
 The SaaS example returns one row per month with starting MRR, new MRR,
@@ -82,7 +84,7 @@ revenue retention.
 Write the saved analysis to a local file:
 
 ```bash
-uv run csvql export queries/revenue_health.sql \
+csvql export queries/revenue_health.sql \
   --format markdown \
   --out output/revenue-health.md \
   --force
@@ -97,12 +99,12 @@ You can turn a result into another CSV source:
 
 ```bash
 mkdir -p .csvql/results
-uv run csvql export queries/revenue_health.sql \
+csvql export queries/revenue_health.sql \
   --format csv \
   --out .csvql/results/revenue_health.csv \
   --force
 
-uv run csvql query \
+csvql query \
   --table revenue_health_result=.csvql/results/revenue_health.csv \
   "SELECT COUNT(*) AS result_rows FROM revenue_health_result"
 ```
@@ -116,7 +118,7 @@ The optional TUI is useful when you want to iterate locally without leaving the
 terminal:
 
 ```bash
-uv run --all-extras csvql menu data/revenue_movements.csv
+csvql menu data/revenue_movements.csv
 ```
 
 ![Terminal screenshot of the TUI workbench after running the SaaS revenue movement query](assets/localql-tui-workbench.svg)

@@ -15,8 +15,8 @@ Try:
 
 ```bash
 pwd
-uv run csvql query missing.csv "SELECT 1"
-uv run csvql add orders data/orders.csv --replace
+csvql query missing.csv "SELECT 1"
+csvql add orders data/orders.csv --replace
 ```
 
 For project catalogs, CSVQL resolves table paths relative to the project root
@@ -30,15 +30,15 @@ without explicit `--table` mappings.
 Start a catalog:
 
 ```bash
-uv run csvql init
-uv run csvql add revenue_movements data/revenue_movements.csv
-uv run csvql tables
+csvql init
+csvql add revenue_movements data/revenue_movements.csv
+csvql tables
 ```
 
 Or bypass the catalog for one command:
 
 ```bash
-uv run csvql query \
+csvql query \
   --table revenue_movements=data/revenue_movements.csv \
   "SELECT COUNT(*) FROM revenue_movements"
 ```
@@ -48,7 +48,7 @@ uv run csvql query \
 Explicit mappings must use `name=path`:
 
 ```bash
-uv run csvql query --table orders=data/orders.csv "SELECT COUNT(*) FROM orders"
+csvql query --table orders=data/orders.csv "SELECT COUNT(*) FROM orders"
 ```
 
 Table aliases must be valid SQL identifiers: use letters, numbers, and
@@ -67,9 +67,9 @@ Check:
 Useful inspection commands:
 
 ```bash
-uv run csvql tables
-uv run csvql inspect revenue_movements --output json
-uv run csvql sample revenue_movements --limit 5
+csvql tables
+csvql inspect revenue_movements --output json
+csvql sample revenue_movements --limit 5
 ```
 
 ## Export Output Already Exists
@@ -77,7 +77,7 @@ uv run csvql sample revenue_movements --limit 5
 CSVQL refuses to overwrite export files unless you ask for it:
 
 ```bash
-uv run csvql export queries/revenue_health.sql \
+csvql export queries/revenue_health.sql \
   --format csv \
   --out output/revenue-health.csv
 ```
@@ -85,7 +85,7 @@ uv run csvql export queries/revenue_health.sql \
 If the existing file should be replaced:
 
 ```bash
-uv run csvql export queries/revenue_health.sql \
+csvql export queries/revenue_health.sql \
   --format csv \
   --out output/revenue-health.csv \
   --force
@@ -127,7 +127,7 @@ Core fallbacks:
 failures. Use failure samples to inspect the bad rows:
 
 ```bash
-uv run csvql check revenue_movements \
+csvql check revenue_movements \
   --output json \
   --show-failures \
   --failure-limit 5
@@ -140,7 +140,7 @@ Fix either the CSV data or the check definition in `.csvql.yml`.
 Run doctor from the project root:
 
 ```bash
-uv run csvql doctor --output json
+csvql doctor --output json
 ```
 
 Doctor checks whether the project catalog loads, configured CSV paths exist,
