@@ -6,8 +6,9 @@ CSVQL is a Python CLI and package for querying local CSV files through DuckDB. D
 
 ## Current Release Lane
 
-The active lane is post-v0.9 hardening toward v1. CSVQL already has the core
-local workflow implemented:
+The active lane is LocalQL distribution aliasing for v1.0.0 while preserving the
+`csvql` CLI, Python import package, and `.csvql.yml` config contract. CSVQL
+already has the core local workflow implemented:
 
 - `csvql query --table name=path "SELECT ..."` and the single-file shortcut
 - `csvql inspect`, `csvql sample`, `csvql profile`, and `csvql check`
@@ -20,12 +21,11 @@ local workflow implemented:
   session-local query history, explicit exports, explicit project catalog save,
   and explicit derived result sources under `.csvql/results/{alias}.csv`
 
-Current work should harden and reconcile the product for v1, not widen it. The
-remaining lane is authority alignment, release workflow and changelog work,
-and contract stabilization decisions. Fresh benchmark, release-readiness, and
-full-gate proof should stay available and be rerun when release-candidate state
-changes. Failure-gallery documentation is implemented and should be kept aligned
-with runtime behavior.
+Current work should refresh full candidate proof after the LocalQL distribution
+alias and prepare only separately approved external release actions, not widen
+the product. Fresh benchmark, release-readiness, and full-gate proof should stay
+available and be rerun when release-candidate state changes. Failure-gallery
+documentation is implemented and should be kept aligned with runtime behavior.
 
 Do not add a web app, cloud connectors, dashboard surface, notebook framework,
 NLP execution, dataframe-first API, plugin system, hidden cache/materialization,

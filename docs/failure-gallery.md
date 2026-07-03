@@ -51,7 +51,7 @@ Expected message shape:
 
 ```text
 Error: CSVQL TUI dependency is not installed.
-Suggestion: Install with pip install "csvql[tui]" or run uv sync --all-extras.
+Suggestion: Install with pip install "localql[tui]" or run uv sync --all-extras.
 ```
 
 How to fix: install the optional `tui` extra, or run from the repo with

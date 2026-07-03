@@ -302,9 +302,22 @@ None of these generated artifacts are intended to be staged or committed.
 
 None found in this proof packet.
 
+## Post-Proof Status Decision
+
+On 2026-07-02, Richard approved treating the repository as local
+`release-candidate` status after reviewing this proof packet. Later on
+2026-07-02, Richard selected LocalQL as the installable distribution/display
+name while preserving the `csvql` CLI, Python import package, and `.csvql.yml`
+config contract. The LocalQL alias changes built wheel and sdist artifact names,
+so full candidate proof must be refreshed on the LocalQL candidate state before
+any external release action. These decisions do not publish packages, create a
+tag, create a GitHub release, upload artifacts, change the package version, or
+claim `v1-stable`.
+
 ## Next Task
 
-Richard can review this refreshed proof packet and decide whether to treat the
-repository as `release-candidate` status. Do not publish, tag, upload artifacts,
-create a GitHub release, change the package version, or claim `v1-stable`
-without separate explicit approval.
+The next separate lane is full candidate proof refresh on the LocalQL candidate
+state, followed by explicit release-action planning or execution only if Richard
+approves it. Do not publish, tag, upload artifacts, create a GitHub release,
+change the package version, or claim `v1-stable` without separate explicit
+approval.

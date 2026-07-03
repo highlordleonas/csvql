@@ -127,13 +127,20 @@ Implemented:
 - explicit export action
 - optional `tui` package extra so the core CLI install does not require Textual
 
+Current status before v1 publication:
+
+- LocalQL distribution alias is selected for the `csvql` CLI/import package
+
 Remaining before v1 publication:
 
+- refreshed full candidate proof on the LocalQL candidate state
 - explicit user approval for external release actions after the `1.0.0` local
   release state is proven
 
 ## v1.0.0 - Stable Release
 
+- current status: LocalQL distribution alias selected; full candidate proof
+  refresh needed
 - stable CLI contract
 - stable config schema
 - stable small Python API contract

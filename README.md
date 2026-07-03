@@ -1,6 +1,7 @@
-# CSVQL
+# LocalQL
 
-CSVQL is a lightweight DuckDB-powered CLI for querying local CSV files like SQL tables.
+LocalQL packages `csvql`, a lightweight DuckDB-powered CLI for querying local
+CSV files like SQL tables.
 
 ```bash
 csvql query \
@@ -21,17 +22,19 @@ CSVQL does not implement a SQL engine. DuckDB executes SQL; CSVQL owns the local
 
 ## Status
 
-This repository has the core local workflow implemented for local CLI use:
+This repository uses `localql` as the installable distribution name while
+keeping `csvql` as the CLI command, Python import package, and project config
+prefix. It has the core local workflow implemented for local CLI use:
 query, inspect/sample, project catalogs, saved SQL, export, profile, configured
 checks, doctor, benchmark and release-readiness proof scripts, JSON contract
 documentation, the failure gallery, the polished example project, and the small
 project-backed Python API. It also includes an optional Textual-powered terminal
 menu for local interactive work. The release workflow and release-note material
-now exist. The package version is prepared as `1.0.0` for the local v1 release
-state.
+now exist. The package version is `1.0.0`.
 
-This local release state is not a tag, PyPI upload, GitHub release, artifact
-upload, or external publication.
+The LocalQL distribution alias needs refreshed full candidate proof before any
+tag, PyPI upload, GitHub release, artifact upload, external publication, or
+`v1-stable` claim.
 
 Implemented now:
 
@@ -127,7 +130,7 @@ Install the optional TUI dependency before using the menu from an installed
 package:
 
 ```bash
-pip install "csvql[tui]"
+pip install "localql[tui]"
 ```
 
 The menu is session-backed by default. Sources added inside the TUI live only

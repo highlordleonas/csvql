@@ -2,13 +2,14 @@
 
 All notable CSVQL changes are summarized here.
 
-CSVQL package metadata is prepared for `v1.0.0`. The `v1.0.0` section records
-implemented surfaces for release preparation; it is not a publication, tag,
-PyPI upload, GitHub release, artifact upload, or `v1-stable` claim.
+LocalQL package metadata is prepared for `v1.0.0`. The `v1.0.0` section records
+implemented `csvql` surfaces for the local release candidate; it is not a
+publication, tag, PyPI upload, GitHub release, artifact upload, or `v1-stable`
+claim.
 
 ## v1.0.0 - 2026-07-01
 
-Status: local v1 release state prepared.
+Status: LocalQL distribution alias accepted; full candidate proof must be refreshed.
 
 ### Added
 
@@ -44,6 +45,8 @@ Status: local v1 release state prepared.
 - Repo-local release-readiness proof for version, build, wheel install, and
   smoke behavior.
 - Small project-backed Python API through `CSVQLSession`.
+- `localql` distribution name while keeping the `csvql` command, import package,
+  and `.csvql.yml` project config contract.
 
 ### Stable v1 Contract Decisions
 
@@ -70,8 +73,8 @@ Status: local v1 release state prepared.
 
 ### Release Proof
 
-Candidate eligibility is proven locally by running the release workflow on the
-current release state:
+Release-candidate eligibility is proven locally by running the release workflow
+on the current candidate state:
 
 - full local gate through Ruff, mypy, and pytest
 - release-readiness proof through `scripts/verify_release_readiness.py`

@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "csvql"
+name = "localql"
 version = "1.0.0"
-description = "A lightweight DuckDB-powered CLI for querying local CSV files like SQL tables."
+description = "LocalQL packages csvql, a DuckDB-powered CLI for querying local CSV files like SQL tables."
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = { text = "MIT" }

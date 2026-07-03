@@ -6,7 +6,7 @@ from pathlib import Path
 
 from csvql.exceptions import CSVQLError
 
-_TUI_DEPENDENCY_MESSAGE = 'Install with pip install "csvql[tui]" or run uv sync --all-extras.'
+_TUI_DEPENDENCY_MESSAGE = 'Install with pip install "localql[tui]" or run uv sync --all-extras.'
 
 
 def run_menu_command(

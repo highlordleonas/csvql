@@ -7,6 +7,7 @@ from csvql.release_readiness import (
     ReleaseReadinessCommandError,
     ReleaseReadinessResult,
     format_release_readiness_summary,
+    read_pyproject_name,
     run_release_command,
     select_built_wheel,
     verify_release_readiness,
@@ -19,16 +20,31 @@ def test_version_strings_match_requires_all_three_sources() -> None:
     assert version_strings_match("0.1.0", "0.1.1", "0.1.0") is False
 
 
+def test_read_pyproject_name_returns_distribution_name(tmp_path: Path) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        """
+[project]
+name = "localql"
+version = "0.1.0"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert read_pyproject_name(pyproject) == "localql"
+
+
 def test_select_built_wheel_returns_matching_wheel(tmp_path: Path) -> None:
-    wheel = tmp_path / "csvql-0.1.0-py3-none-any.whl"
+    wheel = tmp_path / "localql-0.1.0-py3-none-any.whl"
     wheel.write_text("", encoding="utf-8")
 
-    assert select_built_wheel(tmp_path, "0.1.0") == wheel
+    assert select_built_wheel(tmp_path, "localql", "0.1.0") == wheel
 
 
 def test_select_built_wheel_raises_when_missing(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
-        select_built_wheel(tmp_path, "0.1.0")
+        select_built_wheel(tmp_path, "localql", "0.1.0")
 
 
 def test_run_release_command_returns_stripped_stdout(tmp_path: Path) -> None:
@@ -61,6 +77,7 @@ def test_verify_release_readiness_returns_smoke_output(tmp_path: Path) -> None:
     (repo_root / "pyproject.toml").write_text(
         """
 [project]
+name = "localql"
 version = "0.1.0"
 """.strip()
         + "\n",
@@ -81,7 +98,7 @@ version = "0.1.0"
         if command[:2] == ["uv", "build"]:
             dist_dir = Path(command[-1])
             dist_dir.mkdir(parents=True, exist_ok=True)
-            (dist_dir / "csvql-0.1.0-py3-none-any.whl").write_text("", encoding="utf-8")
+            (dist_dir / "localql-0.1.0-py3-none-any.whl").write_text("", encoding="utf-8")
             return CompletedProcess(args=args, returncode=0, stdout="", stderr="")
         if command[:2] == ["uv", "venv"]:
             return CompletedProcess(args=args, returncode=0, stdout="", stderr="")
@@ -121,7 +138,8 @@ version = "0.1.0"
     assert result.inspect_output == '{"row_count":{"mode":"not_counted"}}'
     assert result.tui_import_output == "tui-extra-ok"
     assert "interactive CSVQL terminal menu" in result.menu_help_output
-    assert result.wheel_path.name == "csvql-0.1.0-py3-none-any.whl"
+    assert result.distribution_name == "localql"
+    assert result.wheel_path.name == "localql-0.1.0-py3-none-any.whl"
     assert (repo_root / "out" / "smoke" / "orders.csv").exists()
     assert [
         "uv",
@@ -129,16 +147,17 @@ version = "0.1.0"
         "install",
         "--python",
         str(repo_root / "out" / "smoke-venv" / "bin" / "python"),
-        f"csvql[tui] @ file://{repo_root / 'out' / 'dist' / 'csvql-0.1.0-py3-none-any.whl'}",
+        f"localql[tui] @ file://{repo_root / 'out' / 'dist' / 'localql-0.1.0-py3-none-any.whl'}",
     ] in seen_commands
 
 
 def test_format_release_readiness_summary_includes_tui_proof(tmp_path: Path) -> None:
     result = ReleaseReadinessResult(
+        distribution_name="localql",
         pyproject_version="0.1.0",
         package_version="0.1.0",
         cli_version="0.1.0",
-        wheel_path=tmp_path / "dist" / "csvql-0.1.0-py3-none-any.whl",
+        wheel_path=tmp_path / "dist" / "localql-0.1.0-py3-none-any.whl",
         inspect_output='{"row_count":{"mode":"not_counted"}}',
         tui_import_output="tui-extra-ok",
         menu_help_output="Open the interactive CSVQL terminal menu.",
@@ -147,6 +166,7 @@ def test_format_release_readiness_summary_includes_tui_proof(tmp_path: Path) -> 
     summary = format_release_readiness_summary(result)
 
     assert "Release readiness proof passed." in summary
-    assert "csvql-0.1.0-py3-none-any.whl" in summary
+    assert "Distribution: localql" in summary
+    assert "localql-0.1.0-py3-none-any.whl" in summary
     assert "tui-extra-ok" in summary
     assert "Open the interactive CSVQL terminal menu." in summary

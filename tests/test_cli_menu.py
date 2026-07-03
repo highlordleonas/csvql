@@ -93,7 +93,7 @@ def test_menu_uses_existing_cli_error_path() -> None:
     ) -> None:
         raise CSVQLError(
             "CSVQL TUI dependency is not installed.",
-            suggestion='Install with pip install "csvql[tui]".',
+            suggestion='Install with pip install "localql[tui]".',
         )
 
     with pytest.MonkeyPatch.context() as monkeypatch:
@@ -102,7 +102,7 @@ def test_menu_uses_existing_cli_error_path() -> None:
 
     assert result.exit_code == 1, result.output
     assert "CSVQL TUI dependency is not installed." in result.output
-    assert 'Install with pip install "csvql[tui]".' in result.output
+    assert 'Install with pip install "localql[tui]".' in result.output
 
 
 def test_version_flag_reports_version() -> None:
@@ -132,5 +132,5 @@ def test_menu_launcher_raises_helpful_error_when_textual_is_missing(
     assert exc_info.value.message == "CSVQL TUI dependency is not installed."
     assert (
         exc_info.value.suggestion
-        == 'Install with pip install "csvql[tui]" or run uv sync --all-extras.'
+        == 'Install with pip install "localql[tui]" or run uv sync --all-extras.'
     )

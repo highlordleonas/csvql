@@ -1,8 +1,9 @@
 # Release Readiness
 
-CSVQL is in post-v0.9 hardening toward v1. This document defines the
-local proof path for `release-candidate` and `v1-stable` labels. It does not
-publish packages, create tags, upload artifacts, or claim a release by itself.
+LocalQL is the installable distribution name for the `csvql` CLI, Python import
+package, and project config contract. This document defines the local proof path
+for `release-candidate` and `v1-stable` labels. It does not publish packages,
+create tags, upload artifacts, or claim a release by itself.
 
 Release-note surfaces:
 
@@ -29,8 +30,11 @@ wheel path, inspect smoke output, TUI extra import output, and menu help output.
 
 This workflow verifies:
 
-- `pyproject.toml`, `src/csvql/__init__.py`, and `csvql --version` agree
+- `pyproject.toml` declares the `localql` distribution name
+- `pyproject.toml`, `src/csvql/__init__.py`, and `csvql --version` agree on the
+  version
 - `uv build --sdist --wheel` succeeds
+- built wheel and sdist artifact names use the `localql` distribution
 - an isolated wheel install can run `csvql --version`
 - the installed wheel can run a tiny `inspect` command
 - the installed wheel can install the optional `tui` extra, import the
@@ -152,7 +156,9 @@ Use `release-candidate eligible` only as an assessment result after:
   or large-file performance claims
 
 Use `release-candidate` as a status label only after candidate eligibility is
-proven and the user explicitly approves changing the label.
+proven and the user explicitly approves changing the label. The LocalQL
+distribution alias changes built artifact names, so candidate proof must be
+refreshed on the alias state before external release actions.
 
 Use `v1-stable` only after the release-candidate proof remains valid, the
 repo-defined `v1-stable` conditions in `AGENTS.md` are satisfied, and the final

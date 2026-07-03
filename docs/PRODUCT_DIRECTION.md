@@ -39,27 +39,26 @@ or broad interactive exploration platform.
 
 ## Current Lane
 
-The active implementation lane is post-v0.9 hardening toward v1. The repo has
-already implemented the core local workflow: query, inspect/sample, project
-catalogs, saved SQL, export, profile, configured checks, benchmark and
+The active implementation lane is LocalQL distribution aliasing for the `csvql`
+CLI/import package before v1.0.0 external release action. The repo has already
+implemented the core local workflow: query, inspect/sample, project catalogs,
+saved SQL, export, profile, configured checks, benchmark and
 release-readiness scripts, JSON contract documentation, a polished example
 project, `csvql doctor`, a small project-backed Python API, and the optional
 Textual-powered `csvql menu` terminal workbench with session-local history,
 explicit project catalog save, explicit result export, and explicit derived
 result sources under `.csvql/results/{alias}.csv`.
 
-Current work should not add broad new product surface. It should reconcile
-authority and stabilize the existing product for v1:
+Current work should not add broad new product surface. It should refresh full
+candidate proof after the LocalQL distribution alias and require separate
+explicit approval for any external release action:
 
-- align `AGENTS.md`, README, roadmap, architecture, product direction, release
-  readiness, and JSON-contract docs with the runtime surface
+- keep `AGENTS.md`, README, roadmap, architecture, product direction, release
+  readiness, and JSON-contract docs aligned with the runtime surface
 - keep the completed failure gallery aligned with deterministic runtime behavior
-- decide whether v1 keeps the current v0.8 JSON shapes for compatibility or
-  introduces the documented normalized envelope with migration notes
 - keep benchmark and release-readiness proof current before release claims
-- add release workflow and changelog material without pretending publishing is
-  already automated
-- rerun the full local gate before any `release-candidate` or `v1-stable` claim
+- avoid pretending publishing is already automated or complete
+- rerun the full local gate before any `v1-stable` claim
 
 ## Near-Term Direction
 
@@ -160,7 +159,8 @@ JSON-contract framework before the current lane is stable.
 
 Future Codex sessions should use this order:
 
-1. Treat the current runtime as post-v0.9 and hardening toward v1.
+1. Treat the current runtime as LocalQL/v1-hardening until full candidate proof
+   is refreshed and explicit release action is approved.
 2. State command, JSON, exit-code, config, docs, and test impact before
    implementation.
 3. Use one accountable implementer, with bounded read-only review when useful.

@@ -21,6 +21,7 @@ class ReleaseReadinessCommandError(RuntimeError):
 class ReleaseReadinessResult:
     """Successful release-readiness proof outputs."""
 
+    distribution_name: str
     pyproject_version: str
     package_version: str
     cli_version: str
@@ -36,6 +37,7 @@ def format_release_readiness_summary(result: ReleaseReadinessResult) -> str:
     return "\n".join(
         (
             "Release readiness proof passed.",
+            f"Distribution: {result.distribution_name}",
             (
                 "Versions: "
                 f"pyproject={result.pyproject_version}, "
@@ -50,6 +52,13 @@ def format_release_readiness_summary(result: ReleaseReadinessResult) -> str:
             result.menu_help_output,
         )
     )
+
+
+def read_pyproject_name(pyproject_path: Path) -> str:
+    """Return the distribution name declared in ``pyproject.toml``."""
+
+    payload = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    return str(payload["project"]["name"])
 
 
 def read_pyproject_version(pyproject_path: Path) -> str:
@@ -74,12 +83,12 @@ def version_strings_match(pyproject_version: str, package_version: str, cli_vers
     return pyproject_version == package_version == cli_version
 
 
-def select_built_wheel(dist_dir: Path, version: str) -> Path:
-    """Return the built wheel for ``version`` from ``dist_dir``."""
+def select_built_wheel(dist_dir: Path, distribution_name: str, version: str) -> Path:
+    """Return the built wheel for ``distribution_name`` and ``version``."""
 
-    matches = sorted(dist_dir.glob(f"csvql-{version}-*.whl"))
+    matches = sorted(dist_dir.glob(f"{distribution_name}-{version}-*.whl"))
     if not matches:
-        raise FileNotFoundError(f"No wheel found for csvql {version} in {dist_dir}")
+        raise FileNotFoundError(f"No wheel found for {distribution_name} {version} in {dist_dir}")
     return matches[0]
 
 
@@ -124,7 +133,9 @@ def verify_release_readiness(
     work_dir.mkdir(parents=True, exist_ok=True)
     smoke_dir.mkdir(parents=True, exist_ok=True)
 
-    pyproject_version = read_pyproject_version(repo_root / "pyproject.toml")
+    pyproject_path = repo_root / "pyproject.toml"
+    distribution_name = read_pyproject_name(pyproject_path)
+    pyproject_version = read_pyproject_version(pyproject_path)
     package_version = read_package_version(repo_root / "src" / "csvql" / "__init__.py")
     cli_version = run_release_command(
         (python_executable, "-m", "csvql", "--version"),
@@ -142,7 +153,7 @@ def verify_release_readiness(
         cwd=repo_root,
         run_command=run_command,
     )
-    wheel = select_built_wheel(dist_dir, pyproject_version)
+    wheel = select_built_wheel(dist_dir, distribution_name, pyproject_version)
     run_release_command(
         ("uv", "venv", "--seed", "--clear", venv_dir),
         cwd=repo_root,
@@ -171,7 +182,7 @@ def verify_release_readiness(
             "install",
             "--python",
             python_path,
-            f"csvql[tui] @ {wheel.resolve().as_uri()}",
+            f"{distribution_name}[tui] @ {wheel.resolve().as_uri()}",
         ),
         cwd=repo_root,
         run_command=run_command,
@@ -191,6 +202,7 @@ def verify_release_readiness(
         run_command=run_command,
     )
     return ReleaseReadinessResult(
+        distribution_name=distribution_name,
         pyproject_version=pyproject_version,
         package_version=package_version,
         cli_version=cli_version,
