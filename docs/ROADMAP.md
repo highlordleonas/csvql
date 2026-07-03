@@ -130,8 +130,8 @@ Implemented:
 Current status before v1 publication:
 
 - LocalQL distribution alias is selected for the `csvql` CLI/import package
-- full local candidate proof is refreshed at
-  `fea95f5 release: adopt localql distribution alias`
+- public launch hygiene remains in `v1-hardening` until final proof is rerun on
+  the current release-candidate state
 
 Remaining before v1 publication:
 
@@ -140,8 +140,8 @@ Remaining before v1 publication:
 
 ## v1.0.0 - Stable Release
 
-- current status: LocalQL distribution alias selected; full local candidate
-  proof refreshed
+- current status: LocalQL distribution alias selected; final proof still must be
+  rerun on the current release-candidate state
 - stable CLI contract
 - stable config schema
 - stable small Python API contract

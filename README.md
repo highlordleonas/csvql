@@ -68,10 +68,10 @@ project-backed Python API. It also includes an optional Textual-powered terminal
 menu for local interactive work. The release workflow and release-note material
 now exist. The package version is `1.0.0`.
 
-Full local candidate proof was refreshed on 2026-07-02 at
-`fea95f5 release: adopt localql distribution alias`. This proof does not create
-a tag, PyPI upload, GitHub release, artifact upload, external publication, or
-`v1-stable` claim.
+Public launch hygiene is still in `v1-hardening` until final proof is rerun on
+the current release-candidate state. This work does not create a tag, PyPI
+upload, GitHub release, artifact upload, external publication, or `v1-stable`
+claim.
 
 Implemented now:
 
@@ -567,7 +567,7 @@ make ci
 
 ## Security Model
 
-CSVQL is currently a local developer tool for trusted SQL. DuckDB executes the SQL, and CSVQL does not restrict DuckDB capabilities or filesystem access. Do not run untrusted SQL files or input.
+CSVQL is currently a local developer tool for trusted SQL. DuckDB executes the SQL, and CSVQL does not sandbox DuckDB, restrict DuckDB capabilities, or restrict filesystem access. Do not run untrusted SQL files or input.
 
 ## Documentation
 

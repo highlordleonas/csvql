@@ -9,8 +9,9 @@ claim.
 
 ## v1.0.0 - 2026-07-01
 
-Status: LocalQL distribution alias accepted; full candidate proof refreshed at
-`fea95f5 release: adopt localql distribution alias`.
+Status: LocalQL distribution alias accepted; public launch hygiene remains in
+`v1-hardening` until final proof is rerun on the current release-candidate
+state.
 
 ### Added
 
