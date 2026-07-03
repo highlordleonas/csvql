@@ -233,6 +233,8 @@ panes, keybindings, and derived result source workflow.
 CSVQL also exposes a project-backed Python API:
 
 ```python
+from pathlib import Path
+
 from csvql import CSVQLSession
 
 session = CSVQLSession.from_config("examples/saas_revenue")
@@ -241,6 +243,7 @@ tables = session.tables()
 sample = session.sample("revenue_movements", limit=5)
 profile = session.profile("revenue_movements")
 result = session.run_file("queries/revenue_health.sql")
+Path("examples/saas_revenue/output").mkdir(parents=True, exist_ok=True)
 output_path = session.export(
     "queries/revenue_health.sql",
     "output/revenue-health.json",
@@ -353,6 +356,7 @@ Export the main analysis:
 
 ```bash
 cd examples/saas_revenue
+mkdir -p output
 csvql export queries/revenue_health.sql \
   --format json \
   --out output/revenue-health.json \

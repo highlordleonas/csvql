@@ -84,6 +84,7 @@ revenue retention.
 Write the saved analysis to a local file:
 
 ```bash
+mkdir -p output
 csvql export queries/revenue_health.sql \
   --format markdown \
   --out output/revenue-health.md \

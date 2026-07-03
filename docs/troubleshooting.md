@@ -77,6 +77,7 @@ csvql sample revenue_movements --limit 5
 CSVQL refuses to overwrite export files unless you ask for it:
 
 ```bash
+mkdir -p output
 csvql export queries/revenue_health.sql \
   --format csv \
   --out output/revenue-health.csv

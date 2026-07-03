@@ -15,7 +15,11 @@ EXAMPLE_ROOT = Path(__file__).resolve().parents[1] / "examples" / "saas_revenue"
 
 def _copy_example_project(tmp_path: Path) -> Path:
     project_root = tmp_path / "saas_revenue"
-    shutil.copytree(EXAMPLE_ROOT, project_root)
+    shutil.copytree(
+        EXAMPLE_ROOT,
+        project_root,
+        ignore=shutil.ignore_patterns(".csvql", "output"),
+    )
     return project_root
 
 
@@ -161,6 +165,7 @@ def test_saas_revenue_walkthrough_commands_succeed(
         "output/revenue-health.json",
         "--force",
     ]
+    (project_root / "output").mkdir()
     export_json_result = runner.invoke(app, export_json_args)
     assert export_json_result.exit_code == 0, export_json_result.output
     repeat_export_json_result = runner.invoke(app, export_json_args)

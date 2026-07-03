@@ -122,6 +122,7 @@ Expected: prints `1.0.0`.
 
   ```bash
   cd examples/saas_revenue
+  mkdir -p output
   env UV_CACHE_DIR=/private/tmp/uv-cache uv run csvql export queries/revenue_health.sql \
     --format csv \
     --out output/revenue-health.csv

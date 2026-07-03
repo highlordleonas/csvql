@@ -19,6 +19,7 @@ csvql inspect data/revenue_movements.csv --output json
 csvql profile revenue_movements --output json
 csvql check --output json
 csvql run queries/revenue_health.sql --output json
+mkdir -p output
 csvql export queries/revenue_health.sql --format json --out output/revenue-health.json --force
 csvql export queries/revenue_health.sql --format markdown --out output/revenue-health.md --force
 ```
