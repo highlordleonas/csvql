@@ -1,6 +1,7 @@
 # Benchmarking
 
-CSVQL v0.7 includes a repo-local benchmark harness for the existing CLI surface.
+LocalQL includes a repo-local benchmark harness for the existing `csvql` CLI
+surface.
 
 ## Scope
 

@@ -1,7 +1,9 @@
 # LocalQL
 
 LocalQL packages `csvql`, a lightweight DuckDB-powered CLI for querying local
-CSV files like SQL tables.
+CSV files like SQL tables. It is built for local analytics work where a small
+project catalog, saved SQL, readable terminal output, and explicit exports are
+more useful than a notebook or database service.
 
 ```bash
 csvql query \
@@ -19,6 +21,33 @@ csvql query \
 ```
 
 CSVQL does not implement a SQL engine. DuckDB executes SQL; CSVQL owns the local workflow around table aliases, readable output, validation, and project catalog configuration.
+
+## Quickstart
+
+Install the distribution with the optional terminal workbench:
+
+```bash
+pip install "localql[tui]"
+```
+
+Then query one CSV with the installed `csvql` command:
+
+```bash
+csvql query examples/saas_revenue/data/revenue_movements.csv \
+  "SELECT movement_type, SUM(mrr_delta) AS net_mrr_change
+   FROM revenue_movements
+   GROUP BY movement_type
+   ORDER BY movement_type"
+```
+
+From a source checkout, use `uv run` instead:
+
+```bash
+uv sync --all-extras
+uv run csvql --help
+```
+
+For the full copy/paste path, see [Getting started](docs/getting-started.md).
 
 ## Status
 
@@ -80,7 +109,7 @@ Repo-local hardening now:
 Current local proof evidence is generated under ignored `output/` directories
 when the release-readiness and benchmark workflows are rerun.
 
-## Install For Development
+## Install From Source
 
 ```bash
 uv sync --all-extras
@@ -175,6 +204,9 @@ the same trusted local DuckDB SQL posture as other CSVQL sources.
 
 The SQL editor uses the same trusted local DuckDB execution posture as the rest
 of CSVQL. Do not run untrusted SQL.
+
+See [Terminal menu guide](docs/tui-guide.md) for a focused walkthrough of the
+panes, keybindings, and derived result source workflow.
 
 ## Python API Example
 
@@ -519,15 +551,21 @@ CSVQL is currently a local developer tool for trusted SQL. DuckDB executes the S
 
 ## Documentation
 
+- [Getting started](docs/getting-started.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Terminal menu guide](docs/tui-guide.md)
+- [SaaS revenue example](examples/saas_revenue/README.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Benchmarking](docs/benchmarking.md)
 - [Changelog](CHANGELOG.md)
 - [JSON contracts](docs/json-contracts.md)
 - [Failure gallery](docs/failure-gallery.md)
-- [Manual v1 QA matrix](docs/v1-manual-qa.md)
-- [Product direction](docs/PRODUCT_DIRECTION.md)
 - [Release readiness](docs/release-readiness.md)
 - [v1 release notes](docs/release-notes/v1.md)
 - [Roadmap](docs/ROADMAP.md)
+
+Maintainer-facing docs:
+
+- [Manual v1 QA matrix](docs/v1-manual-qa.md)
+- [Product direction](docs/PRODUCT_DIRECTION.md)
 - [Codex capability review](docs/CODEX_CAPABILITY_REVIEW.md)
-- [v1 Quality Spine design](docs/superpowers/specs/2026-06-26-csvql-v1-quality-spine-design.md)

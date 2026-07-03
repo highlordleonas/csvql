@@ -1,0 +1,98 @@
+# Terminal Menu Guide
+
+`csvql menu` is an optional Textual-powered terminal workbench for the same
+local CSV sources and trusted SQL used by the CLI. It is useful when you want to
+iterate in a terminal without repeatedly retyping source mappings.
+
+## Launch
+
+From a source checkout:
+
+```bash
+uv run --all-extras csvql menu
+uv run --all-extras csvql menu examples/saas_revenue/data/revenue_movements.csv
+uv run --all-extras csvql menu --table customers=customers.csv --table orders=orders.csv
+```
+
+From an installed package, install the optional extra first:
+
+```bash
+pip install "localql[tui]"
+csvql menu
+```
+
+## Panes
+
+The menu opens with the SQL editor focused.
+
+- SQL editor: write selected SQL, the current statement, or the full buffer
+- Sources: inspect, sample, profile, add, remove, and save source mappings
+- Results: view the latest tabular result
+- History: reopen or rerun queries from the current session
+- Help: view available keybindings inside the app
+
+## Core Keys
+
+| Key | Action |
+| --- | --- |
+| `F4` or `Ctrl+Enter` | Run selected SQL or the current statement |
+| `F12` | Run the whole SQL editor buffer |
+| `F2` or `Ctrl+Down` | Focus SQL editor |
+| `F5` | Focus results |
+| `F6` or `Ctrl+Up` | Focus sources |
+| `F8` | Focus history |
+| `F9` | Quit |
+| `F1` | Help |
+| `Ctrl+N` or `F10` | Clear editor for a new query |
+
+`F4` is the reliable run fallback when a terminal does not emit `Ctrl+Enter`.
+
+## Source Actions
+
+When the Sources pane is focused:
+
+| Key | Action |
+| --- | --- |
+| `i` | Inspect selected source |
+| `s` | Sample selected source |
+| `p` | Profile selected source |
+| `a` | Add source |
+| `d` | Remove source from the session |
+| `w` | Save current sources to `.csvql.yml` |
+| `c` | Load or show source columns |
+| `l` | Insert selected source alias into SQL |
+| `x` | Insert `SELECT *` starter query |
+
+Column metadata is session-local and is not written to `.csvql.yml`.
+
+## History
+
+History is in-memory session state. It is not written to disk, logged, or sent
+anywhere by CSVQL.
+
+When the History pane is focused:
+
+- `Enter` reopens a query in the editor
+- `r` reruns a query against the current session sources
+
+History clears when the TUI exits.
+
+## Save A Result As A Source
+
+After a successful tabular query, press `Ctrl+S` to save the result as a derived
+CSV source. `Alt+S` is also available where terminals emit Alt key events, and
+`F11` is available where the OS does not intercept it. macOS may reserve `F11`
+for Show Desktop.
+
+CSVQL prompts for an alias, writes `.csvql/results/{alias}.csv`, and adds the
+alias to the current Sources pane with kind `derived`.
+
+The CSV file remains on disk. The alias becomes durable across TUI sessions only
+if you explicitly save sources to `.csvql.yml`.
+
+## Boundaries
+
+- The TUI uses the same trusted local DuckDB SQL posture as the CLI.
+- Derived result sources are explicit CSV files, not hidden cache or automatic
+  materialization.
+- The TUI is optional; the CLI remains the complete core workflow.
