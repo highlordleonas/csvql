@@ -28,6 +28,19 @@ uv run python scripts/verify_release_readiness.py --work-dir output/release-read
 On success, the script prints a proof summary with version agreement, built
 wheel path, inspect smoke output, TUI extra import output, and menu help output.
 
+## Package Content Audit
+
+Before external release approval, build the wheel and sdist and inspect their
+contents:
+
+```bash
+uv build --sdist --wheel --out-dir output/package-audit/dist
+uv run python scripts/audit_package_contents.py output/package-audit/dist
+```
+
+The audit rejects ignored local artifacts and internal planning material. It is
+part of the launch-readiness gate, not a PyPI upload.
+
 This workflow verifies:
 
 - `pyproject.toml` declares the `localql` distribution name

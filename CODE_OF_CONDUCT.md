@@ -25,3 +25,5 @@ keep the project usable.
 
 Report conduct concerns to the maintainer through a private GitHub channel when
 one is available. Do not include private personal information in public issues.
+If no private GitHub channel is available, open a public issue asking for
+private contact without including private personal information.
