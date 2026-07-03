@@ -28,9 +28,9 @@ def test_internal_operator_material_is_not_on_public_branch() -> None:
         "AGENTS.md",
         "docs/superpowers",
         "docs/CODEX_CAPABILITY_REVIEW.md",
-        "docs/release-candidate-proof-2026-07-02.md",
     ):
         assert not (REPO_ROOT / path).exists(), path
+    assert not list((REPO_ROOT / "docs").glob("release-candidate-proof-*.md"))
 
 
 def test_readme_links_public_launch_docs() -> None:
@@ -68,7 +68,7 @@ def test_public_docs_do_not_reference_removed_internal_material() -> None:
         "AGENTS.md",
         "docs/superpowers",
         "CODEX_CAPABILITY_REVIEW",
-        "release-candidate-proof-2026-07-02",
+        "release-candidate-proof-",
     ):
         assert removed_reference not in public_docs
 
@@ -117,10 +117,16 @@ def test_pyproject_public_metadata_is_consistent() -> None:
 
 def test_publish_workflow_is_manual_only() -> None:
     workflow = read_text(".github/workflows/publish.yml")
+    workflow_lines = workflow.splitlines()
+    on_index = workflow_lines.index("on:")
+    permissions_index = workflow_lines.index("permissions:")
+    trigger_lines = [
+        line
+        for line in workflow_lines[on_index + 1 : permissions_index]
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
 
-    assert "workflow_dispatch:" in workflow
-    assert "push:" not in workflow
-    assert "pull_request:" not in workflow
+    assert trigger_lines == ["  workflow_dispatch:"]
     assert "id-token: write" in workflow
     assert "pypa/gh-action-pypi-publish" in workflow
     assert "environment: pypi" in workflow

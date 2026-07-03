@@ -47,6 +47,7 @@ def test_forbidden_entries_detects_internal_and_ignored_paths() -> None:
     names = [
         "localql-1.0.0/README.md",
         "localql-1.0.0/docs/superpowers/specs/design.md",
+        "localql-1.0.0/docs/release-candidate-proof-2026-07-03.md",
         "localql-1.0.0/.DS_Store",
         "localql-1.0.0/output/proof.json",
         "localql-1.0.0/csvql_project_pack.zip",
@@ -54,6 +55,7 @@ def test_forbidden_entries_detects_internal_and_ignored_paths() -> None:
 
     assert forbidden_entries(names) == [
         "localql-1.0.0/docs/superpowers/specs/design.md",
+        "localql-1.0.0/docs/release-candidate-proof-2026-07-03.md",
         "localql-1.0.0/.DS_Store",
         "localql-1.0.0/output/proof.json",
         "localql-1.0.0/csvql_project_pack.zip",
@@ -85,4 +87,14 @@ def test_audit_archives_rejects_forbidden_package_entries(tmp_path: Path) -> Non
     write_sdist(sdist, ["localql-1.0.0/README.md"])
 
     with pytest.raises(SystemExit, match="Forbidden package entries"):
+        audit_archives([wheel], [sdist])
+
+
+def test_audit_archives_rejects_sdist_without_package_source(tmp_path: Path) -> None:
+    wheel = tmp_path / "localql-1.0.0-py3-none-any.whl"
+    sdist = tmp_path / "localql-1.0.0.tar.gz"
+    write_wheel(wheel, ["csvql/__init__.py", "localql-1.0.0.dist-info/METADATA"])
+    write_sdist(sdist, ["localql-1.0.0/README.md"])
+
+    with pytest.raises(SystemExit, match="missing src/csvql package files"):
         audit_archives([wheel], [sdist])
