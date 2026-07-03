@@ -21,6 +21,8 @@ pip install "localql[tui]"
 csvql menu
 ```
 
+![Terminal screenshot of the LocalQL TUI workbench with project sources loaded and a query result visible](assets/localql-tui-workbench.svg)
+
 ## Panes
 
 The menu opens with the SQL editor focused.

@@ -33,6 +33,8 @@ Expected shape:
 - `run` returns four monthly revenue-health rows.
 - `export` writes JSON and Markdown files under `output/`.
 
+![Terminal screenshot of the SaaS project query and configured checks](../../docs/assets/localql-terminal-project.svg)
+
 ## What The Outputs Prove
 
 - `inspect` shows the raw shape of a core project table

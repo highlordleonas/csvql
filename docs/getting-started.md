@@ -38,6 +38,8 @@ uv run csvql query examples/saas_revenue/data/revenue_movements.csv \
 The table alias comes from the file stem, so `revenue_movements.csv` becomes
 `revenue_movements`.
 
+![Terminal screenshot of a movement-type revenue query](assets/localql-terminal-query.svg)
+
 ## Use A Project Catalog
 
 The example project already includes `.csvql.yml` with registered tables:
@@ -58,6 +60,10 @@ Add or replace a table in your own project with:
 ```bash
 uv run csvql add customers data/customers.csv --replace
 ```
+
+The project path also supports joined SQL and configured checks:
+
+![Terminal screenshot of a SaaS project query and passing configured checks](assets/localql-terminal-project.svg)
 
 ## Run Saved SQL
 
@@ -112,6 +118,8 @@ terminal:
 ```bash
 uv run --all-extras csvql menu data/revenue_movements.csv
 ```
+
+![Terminal screenshot of the TUI workbench after running the SaaS revenue movement query](assets/localql-tui-workbench.svg)
 
 Use `F4` or `Ctrl+Enter` to run SQL, `F6` for sources, `F5` for results, `F8`
 for history, and `F9` to quit. See [Terminal menu guide](tui-guide.md) for the

@@ -22,6 +22,8 @@ csvql query \
 
 CSVQL does not implement a SQL engine. DuckDB executes SQL; CSVQL owns the local workflow around table aliases, readable output, validation, and project catalog configuration.
 
+![Terminal screenshot of a LocalQL query over the SaaS revenue example](docs/assets/localql-terminal-query.svg)
+
 ## Quickstart
 
 Install the distribution with the optional terminal workbench:
@@ -155,6 +157,8 @@ uv run --all-extras csvql menu
 uv run --all-extras csvql menu /path/to/orders.csv
 uv run --all-extras csvql menu --table customers=customers.csv --table orders=orders.csv
 ```
+
+![Terminal screenshot of the LocalQL TUI workbench with sources, SQL, history, and results](docs/assets/localql-tui-workbench.svg)
 
 Install the optional TUI dependency before using the menu from an installed
 package:
