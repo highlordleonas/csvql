@@ -6,9 +6,10 @@ Date: 2026-06-26
 Updated: 2026-07-01
 
 Source: reconciles three external research passes and local adversarial review. This
-document does not override `AGENTS.md`, the current release lane, accepted ADRs, or
-tests. It exists to keep future implementation work pointed at the defensible
-product wedge and away from attractive but crowded scope.
+document does not override `docs/development.md`, `docs/release-readiness.md`,
+the current release lane, accepted ADRs, or tests. It exists to keep future
+implementation work pointed at the defensible product wedge and away from
+attractive but crowded scope.
 
 ## Reconciled Verdict
 
@@ -53,8 +54,8 @@ Current work should not add broad new product surface. Full candidate proof has
 been refreshed after the LocalQL distribution alias; any external release action
 still requires separate explicit approval:
 
-- keep `AGENTS.md`, README, roadmap, architecture, product direction, release
-  readiness, and JSON-contract docs aligned with the runtime surface
+- keep README, development docs, roadmap, architecture, product direction,
+  release readiness, and JSON-contract docs aligned with the runtime surface
 - keep the completed failure gallery aligned with deterministic runtime behavior
 - keep benchmark and release-readiness proof current before release claims
 - avoid pretending publishing is already automated or complete

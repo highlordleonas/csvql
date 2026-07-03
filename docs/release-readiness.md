@@ -100,9 +100,9 @@ Run candidate evaluation from a clean worktree on `main`.
 
 2. Confirm authority docs agree with implemented runtime behavior:
 
-   - `AGENTS.md`
    - `README.md`
    - `CHANGELOG.md`
+   - `docs/development.md`
    - `docs/PRODUCT_DIRECTION.md`
    - `docs/ROADMAP.md`
    - `docs/ARCHITECTURE.md`
@@ -125,7 +125,7 @@ Run candidate evaluation from a clean worktree on `main`.
 7. Scan for unsupported current claims:
 
    ```bash
-   rg -n "v1-ready|v1 ready|production-safe|production ready|production-readiness|production readiness|sandbox-safe|sandbox safety|sandbox|large-file-proven|large file proven|large-file performance|large file performance" AGENTS.md README.md CHANGELOG.md docs/PRODUCT_DIRECTION.md docs/ROADMAP.md docs/ARCHITECTURE.md docs/json-contracts.md docs/benchmarking.md docs/failure-gallery.md docs/release-readiness.md docs/release-notes/v1.md
+   rg -n "v1-ready|v1 ready|production-safe|production ready|production-readiness|production readiness|sandbox-safe|sandbox safety|sandbox|large-file-proven|large file proven|large-file performance|large file performance" README.md CHANGELOG.md docs/development.md docs/PRODUCT_DIRECTION.md docs/ROADMAP.md docs/ARCHITECTURE.md docs/json-contracts.md docs/benchmarking.md docs/failure-gallery.md docs/release-readiness.md docs/release-notes/v1.md
    ```
 
    Matches are expected for guardrails and other non-claims, but each match must
@@ -155,9 +155,9 @@ complete, and reviewed.
 
 Use `release-candidate eligible` only as an assessment result after:
 
-- AGENTS.md, README, changelog, release notes, roadmap, product direction,
-  architecture, JSON contracts, benchmarking, failure gallery, and release
-  readiness agree with the runtime surface
+- README, development docs, changelog, release notes, roadmap, product
+  direction, architecture, JSON contracts, benchmarking, failure gallery, and
+  release readiness agree with the runtime surface
 - current JSON shapes, exit codes, config schema, DuckDB dependency floor, and
   Python API surface are documented and test-backed
 - the release-readiness script passes on the candidate state
@@ -173,9 +173,9 @@ proven and the user explicitly approves changing the label. LocalQL candidate
 proof must remain current on the exact candidate state before external release
 actions.
 
-Use `v1-stable` only after the release-candidate proof remains valid, the
-repo-defined `v1-stable` conditions in `AGENTS.md` are satisfied, and the final
-release action is explicitly approved.
+Use `v1-stable` only after the release-candidate proof remains valid, this
+document's label rules and `docs/development.md` release boundary are satisfied,
+and the final release action is explicitly approved.
 
 ## Generated Artifact Policy
 

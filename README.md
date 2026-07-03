@@ -572,6 +572,7 @@ CSVQL is currently a local developer tool for trusted SQL. DuckDB executes the S
 ## Documentation
 
 - [Getting started](docs/getting-started.md)
+- [FAQ](docs/faq.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Terminal menu guide](docs/tui-guide.md)
 - [SaaS revenue example](examples/saas_revenue/README.md)
@@ -583,9 +584,12 @@ CSVQL is currently a local developer tool for trusted SQL. DuckDB executes the S
 - [Release readiness](docs/release-readiness.md)
 - [v1 release notes](docs/release-notes/v1.md)
 - [Roadmap](docs/ROADMAP.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security](SECURITY.md)
+- [Support](SUPPORT.md)
+- [Development](docs/development.md)
 
 Maintainer-facing docs:
 
 - [Manual v1 QA matrix](docs/v1-manual-qa.md)
 - [Product direction](docs/PRODUCT_DIRECTION.md)
-- [Codex capability review](docs/CODEX_CAPABILITY_REVIEW.md)
