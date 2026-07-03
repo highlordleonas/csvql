@@ -156,9 +156,9 @@ Use `release-candidate eligible` only as an assessment result after:
   or large-file performance claims
 
 Use `release-candidate` as a status label only after candidate eligibility is
-proven and the user explicitly approves changing the label. The LocalQL
-distribution alias changes built artifact names, so candidate proof must be
-refreshed on the alias state before external release actions.
+proven and the user explicitly approves changing the label. LocalQL candidate
+proof must remain current on the exact candidate state before external release
+actions.
 
 Use `v1-stable` only after the release-candidate proof remains valid, the
 repo-defined `v1-stable` conditions in `AGENTS.md` are satisfied, and the final

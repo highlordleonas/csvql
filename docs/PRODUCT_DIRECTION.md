@@ -49,9 +49,9 @@ Textual-powered `csvql menu` terminal workbench with session-local history,
 explicit project catalog save, explicit result export, and explicit derived
 result sources under `.csvql/results/{alias}.csv`.
 
-Current work should not add broad new product surface. It should refresh full
-candidate proof after the LocalQL distribution alias and require separate
-explicit approval for any external release action:
+Current work should not add broad new product surface. Full candidate proof has
+been refreshed after the LocalQL distribution alias; any external release action
+still requires separate explicit approval:
 
 - keep `AGENTS.md`, README, roadmap, architecture, product direction, release
   readiness, and JSON-contract docs aligned with the runtime surface
@@ -159,8 +159,8 @@ JSON-contract framework before the current lane is stable.
 
 Future Codex sessions should use this order:
 
-1. Treat the current runtime as LocalQL/v1-hardening until full candidate proof
-   is refreshed and explicit release action is approved.
+1. Treat the current runtime as LocalQL with refreshed local candidate proof,
+   but no external release action or `v1-stable` claim.
 2. State command, JSON, exit-code, config, docs, and test impact before
    implementation.
 3. Use one accountable implementer, with bounded read-only review when useful.

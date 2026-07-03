@@ -1,11 +1,11 @@
-# CSVQL Release Candidate Proof Packet - 2026-07-02
+# LocalQL Release Candidate Proof Packet - 2026-07-02
 
 ## Verdict
 
 Verdict: `release-candidate eligible`
 
-CSVQL is `release-candidate eligible` as a local assessment for proof target
-commit `538f024 docs: plan release candidate proof refresh`.
+LocalQL is `release-candidate eligible` as a local assessment for proof target
+commit `fea95f5 release: adopt localql distribution alias`.
 
 This is not a release action. It does not publish packages, create tags, upload
 artifacts, create a GitHub release, change the package version, change the
@@ -17,7 +17,7 @@ performance claims.
 
 - Date: 2026-07-02, America/Denver
 - Branch: `main`
-- Proof target HEAD: `538f024 docs: plan release candidate proof refresh`
+- Proof target HEAD: `fea95f5 release: adopt localql distribution alias`
 - Repo path:
   `/Users/richarddemke/LGCY Dropbox/Richard Demke/Mac/Documents/csvql`
 - Invocation path:
@@ -56,27 +56,27 @@ Artifact posture for this proof:
 - `git diff --check`
   - Exit code: `0`
   - Result: no whitespace errors
-- `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run ruff format --check .`
+- `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql-proof uv run ruff format --check .`
   - Exit code: `0`
   - Result: `72 files already formatted`
-- `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run ruff check .`
+- `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql-proof uv run ruff check .`
   - Exit code: `0`
   - Result: `All checks passed!`
-- `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run --all-extras mypy src`
+- `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql-proof uv run --all-extras mypy src`
   - Exit code: `0`
   - Result: `Success: no issues found in 32 source files`
-- `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run --all-extras pytest`
+- `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql-proof uv run --all-extras pytest`
   - Exit code: `0`
-  - Result: `460 passed in 34.58s`
+  - Result: `461 passed in 40.84s`
 
-All automated proof commands ran at proof target HEAD `538f024`.
+All automated proof commands ran at proof target HEAD `fea95f5`.
 
 ## Release-Readiness Proof
 
 Command:
 
 ```bash
-env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run python scripts/verify_release_readiness.py --work-dir output/release-readiness
+env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql-proof uv run python scripts/verify_release_readiness.py --work-dir output/release-readiness-localql-final
 ```
 
 First sandboxed attempt:
@@ -89,19 +89,20 @@ Result after explicit network escalation:
 
 - Exit code: `0`
 - Summary: `Release readiness proof passed.`
+- Distribution: `localql`
 - Versions: `pyproject=1.0.0`, `package=1.0.0`, `cli=1.0.0`
 - Wheel:
-  `output/release-readiness/dist/csvql-1.0.0-py3-none-any.whl`
+  `output/release-readiness-localql-final/dist/localql-1.0.0-py3-none-any.whl`
 - Sdist:
-  `output/release-readiness/dist/csvql-1.0.0.tar.gz`
+  `output/release-readiness-localql-final/dist/localql-1.0.0.tar.gz`
 - Installed-wheel inspect smoke output: passed
 - TUI extra import: `tui-extra-ok`
-- Menu help smoke output: passed
+- Menu help smoke output: passed and showed `csvql menu`
 
 Artifact inspection command:
 
 ```bash
-env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run python -c "from pathlib import Path; root = Path('output/release-readiness'); wheels = sorted((root / 'dist').glob('csvql-*.whl')); sdists = sorted((root / 'dist').glob('csvql-*.tar.gz')); python_path = root / 'smoke-venv' / 'bin' / 'python'; csvql_path = root / 'smoke-venv' / 'bin' / 'csvql'; assert wheels, 'missing built wheel'; assert sdists, 'missing built sdist'; assert python_path.exists(), 'missing smoke venv python'; assert csvql_path.exists(), 'missing installed csvql script'; print('release artifacts ok'); print(wheels[-1]); print(sdists[-1])"
+env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql-proof uv run python -c "from pathlib import Path; root = Path('output/release-readiness-localql-final'); wheels = sorted((root / 'dist').glob('localql-*.whl')); sdists = sorted((root / 'dist').glob('localql-*.tar.gz')); python_path = root / 'smoke-venv' / 'bin' / 'python'; csvql_path = root / 'smoke-venv' / 'bin' / 'csvql'; assert wheels, 'missing built localql wheel'; assert sdists, 'missing built localql sdist'; assert python_path.exists(), 'missing smoke venv python'; assert csvql_path.exists(), 'missing installed csvql script'; print('release artifacts ok'); print(wheels[-1]); print(sdists[-1])"
 ```
 
 Artifact inspection result:
@@ -109,30 +110,30 @@ Artifact inspection result:
 - Exit code: `0`
 - Result: `release artifacts ok`
 - Wheel path:
-  `output/release-readiness/dist/csvql-1.0.0-py3-none-any.whl`
+  `output/release-readiness-localql-final/dist/localql-1.0.0-py3-none-any.whl`
 - Sdist path:
-  `output/release-readiness/dist/csvql-1.0.0.tar.gz`
+  `output/release-readiness-localql-final/dist/localql-1.0.0.tar.gz`
 
 ## Benchmark Proof
 
 Command:
 
 ```bash
-env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run python scripts/benchmark_csvql.py --output-root output/benchmarks
+env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql-proof uv run python scripts/benchmark_csvql.py --output-root output/benchmarks
 ```
 
 Result:
 
 - Exit code: `0`
 - Benchmark JSON:
-  `output/benchmarks/20260703T001804Z/benchmark.json`
+  `output/benchmarks/20260703T033859Z/benchmark.json`
 - Benchmark summary:
-  `output/benchmarks/20260703T001804Z/benchmark-summary.md`
+  `output/benchmarks/20260703T033859Z/benchmark-summary.md`
 
 Artifact inspection command:
 
 ```bash
-env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run python -c "from pathlib import Path; import json; root = Path('output/benchmarks'); runs = sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime); assert runs, 'no benchmark run directories'; run = runs[-1]; artifact = run / 'benchmark.json'; summary = run / 'benchmark-summary.md'; payload = json.loads(artifact.read_text(encoding='utf-8')); assert payload['metadata']['schema_version'] == 1; assert payload['metadata']['csvql_version']; assert payload['metadata']['duckdb_version']; assert payload['metadata']['python_version']; assert payload['metadata']['platform']; assert payload['metadata']['generated_at']; assert {d['dataset_id'] for d in payload['datasets']} == {'fixture', 'synthetic_medium', 'synthetic_large'}; assert len(payload['cases']) == 18; assert summary.exists(); assert 'Local benchmark evidence only.' in payload['notes']; print('benchmark artifacts ok'); print(artifact); print(summary)"
+env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql-proof uv run python -c "from pathlib import Path; import json; artifact = Path('output/benchmarks/20260703T033859Z/benchmark.json'); summary = Path('output/benchmarks/20260703T033859Z/benchmark-summary.md'); payload = json.loads(artifact.read_text(encoding='utf-8')); assert payload['metadata']['schema_version'] == 1; assert payload['metadata']['csvql_version'] == '1.0.0'; assert payload['metadata']['duckdb_version']; assert payload['metadata']['python_version']; assert payload['metadata']['platform']; assert payload['metadata']['generated_at']; assert {d['dataset_id'] for d in payload['datasets']} == {'fixture', 'synthetic_medium', 'synthetic_large'}; assert len(payload['cases']) == 18; assert summary.exists(); assert 'Local benchmark evidence only.' in payload['notes']; print('benchmark artifacts ok'); print(artifact); print(summary)"
 ```
 
 Artifact inspection result:
@@ -140,12 +141,12 @@ Artifact inspection result:
 - Exit code: `0`
 - Result: `benchmark artifacts ok`
 - Benchmark JSON:
-  `output/benchmarks/20260703T001804Z/benchmark.json`
+  `output/benchmarks/20260703T033859Z/benchmark.json`
 - Benchmark summary:
-  `output/benchmarks/20260703T001804Z/benchmark-summary.md`
+  `output/benchmarks/20260703T033859Z/benchmark-summary.md`
 
 These benchmark artifacts were generated during the current proof run at
-candidate-state HEAD `538f024`. They are local evidence only and do not prove
+candidate-state HEAD `fea95f5`. They are local evidence only and do not prove
 broad large-file performance beyond the recorded benchmark datasets.
 
 ## Manual QA
@@ -153,7 +154,7 @@ broad large-file performance beyond the recorded benchmark datasets.
 Manual proof environment:
 
 - Date: 2026-07-02, America/Denver
-- Commit: `538f024 docs: plan release candidate proof refresh`
+- Commit: `fea95f5 release: adopt localql distribution alias`
 - Shell: `/bin/zsh`
 - Live TUI terminal: Codex managed PTY
 - Synthetic TUI key bursts: avoided for live proof; standalone `F9` was used
@@ -162,7 +163,11 @@ Manual proof environment:
 CLI manual QA:
 
 - Setup/version check: passed
-  - `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run csvql --version`
+  - `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql-proof uv run csvql --version`
+  - Exit code: `0`
+  - Result: `1.0.0`
+- Python module version check: passed
+  - `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql-proof uv run python -m csvql --version`
   - Exit code: `0`
   - Result: `1.0.0`
 - CLI single-file query: passed
@@ -170,7 +175,7 @@ CLI manual QA:
 - CLI project catalog query: passed
   - Query returned `customer_count = 5`
 - CLI export and reuse as CSV source: passed
-  - export wrote `.csvql/results/revenue_health.csv`
+  - export wrote `.csvql/results/revenue_health_localql_final.csv`
   - follow-up query returned `result_rows = 4`
 - Bad SQL behavior: passed
   - exit code `1`
@@ -180,23 +185,23 @@ CLI manual QA:
   - exit code `4`
   - error reported `CSV file not found: missing.csv`
 - Export overwrite refusal and force: passed
-  - proof path: `examples/saas_revenue/output/revenue-health-proof-current.csv`
-  - first forced export succeeded
-  - unforced export exited `10` with overwrite guidance
+  - proof path: `examples/saas_revenue/output/revenue-health-proof-localql-final.csv`
+  - first export succeeded
+  - unforced overwrite exited `10` with overwrite guidance
   - final forced export succeeded
 
 TUI deterministic QA:
 
 - Focused TUI proof tests: passed
   - Command:
-    `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run --all-extras pytest tests/test_tui_app.py::test_run_shortcuts_preserve_previous_result_after_empty_sql tests/test_tui_app.py::test_run_shortcuts_preserve_previous_result_after_missing_sources tests/test_tui_app.py::test_schedule_failure_preserves_previous_result_and_resets_ready tests/test_tui_app.py::test_already_running_rejection_preserves_previous_result tests/test_tui_app.py::test_run_shortcut_runs_selected_sql_when_editor_has_selection tests/test_tui_app.py::test_run_all_shortcut_runs_whole_editor_when_current_statement_is_not_enough tests/test_tui_app.py::test_history_rerun_records_rerun_mode_and_status_message tests/test_tui_app.py::test_history_rerun_uses_current_session_sources tests/test_tui_app.py::test_source_columns_loads_displays_and_disables_export tests/test_tui_app.py::test_insert_source_alias_appends_rendered_alias_and_preserves_result tests/test_tui_app.py::test_insert_starter_select_appends_rendered_select_and_preserves_result tests/test_tui_workflows.py::test_run_query_for_tui_treats_duckdb_ddl_metadata_as_result -q`
+    `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql-proof uv run --all-extras pytest tests/test_tui_app.py::test_run_shortcuts_preserve_previous_result_after_empty_sql tests/test_tui_app.py::test_run_shortcuts_preserve_previous_result_after_missing_sources tests/test_tui_app.py::test_schedule_failure_preserves_previous_result_and_resets_ready tests/test_tui_app.py::test_already_running_rejection_preserves_previous_result tests/test_tui_app.py::test_run_shortcut_runs_selected_sql_when_editor_has_selection tests/test_tui_app.py::test_run_all_shortcut_runs_whole_editor_when_current_statement_is_not_enough tests/test_tui_app.py::test_history_rerun_records_rerun_mode_and_status_message tests/test_tui_app.py::test_history_rerun_uses_current_session_sources tests/test_tui_app.py::test_source_columns_loads_displays_and_disables_export tests/test_tui_app.py::test_insert_source_alias_appends_rendered_alias_and_preserves_result tests/test_tui_app.py::test_insert_starter_select_appends_rendered_select_and_preserves_result tests/test_tui_workflows.py::test_run_query_for_tui_treats_duckdb_ddl_metadata_as_result -q`
   - Exit code: `0`
-  - Result: `14 passed in 8.24s`
+  - Result: `14 passed in 9.98s`
 - Full TUI app test file: passed
   - Command:
-    `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run --all-extras pytest tests/test_tui_app.py -q`
+    `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql-proof uv run --all-extras pytest tests/test_tui_app.py -q`
   - Exit code: `0`
-  - Result: `62 passed in 30.88s`
+  - Result: `62 passed in 33.05s`
 
 TUI behaviors covered by deterministic proof:
 
@@ -219,25 +224,18 @@ Live TUI smoke:
 
 - Launch: passed
   - Command:
-    `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-proof uv run --all-extras csvql menu examples/saas_revenue/data/revenue_movements.csv`
-  - PTY output showed `1 source loaded.`
+    `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql-proof uv run --all-extras csvql menu examples/saas_revenue/data/revenue_movements.csv`
+  - PTY output showed `1 source loaded.` and the `revenue_movements` source
   - Exit code after quit: `0`
 - Quit path: passed
   - standalone `F9` sequence exited cleanly without traceback
-
-Proof-process note:
-
-- A first shell wrapper for bad-SQL and missing-file exit capture used `status`,
-  which is a read-only variable in zsh. The wrapper failed before printing its
-  exit line. The product checks were rerun with `proof_status`; those reruns
-  captured the expected exit codes.
 
 ## Unsupported-Claim Scan
 
 Command:
 
 ```bash
-rg -n "v1-ready|v1 ready|production-safe|production ready|production-readiness|production readiness|sandbox-safe|sandbox safety|sandbox|large-file-proven|large file proven|large-file performance|large file performance|v1-stable|release-candidate" AGENTS.md README.md CHANGELOG.md docs/PRODUCT_DIRECTION.md docs/ROADMAP.md docs/ARCHITECTURE.md docs/json-contracts.md docs/benchmarking.md docs/failure-gallery.md docs/release-readiness.md docs/release-notes/v1.md
+rg -n "v1-ready|v1 ready|production-safe|production ready|production-readiness|production readiness|sandbox-safe|sandbox safety|sandbox|large-file-proven|large file proven|large-file performance|large file performance|v1-stable|release-candidate" AGENTS.md README.md CHANGELOG.md docs/PRODUCT_DIRECTION.md docs/ROADMAP.md docs/ARCHITECTURE.md docs/json-contracts.md docs/benchmarking.md docs/failure-gallery.md docs/release-readiness.md docs/release-notes/v1.md docs/release-candidate-proof-2026-07-02.md
 ```
 
 Result:
@@ -249,6 +247,7 @@ Result:
   - label rules
   - workflow instructions
   - explicit non-claims
+  - this proof packet's bounded local assessment
 
 Authority docs reviewed or scanned:
 
@@ -272,10 +271,10 @@ large-file proof.
 
 Generated proof evidence remained local and ignored:
 
-- `output/release-readiness/**`
-- `output/benchmarks/**`
-- `examples/saas_revenue/.csvql/results/revenue_health.csv`
-- `examples/saas_revenue/output/revenue-health-proof-current.csv`
+- `output/release-readiness-localql-final/**`
+- `output/benchmarks/20260703T033859Z/**`
+- `examples/saas_revenue/.csvql/results/revenue_health_localql_final.csv`
+- `examples/saas_revenue/output/revenue-health-proof-localql-final.csv`
 - temporary Textual/TUI proof roots under `/private/tmp`
 
 None of these generated artifacts are intended to be staged or committed.
@@ -302,22 +301,9 @@ None of these generated artifacts are intended to be staged or committed.
 
 None found in this proof packet.
 
-## Post-Proof Status Decision
-
-On 2026-07-02, Richard approved treating the repository as local
-`release-candidate` status after reviewing this proof packet. Later on
-2026-07-02, Richard selected LocalQL as the installable distribution/display
-name while preserving the `csvql` CLI, Python import package, and `.csvql.yml`
-config contract. The LocalQL alias changes built wheel and sdist artifact names,
-so full candidate proof must be refreshed on the LocalQL candidate state before
-any external release action. These decisions do not publish packages, create a
-tag, create a GitHub release, upload artifacts, change the package version, or
-claim `v1-stable`.
-
 ## Next Task
 
-The next separate lane is full candidate proof refresh on the LocalQL candidate
-state, followed by explicit release-action planning or execution only if Richard
-approves it. Do not publish, tag, upload artifacts, create a GitHub release,
-change the package version, or claim `v1-stable` without separate explicit
-approval.
+The next separate lane is explicit release-action planning or execution only if
+Richard approves it. Do not publish, tag, upload artifacts, create a GitHub
+release, change the package version, change the repository status label to
+`release-candidate`, or claim `v1-stable` without separate explicit approval.

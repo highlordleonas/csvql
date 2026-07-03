@@ -21,11 +21,12 @@ already has the core local workflow implemented:
   session-local query history, explicit exports, explicit project catalog save,
   and explicit derived result sources under `.csvql/results/{alias}.csv`
 
-Current work should refresh full candidate proof after the LocalQL distribution
-alias and prepare only separately approved external release actions, not widen
-the product. Fresh benchmark, release-readiness, and full-gate proof should stay
-available and be rerun when release-candidate state changes. Failure-gallery
-documentation is implemented and should be kept aligned with runtime behavior.
+Current work should keep full candidate proof current after the LocalQL
+distribution alias and prepare only separately approved external release
+actions, not widen the product. Fresh benchmark, release-readiness, and
+full-gate proof should stay available and be rerun when release-candidate state
+changes. Failure-gallery documentation is implemented and should be kept aligned
+with runtime behavior.
 
 Do not add a web app, cloud connectors, dashboard surface, notebook framework,
 NLP execution, dataframe-first API, plugin system, hidden cache/materialization,

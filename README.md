@@ -32,8 +32,9 @@ project-backed Python API. It also includes an optional Textual-powered terminal
 menu for local interactive work. The release workflow and release-note material
 now exist. The package version is `1.0.0`.
 
-The LocalQL distribution alias needs refreshed full candidate proof before any
-tag, PyPI upload, GitHub release, artifact upload, external publication, or
+Full local candidate proof was refreshed on 2026-07-02 at
+`fea95f5 release: adopt localql distribution alias`. This proof does not create
+a tag, PyPI upload, GitHub release, artifact upload, external publication, or
 `v1-stable` claim.
 
 Implemented now:
