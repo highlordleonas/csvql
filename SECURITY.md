@@ -21,7 +21,6 @@ line is the supported line unless release notes say otherwise.
 
 LocalQL treats user-authored SQL as trusted local DuckDB SQL. It does not
 sandbox DuckDB, restrict DuckDB filesystem access, or make untrusted SQL safe.
-LocalQL does not sandbox DuckDB or make untrusted SQL safe.
 
 Security reports are useful when they concern LocalQL package behavior,
 dependency vulnerabilities, accidental disclosure, misleading security claims,
