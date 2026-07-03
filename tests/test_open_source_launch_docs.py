@@ -121,5 +121,6 @@ def test_publish_workflow_is_manual_only() -> None:
     assert "workflow_dispatch:" in workflow
     assert "push:" not in workflow
     assert "pull_request:" not in workflow
+    assert "id-token: write" in workflow
     assert "pypa/gh-action-pypi-publish" in workflow
     assert "environment: pypi" in workflow
