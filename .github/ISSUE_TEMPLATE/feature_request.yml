@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a focused LocalQL improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: "LocalQL is local-first: CSV files, DuckDB SQL, CLI/TUI workflow, explicit exports, and project catalogs."
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What local CSV workflow problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This stays within local CSV, DuckDB SQL, CLI/TUI workflow, explicit exports, or project catalogs.
+          required: true
+        - label: This does not require a web app, cloud connector, NLP execution, hidden cache, or sandbox-safe SQL claim.
+          required: true

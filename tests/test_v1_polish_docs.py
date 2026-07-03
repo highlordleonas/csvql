@@ -73,3 +73,29 @@ def test_release_readiness_links_manual_qa_matrix() -> None:
 
     assert "[Manual v1 QA matrix](v1-manual-qa.md)" in readiness
     assert "Run the manual v1 QA matrix" in readiness
+
+
+def test_public_launch_docs_state_security_and_release_boundaries() -> None:
+    public_docs = "\n".join(
+        [
+            read_doc("README.md"),
+            read_doc("docs/getting-started.md"),
+            read_doc("docs/troubleshooting.md"),
+            read_doc("docs/tui-guide.md"),
+            read_doc("docs/faq.md"),
+            read_doc("docs/development.md"),
+            read_doc("SECURITY.md"),
+            read_doc("CONTRIBUTING.md"),
+        ]
+    )
+
+    required_boundaries = (
+        "does not sandbox DuckDB",
+        "trusted local DuckDB SQL",
+        "Do not create a tag",
+        "publish to PyPI",
+        "create a GitHub release",
+        "explicit exports",
+    )
+    for boundary in required_boundaries:
+        assert boundary in public_docs
