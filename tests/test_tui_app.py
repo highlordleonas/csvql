@@ -855,8 +855,7 @@ def test_footer_key_order_is_stable_between_sql_and_sources(tmp_path: Path) -> N
 
     sql_footer, sources_footer = asyncio.run(_inner())
 
-    assert sql_footer[:13] == (
-        "f1",
+    assert sql_footer[:12] == (
         "?",
         "f2",
         "f3",
@@ -870,8 +869,8 @@ def test_footer_key_order_is_stable_between_sql_and_sources(tmp_path: Path) -> N
         "F12",
         "Ctrl+S/Alt+S",
     )
-    assert sources_footer[:13] == (
-        "f1",
+    assert "f1" not in sql_footer
+    assert sources_footer[:12] == (
         "?",
         "f2",
         "f3",
@@ -885,6 +884,7 @@ def test_footer_key_order_is_stable_between_sql_and_sources(tmp_path: Path) -> N
         "F12",
         "Ctrl+S/Alt+S",
     )
+    assert "f1" not in sources_footer
 
 
 def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> None:
@@ -1688,6 +1688,8 @@ def test_help_text_documents_workbench_keymap() -> None:
     assert "Run selected SQL, otherwise current statement" in help_text
     assert "F12                 Run the whole SQL editor" in help_text
     assert "F3                  Choose CSV file(s)" in help_text
+    assert "?                   Help" in help_text
+    assert "F1                  Also opens help" in help_text
     assert "r                   Rerun selected query with current session sources" in help_text
 
 

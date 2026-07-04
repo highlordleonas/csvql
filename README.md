@@ -201,7 +201,8 @@ for results, `F6` or `Ctrl+Up` for sources, and `F8` for history. Printable keys
 type into SQL while the editor is focused. Source actions use letters only when
 the source pane is focused: `i` inspect, `s` sample, `p` profile, `a` add, `d`
 remove, and `w` save sources. In History, use `Enter` to reopen a query and `r`
-to rerun a query against the current session sources. `F1` and `?` open help.
+to rerun a query against the current session sources. `?` opens help; `F1`
+also works.
 
 The Add source prompt accepts either `name=path` or pasted `.csv` path(s). Direct
 path paste derives aliases from file names; duplicate aliases receive numeric

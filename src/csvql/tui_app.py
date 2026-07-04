@@ -48,7 +48,6 @@ from csvql.tui_workflows import (
 )
 
 _FOOTER_KEY_ORDER = (
-    "f1",
     "question_mark",
     "f2",
     "f3",

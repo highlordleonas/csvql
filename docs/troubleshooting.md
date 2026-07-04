@@ -119,7 +119,8 @@ Core fallbacks:
 - `F5`: results
 - `F8`: history
 - `F9`: quit
-- `F1`: help
+- `?`: help
+- `F1`: also opens help
 
 ## Data-Quality Checks Fail
 
