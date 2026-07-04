@@ -6,7 +6,10 @@ import pytest
 
 pytest.importorskip("textual")
 
+from textual import events
+from textual.pilot import Pilot
 from textual.widgets import DataTable, Input, Static, TextArea
+from textual.widgets._footer import FooterKey
 
 from csvql.models import QueryResult
 from csvql.tui_app import CSVQLMenuApp
@@ -47,6 +50,24 @@ def _result_grid_snapshot(app: CSVQLMenuApp) -> tuple[tuple[str, ...], int, str]
         results.row_count,
         app.query_one("#results-message", Static).content,
     )
+
+
+def _footer_key_displays(app: CSVQLMenuApp) -> tuple[str, ...]:
+    return tuple(key.key_display for key in app.query(FooterKey))
+
+
+async def _settled_footer_key_displays(
+    pilot: Pilot[None],
+    app: CSVQLMenuApp,
+    *,
+    required_key: str | None = None,
+) -> tuple[str, ...]:
+    for _ in range(5):
+        await pilot.pause(0.1)
+        key_displays = _footer_key_displays(app)
+        if key_displays and (required_key is None or required_key in key_displays):
+            return key_displays
+    return _footer_key_displays(app)
 
 
 def _create_csv(tmp_path: Path, filename: str, content: str) -> Path:
@@ -287,7 +308,7 @@ def test_printable_workbench_action_keys_type_in_sql_editor(tmp_path: Path) -> N
             sql = app.query_one("#sql", TextArea)
             sql.focus()
 
-            for key in ["?", "q", "i", "s", "p", "a", "d", "w", "r"]:
+            for key in ["q", "i", "s", "p", "a", "d", "w", "r"]:
                 await pilot.press(key)
             await pilot.pause()
 
@@ -296,7 +317,7 @@ def test_printable_workbench_action_keys_type_in_sql_editor(tmp_path: Path) -> N
 
     sql_text, config_exists, status = asyncio.run(_inner())
 
-    assert sql_text == "?qispadwr"
+    assert sql_text == "qispadwr"
     assert config_exists is False
     assert "Saved sources to" not in status
 
@@ -330,7 +351,7 @@ def test_function_key_runs_query_from_sql_editor(tmp_path: Path) -> None:
     assert row_count == 2
 
 
-def test_ctrl_enter_runs_query_from_sql_editor(tmp_path: Path) -> None:
+def test_f4_runs_query_from_sql_editor(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
     async def _inner() -> tuple[str, tuple[str, ...], int]:
@@ -341,7 +362,7 @@ def test_ctrl_enter_runs_query_from_sql_editor(tmp_path: Path) -> None:
             sql.focus()
             sql.load_text("SELECT * FROM customers")
 
-            await pilot.press("ctrl+enter")
+            await pilot.press("f4")
             await pilot.pause(0.2)
 
             status = app.query_one("#status", Static).content
@@ -696,7 +717,7 @@ def test_query_run_returns_focus_to_sql_editor(tmp_path: Path) -> None:
             sql.focus()
             sql.load_text("SELECT * FROM customers")
 
-            await pilot.press("ctrl+enter")
+            await pilot.press("f4")
             await pilot.pause(0.2)
 
             return app.focused
@@ -740,14 +761,14 @@ def test_can_run_another_query_after_starting_new_query(tmp_path: Path) -> None:
             sql = app.query_one("#sql", TextArea)
             sql.focus()
             sql.load_text("SELECT * FROM customers")
-            await pilot.press("ctrl+enter")
+            await pilot.press("f4")
             await pilot.pause(0.2)
 
             await pilot.press("ctrl+n")
             await pilot.pause()
 
             sql.load_text("SELECT COUNT(*) AS row_count FROM customers")
-            await pilot.press("ctrl+enter")
+            await pilot.press("f4")
             await pilot.pause(0.2)
 
             status = app.query_one("#status", Static).content
@@ -794,30 +815,76 @@ def test_focus_shortcuts_move_between_sources_and_sql(tmp_path: Path) -> None:
 def test_workbench_focus_shortcuts_cover_all_panes(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
-    async def _inner() -> tuple[type[object], type[object], type[object], type[object]]:
+    async def _inner() -> tuple[object | None, object | None, object | None, object | None]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("f6")
             await pilot.pause()
-            sources_focus = type(app.focused)
+            sources_focus = app.focused
             await pilot.press("f8")
             await pilot.pause()
-            history_focus = type(app.focused)
+            history_focus = app.focused
             await pilot.press("f5")
             await pilot.pause()
-            results_focus = type(app.focused)
+            results_focus = app.focused
             await pilot.press("f2")
             await pilot.pause()
-            sql_focus = type(app.focused)
+            sql_focus = app.focused
             return sources_focus, history_focus, results_focus, sql_focus
 
     sources_focus, history_focus, results_focus, sql_focus = asyncio.run(_inner())
 
-    assert sources_focus is DataTable
-    assert history_focus is DataTable
-    assert results_focus is DataTable
-    assert sql_focus is TextArea
+    assert isinstance(sources_focus, DataTable)
+    assert isinstance(history_focus, DataTable)
+    assert isinstance(results_focus, DataTable)
+    assert isinstance(sql_focus, TextArea)
+
+
+def test_footer_key_order_is_stable_between_sql_and_sources(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[tuple[str, ...], tuple[str, ...]]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            sql_footer = await _settled_footer_key_displays(pilot, app)
+
+            app.query_one("#sources", DataTable).focus()
+            sources_footer = await _settled_footer_key_displays(pilot, app, required_key="?")
+            return sql_footer, sources_footer
+
+    sql_footer, sources_footer = asyncio.run(_inner())
+
+    assert sql_footer[:13] == (
+        "f1",
+        "?",
+        "f2",
+        "f3",
+        "F4",
+        "f5",
+        "f6",
+        "f7",
+        "f8",
+        "f9",
+        "f10",
+        "F12",
+        "Ctrl+S/Alt+S",
+    )
+    assert sources_footer[:13] == (
+        "f1",
+        "?",
+        "f2",
+        "f3",
+        "F4",
+        "f5",
+        "f6",
+        "f7",
+        "f8",
+        "f9",
+        "f10",
+        "F12",
+        "Ctrl+S/Alt+S",
+    )
 
 
 def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> None:
@@ -851,6 +918,293 @@ def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> Non
     assert origin == "session"
     assert "Added source customers." in status
     assert selected_alias == "customers"
+
+
+def test_add_source_action_accepts_pasted_csv_path(tmp_path: Path) -> None:
+    csv_path = _create_csv(
+        tmp_path,
+        "new customers.csv",
+        "customer_id,email\nCUST-101,zoe@example.com\n",
+    )
+
+    async def _inner() -> tuple[int, str, str, str]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("a")
+            await pilot.pause()
+
+            mapping_input = app.screen.query_one("#mapping-input", Input)
+            mapping_input.value = str(csv_path)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            sources = app.query_one("#sources", DataTable)
+            status = app.query_one("#status", Static).content
+            selected_alias = app.state.selected_alias or ""
+            return sources.row_count, app.state.sources[0].name, status, selected_alias
+
+    row_count, source_name, status, selected_alias = asyncio.run(_inner())
+
+    assert row_count == 1
+    assert source_name == "new_customers"
+    assert "Added source new_customers." in status
+    assert selected_alias == "new_customers"
+
+
+def test_choose_csv_source_action_adds_native_picker_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    csv_path = _create_csv(
+        tmp_path,
+        "picker_customers.csv",
+        "customer_id,email\nCUST-101,zoe@example.com\n",
+    )
+
+    monkeypatch.setattr(
+        "csvql.tui_app._choose_csv_paths_with_native_picker",
+        lambda: (str(csv_path),),
+    )
+
+    async def _inner() -> tuple[int, str, str, object]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await pilot.press("f3")
+            await pilot.pause()
+
+            sources = app.query_one("#sources", DataTable)
+            status = app.query_one("#status", Static).content
+            return sources.row_count, app.state.sources[0].name, status, app.focused
+
+    row_count, source_name, status, focused = asyncio.run(_inner())
+
+    assert row_count == 1
+    assert source_name == "picker_customers"
+    assert "Added source picker_customers." in status
+    assert isinstance(focused, TextArea)
+
+
+def test_choose_csv_source_action_handles_native_picker_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "csvql.tui_app._choose_csv_paths_with_native_picker",
+        lambda: (),
+    )
+
+    async def _inner() -> tuple[tuple[TUISource, ...], str]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await pilot.press("f3")
+            await pilot.pause()
+
+            return app.state.sources, app.query_one("#status", Static).content
+
+    sources, status = asyncio.run(_inner())
+
+    assert sources == ()
+    assert "No CSV selected." in status
+
+
+def test_pasted_csv_path_adds_source_without_inserting_editor_text(tmp_path: Path) -> None:
+    csv_path = _create_csv(
+        tmp_path,
+        "customers.csv",
+        "customer_id,email\nCUST-101,zoe@example.com\n",
+    )
+
+    async def _inner() -> tuple[str, tuple[TUISource, ...], str]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.post_message(events.Paste(str(csv_path)))
+            await pilot.pause()
+
+            status = app.query_one("#status", Static).content
+            return sql.text, app.state.sources, status
+
+    sql_text, sources, status = asyncio.run(_inner())
+
+    assert sql_text == ""
+    assert sources == (TUISource(name="customers", path=csv_path.resolve(), origin="session"),)
+    assert "Added source customers." in status
+
+
+def test_inserted_csv_path_text_adds_source_after_editor_settles(
+    tmp_path: Path,
+) -> None:
+    csv_path = _create_csv(
+        tmp_path,
+        "terminal_path.csv",
+        "customer_id,email\nCUST-101,zoe@example.com\n",
+    )
+
+    async def _inner() -> tuple[str, tuple[TUISource, ...], str]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+
+            sql.load_text(str(csv_path))
+            await pilot.pause(0.1)
+
+            status = app.query_one("#status", Static).content
+            return sql.text, app.state.sources, status
+
+    sql_text, sources, status = asyncio.run(_inner())
+
+    assert sql_text == ""
+    assert sources == (TUISource(name="terminal_path", path=csv_path.resolve(), origin="session"),)
+    assert "Added source terminal_path." in status
+
+
+def test_incremental_terminal_path_text_adds_source_after_editor_settles(
+    tmp_path: Path,
+) -> None:
+    csv_path = _create_csv(
+        tmp_path,
+        "incremental_path.csv",
+        "customer_id,email\nCUST-101,zoe@example.com\n",
+    )
+
+    async def _inner() -> tuple[str, tuple[TUISource, ...], str]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+
+            for character in str(csv_path):
+                sql.load_text(f"{sql.text}{character}")
+            await pilot.pause(0.1)
+
+            status = app.query_one("#status", Static).content
+            return sql.text, app.state.sources, status
+
+    sql_text, sources, status = asyncio.run(_inner())
+
+    assert sql_text == ""
+    assert sources == (
+        TUISource(name="incremental_path", path=csv_path.resolve(), origin="session"),
+    )
+    assert "Added source incremental_path." in status
+
+
+def test_embedded_terminal_path_text_adds_source_and_removes_path_text(
+    tmp_path: Path,
+) -> None:
+    csv_path = _create_csv(
+        tmp_path,
+        "embedded_path.csv",
+        "customer_id,email\nCUST-101,zoe@example.com\n",
+    )
+
+    async def _inner() -> tuple[str, tuple[TUISource, ...], str]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+
+            sql.load_text(f"SELECT 1;\n{csv_path}")
+            await pilot.pause(0.1)
+
+            status = app.query_one("#status", Static).content
+            return sql.text, app.state.sources, status
+
+    sql_text, sources, status = asyncio.run(_inner())
+
+    assert sql_text == "SELECT 1;"
+    assert sources == (TUISource(name="embedded_path", path=csv_path.resolve(), origin="session"),)
+    assert "Added source embedded_path." in status
+
+
+def test_run_shortcut_recovers_stuck_csv_path_text_as_source(tmp_path: Path) -> None:
+    csv_path = _create_csv(
+        tmp_path,
+        "stuck_path.csv",
+        "customer_id,email\nCUST-101,zoe@example.com\n",
+    )
+
+    async def _inner() -> tuple[str, tuple[TUISource, ...], str, str]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+
+            app._suppress_sql_source_text_detection = True
+            sql.load_text(str(csv_path))
+            app._suppress_sql_source_text_detection = False
+            await pilot.press("f4")
+            await pilot.pause()
+
+            status = app.query_one("#status", Static).content
+            run_status = app.query_one("#run-status", Static).content
+            return sql.text, app.state.sources, status, run_status
+
+    sql_text, sources, status, run_status = asyncio.run(_inner())
+
+    assert sql_text == ""
+    assert sources == (TUISource(name="stuck_path", path=csv_path.resolve(), origin="session"),)
+    assert "Added source stuck_path." in status
+    assert run_status == "Ready."
+
+
+def test_sql_string_with_csv_path_is_not_treated_as_pasted_path_text(tmp_path: Path) -> None:
+    csv_path = _create_csv(
+        tmp_path,
+        "literal_path.csv",
+        "customer_id,email\nCUST-101,zoe@example.com\n",
+    )
+    sql_text = f"SELECT * FROM read_csv('{csv_path}')"
+
+    async def _inner() -> tuple[str, tuple[TUISource, ...]]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+
+            sql.load_text(sql_text)
+            await pilot.pause(0.1)
+
+            return sql.text, app.state.sources
+
+    editor_text, sources = asyncio.run(_inner())
+
+    assert editor_text == sql_text
+    assert sources == ()
+
+
+def test_regular_sql_paste_stays_in_sql_editor(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, tuple[TUISource, ...]]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.post_message(events.Paste("SELECT * FROM customers"))
+            await pilot.pause()
+
+            return sql.text, app.state.sources
+
+    sql_text, sources = asyncio.run(_inner())
+
+    assert sql_text == "SELECT * FROM customers"
+    assert sources == state.sources
 
 
 def test_export_action_requires_last_result(tmp_path: Path) -> None:
@@ -1330,32 +1684,39 @@ def test_help_text_documents_workbench_keymap() -> None:
     help_text = WORKBENCH_HELP
 
     assert "Run SQL" in help_text
-    assert "F4 / Ctrl+Enter" in help_text
+    assert "F4                  Run selected SQL, otherwise current statement" in help_text
     assert "Run selected SQL, otherwise current statement" in help_text
     assert "F12                 Run the whole SQL editor" in help_text
+    assert "F3                  Choose CSV file(s)" in help_text
     assert "r                   Rerun selected query with current session sources" in help_text
 
 
-def test_question_mark_help_only_outside_sql_editor(tmp_path: Path) -> None:
+def test_question_mark_help_opens_from_sql_and_sources(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
-    async def _inner() -> tuple[str, str]:
+    async def _inner() -> tuple[str, str, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("?")
             await pilot.pause()
             editor_text = app.query_one("#sql", TextArea).text
+            sql_help_text = app.screen.query_one("#help-text", Static).content
+
+            await pilot.press("escape")
+            await pilot.pause()
 
             app.query_one("#sources", DataTable).focus()
             await pilot.press("?")
             await pilot.pause()
-            help_text = app.screen.query_one("#help-text", Static).content
-            return editor_text, help_text
+            sources_help_text = app.screen.query_one("#help-text", Static).content
+            return editor_text, sql_help_text, sources_help_text
 
-    editor_text, _help_text = asyncio.run(_inner())
+    editor_text, sql_help_text, sources_help_text = asyncio.run(_inner())
 
-    assert editor_text == "?"
+    assert editor_text == ""
+    assert sql_help_text.startswith("CSVQL Workbench Lite")
+    assert sources_help_text.startswith("CSVQL Workbench Lite")
 
 
 def test_readme_documents_source_intelligence_keymap() -> None:
@@ -1369,7 +1730,7 @@ def test_readme_documents_source_intelligence_keymap() -> None:
 def test_readme_documents_editor_quality_keymap() -> None:
     readme = _normalized_markdown_text(_read_readme_text())
 
-    assert "`Ctrl+Enter` or `F4` to run selected SQL" in readme
+    assert "`F4` to run selected SQL" in readme
     assert "`F12` runs the whole editor" in readme
     assert "current statement around the cursor" in readme
 

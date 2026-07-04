@@ -187,19 +187,25 @@ The menu is session-backed by default. Sources added inside the TUI live only
 for the current session unless you explicitly save them to a `.csvql.yml`
 project catalog. Exports are written only when you choose the export action.
 
-The SQL editor is focused when the menu opens. Type SQL directly, then press
-`Ctrl+Enter` or `F4` to run selected SQL. If nothing is selected, CSVQL falls
-back to the current statement around the cursor. `F12` runs the whole editor
-when you want to execute the complete SQL buffer. `F4` is the reliable fallback
-if your terminal does not emit `Ctrl+Enter`.
+You can add sources after launch with `F3`, which opens a local CSV picker on
+macOS. You can also paste `.csv` paths into the SQL editor. CSVQL turns pasted
+CSV paths into session sources immediately.
 
-Use `F2` or `Ctrl+Down` for the SQL editor, `F5` for results, `F6` or
-`Ctrl+Up` for sources, and `F8` for history. Printable keys type into SQL while
-the editor is focused. Source actions use letters only when the source pane is
-focused: `i` inspect, `s` sample, `p` profile, `a` add, `d` remove, and `w`
-save sources. In History, use `Enter` to reopen a query and `r` to rerun a query
-against the current session sources. `F1` opens help; `?` is a help fallback
-only outside the SQL editor.
+The SQL editor is focused when the menu opens. Type SQL directly, then press
+`F4` to run selected SQL. If nothing is selected, CSVQL falls back to the current
+statement around the cursor. `F12` runs the whole editor when you want to
+execute the complete SQL buffer.
+
+Use `F2` or `Ctrl+Down` for the SQL editor, `F3` to choose CSV file(s), `F5`
+for results, `F6` or `Ctrl+Up` for sources, and `F8` for history. Printable keys
+type into SQL while the editor is focused. Source actions use letters only when
+the source pane is focused: `i` inspect, `s` sample, `p` profile, `a` add, `d`
+remove, and `w` save sources. In History, use `Enter` to reopen a query and `r`
+to rerun a query against the current session sources. `F1` and `?` open help.
+
+The Add source prompt accepts either `name=path` or pasted `.csv` path(s). Direct
+path paste derives aliases from file names; duplicate aliases receive numeric
+suffixes such as `orders_2`.
 
 When the source pane is focused, Source Intelligence actions use `c` to
 load/show columns, `l` to insert the selected source alias, and `x` to insert a

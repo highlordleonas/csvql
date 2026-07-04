@@ -3,7 +3,7 @@
 WORKBENCH_HELP = """CSVQL Workbench Lite
 
 Run SQL
-  F4 / Ctrl+Enter     Run selected SQL, otherwise current statement
+  F4                  Run selected SQL, otherwise current statement
   F12                 Run the whole SQL editor
   Ctrl+N / F10        Clear editor for a new query
 
@@ -20,7 +20,9 @@ Source pane
   c                   Load/show selected source columns
   l                   Insert selected source alias
   x                   Insert SELECT * starter query
+  F3                  Choose CSV file(s)
   a                   Add source
+  paste .csv path     Add CSV path text as a session source
   d                   Remove source
   w                   Save sources to project catalog
 
@@ -30,7 +32,7 @@ History pane
 
 General
   F1                  Help
-  ?                   Help outside the SQL editor
+  ?                   Help
   F7                  Export last tabular result
   F9                  Quit
   Esc                 Close help or modal

@@ -1,14 +1,19 @@
 """Minimal Textual shell for the CSVQL menu TUI."""
 
+import re
+import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import ClassVar
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, Static, TextArea
+from textual.widgets._footer import FooterKey
 from textual.worker import Worker, WorkerState
 
 from csvql.exceptions import CSVQLError
@@ -39,6 +44,23 @@ from csvql.tui_workflows import (
     sample_source,
     save_derived_result_source,
     save_sources_to_project_catalog,
+    sources_from_csv_path_text,
+)
+
+_FOOTER_KEY_ORDER = (
+    "f1",
+    "question_mark",
+    "f2",
+    "f3",
+    "f4",
+    "f5",
+    "f6",
+    "f7",
+    "f8",
+    "f9",
+    "f10",
+    "f12",
+    "ctrl+s",
 )
 
 
@@ -78,8 +100,66 @@ class _HelpScreen(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         yield Static(WORKBENCH_HELP, id="help-text")
 
+    def on_mount(self) -> None:
+        self.call_after_refresh(lambda: self.scroll_home(animate=False))
+
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class _OrderedFooter(Footer):
+    """Footer that keeps CSVQL's key order stable across focused widgets."""
+
+    def compose(self) -> ComposeResult:
+        if not self._bindings_ready:
+            return
+
+        active_bindings = self.screen.active_bindings
+        ordered_footer_keys: list[FooterKey] = []
+        for key in _FOOTER_KEY_ORDER:
+            if active_binding := active_bindings.get(key):
+                binding = active_binding.binding
+                if not binding.show:
+                    continue
+                ordered_footer_keys.append(
+                    FooterKey(
+                        binding.key,
+                        self.app.get_key_display(binding),
+                        binding.description,
+                        binding.action,
+                        disabled=not active_binding.enabled,
+                        tooltip=active_binding.tooltip or binding.tooltip or binding.description,
+                    ).data_bind(compact=Footer.compact)
+                )
+            elif key == "question_mark" and isinstance(self.app.focused, TextArea):
+                ordered_footer_keys.append(
+                    FooterKey(
+                        "question_mark",
+                        "?",
+                        "Help",
+                        "show_contextual_help",
+                    ).data_bind(compact=Footer.compact)
+                )
+
+        self.styles.grid_size_columns = len(ordered_footer_keys)
+
+        yield from ordered_footer_keys
+
+        if self.show_command_palette and self.app.ENABLE_COMMAND_PALETTE:
+            try:
+                active_binding = active_bindings[self.app.COMMAND_PALETTE_BINDING]
+            except KeyError:
+                return
+            binding = active_binding.binding
+            yield FooterKey(
+                binding.key,
+                self.app.get_key_display(binding),
+                binding.description,
+                binding.action,
+                classes="-command-palette",
+                disabled=not active_binding.enabled,
+                tooltip=binding.tooltip or binding.description,
+            )
 
 
 class CSVQLMenuApp(App[None]):
@@ -131,20 +211,14 @@ class CSVQLMenuApp(App[None]):
     BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
         Binding("q", "quit_from_non_editor", "Quit", show=False),
         Binding("f1", "show_help", "Help", priority=True),
-        Binding("?", "show_contextual_help", "Help", priority=True),
+        Binding("question_mark", "show_contextual_help", "Help", key_display="?", priority=True),
         Binding("f2,ctrl+down", "focus_sql", "SQL", priority=True),
+        Binding("f3", "choose_csv_source", "Open CSV", priority=True),
         Binding(
-            "f4,ctrl+enter",
+            "f4",
             "run_selected_or_current_query",
             "Run SQL",
-            key_display="F4/Ctrl+Enter",
-            priority=True,
-        ),
-        Binding(
-            "f12",
-            "run_query",
-            "Run All",
-            key_display="F12",
+            key_display="F4",
             priority=True,
         ),
         Binding("f5", "focus_results", "Results", priority=True),
@@ -153,6 +227,13 @@ class CSVQLMenuApp(App[None]):
         Binding("f8", "focus_history", "History", priority=True),
         Binding("f9", "quit", "Quit", priority=True),
         Binding("f10,ctrl+n", "new_query", "New query", priority=True),
+        Binding(
+            "f12",
+            "run_query",
+            "Run All",
+            key_display="F12",
+            priority=True,
+        ),
         Binding(
             "ctrl+s,alt+s,f11",
             "save_result_as_source",
@@ -186,6 +267,8 @@ class CSVQLMenuApp(App[None]):
         self._active_query_sql: dict[int, str] = {}
         self._active_query_run_modes: dict[int, TUIQueryRunMode] = {}
         self._run_editor_pending = False
+        self._suppress_sql_source_text_detection = False
+        self._sql_source_text_revision = 0
         if initial_state is not None:
             self.state = initial_state
         else:
@@ -202,11 +285,11 @@ class CSVQLMenuApp(App[None]):
                 yield DataTable(id="sources", cursor_type="row")
                 yield DataTable(id="history", cursor_type="row")
             with Vertical(id="right-pane"):
-                yield TextArea(id="sql")
+                yield _SourcePathTextArea(id="sql")
                 yield Static("", id="run-status")
                 yield DataTable(id="results", cursor_type="cell")
                 yield Static("", id="results-message")
-        yield Footer()
+        yield _OrderedFooter()
 
     async def on_mount(self) -> None:
         self._refresh_sources_table()
@@ -220,7 +303,10 @@ class CSVQLMenuApp(App[None]):
 
     def action_add_source(self) -> None:
         self.push_screen(
-            _PromptInputScreen("Enter a name=path mapping.", input_id="mapping-input"),
+            _PromptInputScreen(
+                "Enter name=path or paste CSV path(s).",
+                input_id="mapping-input",
+            ),
             callback=self._handle_add_source,
         )
 
@@ -229,6 +315,21 @@ class CSVQLMenuApp(App[None]):
 
     def action_show_contextual_help(self) -> None:
         self.push_screen(_HelpScreen())
+
+    def action_choose_csv_source(self) -> None:
+        try:
+            path_values = _choose_csv_paths_with_native_picker()
+            sources = self._sources_from_csv_path_values(path_values)
+        except CSVQLError as exc:
+            self._show_error(exc)
+            return
+
+        if not sources:
+            self._set_status("No CSV selected. " + self._status_message())
+            return
+
+        self._add_session_sources(sources)
+        self.query_one("#sql", TextArea).focus()
 
     def action_focus_sources(self) -> None:
         self.query_one("#sources", DataTable).focus()
@@ -376,6 +477,9 @@ class CSVQLMenuApp(App[None]):
         callback: Callable[[], None],
         preparing_message: str,
     ) -> None:
+        if self._consume_sql_editor_csv_path_text(self.query_one("#sql", TextArea)):
+            return
+
         if self._run_editor_pending or self.state.query_run.is_running:
             self._show_rejected_run(
                 CSVQLError(
@@ -567,11 +671,29 @@ class CSVQLMenuApp(App[None]):
         if event.data_table.id == "sources":
             self._select_source_at_row(event.cursor_row)
 
+    def on_paste(self, event: events.Paste) -> None:
+        if isinstance(self.focused, Input):
+            return
+        if self._handle_pasted_csv_sources(event.text):
+            event.stop()
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if event.text_area.id != "sql" or self._suppress_sql_source_text_detection:
+            return
+        self._sql_source_text_revision += 1
+        revision = self._sql_source_text_revision
+        self.set_timer(
+            0.05,
+            lambda: self._consume_sql_editor_csv_path_text(
+                event.text_area,
+                revision=revision,
+            ),
+        )
+
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool:
         del parameters
         if isinstance(self.focused, TextArea):
             text_entry_actions = {
-                "show_contextual_help",
                 "quit_from_non_editor",
                 "inspect_source",
                 "sample_source",
@@ -602,8 +724,6 @@ class CSVQLMenuApp(App[None]):
             return False
         history_actions = {"rerun_history", "reopen_history"}
         if action in history_actions and not self._is_focused("#history"):
-            return False
-        if action == "show_contextual_help" and self._is_focused("#sql"):
             return False
         return True
 
@@ -641,7 +761,7 @@ class CSVQLMenuApp(App[None]):
     def _status_message(self) -> str:
         source_count = len(self.state.sources)
         if source_count == 0:
-            return "No sources loaded. Add a source before running SQL."
+            return "No sources loaded. Press F3 to choose a CSV or add a source before running SQL."
         if source_count == 1:
             return "1 source loaded."
         return f"{source_count} sources loaded."
@@ -700,20 +820,31 @@ class CSVQLMenuApp(App[None]):
             return
 
         try:
-            mapping_source = parse_table_mapping(raw_mapping, base_dir=self.start_dir)
-            self.state.add_source(
-                TUISource(
-                    name=mapping_source.name,
-                    path=mapping_source.path,
-                    origin="session",
-                ),
-            )
+            sources: tuple[TUISource, ...]
+            if "=" in raw_mapping:
+                mapping_source = parse_table_mapping(raw_mapping, base_dir=self.start_dir)
+                sources = (
+                    TUISource(
+                        name=mapping_source.name,
+                        path=mapping_source.path,
+                        origin="session",
+                    ),
+                )
+            else:
+                sources = sources_from_csv_path_text(
+                    raw_mapping,
+                    existing_sources=self.state.sources,
+                    start_dir=self.start_dir,
+                )
+                if not sources:
+                    raise CSVQLError(
+                        "Invalid source input.",
+                        suggestion="Use name=path or paste one or more .csv file paths.",
+                    )
+            self._add_session_sources(sources)
         except CSVQLError as exc:
             self._show_error(exc)
             return
-
-        self._refresh_sources_table()
-        self._set_status(f"Added source {mapping_source.name}. {self._status_message()}")
 
     def _handle_export_last_result(self, path_value: str | None) -> None:
         if path_value is None:
@@ -888,6 +1019,227 @@ class CSVQLMenuApp(App[None]):
         except ValueError:
             return None
 
+    def _handle_pasted_csv_sources(self, raw_text: str) -> bool:
+        try:
+            sources = self._sources_from_csv_path_values((raw_text,))
+        except CSVQLError as exc:
+            self._show_error(exc)
+            return True
+
+        if not sources:
+            return False
+
+        self._add_session_sources(sources)
+        return True
+
+    def _sources_from_csv_path_values(self, path_values: Sequence[str]) -> tuple[TUISource, ...]:
+        raw_text = "\n".join(path_values)
+        return sources_from_csv_path_text(
+            raw_text,
+            existing_sources=self.state.sources,
+            start_dir=self.start_dir,
+        )
+
+    def _consume_sql_editor_csv_path_text(
+        self,
+        sql_widget: TextArea,
+        *,
+        revision: int | None = None,
+    ) -> bool:
+        if revision is not None and revision != self._sql_source_text_revision:
+            return False
+
+        raw_text = sql_widget.text
+        if not raw_text.strip():
+            return False
+
+        sources, cleaned_text = self._sources_from_embedded_editor_csv_paths(raw_text)
+        if sources:
+            return self._add_editor_path_sources(
+                sources,
+                sql_widget=sql_widget,
+                cleaned_text=cleaned_text,
+            )
+
+        try:
+            sources = sources_from_csv_path_text(
+                raw_text,
+                existing_sources=self.state.sources,
+                start_dir=self.start_dir,
+            )
+        except CSVQLError as exc:
+            self._show_error(exc)
+            return True
+
+        if sources:
+            return self._add_editor_path_sources(
+                sources,
+                sql_widget=sql_widget,
+                cleaned_text="",
+            )
+
+        return False
+
+    def _sources_from_embedded_editor_csv_paths(
+        self,
+        raw_text: str,
+    ) -> tuple[tuple[TUISource, ...], str]:
+        fragments = _editor_csv_path_fragments(raw_text)
+        if not fragments:
+            return (), raw_text
+
+        reserved_sources = list(self.state.sources)
+        sources: list[TUISource] = []
+        consumed_spans: list[tuple[int, int]] = []
+        for start_index, end_index, candidate_text in fragments:
+            try:
+                candidate_sources = sources_from_csv_path_text(
+                    candidate_text,
+                    existing_sources=tuple(reserved_sources),
+                    start_dir=self.start_dir,
+                )
+            except CSVQLError:
+                continue
+
+            if not candidate_sources:
+                continue
+
+            sources.extend(candidate_sources)
+            reserved_sources.extend(candidate_sources)
+            consumed_spans.append((start_index, end_index))
+
+        if not sources:
+            return (), raw_text
+
+        return tuple(sources), _remove_text_spans(raw_text, consumed_spans)
+
+    def _remove_pasted_text_from_sql_editor(
+        self,
+        *,
+        before_text: str,
+        expected_single_paste_text: str,
+        expected_double_paste_text: str,
+    ) -> None:
+        sql = self.query_one("#sql", TextArea)
+        current_text = sql.text
+        if current_text not in {expected_single_paste_text, expected_double_paste_text}:
+            return
+        sql.load_text(before_text)
+        sql.focus()
+
+    def _remove_pasted_source_text_from_sql_editor(
+        self,
+        *,
+        before_text: str,
+        expected_single_paste_text: str,
+        expected_double_paste_text: str,
+    ) -> None:
+        try:
+            self._remove_pasted_text_from_sql_editor(
+                before_text=before_text,
+                expected_single_paste_text=expected_single_paste_text,
+                expected_double_paste_text=expected_double_paste_text,
+            )
+        finally:
+            self._suppress_sql_source_text_detection = False
+
+    def _normalize_pasted_text_in_sql_editor(
+        self,
+        *,
+        expected_single_paste_text: str,
+        expected_double_paste_text: str,
+    ) -> None:
+        sql = self.query_one("#sql", TextArea)
+        if sql.text not in {expected_single_paste_text, expected_double_paste_text}:
+            return
+        sql.load_text(expected_single_paste_text)
+        sql.focus()
+
+    def _add_session_sources(self, sources: Sequence[TUISource]) -> None:
+        for source in sources:
+            self.state.add_source(source)
+        if sources:
+            self.state.select_source(sources[0].name)
+        self._refresh_sources_table()
+        self._set_status(f"{_added_sources_message(sources)} {self._status_message()}")
+
+    def _add_editor_path_sources(
+        self,
+        sources: Sequence[TUISource],
+        *,
+        sql_widget: TextArea,
+        cleaned_text: str,
+    ) -> bool:
+        self._suppress_sql_source_text_detection = True
+        try:
+            sql_widget.load_text(cleaned_text)
+        finally:
+            self._suppress_sql_source_text_detection = False
+        self._add_session_sources(sources)
+        sql_widget.focus()
+        return True
+
+
+class _SourcePathTextArea(TextArea):
+    """SQL editor that turns pasted CSV path payloads into sources."""
+
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key == "question_mark" and isinstance(self.app, CSVQLMenuApp):
+            event.stop()
+            event.prevent_default()
+            self.app.action_show_contextual_help()
+            return
+
+        await super()._on_key(event)
+
+    async def _on_paste(self, event: events.Paste) -> None:
+        if not isinstance(self.app, CSVQLMenuApp):
+            return
+
+        before_text, expected_single_paste_text, expected_double_paste_text = (
+            self._paste_text_expectations(event.text)
+        )
+        if self.app._handle_pasted_csv_sources(event.text):
+            self.app._suppress_sql_source_text_detection = True
+            event.stop()
+            if not self.call_after_refresh(
+                lambda: self.app._remove_pasted_source_text_from_sql_editor(
+                    before_text=before_text,
+                    expected_single_paste_text=expected_single_paste_text,
+                    expected_double_paste_text=expected_double_paste_text,
+                )
+            ):
+                self.app._suppress_sql_source_text_detection = False
+            self.focus()
+            return
+
+        if not self.read_only:
+            if result := self._replace_via_keyboard(event.text, *self.selection):
+                self.move_cursor(result.end_location)
+                self.focus()
+        event.stop()
+        self.call_after_refresh(
+            lambda: self.app._normalize_pasted_text_in_sql_editor(
+                expected_single_paste_text=expected_single_paste_text,
+                expected_double_paste_text=expected_double_paste_text,
+            )
+        )
+
+    def _paste_text_expectations(self, pasted_text: str) -> tuple[str, str, str]:
+        before_text = self.text
+        start_index = _text_index_from_location(before_text, self.selection.start)
+        end_index = _text_index_from_location(before_text, self.selection.end)
+        if start_index > end_index:
+            start_index, end_index = end_index, start_index
+
+        before_selection = before_text[:start_index]
+        after_selection = before_text[end_index:]
+        expected_single_paste_text = f"{before_selection}{pasted_text}{after_selection}"
+        expected_double_paste_text = (
+            f"{before_selection}{pasted_text}{pasted_text}{after_selection}"
+        )
+        return before_text, expected_single_paste_text, expected_double_paste_text
+
 
 def _export_format_for_path(path_value: str) -> ExportFormat:
     suffix = Path(path_value).suffix.lower()
@@ -920,6 +1272,121 @@ def _one_line_sql(sql: str) -> str:
     return " ".join(sql.split())
 
 
+def _text_index_from_location(text: str, location: tuple[int, int]) -> int:
+    row, column = location
+    if row < 0:
+        return 0
+
+    lines = text.splitlines(keepends=True)
+    if not lines or row >= len(lines):
+        return len(text)
+
+    index = sum(len(line) for line in lines[:row])
+    line_text = lines[row].removesuffix("\n").removesuffix("\r")
+    return index + min(max(column, 0), len(line_text))
+
+
+_QUOTED_CSV_PATH_FRAGMENT = re.compile(
+    r"(?P<quote>['\"])(?P<path>(?:file://)?(?:~|/).*?\.csv)(?P=quote)",
+    flags=re.IGNORECASE,
+)
+_UNQUOTED_CSV_PATH_FRAGMENT = re.compile(
+    r"(?P<path>(?:file://)?(?:~|/)(?:\\.|[^\s'\"<>|])+?\.csv)",
+    flags=re.IGNORECASE,
+)
+
+
+def _editor_csv_path_fragments(text: str) -> tuple[tuple[int, int, str], ...]:
+    fragments: list[tuple[int, int, str]] = []
+    occupied_spans: list[tuple[int, int]] = []
+
+    for match in _QUOTED_CSV_PATH_FRAGMENT.finditer(text):
+        start_index, end_index = match.span()
+        if not _has_editor_path_text_boundary(text, start_index, end_index):
+            continue
+        fragments.append((start_index, end_index, match.group()))
+        occupied_spans.append((start_index, end_index))
+
+    for match in _UNQUOTED_CSV_PATH_FRAGMENT.finditer(text):
+        start_index, end_index = match.span()
+        if any(
+            start_index < occupied_end and end_index > occupied_start
+            for occupied_start, occupied_end in occupied_spans
+        ):
+            continue
+        if not _has_editor_path_text_boundary(text, start_index, end_index):
+            continue
+        fragments.append((start_index, end_index, match.group("path")))
+
+    return tuple(sorted(fragments, key=lambda fragment: fragment[0]))
+
+
+def _has_editor_path_text_boundary(text: str, start_index: int, end_index: int) -> bool:
+    before = text[start_index - 1] if start_index > 0 else ""
+    after = text[end_index] if end_index < len(text) else ""
+    before_ok = not before or before.isspace() or before in ";,"
+    after_ok = not after or after.isspace() or after in ";,"
+    return before_ok and after_ok
+
+
+def _remove_text_spans(text: str, spans: Sequence[tuple[int, int]]) -> str:
+    if not spans:
+        return text
+
+    chunks: list[str] = []
+    cursor = 0
+    for start_index, end_index in sorted(spans):
+        chunks.append(text[cursor:start_index])
+        cursor = end_index
+    chunks.append(text[cursor:])
+    return "".join(chunks).strip()
+
+
+def _choose_csv_paths_with_native_picker() -> tuple[str, ...]:
+    """Return CSV candidate paths selected through the local macOS file picker."""
+
+    if sys.platform != "darwin":
+        raise CSVQLError(
+            "Native CSV picker is only available on macOS.",
+            suggestion="Use Add source and paste a CSV path instead.",
+        )
+
+    script_lines = [
+        'set chosenFiles to choose file with prompt "Choose CSV file(s) to add to CSVQL." '
+        "with multiple selections allowed",
+        "set outputPaths to {}",
+        "repeat with chosenFile in chosenFiles",
+        "set end of outputPaths to POSIX path of chosenFile",
+        "end repeat",
+        "set AppleScript's text item delimiters to linefeed",
+        "return outputPaths as text",
+    ]
+
+    try:
+        result = subprocess.run(
+            ["osascript", *(argument for line in script_lines for argument in ("-e", line))],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise CSVQLError(
+            "Native CSV picker is unavailable.",
+            suggestion="Use Add source and paste a CSV path instead.",
+        ) from exc
+
+    if result.returncode != 0:
+        error_text = result.stderr.strip()
+        if "User canceled" in error_text:
+            return ()
+        raise CSVQLError(
+            "Native CSV picker failed.",
+            suggestion="Use Add source and paste a CSV path instead.",
+        )
+
+    return tuple(line.strip() for line in result.stdout.splitlines() if line.strip())
+
+
 def _format_source_columns(alias: str, columns: tuple[TUISourceColumn, ...]) -> str:
     lines = [f"{alias} columns"]
     lines.extend(f"  {column.name} {column.duckdb_type}" for column in columns)
@@ -930,3 +1397,10 @@ def _result_message(view: TUIResultViewState) -> str:
     if view.is_truncated:
         return f"Showing first {view.preview_row_cap} of {view.total_row_count} returned rows."
     return f"Showing {view.total_row_count} returned row(s)."
+
+
+def _added_sources_message(sources: Sequence[TUISource]) -> str:
+    if len(sources) == 1:
+        return f"Added source {sources[0].name}."
+    source_names = ", ".join(source.name for source in sources)
+    return f"Added {len(sources)} sources: {source_names}."

@@ -109,9 +109,8 @@ uv run --all-extras csvql menu
 
 ## TUI Keybindings Do Not Work In My Terminal
 
-Use `F4` as the reliable run fallback when `Ctrl+Enter` is not emitted by your
-terminal. On macOS, `F11` may be intercepted by Show Desktop; use `Ctrl+S` to
-save a result as a derived source.
+Use `F4` to run SQL. On macOS, `F11` may be intercepted by Show Desktop; use
+`Ctrl+S` to save a result as a derived source.
 
 Core fallbacks:
 

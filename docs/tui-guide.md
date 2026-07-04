@@ -27,6 +27,10 @@ uv sync --all-extras
 uv run --all-extras csvql menu
 ```
 
+You can also add sources after launch with `F3`, which opens a local CSV picker
+on macOS, or by pasting `.csv` paths into the SQL editor. CSVQL turns pasted CSV
+paths into session sources immediately.
+
 ![Terminal screenshot of the LocalQL TUI workbench with project sources loaded and a query result visible](assets/localql-tui-workbench.svg)
 
 ## Panes
@@ -43,17 +47,16 @@ The menu opens with the SQL editor focused.
 
 | Key | Action |
 | --- | --- |
-| `F4` or `Ctrl+Enter` | Run selected SQL or the current statement |
+| `F4` | Run selected SQL or the current statement |
 | `F12` | Run the whole SQL editor buffer |
 | `F2` or `Ctrl+Down` | Focus SQL editor |
+| `F3` | Choose CSV file(s) |
 | `F5` | Focus results |
 | `F6` or `Ctrl+Up` | Focus sources |
 | `F8` | Focus history |
 | `F9` | Quit |
 | `F1` | Help |
 | `Ctrl+N` or `F10` | Clear editor for a new query |
-
-`F4` is the reliable run fallback when a terminal does not emit `Ctrl+Enter`.
 
 ## Source Actions
 
@@ -65,11 +68,17 @@ When the Sources pane is focused:
 | `s` | Sample selected source |
 | `p` | Profile selected source |
 | `a` | Add source |
+| paste `.csv` paths | Add CSV path text as session sources |
 | `d` | Remove source from the session |
 | `w` | Save current sources to `.csvql.yml` |
 | `c` | Load or show source columns |
 | `l` | Insert selected source alias into SQL |
 | `x` | Insert `SELECT *` starter query |
+
+The Add source prompt accepts either `name=path` or one or more pasted `.csv`
+paths. Direct path paste derives aliases from file names, and duplicate aliases
+receive numeric suffixes such as `orders_2`. Added sources are session-local
+until you save sources to `.csvql.yml`.
 
 Column metadata is session-local and is not written to `.csvql.yml`.
 

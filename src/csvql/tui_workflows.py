@@ -1,7 +1,9 @@
 """Startup workflows for the CSVQL menu TUI."""
 
+import shlex
 from collections.abc import Sequence
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import CSVQLError, ExportError, ProjectConfigError, TableMappingError
@@ -62,6 +64,39 @@ def build_initial_state(
         )
 
     return state
+
+
+def sources_from_csv_path_text(
+    raw_text: str,
+    *,
+    existing_sources: Sequence[TUISource],
+    start_dir: Path,
+) -> tuple[TUISource, ...]:
+    """Build session sources from terminal-pasted CSV path text.
+
+    This helper returns an empty tuple when the pasted text is not exclusively
+    one or more `.csv` paths, allowing normal SQL/editor paste behavior to
+    continue.
+    """
+
+    path_values = _csv_path_values_from_text(raw_text)
+    if not path_values:
+        return ()
+
+    reserved_aliases = {source.name.casefold() for source in existing_sources}
+    sources: list[TUISource] = []
+    for path_value in path_values:
+        table_source = source_from_single_csv(path_value, base_dir=start_dir)
+        source_name = _unique_table_alias(table_source.name, reserved_aliases)
+        reserved_aliases.add(source_name.casefold())
+        sources.append(
+            TUISource(
+                name=source_name,
+                path=table_source.path,
+                origin="session",
+            )
+        )
+    return tuple(sources)
 
 
 def inspect_source(source: TUISource, *, exact: bool = False) -> InspectResult:
@@ -384,3 +419,41 @@ def _write_derived_result_file(path: Path, content: str) -> None:
             f"Failed to write derived source to {path}.",
             suggestion="Check that the derived results directory is writable.",
         ) from exc
+
+
+def _csv_path_values_from_text(raw_text: str) -> tuple[str, ...]:
+    raw_text = raw_text.strip()
+    try:
+        tokens = tuple(shlex.split(raw_text))
+    except ValueError:
+        tokens = ()
+
+    if tokens:
+        path_values = tuple(_path_value_from_terminal_token(token) for token in tokens)
+        if all(Path(path_value).suffix.casefold() == ".csv" for path_value in path_values):
+            return path_values
+
+    raw_path_value = _path_value_from_terminal_token(raw_text)
+    if Path(raw_path_value).suffix.casefold() == ".csv":
+        return (raw_path_value,)
+    return ()
+
+
+def _path_value_from_terminal_token(token: str) -> str:
+    parsed = urlparse(token)
+    if parsed.scheme == "file":
+        return unquote(parsed.path)
+    return token
+
+
+def _unique_table_alias(alias: str, reserved_casefold_aliases: set[str]) -> str:
+    base_alias = validate_table_alias(alias)
+    if base_alias.casefold() not in reserved_casefold_aliases:
+        return base_alias
+
+    suffix = 2
+    while True:
+        candidate = validate_table_alias(f"{base_alias}_{suffix}")
+        if candidate.casefold() not in reserved_casefold_aliases:
+            return candidate
+        suffix += 1

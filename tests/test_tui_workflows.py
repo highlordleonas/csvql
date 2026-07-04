@@ -20,6 +20,7 @@ from csvql.tui_workflows import (
     sample_source,
     save_derived_result_source,
     save_sources_to_project_catalog,
+    sources_from_csv_path_text,
 )
 
 
@@ -121,6 +122,62 @@ def test_build_initial_state_rejects_duplicate_aliases_between_csv_and_mapping(
             table_mappings=(f"orders={duplicate_csv}",),
             start_dir=tmp_path,
         )
+
+
+def test_sources_from_csv_path_text_adds_pasted_paths_with_derived_aliases(
+    tmp_path: Path,
+) -> None:
+    customers_csv = _write_csv(tmp_path / "new customers.csv")
+    orders_csv = _write_csv(tmp_path / "orders.csv")
+
+    sources = sources_from_csv_path_text(
+        f"'{customers_csv}' {orders_csv}",
+        existing_sources=(),
+        start_dir=tmp_path,
+    )
+
+    assert sources == (
+        TUISource(name="new_customers", path=customers_csv.resolve(), origin="session"),
+        TUISource(name="orders", path=orders_csv.resolve(), origin="session"),
+    )
+
+
+def test_sources_from_csv_path_text_suffixes_duplicate_aliases(tmp_path: Path) -> None:
+    existing_csv = _write_csv(tmp_path / "existing" / "orders.csv")
+    pasted_csv = _write_csv(tmp_path / "pasted" / "orders.csv")
+    existing_source = TUISource(name="orders", path=existing_csv.resolve(), origin="argument")
+
+    sources = sources_from_csv_path_text(
+        str(pasted_csv),
+        existing_sources=(existing_source,),
+        start_dir=tmp_path,
+    )
+
+    assert sources == (TUISource(name="orders_2", path=pasted_csv.resolve(), origin="session"),)
+
+
+def test_sources_from_csv_path_text_accepts_file_urls(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path / "customers.csv")
+
+    sources = sources_from_csv_path_text(
+        csv_path.as_uri(),
+        existing_sources=(),
+        start_dir=tmp_path,
+    )
+
+    assert sources == (TUISource(name="customers", path=csv_path.resolve(), origin="session"),)
+
+
+def test_sources_from_csv_path_text_ignores_non_path_sql_paste(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path / "orders.csv")
+
+    sources = sources_from_csv_path_text(
+        f"SELECT * FROM read_csv('{csv_path}')",
+        existing_sources=(),
+        start_dir=tmp_path,
+    )
+
+    assert sources == ()
 
 
 def test_build_initial_state_propagates_invalid_catalog_yaml(
