@@ -204,8 +204,7 @@ type into SQL while the editor is focused. Source actions use letters only when
 the source pane is focused: `i` inspect, `s` sample, `p` profile, `a` add, `d`
 remove, and `w` save sources. In History, use `Enter` to reopen a query and `r`
 to rerun a query against the current session sources. Highlighting a successful
-History row restores that row's result in the Results pane. `?` opens help;
-`F1` also works.
+History row restores that row's result in the Results pane. `F1` opens help.
 
 The Add source prompt accepts either `name=path` or pasted `.csv` path(s). Direct
 path paste derives aliases from file names; duplicate aliases receive numeric

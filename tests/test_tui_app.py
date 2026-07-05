@@ -7,6 +7,7 @@ import pytest
 pytest.importorskip("textual")
 
 from textual import events
+from textual.coordinate import Coordinate
 from textual.pilot import Pilot
 from textual.widgets import DataTable, Input, Static, TextArea
 from textual.widgets._footer import FooterKey
@@ -55,6 +56,11 @@ def _result_grid_snapshot(app: CSVQLMenuApp) -> tuple[tuple[str, ...], int, str]
 
 def _footer_key_displays(app: CSVQLMenuApp) -> tuple[str, ...]:
     return tuple(key.key_display for key in app.query(FooterKey))
+
+
+def _history_run_column_values(app: CSVQLMenuApp) -> tuple[str, ...]:
+    history = app.query_one("#history", DataTable)
+    return tuple(str(history.get_cell_at(Coordinate(row, 1))) for row in range(history.row_count))
 
 
 def _focused_widget_id(app: CSVQLMenuApp) -> str:
@@ -601,7 +607,7 @@ def test_run_all_stops_batch_after_middle_statement_failure(
 def test_run_shortcut_records_sql_run_mode_and_history_column(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
-    async def _inner() -> tuple[list[str], tuple[str, ...], str]:
+    async def _inner() -> tuple[list[str], tuple[str, ...], tuple[str, ...], str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -616,20 +622,22 @@ def test_run_shortcut_records_sql_run_mode_and_history_column(tmp_path: Path) ->
             return (
                 app_history_run_modes(app.state),
                 tuple(str(column.label) for column in history.columns.values()),
+                _history_run_column_values(app),
                 app.query_one("#status", Static).content,
             )
 
-    run_modes, columns, status = asyncio.run(_inner())
+    run_modes, columns, run_labels, status = asyncio.run(_inner())
 
     assert run_modes == ["sql"]
     assert columns == ("seq", "run", "status", "rows", "sql")
+    assert run_labels == ("F4",)
     assert "1 returned row(s)" in status
 
 
 def test_run_all_shortcut_records_editor_run_mode(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
-    async def _inner() -> tuple[list[str], str]:
+    async def _inner() -> tuple[list[str], tuple[str, ...], str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -640,11 +648,16 @@ def test_run_all_shortcut_records_editor_run_mode(tmp_path: Path) -> None:
             await pilot.press("f12")
             await pilot.pause(0.2)
 
-            return app_history_run_modes(app.state), app.query_one("#status", Static).content
+            return (
+                app_history_run_modes(app.state),
+                _history_run_column_values(app),
+                app.query_one("#status", Static).content,
+            )
 
-    run_modes, status = asyncio.run(_inner())
+    run_modes, run_labels, status = asyncio.run(_inner())
 
     assert run_modes == ["editor"]
+    assert run_labels == ("F12",)
     assert "1 returned row(s)" in status
 
 
@@ -674,7 +687,7 @@ def test_history_rerun_records_rerun_mode_and_status_message(tmp_path: Path) -> 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
 
-    async def _inner() -> tuple[list[str], str, str]:
+    async def _inner() -> tuple[list[str], tuple[str, ...], str, str, list[str]]:
         try:
             app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
             async with app.run_test() as pilot:
@@ -692,6 +705,7 @@ def test_history_rerun_records_rerun_mode_and_status_message(tmp_path: Path) -> 
                 await pilot.pause(0.2)
                 return (
                     app_history_run_modes(app.state),
+                    _history_run_column_values(app),
                     run_status,
                     app.query_one("#sql", TextArea).text,
                     seen_sql,
@@ -699,9 +713,10 @@ def test_history_rerun_records_rerun_mode_and_status_message(tmp_path: Path) -> 
         finally:
             monkeypatch.undo()
 
-    run_modes, run_status, sql_text, seen_sql = asyncio.run(_inner())
+    run_modes, run_labels, run_status, sql_text, seen_sql = asyncio.run(_inner())
 
     assert run_modes == ["sql", "rerun"]
+    assert run_labels == ("F4", "rerun")
     assert run_status == "Rerunning query 1 as query 2..."
     assert sql_text == "SELECT COUNT(*) AS count FROM customers"
     assert seen_sql == ["SELECT COUNT(*) AS count FROM customers"]
@@ -1064,13 +1079,13 @@ def test_footer_key_order_is_stable_between_sql_and_sources(tmp_path: Path) -> N
             sql_footer = await _settled_footer_key_displays(pilot, app)
 
             app.query_one("#sources", DataTable).focus()
-            sources_footer = await _settled_footer_key_displays(pilot, app, required_key="?")
+            sources_footer = await _settled_footer_key_displays(pilot, app, required_key="F1")
             return sql_footer, sources_footer
 
     sql_footer, sources_footer = asyncio.run(_inner())
 
     assert sql_footer[:12] == (
-        "?",
+        "F1",
         "f2",
         "f3",
         "F4",
@@ -1083,9 +1098,9 @@ def test_footer_key_order_is_stable_between_sql_and_sources(tmp_path: Path) -> N
         "F12",
         "Ctrl+S/Alt+S",
     )
-    assert "f1" not in sql_footer
+    assert "?" not in sql_footer
     assert sources_footer[:12] == (
-        "?",
+        "F1",
         "f2",
         "f3",
         "F4",
@@ -1098,7 +1113,7 @@ def test_footer_key_order_is_stable_between_sql_and_sources(tmp_path: Path) -> N
         "F12",
         "Ctrl+S/Alt+S",
     )
-    assert "f1" not in sources_footer
+    assert "?" not in sources_footer
 
 
 def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> None:
@@ -2093,8 +2108,9 @@ def test_help_text_documents_workbench_keymap() -> None:
     assert "Run selected SQL, otherwise current statement" in help_text
     assert "F12                 Run all editor statements" in help_text
     assert "F3                  Choose CSV file(s) or prompt for paths" in help_text
-    assert "?                   Help" in help_text
-    assert "F1                  Also opens help" in help_text
+    assert "F1                  Help" in help_text
+    assert "?                   Help" not in help_text
+    assert "Also opens help" not in help_text
     assert "r                   Rerun selected query with current session sources" in help_text
 
 

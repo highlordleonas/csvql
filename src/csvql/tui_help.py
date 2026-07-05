@@ -32,8 +32,7 @@ History pane
   r                   Rerun selected query with current session sources
 
 General
-  ?                   Help
-  F1                  Also opens help
+  F1                  Help
   F7                  Export last tabular result
   F9                  Quit
   Esc                 Close help or modal

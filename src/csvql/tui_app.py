@@ -48,7 +48,7 @@ from csvql.tui_workflows import (
 )
 
 _FOOTER_KEY_ORDER = (
-    "question_mark",
+    "f1",
     "f2",
     "f3",
     "f4",
@@ -130,16 +130,6 @@ class _OrderedFooter(Footer):
                         tooltip=active_binding.tooltip or binding.tooltip or binding.description,
                     ).data_bind(compact=Footer.compact)
                 )
-            elif key == "question_mark" and isinstance(self.app.focused, TextArea):
-                ordered_footer_keys.append(
-                    FooterKey(
-                        "question_mark",
-                        "?",
-                        "Help",
-                        "show_contextual_help",
-                    ).data_bind(compact=Footer.compact)
-                )
-
         self.styles.grid_size_columns = len(ordered_footer_keys)
 
         yield from ordered_footer_keys
@@ -209,8 +199,15 @@ class CSVQLMenuApp(App[None]):
 
     BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
         Binding("q", "quit_from_non_editor", "Quit", show=False),
-        Binding("f1", "show_help", "Help", priority=True),
-        Binding("question_mark", "show_contextual_help", "Help", key_display="?", priority=True),
+        Binding("f1", "show_help", "Help", key_display="F1", priority=True),
+        Binding(
+            "question_mark",
+            "show_contextual_help",
+            "Help",
+            key_display="?",
+            show=False,
+            priority=True,
+        ),
         Binding("f2,ctrl+down", "focus_sql", "SQL", priority=True),
         Binding("f3", "choose_csv_source", "Open CSV", priority=True),
         Binding(
@@ -795,7 +792,7 @@ class CSVQLMenuApp(App[None]):
             rows = "" if item.row_count is None else str(item.row_count)
             history_table.add_row(
                 str(item.sequence),
-                item.run_mode,
+                _run_mode_display(item.run_mode),
                 item.status,
                 rows,
                 _one_line_sql(item.sql),
@@ -815,7 +812,7 @@ class CSVQLMenuApp(App[None]):
             rows = "" if item.row_count is None else str(item.row_count)
             history_table.add_row(
                 str(item.sequence),
-                item.run_mode,
+                _run_mode_display(item.run_mode),
                 item.status,
                 rows,
                 _one_line_sql(item.sql),
@@ -1424,6 +1421,14 @@ def _with_previous_result_suggestion(error: CSVQLError) -> CSVQLError:
 
 def _one_line_sql(sql: str) -> str:
     return " ".join(sql.split())
+
+
+def _run_mode_display(run_mode: TUIQueryRunMode) -> str:
+    if run_mode == "sql":
+        return "F4"
+    if run_mode == "editor":
+        return "F12"
+    return "rerun"
 
 
 def _text_index_from_location(text: str, location: tuple[int, int]) -> int:

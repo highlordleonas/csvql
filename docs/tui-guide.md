@@ -55,8 +55,7 @@ The menu opens with the SQL editor focused.
 | `F6` or `Ctrl+Up` | Focus sources |
 | `F8` | Focus history |
 | `F9` | Quit |
-| `?` | Help |
-| `F1` | Also opens Help |
+| `F1` | Help |
 | `Ctrl+N` or `F10` | Clear editor for a new query |
 
 ## Source Actions

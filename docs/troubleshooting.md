@@ -124,8 +124,7 @@ Core fallbacks:
 - `F5`: results
 - `F8`: history
 - `F9`: quit
-- `?`: help
-- `F1`: also opens help
+- `F1`: help
 
 After `F12`, move through History to recall each successful statement's result
 in the Results pane.
