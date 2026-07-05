@@ -5,6 +5,9 @@ Status: manual proof checklist for local v1 candidate evaluation.
 This matrix is local evidence only. It does not publish, tag, upload, or claim
 `v1-stable`.
 
+For terminal usability coverage, also run the [TUI QoL QA gate](tui-qol-qa.md).
+The TUI QoL QA gate is blocking for `release-candidate eligible`.
+
 Run from the repository root unless a step explicitly changes directories.
 
 ## Setup

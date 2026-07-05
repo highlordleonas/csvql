@@ -64,15 +64,19 @@ uv run --all-extras mypy src
 uv run --all-extras pytest
 ```
 
-## Manual V1 QA Matrix
+## Manual QA Gates
 
-Run the manual v1 QA matrix before classifying a final candidate:
+Run the manual QA gates before classifying a final candidate:
 
 - [Manual v1 QA matrix](v1-manual-qa.md)
+- [TUI QoL QA gate](tui-qol-qa.md)
 
 The matrix covers CLI-only reuse, optional TUI flows, derived-source save and
 query, bad SQL, TUI DDL metadata results, export overwrite behavior, missing
 files, quit behavior, and Mac keybinding paths.
+
+Run the TUI QoL QA gate for required terminal coverage, media evidence, and
+state-clarity checks. Any failed TUI QoL matrix item blocks `release-candidate eligible`.
 
 ## Benchmark Proof
 
@@ -116,13 +120,15 @@ Run candidate evaluation from a clean worktree on `main`.
 4. Run release-readiness proof.
 5. Run the manual v1 QA matrix and record the date, commit SHA, terminal app,
    passed items, and blockers.
-6. Run benchmark proof or explicitly cite a current local benchmark artifact.
+6. Run the TUI QoL QA gate and record the TUI QoL run id, required terminal
+   coverage, media artifact paths, passed items, and blockers.
+7. Run benchmark proof or explicitly cite a current local benchmark artifact.
    A current local benchmark artifact must come from the same candidate-state
    `HEAD`; record both `output/benchmarks/<run-id>/benchmark.json` and
    `output/benchmarks/<run-id>/benchmark-summary.md`. Rerunning
    `uv run python scripts/benchmark_csvql.py --output-root output/benchmarks`
    during final candidate evaluation is preferred.
-7. Scan for unsupported current claims:
+8. Scan for unsupported current claims:
 
    ```bash
    rg -n "v1-ready|v1 ready|production-safe|production ready|production-readiness|production readiness|sandbox-safe|sandbox safety|sandbox|large-file-proven|large file proven|large-file performance|large file performance" README.md CHANGELOG.md docs/development.md docs/PRODUCT_DIRECTION.md docs/ROADMAP.md docs/ARCHITECTURE.md docs/json-contracts.md docs/benchmarking.md docs/failure-gallery.md docs/release-readiness.md docs/release-notes/v1.md
@@ -133,7 +139,7 @@ Run candidate evaluation from a clean worktree on `main`.
    production-ready, sandbox-safe or sandboxed, or large-file-proven blocks
    candidate eligibility.
 
-8. Classify the result:
+9. Classify the result:
 
    - `v1-hardening`: release package exists but proof is stale, incomplete, not
      run, or blocked by remaining work.
@@ -145,7 +151,7 @@ Run candidate evaluation from a clean worktree on `main`.
    - `blocked`: a named proof, contract, docs, environment, dependency, or
      tooling blocker prevents honest candidate classification.
 
-9. Stop before publishing, tagging, uploading artifacts, creating a GitHub
+10. Stop before publishing, tagging, uploading artifacts, creating a GitHub
    release, or changing the package version.
 
 ## Label Rules
@@ -164,6 +170,8 @@ Use `release-candidate eligible` only as an assessment result after:
 - benchmark proof is refreshed or a same-HEAD local benchmark artifact is cited
   with benchmark JSON and Markdown summary paths
 - the full local gate passes
+- the TUI QoL QA gate passes on every required terminal with a recorded run id
+  and media artifact paths
 - changelog and release-note material exists for the implemented surfaces
 - docs make no unsupported sandbox, security-isolation, production-readiness,
   or large-file performance claims

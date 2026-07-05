@@ -112,11 +112,22 @@ def test_tui_qol_qa_gate_is_blocking_and_records_terminal_evidence() -> None:
     assert "Which source, query, History row, result, export, or derived-source target is affected?" in matrix
 
 
+def test_manual_qa_matrix_links_tui_qol_gate() -> None:
+    matrix = read_doc("docs/v1-manual-qa.md")
+
+    assert "[TUI QoL QA gate](tui-qol-qa.md)" in matrix
+    assert "The TUI QoL QA gate is blocking for `release-candidate eligible`." in matrix
+
+
 def test_release_readiness_links_manual_qa_matrix() -> None:
     readiness = read_doc("docs/release-readiness.md")
 
     assert "[Manual v1 QA matrix](v1-manual-qa.md)" in readiness
+    assert "[TUI QoL QA gate](tui-qol-qa.md)" in readiness
     assert "Run the manual v1 QA matrix" in readiness
+    assert "Run the TUI QoL QA gate" in readiness
+    assert "Any failed TUI QoL matrix item blocks `release-candidate eligible`." in readiness
+    assert "TUI QoL run id" in readiness
 
 
 def test_public_launch_docs_state_security_and_release_boundaries() -> None:
@@ -126,6 +137,7 @@ def test_public_launch_docs_state_security_and_release_boundaries() -> None:
             read_doc("docs/getting-started.md"),
             read_doc("docs/troubleshooting.md"),
             read_doc("docs/tui-guide.md"),
+            read_doc("docs/tui-qol-qa.md"),
             read_doc("docs/faq.md"),
             read_doc("docs/development.md"),
             read_doc("SECURITY.md"),
