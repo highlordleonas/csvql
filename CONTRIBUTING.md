@@ -46,6 +46,26 @@ uv run --all-extras pytest
 For package or release-readiness changes, also run the package and
 release-readiness checks described in [Development](docs/development.md).
 
+## Git Workflow
+
+Use branch names that describe the work type and scope:
+
+- `feat/<short-scope>` for user-visible capability
+- `fix/<short-scope>` for bug fixes
+- `docs/<short-scope>` for documentation-only changes
+- `test/<short-scope>` for test-only coverage changes
+- `chore/<short-scope>` for maintenance
+- `refactor/<short-scope>` for behavior-preserving code structure changes
+- `release/<short-scope>` for release-prep or candidate-proof lanes
+- `hotfix/<short-scope>` for urgent narrow fixes
+
+Do not use agent-identity prefixes such as `codex/` for normal project work.
+Reserve them only for explicitly requested scratch branches.
+
+Use conventional commit-style subjects, such as `docs: update TUI QA gate` or
+`fix: restore recalled TUI result export`. Keep each commit focused on one
+behavior, proof, or documentation change.
+
 ## Pull Requests
 
 Keep pull requests focused. Include tests or docs updates when behavior changes.
