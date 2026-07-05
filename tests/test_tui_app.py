@@ -531,6 +531,70 @@ def test_run_all_shortcut_runs_whole_editor_when_current_statement_is_not_enough
     assert "History query 1. Showing 1 returned row(s)." in recall_message
 
 
+def test_run_all_stops_batch_after_middle_statement_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    seen_runs: list[tuple[int, str]] = []
+
+    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
+        del sources
+        from csvql.tui_state import TUIQueryOutcome
+
+        seen_runs.append((sequence, sql))
+        if "broken" in sql:
+            return TUIQueryOutcome.error(
+                sequence=sequence,
+                sql=sql,
+                error_message="simulated failure",
+                suggestion="Fix statement 2.",
+            )
+        return TUIQueryOutcome.success(
+            sequence=sequence,
+            sql=sql,
+            result=QueryResult(columns=("value",), rows=((sequence,),), elapsed_ms=1.0),
+        )
+
+    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+
+    async def _inner() -> tuple[list[tuple[int, str]], list[str], list[int], str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.load_text(
+                "SELECT 1 AS first;\n"
+                "SELECT broken FROM customers;\n"
+                "SELECT 3 AS third;"
+            )
+
+            await pilot.press("f12")
+            await pilot.pause(0.2)
+
+            return (
+                seen_runs,
+                app_history_statuses(app.state),
+                [item.sequence for item in app.state.query_history],
+                app.query_one("#status", Static).content,
+                app.query_one("#results-message", Static).content,
+                app.query_one("#run-status", Static).content,
+            )
+
+    seen_runs, statuses, sequences, status, results_message, run_status = asyncio.run(_inner())
+
+    assert seen_runs == [
+        (1, "SELECT 1 AS first"),
+        (2, "SELECT broken FROM customers"),
+    ]
+    assert statuses == ["success", "error"]
+    assert sequences == [1, 2]
+    assert "simulated failure" in status
+    assert "simulated failure" in results_message
+    assert run_status == "Ready."
+
+
 def test_run_shortcut_records_sql_run_mode_and_history_column(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
@@ -1929,6 +1993,36 @@ def test_help_action_does_not_stack_multiple_help_screens(tmp_path: Path) -> Non
 
     assert same_help_screen is True
     assert isinstance(focused, TextArea)
+
+
+@pytest.mark.parametrize("selector", ["#sql", "#sources", "#history", "#results"])
+def test_help_escape_restores_focus_to_opening_pane(tmp_path: Path, selector: str) -> None:
+    state = _make_source_state(tmp_path)
+    sequence = state.begin_query_run("SELECT 'saved' AS label")
+    state.record_query_success(
+        sequence,
+        "SELECT 'saved' AS label",
+        QueryResult(columns=("label",), rows=(("saved",),), elapsed_ms=1.0),
+    )
+
+    async def _inner() -> tuple[object | None, object | None]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            opening_widget = app.query_one(selector)
+            opening_widget.focus()
+            await pilot.pause()
+
+            await pilot.press("?")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+
+            return opening_widget, app.focused
+
+    opening_widget, focused = asyncio.run(_inner())
+
+    assert focused is opening_widget
 
 
 def test_help_text_documents_workbench_keymap() -> None:
