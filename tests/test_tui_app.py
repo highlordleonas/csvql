@@ -571,11 +571,7 @@ def test_run_all_stops_batch_after_middle_statement_failure(
             await pilot.pause()
             sql = app.query_one("#sql", TextArea)
             sql.focus()
-            sql.load_text(
-                "SELECT 1 AS first;\n"
-                "SELECT broken FROM customers;\n"
-                "SELECT 3 AS third;"
-            )
+            sql.load_text("SELECT 1 AS first;\nSELECT broken FROM customers;\nSELECT 3 AS third;")
 
             await pilot.press("f12")
             await pilot.pause(0.2)

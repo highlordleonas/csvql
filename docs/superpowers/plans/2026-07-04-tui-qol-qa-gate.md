@@ -1004,7 +1004,7 @@ Expected: command exits 0 with no output.
 Run:
 
 ```bash
-rg -n "Run the whole SQL editor|F1 and \\?|\\? and F1|Ctrl\\+Enter|ctrl\\+enter|drag/drop|drag and drop|dropped files" README.md docs src tests
+rg -n "Run the whole SQL editor|F1 and \\?|\\? and F1|Ctrl\\+Enter|ctrl\\+enter|drag/drop|drag and drop|dropped files" README.md docs src tests --glob '!docs/superpowers/**'
 ```
 
 Expected: command exits 1 with no matches.

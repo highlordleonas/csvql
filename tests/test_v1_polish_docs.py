@@ -109,7 +109,10 @@ def test_tui_qol_qa_gate_is_blocking_and_records_terminal_evidence() -> None:
     assert "output/tui-qol-qa/<run-id>/<terminal-id>/" in matrix
     assert "media evidence is required for every terminal run" in matrix
     assert "Which pane is active?" in matrix
-    assert "Which source, query, History row, result, export, or derived-source target is affected?" in matrix
+    assert (
+        "Which source, query, History row, result, export, or derived-source target is affected?"
+        in matrix
+    )
 
 
 def test_manual_qa_matrix_links_tui_qol_gate() -> None:
