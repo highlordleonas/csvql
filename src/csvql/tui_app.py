@@ -610,6 +610,8 @@ class CSVQLMenuApp(App[None]):
         )
 
     def action_export_last_result(self) -> None:
+        if self._is_focused("#history"):
+            self._show_selected_history_result()
         if self.state.last_result is None:
             self._show_error(CSVQLError("Run a query before exporting."))
             return
@@ -620,6 +622,8 @@ class CSVQLMenuApp(App[None]):
         )
 
     def action_save_result_as_source(self) -> None:
+        if self._is_focused("#history"):
+            self._show_selected_history_result()
         result = self.state.last_result
         if result is None:
             if self.state.last_result_status == "no_result":
@@ -706,6 +710,10 @@ class CSVQLMenuApp(App[None]):
             self._select_source_at_row(event.cursor_row)
         if event.data_table.id == "history" and self._is_focused("#history"):
             self._show_history_result_at_row(event.cursor_row)
+
+    def on_focus(self, event: events.Focus) -> None:
+        if getattr(event.control, "id", None) == "history":
+            self._show_selected_history_result()
 
     def on_paste(self, event: events.Paste) -> None:
         if isinstance(self.focused, Input):

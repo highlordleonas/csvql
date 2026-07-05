@@ -1480,6 +1480,50 @@ def test_export_last_result_writes_file_when_result_exists(tmp_path: Path) -> No
     assert "Exported to" in results
 
 
+def test_export_uses_recalled_history_result(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+    first_sequence = state.begin_query_run("SELECT 'first' AS label")
+    state.record_query_success(
+        first_sequence,
+        "SELECT 'first' AS label",
+        QueryResult(columns=("label",), rows=(("first",),), elapsed_ms=1.0),
+    )
+    second_sequence = state.begin_query_run("SELECT 'second' AS label")
+    state.record_query_success(
+        second_sequence,
+        "SELECT 'second' AS label",
+        QueryResult(columns=("label",), rows=(("second",),), elapsed_ms=1.0),
+    )
+    export_path = tmp_path / "exports" / "recalled.csv"
+    export_path.parent.mkdir()
+
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            history = app.query_one("#history", DataTable)
+            history.focus()
+            history.move_cursor(row=0)
+            await pilot.pause()
+
+            await pilot.press("f7")
+            await pilot.pause()
+            export_input = app.screen.query_one("#export-path", Input)
+            export_input.value = str(export_path)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            return (
+                app.query_one("#status", Static).content,
+                export_path.read_text(encoding="utf-8"),
+            )
+
+    status, content = asyncio.run(_inner())
+
+    assert "Exported to" in status
+    assert content == "label\nfirst\n"
+
+
 def test_sources_pane_shows_source_kind(tmp_path: Path) -> None:
     state = TUISessionState()
     state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
@@ -1574,6 +1618,56 @@ def test_save_result_as_source_writes_csv_and_adds_derived_source(tmp_path: Path
     assert "Use Save sources to persist the alias in .csvql.yml." in status
     assert "Use Save sources to persist the alias in .csvql.yml." in message
     assert content == "customer_id,email\nCUST-001,alex@example.com\n"
+
+
+def test_save_result_as_source_uses_recalled_history_result(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+    first_sequence = state.begin_query_run("SELECT 'first' AS label")
+    state.record_query_success(
+        first_sequence,
+        "SELECT 'first' AS label",
+        QueryResult(columns=("label",), rows=(("first",),), elapsed_ms=1.0),
+    )
+    second_sequence = state.begin_query_run("SELECT 'second' AS label")
+    state.record_query_success(
+        second_sequence,
+        "SELECT 'second' AS label",
+        QueryResult(columns=("label",), rows=(("second",),), elapsed_ms=1.0),
+    )
+
+    async def _inner() -> tuple[tuple[TUISource, ...], str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            history = app.query_one("#history", DataTable)
+            history.focus()
+            history.move_cursor(row=0)
+            await pilot.pause()
+
+            await pilot.press("f11")
+            await pilot.pause()
+            alias_input = app.screen.query_one("#derived-source-alias", Input)
+            alias_input.value = "recalled_first"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            output_path = tmp_path / ".csvql" / "results" / "recalled_first.csv"
+            return (
+                app.state.sources,
+                app.query_one("#status", Static).content,
+                output_path.read_text(encoding="utf-8"),
+            )
+
+    sources, status, content = asyncio.run(_inner())
+
+    assert sources[-1] == TUISource(
+        name="recalled_first",
+        path=(tmp_path / ".csvql" / "results" / "recalled_first.csv").resolve(),
+        origin="session",
+        kind="derived",
+    )
+    assert "Saved result as derived source recalled_first" in status
+    assert content == "label\nfirst\n"
 
 
 @pytest.mark.parametrize("key", ["ctrl+s", "alt+s"])
