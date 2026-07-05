@@ -57,6 +57,13 @@ def _footer_key_displays(app: CSVQLMenuApp) -> tuple[str, ...]:
     return tuple(key.key_display for key in app.query(FooterKey))
 
 
+def _focused_widget_id(app: CSVQLMenuApp) -> str:
+    focused = app.focused
+    if focused is None:
+        return "None"
+    return focused.id or type(focused).__name__
+
+
 async def _settled_footer_key_displays(
     pilot: Pilot[None],
     app: CSVQLMenuApp,
@@ -995,6 +1002,61 @@ def test_workbench_focus_shortcuts_cover_all_panes(tmp_path: Path) -> None:
     assert isinstance(history_focus, DataTable)
     assert isinstance(results_focus, DataTable)
     assert isinstance(sql_focus, TextArea)
+
+
+@pytest.mark.parametrize("size", [(60, 18), (160, 45)])
+def test_core_panes_mount_and_remain_focusable_at_simulated_viewport_sizes(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[int, int, int, str, str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            sources = app.query_one("#sources", DataTable)
+            history = app.query_one("#history", DataTable)
+            results = app.query_one("#results", DataTable)
+
+            await pilot.press("f6")
+            await pilot.pause()
+            sources_focus = _focused_widget_id(app)
+            await pilot.press("f8")
+            await pilot.pause()
+            history_focus = _focused_widget_id(app)
+            await pilot.press("f5")
+            await pilot.pause()
+            results_focus = _focused_widget_id(app)
+            await pilot.press("f2")
+            await pilot.pause()
+            sql_focus = _focused_widget_id(app)
+            return (
+                sources.row_count,
+                history.row_count,
+                results.row_count,
+                sources_focus,
+                history_focus,
+                results_focus,
+                sql_focus,
+            )
+
+    (
+        sources_count,
+        history_count,
+        results_count,
+        sources_focus,
+        history_focus,
+        results_focus,
+        sql_focus,
+    ) = asyncio.run(_inner())
+
+    assert sources_count == 1
+    assert history_count == 0
+    assert results_count == 0
+    assert sources_focus == "sources"
+    assert history_focus == "history"
+    assert results_focus == "results"
+    assert sql_focus == "sql"
 
 
 def test_footer_key_order_is_stable_between_sql_and_sources(tmp_path: Path) -> None:
@@ -2118,6 +2180,92 @@ def test_source_letter_actions_only_work_when_sources_focused(tmp_path: Path) ->
     assert editor_text == "i"
     assert "customers: 2 columns." in status
     assert "customer_id, email" in message
+
+
+def test_documented_keys_have_predictable_pane_behavior(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+    reopened_sequence = state.begin_query_run("SELECT 99 AS reopened")
+    state.record_query_success(
+        reopened_sequence,
+        "SELECT 99 AS reopened",
+        QueryResult(columns=("reopened",), rows=((99,),), elapsed_ms=1.0),
+    )
+
+    async def _inner() -> tuple[str, str, str, str, str, str, str, str, str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            await pilot.press("a")
+            await pilot.pause()
+            editor_after_a = sql.text
+
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            focused_after_source_enter = _focused_widget_id(app)
+            editor_after_source_enter = app.query_one("#sql", TextArea).text
+
+            history = app.query_one("#history", DataTable)
+            history.focus()
+            history.move_cursor(row=0)
+            await pilot.pause()
+            status_before_history_i = app.query_one("#status", Static).content
+            results_before_history_i = app.query_one("#results-message", Static).content
+            await pilot.press("i")
+            await pilot.pause()
+            editor_after_history_i = app.query_one("#sql", TextArea).text
+            focused_after_history_i = _focused_widget_id(app)
+            status_after_history_i = app.query_one("#status", Static).content
+            results_after_history_i = app.query_one("#results-message", Static).content
+
+            await pilot.press("f2")
+            await pilot.pause()
+            focused_after_f2 = _focused_widget_id(app)
+
+            await pilot.press("f6")
+            await pilot.pause()
+            focused_after_f6 = _focused_widget_id(app)
+
+            return (
+                editor_after_a,
+                focused_after_source_enter,
+                editor_after_source_enter,
+                editor_after_history_i,
+                focused_after_history_i,
+                status_before_history_i,
+                status_after_history_i,
+                results_before_history_i,
+                results_after_history_i,
+                focused_after_f2,
+                focused_after_f6,
+            )
+
+    (
+        editor_after_a,
+        focused_after_source_enter,
+        editor_after_source_enter,
+        editor_after_history_i,
+        focused_after_history_i,
+        status_before_history_i,
+        status_after_history_i,
+        results_before_history_i,
+        results_after_history_i,
+        focused_after_f2,
+        focused_after_f6,
+    ) = asyncio.run(_inner())
+
+    assert editor_after_a == "a"
+    assert focused_after_source_enter == "sources"
+    assert editor_after_source_enter == "a"
+    assert editor_after_history_i == "a"
+    assert focused_after_history_i == "history"
+    assert status_after_history_i == status_before_history_i
+    assert results_after_history_i == results_before_history_i
+    assert focused_after_f2 == "sql"
+    assert focused_after_f6 == "sources"
 
 
 def test_no_result_outcome_clears_last_result_and_disables_export(
