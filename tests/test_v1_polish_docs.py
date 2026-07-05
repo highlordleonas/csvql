@@ -152,6 +152,9 @@ def test_public_launch_docs_state_security_and_release_boundaries() -> None:
         "publish to PyPI",
         "create a GitHub release",
         "explicit exports",
+        "claim `v1-stable`",
+        "production readiness",
+        "broad large-file proof",
     )
     for boundary in required_boundaries:
         assert boundary in public_docs

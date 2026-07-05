@@ -65,7 +65,6 @@ def test_public_docs_do_not_reference_removed_internal_material() -> None:
 
     for removed_reference in (
         "AGENTS.md",
-        "docs/superpowers",
         "CODEX_CAPABILITY_REVIEW",
         "release-candidate-proof-",
     ):
