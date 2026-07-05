@@ -17,6 +17,16 @@ def selected_or_current_sql(
     return current_statement_at_offset(text, _offset_for_location(text, cursor_location))
 
 
+def all_sql_statements(text: str) -> tuple[str, ...]:
+    """Return all non-empty semicolon-delimited statements in editor order."""
+
+    return tuple(
+        statement
+        for segment in _statement_segments(text)
+        if (statement := _segment_text(text, segment))
+    )
+
+
 def current_statement_at_offset(text: str, cursor_offset: int) -> str:
     """Return the statement around a text offset, ignoring semicolons inside SQL literals."""
 

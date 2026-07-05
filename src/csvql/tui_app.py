@@ -21,7 +21,7 @@ from csvql.export import ExportFormat
 from csvql.models import QueryResult
 from csvql.output import format_profile_result_table
 from csvql.table_mapping import parse_table_mapping
-from csvql.tui_editor import selected_or_current_sql
+from csvql.tui_editor import all_sql_statements, selected_or_current_sql
 from csvql.tui_help import WORKBENCH_HELP
 from csvql.tui_results import make_result_view_state, populate_result_table
 from csvql.tui_state import (
@@ -266,6 +266,10 @@ class CSVQLMenuApp(App[None]):
         self._active_query_sql: dict[int, str] = {}
         self._active_query_run_modes: dict[int, TUIQueryRunMode] = {}
         self._run_editor_pending = False
+        self._help_screen_open = False
+        self._editor_batch_queue: list[str] = []
+        self._editor_batch_total = 0
+        self._editor_batch_completed = 0
         self._suppress_sql_source_text_detection = False
         self._sql_source_text_revision = 0
         if initial_state is not None:
@@ -301,26 +305,42 @@ class CSVQLMenuApp(App[None]):
         self.query_one("#run-status", Static).update("Ready.")
 
     def action_add_source(self) -> None:
+        self._open_add_source_prompt("Enter name=path or paste CSV path(s).")
+
+    def _open_add_source_prompt(self, prompt: str) -> None:
         self.push_screen(
             _PromptInputScreen(
-                "Enter name=path or paste CSV path(s).",
+                prompt,
                 input_id="mapping-input",
             ),
             callback=self._handle_add_source,
         )
 
     def action_show_help(self) -> None:
-        self.push_screen(_HelpScreen())
+        self._show_help_once()
 
     def action_show_contextual_help(self) -> None:
-        self.push_screen(_HelpScreen())
+        self._show_help_once()
+
+    def _show_help_once(self) -> None:
+        if self._help_screen_open or isinstance(self.screen, _HelpScreen):
+            return
+        self._help_screen_open = True
+        self.push_screen(_HelpScreen(), callback=lambda _: self._mark_help_closed())
+
+    def _mark_help_closed(self) -> None:
+        self._help_screen_open = False
 
     def action_choose_csv_source(self) -> None:
         try:
             path_values = _choose_csv_paths_with_native_picker()
             sources = self._sources_from_csv_path_values(path_values)
         except CSVQLError as exc:
-            self._show_error(exc)
+            fallback_message = exc.message
+            if exc.suggestion:
+                fallback_message = f"{fallback_message} {exc.suggestion}"
+            self._set_status(fallback_message)
+            self._open_add_source_prompt("Paste CSV path(s) or enter name=path.")
             return
 
         if not sources:
@@ -341,6 +361,7 @@ class CSVQLMenuApp(App[None]):
 
     def action_focus_history(self) -> None:
         self.query_one("#history", DataTable).focus()
+        self._show_selected_history_result()
 
     def action_quit_from_non_editor(self) -> None:
         if isinstance(self.focused, TextArea):
@@ -504,8 +525,22 @@ class CSVQLMenuApp(App[None]):
     def _run_query_from_editor(self) -> None:
         self._run_editor_pending = False
         sql_widget = self.query_one("#sql", TextArea)
-        sql = sql_widget.text.strip()
+        statements = all_sql_statements(sql_widget.text)
+        if len(statements) > 1:
+            self._start_editor_query_batch(statements)
+            return
+        sql = statements[0] if statements else ""
         self._start_query_run(sql, run_label="editor query", run_mode="editor")
+
+    def _start_editor_query_batch(self, statements: Sequence[str]) -> None:
+        self._editor_batch_queue = list(statements[1:])
+        self._editor_batch_total = len(statements)
+        self._editor_batch_completed = 0
+        self._start_query_run(
+            statements[0],
+            run_label=f"statement 1/{self._editor_batch_total}",
+            run_mode="editor",
+        )
 
     def _run_selected_or_current_query_from_editor(self) -> None:
         self._run_editor_pending = False
@@ -669,6 +704,8 @@ class CSVQLMenuApp(App[None]):
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.data_table.id == "sources":
             self._select_source_at_row(event.cursor_row)
+        if event.data_table.id == "history" and self._is_focused("#history"):
+            self._show_history_result_at_row(event.cursor_row)
 
     def on_paste(self, event: events.Paste) -> None:
         if isinstance(self.focused, Input):
@@ -741,10 +778,12 @@ class CSVQLMenuApp(App[None]):
 
     def _refresh_history_table(self) -> None:
         history_table = self.query_one("#history", DataTable)
-        previous_row = history_table.cursor_row
+        selected_sequence = self._selected_history_sequence()
         history_table.clear(columns=True)
         history_table.add_columns("seq", "run", "status", "rows", "sql")
+        target_row = 0
         for item in self.state.query_history:
+            row_index = history_table.row_count
             rows = "" if item.row_count is None else str(item.row_count)
             history_table.add_row(
                 str(item.sequence),
@@ -753,8 +792,29 @@ class CSVQLMenuApp(App[None]):
                 rows,
                 _one_line_sql(item.sql),
             )
+            if selected_sequence == item.sequence:
+                target_row = row_index
         if history_table.row_count:
-            target_row = previous_row if 0 <= previous_row < history_table.row_count else 0
+            history_table.move_cursor(row=target_row)
+
+    def _refresh_history_table_selecting(self, sequence: int) -> None:
+        history_table = self.query_one("#history", DataTable)
+        history_table.clear(columns=True)
+        history_table.add_columns("seq", "run", "status", "rows", "sql")
+        target_row = 0
+        for item in self.state.query_history:
+            row_index = history_table.row_count
+            rows = "" if item.row_count is None else str(item.row_count)
+            history_table.add_row(
+                str(item.sequence),
+                item.run_mode,
+                item.status,
+                rows,
+                _one_line_sql(item.sql),
+            )
+            if item.sequence == sequence:
+                target_row = row_index
+        if history_table.row_count:
             history_table.move_cursor(row=target_row)
 
     def _status_message(self) -> str:
@@ -917,10 +977,54 @@ class CSVQLMenuApp(App[None]):
 
     def _selected_history_item(self) -> TUIQueryHistoryItem | None:
         history_table = self.query_one("#history", DataTable)
-        row_index = history_table.cursor_row
+        return self._history_item_at_row(history_table.cursor_row)
+
+    def _history_item_at_row(self, row_index: int) -> TUIQueryHistoryItem | None:
         if row_index < 0 or row_index >= len(self.state.query_history):
             return None
         return self.state.query_history[row_index]
+
+    def _selected_history_sequence(self) -> int | None:
+        item = self._selected_history_item()
+        if item is None:
+            return None
+        return item.sequence
+
+    def _show_selected_history_result(self) -> None:
+        item = self._selected_history_item()
+        if item is None:
+            return
+        self._show_history_item_result(item)
+
+    def _show_history_result_at_row(self, row_index: int) -> None:
+        item = self._history_item_at_row(row_index)
+        if item is None:
+            return
+        self._show_history_item_result(item)
+
+    def _show_history_item_result(self, item: TUIQueryHistoryItem) -> None:
+        if item.status == "success":
+            if not self.state.restore_query_result(item.sequence):
+                return
+            view = self.state.result_view
+            populate_result_table(self.query_one("#results", DataTable), view)
+            self.query_one("#results-message", Static).update(
+                f"History query {item.sequence}. {_result_message(view)}"
+            )
+            self._set_status(f"Showing query {item.sequence} result from History.")
+            return
+
+        self.state.clear_last_result()
+        self._clear_result_grid()
+        if item.status == "no_result":
+            self.state.last_result_status = "no_result"
+            message = f"History query {item.sequence} completed with no tabular result."
+        else:
+            self.state.last_result_status = "error"
+            detail = item.error_message or "Query failed."
+            message = f"History query {item.sequence} failed. {detail}"
+        self.query_one("#results-message", Static).update(message)
+        self._set_status(message)
 
     def _is_focused(self, selector: str) -> bool:
         try:
@@ -946,12 +1050,14 @@ class CSVQLMenuApp(App[None]):
                 run_mode=run_mode,
             )
             populate_result_table(self.query_one("#results", DataTable), view)
-            self._refresh_history_table()
+            self._refresh_history_table_selecting(outcome.sequence)
             self._set_status(
                 f"{outcome.result.row_count} returned row(s) in {outcome.result.elapsed_ms:.1f} ms."
             )
             self.query_one("#run-status", Static).update("Ready.")
             self.query_one("#results-message", Static).update(_result_message(view))
+            if self._continue_editor_query_batch(outcome):
+                return
             self.query_one("#sql", TextArea).focus()
             return
         if outcome.status == "no_result":
@@ -963,10 +1069,12 @@ class CSVQLMenuApp(App[None]):
             )
             self.query_one("#results", DataTable).clear(columns=True)
             message = "Statement completed; no tabular result to display."
-            self._refresh_history_table()
+            self._refresh_history_table_selecting(outcome.sequence)
             self._set_status(message)
             self.query_one("#run-status", Static).update("Ready.")
             self.query_one("#results-message", Static).update(message)
+            if self._continue_editor_query_batch(outcome):
+                return
             self.query_one("#sql", TextArea).focus()
             return
         self.state.record_query_error(
@@ -977,10 +1085,48 @@ class CSVQLMenuApp(App[None]):
         )
         self.query_one("#results", DataTable).clear(columns=True)
         error = CSVQLError(outcome.error_message or "Query failed.", suggestion=outcome.suggestion)
-        self._refresh_history_table()
+        self._refresh_history_table_selecting(outcome.sequence)
         self.query_one("#run-status", Static).update("Ready.")
         self._show_error(error)
+        self._clear_editor_query_batch()
         self.query_one("#sql", TextArea).focus()
+
+    def _continue_editor_query_batch(self, outcome: TUIQueryOutcome) -> bool:
+        if self._editor_batch_total == 0:
+            return False
+
+        self._editor_batch_completed += 1
+        if outcome.status == "error":
+            self._clear_editor_query_batch()
+            return False
+
+        if self._editor_batch_queue:
+            next_index = self._editor_batch_completed + 1
+            next_sql = self._editor_batch_queue.pop(0)
+            self._start_query_run(
+                next_sql,
+                run_label=f"statement {next_index}/{self._editor_batch_total}",
+                run_mode="editor",
+            )
+            return True
+
+        total = self._editor_batch_total
+        self._clear_editor_query_batch()
+        if total > 1:
+            if outcome.status == "success" and outcome.result is not None:
+                self._set_status(
+                    f"Ran {total} statements. Showing query {outcome.sequence} result."
+                )
+            else:
+                self._set_status(
+                    f"Ran {total} statements. Final statement produced no tabular result."
+                )
+        return False
+
+    def _clear_editor_query_batch(self) -> None:
+        self._editor_batch_queue = []
+        self._editor_batch_total = 0
+        self._editor_batch_completed = 0
 
     def _handle_query_worker_failure(
         self,
@@ -998,7 +1144,7 @@ class CSVQLMenuApp(App[None]):
             error_message = f"{error_message} {error}"
 
         self.state.record_query_error(sequence, sql, error_message, run_mode=run_mode)
-        self._refresh_history_table()
+        self._refresh_history_table_selecting(sequence)
         self.query_one("#run-status", Static).update("Ready.")
         self._clear_result_grid()
         self._show_error(
@@ -1007,6 +1153,7 @@ class CSVQLMenuApp(App[None]):
                 suggestion="Try running the query again.",
             )
         )
+        self._clear_editor_query_batch()
         self.query_one("#sql", TextArea).focus()
 
     def _sequence_from_worker(self, worker: Worker[object]) -> int | None:

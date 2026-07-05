@@ -130,6 +130,8 @@ class TUISessionState:
     _source_columns: dict[str, tuple[TUISourceColumn, ...]] = field(default_factory=dict)
     _selected_alias: str | None = None
     _query_history: list[TUIQueryHistoryItem] = field(default_factory=list)
+    _query_results: dict[int, QueryResult] = field(default_factory=dict)
+    _query_result_views: dict[int, TUIResultViewState] = field(default_factory=dict)
     _next_query_sequence: int = 1
     active_pane: TUIFocusPane = "editor"
     last_result: QueryResult | None = None
@@ -213,6 +215,28 @@ class TUISessionState:
     def query_history(self) -> tuple[TUIQueryHistoryItem, ...]:
         return tuple(self._query_history)
 
+    def query_result(self, sequence: int) -> QueryResult | None:
+        """Return the stored tabular result for a successful query."""
+
+        return self._query_results.get(sequence)
+
+    def query_result_view(self, sequence: int) -> TUIResultViewState | None:
+        """Return the stored result-grid view for a successful query."""
+
+        return self._query_result_views.get(sequence)
+
+    def restore_query_result(self, sequence: int) -> bool:
+        """Make a successful history row's result the active visible result."""
+
+        result = self.query_result(sequence)
+        view = self.query_result_view(sequence)
+        if result is None or view is None:
+            return False
+        self.last_result = result
+        self.last_result_status = "query"
+        self.result_view = view
+        return True
+
     def set_last_result(self, result: QueryResult) -> None:
         """Store the most recent query result."""
 
@@ -255,6 +279,8 @@ class TUISessionState:
             total_row_count=result.row_count,
             source_result_sequence=sequence,
         )
+        self._query_results[sequence] = result
+        self._query_result_views[sequence] = self.result_view
         self._query_history.append(
             TUIQueryHistoryItem(
                 sequence=sequence,

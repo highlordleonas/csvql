@@ -112,15 +112,23 @@ uv run --all-extras csvql menu
 Use `F4` to run SQL. On macOS, `F11` may be intercepted by Show Desktop; use
 `Ctrl+S` to save a result as a derived source.
 
+`F3` opens a native CSV picker on macOS. On other platforms, or when the native
+picker is unavailable, it opens a path prompt where you can paste CSV path(s) or
+enter `name=path`.
+
 Core fallbacks:
 
 - `F4`: run SQL
+- `F12`: run all editor statements as separate History rows
 - `F6`: sources
 - `F5`: results
 - `F8`: history
 - `F9`: quit
 - `?`: help
 - `F1`: also opens help
+
+After `F12`, move through History to recall each successful statement's result
+in the Results pane.
 
 ## Data-Quality Checks Fail
 

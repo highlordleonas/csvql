@@ -4,7 +4,7 @@ WORKBENCH_HELP = """CSVQL Workbench Lite
 
 Run SQL
   F4                  Run selected SQL, otherwise current statement
-  F12                 Run the whole SQL editor
+  F12                 Run all editor statements as History rows
   Ctrl+N / F10        Clear editor for a new query
 
 Focus
@@ -20,13 +20,14 @@ Source pane
   c                   Load/show selected source columns
   l                   Insert selected source alias
   x                   Insert SELECT * starter query
-  F3                  Choose CSV file(s)
+  F3                  Choose CSV file(s) or prompt for paths
   a                   Add source
   paste .csv path     Add CSV path text as a session source
   d                   Remove source
   w                   Save sources to project catalog
 
 History pane
+  highlight           Recall selected query result
   Enter               Reopen selected query
   r                   Rerun selected query with current session sources
 

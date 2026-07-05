@@ -27,9 +27,9 @@ uv sync --all-extras
 uv run --all-extras csvql menu
 ```
 
-You can also add sources after launch with `F3`, which opens a local CSV picker
-on macOS, or by pasting `.csv` paths into the SQL editor. CSVQL turns pasted CSV
-paths into session sources immediately.
+You can also add sources after launch with `F3`. On macOS it opens a local CSV
+picker; elsewhere it opens a CSV path prompt. Pasting `.csv` paths into the SQL
+editor also turns those paths into session sources immediately.
 
 ![Terminal screenshot of the LocalQL TUI workbench with project sources loaded and a query result visible](assets/localql-tui-workbench.svg)
 
@@ -39,8 +39,8 @@ The menu opens with the SQL editor focused.
 
 - SQL editor: write selected SQL, the current statement, or the full buffer
 - Sources: inspect, sample, profile, add, remove, and save source mappings
-- Results: view the latest tabular result
-- History: reopen or rerun queries from the current session
+- Results: view the latest or recalled tabular result
+- History: recall results, reopen queries, or rerun queries from the current session
 - Help: view available keybindings inside the app
 
 ## Core Keys
@@ -48,9 +48,9 @@ The menu opens with the SQL editor focused.
 | Key | Action |
 | --- | --- |
 | `F4` | Run selected SQL or the current statement |
-| `F12` | Run the whole SQL editor buffer |
+| `F12` | Run all semicolon-delimited editor statements as separate History rows |
 | `F2` or `Ctrl+Down` | Focus SQL editor |
-| `F3` | Choose CSV file(s) |
+| `F3` | Choose CSV file(s) on macOS or open a CSV path prompt elsewhere |
 | `F5` | Focus results |
 | `F6` or `Ctrl+Up` | Focus sources |
 | `F8` | Focus history |

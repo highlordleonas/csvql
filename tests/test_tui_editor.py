@@ -1,4 +1,8 @@
-from csvql.tui_editor import current_statement_at_offset, selected_or_current_sql
+from csvql.tui_editor import (
+    all_sql_statements,
+    current_statement_at_offset,
+    selected_or_current_sql,
+)
 
 
 def test_selected_sql_wins_over_current_statement() -> None:
@@ -63,3 +67,13 @@ def test_current_statement_at_end_after_trailing_semicolon_uses_previous_stateme
     sql = "SELECT COUNT(*) FROM customers;  "
 
     assert current_statement_at_offset(sql, len(sql)) == "SELECT COUNT(*) FROM customers"
+
+
+def test_all_sql_statements_returns_ordered_non_empty_statements() -> None:
+    sql = " SELECT 1; \n\nSELECT 'a;b' AS value; -- comment ;\n SELECT 3 "
+
+    assert all_sql_statements(sql) == (
+        "SELECT 1",
+        "SELECT 'a;b' AS value",
+        "-- comment ;\n SELECT 3",
+    )
