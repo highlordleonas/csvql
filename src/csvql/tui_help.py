@@ -3,8 +3,8 @@
 WORKBENCH_HELP = """CSVQL Workbench Lite
 
 Run SQL
-  F4                  Run selected SQL, otherwise current statement
-  F12                 Run all editor statements as History rows
+  F4 / Ctrl+R         Run selected SQL, otherwise current statement
+  F12                 Run all SQL in editor as History rows
   Ctrl+N / F10        Clear editor for a new query
 
 Focus

@@ -193,10 +193,12 @@ paste `.csv` paths into the SQL editor. CSVQL turns pasted CSV paths into
 session sources immediately.
 
 The SQL editor is focused when the menu opens. Type SQL directly, then press
-`F4` to run selected SQL. If nothing is selected, CSVQL falls back to the current
-statement around the cursor. `F12` runs every semicolon-delimited statement in
-the editor, records each statement in History, and shows the final tabular
-result. Move through History to recall each successful statement's result set.
+`F4` or `Ctrl+R` to run selected SQL. If nothing is selected, CSVQL falls back
+to the current statement around the cursor. `F12` runs every semicolon-delimited
+statement in the editor, records each statement in History, and shows the final
+tabular result. Move through History to recall each successful statement's
+result set. The History run column labels current-statement runs as `current`,
+F12 runs as `all`, and History reruns as `rerun`.
 
 Use `F2` or `Ctrl+Down` for the SQL editor, `F3` to choose CSV file(s), `F5`
 for results, `F6` or `Ctrl+Up` for sources, and `F8` for history. Printable keys

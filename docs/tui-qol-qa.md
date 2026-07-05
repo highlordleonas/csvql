@@ -74,7 +74,7 @@ Run every item in every required terminal.
 | QOL-05 | Add a source through the Add Source prompt | `name=path` adds the expected session source and selects it predictably. |
 | QOL-06 | Add a source by pasted path | Pasted CSV path becomes a session source and does not remain as SQL text. |
 | QOL-07 | Run selected SQL | Only the selected SQL runs and History records one attempt. |
-| QOL-08 | Run the current statement | `F4` runs the statement around the cursor, not unrelated editor text. |
+| QOL-08 | Run the current statement | `F4` and `Ctrl+R` run the statement around the cursor, not unrelated editor text. |
 | QOL-09 | Run full-buffer multi-statement SQL with `F12` | Each statement is recorded as a separate History row and successful rows can be recalled. |
 | QOL-10 | Recall History results | Highlighting a successful History row restores that result without rerunning SQL. |
 | QOL-11 | Rerun History rows | Rerun appends a new sequence and selects the new query row. |

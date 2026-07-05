@@ -630,7 +630,7 @@ def test_run_shortcut_records_sql_run_mode_and_history_column(tmp_path: Path) ->
 
     assert run_modes == ["sql"]
     assert columns == ("seq", "run", "status", "rows", "sql")
-    assert run_labels == ("F4",)
+    assert run_labels == ("current",)
     assert "1 returned row(s)" in status
 
 
@@ -657,7 +657,7 @@ def test_run_all_shortcut_records_editor_run_mode(tmp_path: Path) -> None:
     run_modes, run_labels, status = asyncio.run(_inner())
 
     assert run_modes == ["editor"]
-    assert run_labels == ("F12",)
+    assert run_labels == ("all",)
     assert "1 returned row(s)" in status
 
 
@@ -716,8 +716,8 @@ def test_history_rerun_records_rerun_mode_and_status_message(tmp_path: Path) -> 
     run_modes, run_labels, run_status, sql_text, seen_sql = asyncio.run(_inner())
 
     assert run_modes == ["sql", "rerun"]
-    assert run_labels == ("F4", "rerun")
-    assert run_status == "Rerunning query 1 as query 2..."
+    assert run_labels == ("current", "rerun")
+    assert run_status == "Rerunning history query 1 as query 2..."
     assert sql_text == "SELECT COUNT(*) AS count FROM customers"
     assert seen_sql == ["SELECT COUNT(*) AS count FROM customers"]
 
@@ -1114,6 +1114,58 @@ def test_footer_key_order_is_stable_between_sql_and_sources(tmp_path: Path) -> N
         "Ctrl+S/Alt+S",
     )
     assert "?" not in sources_footer
+
+
+def test_pane_context_updates_with_active_focus(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+    sequence = state.begin_query_run("SELECT 1 AS value")
+    state.record_query_success(
+        sequence,
+        "SELECT 1 AS value",
+        QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+    )
+
+    async def _inner() -> tuple[str, str, str, str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            initial_sql_title = app.query_one("#sql-title", Static).content
+            initial_context = app.query_one("#context", Static).content
+
+            app.query_one("#sources", DataTable).focus()
+            await pilot.pause()
+            sources_title = app.query_one("#sources-title", Static).content
+            sources_context = app.query_one("#context", Static).content
+
+            app.query_one("#history", DataTable).focus()
+            await pilot.pause()
+            history_title = app.query_one("#history-title", Static).content
+            history_context = app.query_one("#context", Static).content
+
+            return (
+                initial_sql_title,
+                initial_context,
+                sources_title,
+                sources_context,
+                history_title,
+                history_context,
+            )
+
+    (
+        initial_sql_title,
+        initial_context,
+        sources_title,
+        sources_context,
+        history_title,
+        history_context,
+    ) = asyncio.run(_inner())
+
+    assert initial_sql_title.startswith("> SQL editor")
+    assert "F4/Ctrl+R current" in initial_context
+    assert sources_title.startswith("> Sources")
+    assert "a add source" in sources_context
+    assert history_title.startswith("> History")
+    assert "Enter reopen" in history_context
 
 
 def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> None:
@@ -2055,7 +2107,6 @@ def test_help_action_does_not_stack_multiple_help_screens(tmp_path: Path) -> Non
             await pilot.pause()
             first_help_screen = app.screen
             await pilot.press("f1")
-            await pilot.press("?")
             await pilot.pause()
             same_help_screen = app.screen is first_help_screen
             await pilot.press("escape")
@@ -2086,7 +2137,7 @@ def test_help_escape_restores_focus_to_opening_pane(tmp_path: Path, selector: st
             opening_widget.focus()
             await pilot.pause()
 
-            await pilot.press("?")
+            await pilot.press("f1")
             await pilot.pause()
             await pilot.press("escape")
             await pilot.pause()
@@ -2104,9 +2155,9 @@ def test_help_text_documents_workbench_keymap() -> None:
     help_text = WORKBENCH_HELP
 
     assert "Run SQL" in help_text
-    assert "F4                  Run selected SQL, otherwise current statement" in help_text
+    assert "F4 / Ctrl+R         Run selected SQL, otherwise current statement" in help_text
     assert "Run selected SQL, otherwise current statement" in help_text
-    assert "F12                 Run all editor statements" in help_text
+    assert "F12                 Run all SQL in editor" in help_text
     assert "F3                  Choose CSV file(s) or prompt for paths" in help_text
     assert "F1                  Help" in help_text
     assert "?                   Help" not in help_text
@@ -2114,32 +2165,26 @@ def test_help_text_documents_workbench_keymap() -> None:
     assert "r                   Rerun selected query with current session sources" in help_text
 
 
-def test_question_mark_help_opens_from_sql_and_sources(tmp_path: Path) -> None:
+def test_question_mark_types_in_sql_editor_and_f1_opens_help(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
-    async def _inner() -> tuple[str, str, str]:
+    async def _inner() -> tuple[str, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("?")
             await pilot.pause()
             editor_text = app.query_one("#sql", TextArea).text
-            sql_help_text = app.screen.query_one("#help-text", Static).content
 
-            await pilot.press("escape")
+            await pilot.press("f1")
             await pilot.pause()
+            help_text = app.screen.query_one("#help-text", Static).content
+            return editor_text, help_text
 
-            app.query_one("#sources", DataTable).focus()
-            await pilot.press("?")
-            await pilot.pause()
-            sources_help_text = app.screen.query_one("#help-text", Static).content
-            return editor_text, sql_help_text, sources_help_text
+    editor_text, help_text = asyncio.run(_inner())
 
-    editor_text, sql_help_text, sources_help_text = asyncio.run(_inner())
-
-    assert editor_text == ""
-    assert sql_help_text.startswith("CSVQL Workbench Lite")
-    assert sources_help_text.startswith("CSVQL Workbench Lite")
+    assert editor_text == "?"
+    assert help_text.startswith("CSVQL Workbench Lite")
 
 
 def test_readme_documents_source_intelligence_keymap() -> None:
@@ -2153,9 +2198,12 @@ def test_readme_documents_source_intelligence_keymap() -> None:
 def test_readme_documents_editor_quality_keymap() -> None:
     readme = _normalized_markdown_text(_read_readme_text())
 
-    assert "`F4` to run selected SQL" in readme
+    assert "`F4` or `Ctrl+R` to run selected SQL" in readme
     assert "`F12` runs every semicolon-delimited statement" in readme
     assert "current statement around the cursor" in readme
+    assert "labels current-statement runs as `current`" in readme
+    assert "F12 runs as `all`" in readme
+    assert "History reruns as `rerun`" in readme
 
 
 def test_readme_documents_history_rerun_keymap() -> None:
@@ -2515,7 +2563,7 @@ def test_second_run_while_worker_active_shows_already_running(
     status, run_status, is_running, sequence, final_status, history_statuses = asyncio.run(_inner())
 
     assert status == "Query already running."
-    assert run_status == "Running SQL query 1..."
+    assert run_status == "Running current SQL as query 1..."
     assert is_running is True
     assert sequence == 1
     assert "1 returned row(s)" in final_status
@@ -2641,7 +2689,7 @@ def test_already_running_rejection_preserves_previous_result(
     assert "Query already running." in status
     assert "Previous result is still available." in status
     assert "Previous result is still available." in message
-    assert run_status == "Running SQL query 2..."
+    assert run_status == "Running current SQL as query 2..."
     assert is_running is True
     assert sequence == 2
     assert history_before_release == ["success"]

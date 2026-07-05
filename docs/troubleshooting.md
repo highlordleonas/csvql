@@ -109,8 +109,8 @@ uv run --all-extras csvql menu
 
 ## TUI Keybindings Do Not Work In My Terminal
 
-Use `F4` to run SQL. On macOS, `F11` may be intercepted by Show Desktop; use
-`Ctrl+S` to save a result as a derived source.
+Use `F4` or `Ctrl+R` to run the current SQL. On macOS, `F11` may be intercepted
+by Show Desktop; use `Ctrl+S` to save a result as a derived source.
 
 `F3` opens a native CSV picker on macOS. On other platforms, or when the native
 picker is unavailable, it opens a path prompt where you can paste CSV path(s) or
@@ -118,8 +118,8 @@ enter `name=path`.
 
 Core fallbacks:
 
-- `F4`: run SQL
-- `F12`: run all editor statements as separate History rows
+- `F4` or `Ctrl+R`: run selected SQL or the current statement
+- `F12`: run all SQL in the editor as separate History rows
 - `F6`: sources
 - `F5`: results
 - `F8`: history

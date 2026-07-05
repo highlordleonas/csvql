@@ -47,8 +47,8 @@ The menu opens with the SQL editor focused.
 
 | Key | Action |
 | --- | --- |
-| `F4` | Run selected SQL or the current statement |
-| `F12` | Run all semicolon-delimited editor statements as separate History rows |
+| `F4` or `Ctrl+R` | Run selected SQL or the current statement |
+| `F12` | Run all semicolon-delimited SQL in the editor as separate History rows |
 | `F2` or `Ctrl+Down` | Focus SQL editor |
 | `F3` | Choose CSV file(s) on macOS or open a CSV path prompt elsewhere |
 | `F5` | Focus results |
@@ -57,6 +57,9 @@ The menu opens with the SQL editor focused.
 | `F9` | Quit |
 | `F1` | Help |
 | `Ctrl+N` or `F10` | Clear editor for a new query |
+
+The History run column uses semantic labels: `current` for F4/Ctrl+R runs,
+`all` for F12 runs, and `rerun` for History reruns.
 
 ## Source Actions
 

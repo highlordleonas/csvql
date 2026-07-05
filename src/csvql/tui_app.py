@@ -11,6 +11,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, Static, TextArea
 from textual.widgets._footer import FooterKey
@@ -25,6 +26,7 @@ from csvql.tui_editor import all_sql_statements, selected_or_current_sql
 from csvql.tui_help import WORKBENCH_HELP
 from csvql.tui_results import make_result_view_state, populate_result_table
 from csvql.tui_state import (
+    TUIFocusPane,
     TUIQueryHistoryItem,
     TUIQueryOutcome,
     TUIQueryRunMode,
@@ -195,19 +197,19 @@ class CSVQLMenuApp(App[None]):
     #results-message {
         height: 1;
     }
+
+    .pane-title {
+        height: 1;
+    }
+
+    #context {
+        height: 1;
+    }
     """
 
     BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
         Binding("q", "quit_from_non_editor", "Quit", show=False),
         Binding("f1", "show_help", "Help", key_display="F1", priority=True),
-        Binding(
-            "question_mark",
-            "show_contextual_help",
-            "Help",
-            key_display="?",
-            show=False,
-            priority=True,
-        ),
         Binding("f2,ctrl+down", "focus_sql", "SQL", priority=True),
         Binding("f3", "choose_csv_source", "Open CSV", priority=True),
         Binding(
@@ -217,6 +219,7 @@ class CSVQLMenuApp(App[None]):
             key_display="F4",
             priority=True,
         ),
+        Binding("ctrl+r", "run_selected_or_current_query", "Run SQL", show=False),
         Binding("f5", "focus_results", "Results", priority=True),
         Binding("f6,ctrl+up", "focus_sources", "Sources", priority=True),
         Binding("f7", "export_last_result", "Export result", priority=True),
@@ -282,13 +285,18 @@ class CSVQLMenuApp(App[None]):
         yield Static("", id="status")
         with Horizontal(id="workbench"):
             with Vertical(id="left-pane"):
+                yield Static("", id="sources-title", classes="pane-title")
                 yield DataTable(id="sources", cursor_type="row")
+                yield Static("", id="history-title", classes="pane-title")
                 yield DataTable(id="history", cursor_type="row")
             with Vertical(id="right-pane"):
+                yield Static("", id="sql-title", classes="pane-title")
                 yield _SourcePathTextArea(id="sql")
                 yield Static("", id="run-status")
+                yield Static("", id="results-title", classes="pane-title")
                 yield DataTable(id="results", cursor_type="cell")
                 yield Static("", id="results-message")
+        yield Static("", id="context")
         yield _OrderedFooter()
 
     async def on_mount(self) -> None:
@@ -297,6 +305,11 @@ class CSVQLMenuApp(App[None]):
         self._set_status(self._status_message())
         self._set_run_status_ready()
         self.query_one("#sql", TextArea).focus()
+        self._refresh_pane_context()
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        del event
+        self._refresh_pane_context()
 
     def _set_run_status_ready(self) -> None:
         self.query_one("#run-status", Static).update("Ready.")
@@ -314,9 +327,6 @@ class CSVQLMenuApp(App[None]):
         )
 
     def action_show_help(self) -> None:
-        self._show_help_once()
-
-    def action_show_contextual_help(self) -> None:
         self._show_help_once()
 
     def _show_help_once(self) -> None:
@@ -349,15 +359,19 @@ class CSVQLMenuApp(App[None]):
 
     def action_focus_sources(self) -> None:
         self.query_one("#sources", DataTable).focus()
+        self._refresh_pane_context()
 
     def action_focus_sql(self) -> None:
         self.query_one("#sql", TextArea).focus()
+        self._refresh_pane_context()
 
     def action_focus_results(self) -> None:
         self.query_one("#results", DataTable).focus()
+        self._refresh_pane_context()
 
     def action_focus_history(self) -> None:
         self.query_one("#history", DataTable).focus()
+        self._refresh_pane_context()
         self._show_selected_history_result()
 
     def action_quit_from_non_editor(self) -> None:
@@ -481,12 +495,12 @@ class CSVQLMenuApp(App[None]):
         self._append_sql_text(f"SELECT *\nFROM {alias}\nLIMIT 10;")
 
     def action_run_query(self) -> None:
-        self._schedule_editor_query(self._run_query_from_editor, "Preparing editor query...")
+        self._schedule_editor_query(self._run_query_from_editor, "Preparing all SQL...")
 
     def action_run_selected_or_current_query(self) -> None:
         self._schedule_editor_query(
             self._run_selected_or_current_query_from_editor,
-            "Preparing editor query...",
+            "Preparing current SQL...",
         )
 
     def _schedule_editor_query(
@@ -527,7 +541,7 @@ class CSVQLMenuApp(App[None]):
             self._start_editor_query_batch(statements)
             return
         sql = statements[0] if statements else ""
-        self._start_query_run(sql, run_label="editor query", run_mode="editor")
+        self._start_query_run(sql, run_label="all SQL", run_mode="editor")
 
     def _start_editor_query_batch(self, statements: Sequence[str]) -> None:
         self._editor_batch_queue = list(statements[1:])
@@ -547,7 +561,7 @@ class CSVQLMenuApp(App[None]):
             cursor_location=sql_widget.cursor_location,
             selected_text=sql_widget.selected_text,
         )
-        self._start_query_run(sql, run_label="SQL query", run_mode="sql")
+        self._start_query_run(sql, run_label="current SQL", run_mode="sql")
 
     def _start_query_run(
         self,
@@ -588,10 +602,12 @@ class CSVQLMenuApp(App[None]):
             )
             return
 
-        if run_mode == "rerun" and rerun_source_sequence is not None:
-            message = f"Rerunning query {rerun_source_sequence} as query {sequence}..."
-        else:
-            message = f"Running {run_label} {sequence}..."
+        message = _run_start_message(
+            sequence=sequence,
+            run_label=run_label,
+            run_mode=run_mode,
+            rerun_source_sequence=rerun_source_sequence,
+        )
 
         self._set_status(message)
         self.query_one("#run-status", Static).update(message)
@@ -709,6 +725,7 @@ class CSVQLMenuApp(App[None]):
             self._show_history_result_at_row(event.cursor_row)
 
     def on_focus(self, event: events.Focus) -> None:
+        self._refresh_pane_context()
         if getattr(event.control, "id", None) == "history":
             self._show_selected_history_result()
 
@@ -780,6 +797,38 @@ class CSVQLMenuApp(App[None]):
             sources_table.move_cursor(row=selected_row)
         elif self.state.sources:
             sources_table.move_cursor(row=0)
+
+    def _refresh_pane_context(self) -> None:
+        if isinstance(self.screen, (_HelpScreen, _PromptInputScreen)):
+            return
+        try:
+            active_pane = self._active_focus_pane()
+            self.state.active_pane = active_pane
+            self.query_one("#sources-title", Static).update(
+                _pane_title("Sources", active_pane == "sources")
+            )
+            self.query_one("#history-title", Static).update(
+                _pane_title("History", active_pane == "history")
+            )
+            self.query_one("#sql-title", Static).update(
+                _pane_title("SQL editor", active_pane == "editor")
+            )
+            self.query_one("#results-title", Static).update(
+                _pane_title("Results", active_pane == "results")
+            )
+            self.query_one("#context", Static).update(_pane_context(active_pane))
+        except NoMatches:
+            return
+
+    def _active_focus_pane(self) -> TUIFocusPane:
+        focused = self.focused
+        if focused is self.query_one("#sources", DataTable):
+            return "sources"
+        if focused is self.query_one("#history", DataTable):
+            return "history"
+        if focused is self.query_one("#results", DataTable):
+            return "results"
+        return "editor"
 
     def _refresh_history_table(self) -> None:
         history_table = self.query_one("#history", DataTable)
@@ -1334,15 +1383,6 @@ class CSVQLMenuApp(App[None]):
 class _SourcePathTextArea(TextArea):
     """SQL editor that turns pasted CSV path payloads into sources."""
 
-    async def _on_key(self, event: events.Key) -> None:
-        if event.key == "question_mark" and isinstance(self.app, CSVQLMenuApp):
-            event.stop()
-            event.prevent_default()
-            self.app.action_show_contextual_help()
-            return
-
-        await super()._on_key(event)
-
     async def _on_paste(self, event: events.Paste) -> None:
         if not isinstance(self.app, CSVQLMenuApp):
             return
@@ -1425,10 +1465,50 @@ def _one_line_sql(sql: str) -> str:
 
 def _run_mode_display(run_mode: TUIQueryRunMode) -> str:
     if run_mode == "sql":
-        return "F4"
+        return "current"
     if run_mode == "editor":
-        return "F12"
+        return "all"
     return "rerun"
+
+
+def _run_start_message(
+    *,
+    sequence: int,
+    run_label: str,
+    run_mode: TUIQueryRunMode,
+    rerun_source_sequence: int | None,
+) -> str:
+    if run_mode == "rerun" and rerun_source_sequence is not None:
+        return f"Rerunning history query {rerun_source_sequence} as query {sequence}..."
+    if run_mode == "sql":
+        return f"Running current SQL as query {sequence}..."
+    if run_label.startswith("statement "):
+        return f"Running all SQL {run_label} as query {sequence}..."
+    return f"Running all SQL as query {sequence}..."
+
+
+def _pane_title(label: str, is_active: bool) -> str:
+    prefix = ">" if is_active else " "
+    return f"{prefix} {label}"
+
+
+def _pane_context(active_pane: TUIFocusPane) -> str:
+    if active_pane == "sources":
+        return (
+            "Sources: F3 picker | a add source | i inspect | s sample | p profile | "
+            "c columns | l alias | x starter | d remove | w save"
+        )
+    if active_pane == "history":
+        return (
+            "History: highlight recall | Enter reopen | r rerun | F7 export | "
+            "Ctrl+S/Alt+S save source"
+        )
+    if active_pane == "results":
+        return "Results: arrow keys move | F7 export | Ctrl+S/Alt+S save source | F8 history"
+    return (
+        "SQL editor: type SQL | F4/Ctrl+R current | F12 all | F10 new query | "
+        "paste CSV path to add source"
+    )
 
 
 def _text_index_from_location(text: str, location: tuple[int, int]) -> int:
