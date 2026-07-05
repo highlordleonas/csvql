@@ -128,6 +128,8 @@ def test_release_readiness_links_manual_qa_matrix() -> None:
     assert "Run the TUI QoL QA gate" in readiness
     assert "Any failed TUI QoL matrix item blocks `release-candidate eligible`." in readiness
     assert "TUI QoL run id" in readiness
+    assert "docs/v1-manual-qa.md" in readiness
+    assert "docs/tui-qol-qa.md" in readiness
 
 
 def test_public_launch_docs_state_security_and_release_boundaries() -> None:

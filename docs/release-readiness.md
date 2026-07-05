@@ -113,6 +113,8 @@ Run candidate evaluation from a clean worktree on `main`.
    - `docs/json-contracts.md`
    - `docs/benchmarking.md`
    - `docs/failure-gallery.md`
+   - `docs/v1-manual-qa.md`
+   - `docs/tui-qol-qa.md`
    - `docs/release-readiness.md`
    - `docs/release-notes/v1.md`
 
@@ -131,7 +133,7 @@ Run candidate evaluation from a clean worktree on `main`.
 8. Scan for unsupported current claims:
 
    ```bash
-   rg -n "v1-ready|v1 ready|production-safe|production ready|production-readiness|production readiness|sandbox-safe|sandbox safety|sandbox|large-file-proven|large file proven|large-file performance|large file performance" README.md CHANGELOG.md docs/development.md docs/PRODUCT_DIRECTION.md docs/ROADMAP.md docs/ARCHITECTURE.md docs/json-contracts.md docs/benchmarking.md docs/failure-gallery.md docs/release-readiness.md docs/release-notes/v1.md
+   rg -n "v1-ready|v1 ready|production-safe|production ready|production-readiness|production readiness|sandbox-safe|sandbox safety|sandbox|large-file-proven|large file proven|large-file performance|large file performance" README.md CHANGELOG.md docs/development.md docs/PRODUCT_DIRECTION.md docs/ROADMAP.md docs/ARCHITECTURE.md docs/json-contracts.md docs/benchmarking.md docs/failure-gallery.md docs/v1-manual-qa.md docs/tui-qol-qa.md docs/release-readiness.md docs/release-notes/v1.md
    ```
 
    Matches are expected for guardrails and other non-claims, but each match must

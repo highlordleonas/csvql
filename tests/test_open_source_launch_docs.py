@@ -57,6 +57,8 @@ def test_public_docs_do_not_reference_removed_internal_material() -> None:
             read_text("docs/json-contracts.md"),
             read_text("docs/benchmarking.md"),
             read_text("docs/failure-gallery.md"),
+            read_text("docs/v1-manual-qa.md"),
+            read_text("docs/tui-qol-qa.md"),
             read_text("docs/release-readiness.md"),
             read_text("docs/release-notes/v1.md"),
             read_text("docs/faq.md"),
@@ -65,6 +67,7 @@ def test_public_docs_do_not_reference_removed_internal_material() -> None:
 
     for removed_reference in (
         "AGENTS.md",
+        "docs/superpowers",
         "CODEX_CAPABILITY_REVIEW",
         "release-candidate-proof-",
     ):
