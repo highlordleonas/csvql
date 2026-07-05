@@ -7,6 +7,10 @@ def read_doc(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
+def normalized_markdown_text(text: str) -> str:
+    return " ".join(text.split())
+
+
 def test_readme_documents_cli_reusable_result_sources() -> None:
     readme = read_doc("README.md")
 
@@ -133,6 +137,32 @@ def test_release_readiness_links_manual_qa_matrix() -> None:
     assert "TUI QoL run id" in readiness
     assert "docs/v1-manual-qa.md" in readiness
     assert "docs/tui-qol-qa.md" in readiness
+
+
+def test_release_notes_require_manual_qa_and_tui_qol_gates() -> None:
+    release_notes = read_doc("docs/release-notes/v1.md")
+    normalized_release_notes = normalized_markdown_text(release_notes)
+
+    assert "[Manual v1 QA matrix](../v1-manual-qa.md)" in release_notes
+    assert "[TUI QoL QA gate](../tui-qol-qa.md)" in release_notes
+    assert (
+        "Any failed TUI QoL matrix item blocks `release-candidate eligible`."
+        in normalized_release_notes
+    )
+    assert (
+        "Any untested or missing-media TUI QoL item also blocks `release-candidate eligible`."
+        in normalized_release_notes
+    )
+    assert "docs/v1-manual-qa.md" in release_notes
+    assert "docs/tui-qol-qa.md" in release_notes
+    assert "TUI QoL run id" in release_notes
+    assert "media artifact paths" in release_notes
+    assert "manual v1 QA matrix is recorded for the candidate state" in release_notes
+    assert (
+        "the TUI QoL QA gate passes on every required terminal with a recorded run id,"
+        in release_notes
+    )
+    assert "no failed, untested, or missing-media items" in release_notes
 
 
 def test_public_launch_docs_state_security_and_release_boundaries() -> None:
