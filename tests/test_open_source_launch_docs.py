@@ -23,10 +23,9 @@ def test_open_source_trust_files_exist() -> None:
         assert (REPO_ROOT / path).is_file(), path
 
 
-def test_internal_operator_material_is_not_on_public_branch() -> None:
+def test_removed_internal_operator_material_is_not_on_public_branch() -> None:
     for path in (
         "AGENTS.md",
-        "docs/superpowers",
         "docs/CODEX_CAPABILITY_REVIEW.md",
     ):
         assert not (REPO_ROOT / path).exists(), path

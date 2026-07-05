@@ -68,6 +68,50 @@ def test_manual_qa_matrix_covers_cli_and_tui_release_paths() -> None:
     assert "- [ ] Mac keybinding path" in matrix
 
 
+def test_tui_qol_qa_gate_is_blocking_and_records_terminal_evidence() -> None:
+    matrix = read_doc("docs/tui-qol-qa.md")
+
+    assert "# TUI QoL QA Gate" in matrix
+    assert "Any failed item blocks `release-candidate eligible`." in matrix
+    for terminal in (
+        "macOS Terminal",
+        "iTerm2",
+        "VS Code terminal",
+        "Linux terminal",
+        "Windows Terminal",
+        "tmux/SSH",
+    ):
+        assert terminal in matrix
+    for flow in (
+        "Launch empty",
+        "Launch with one CSV",
+        "Launch from a project catalog",
+        "Add a source with `F3`",
+        "Add a source through the Add Source prompt",
+        "Add a source by pasted path",
+        "Run selected SQL",
+        "Run the current statement",
+        "Run full-buffer multi-statement SQL with `F12`",
+        "Recall History results",
+        "Rerun History rows",
+        "Export a recalled result",
+        "Save a derived source from the latest result",
+        "Save a derived source from a recalled History result",
+        "Open and close help repeatedly from every pane",
+        "Try every documented key from every pane",
+        "Resize the terminal while using each pane",
+        "Run invalid SQL",
+        "Run SQL against a missing source or missing file path",
+        "Run DDL or no-result SQL",
+        "Run batch SQL where a middle statement fails",
+    ):
+        assert flow in matrix
+    assert "output/tui-qol-qa/<run-id>/<terminal-id>/" in matrix
+    assert "media evidence is required for every terminal run" in matrix
+    assert "Which pane is active?" in matrix
+    assert "Which source, query, History row, result, export, or derived-source target is affected?" in matrix
+
+
 def test_release_readiness_links_manual_qa_matrix() -> None:
     readiness = read_doc("docs/release-readiness.md")
 
