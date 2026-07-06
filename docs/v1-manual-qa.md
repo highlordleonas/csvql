@@ -103,8 +103,8 @@ Expected: prints `1.0.0`.
 
 - [ ] TUI derived save and query
 
-  In the TUI, save the last tabular result with `Ctrl+S`, use alias
-  `movement_counts`, then run:
+  In the TUI, keep or select the intended active result, save it with `Ctrl+S`,
+  use alias `movement_counts`, then run:
 
   ```sql
   SELECT * FROM movement_counts;

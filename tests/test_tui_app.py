@@ -1254,7 +1254,7 @@ def test_footer_key_order_is_stable_between_sql_and_sources(tmp_path: Path) -> N
     assert sql_footer[:12] == (
         "F1",
         "f2",
-        "f3",
+        "F3",
         "F4",
         "f5",
         "f6",
@@ -1269,7 +1269,7 @@ def test_footer_key_order_is_stable_between_sql_and_sources(tmp_path: Path) -> N
     assert sources_footer[:12] == (
         "F1",
         "f2",
-        "f3",
+        "F3",
         "F4",
         "f5",
         "f6",

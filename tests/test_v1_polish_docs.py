@@ -78,6 +78,25 @@ def test_manual_qa_matrix_covers_cli_and_tui_release_paths() -> None:
         "Expected: `F12` or `Ctrl+B` records one History row per statement, preserves"
         in matrix
     )
+    assert "keep or select the intended active result" in matrix
+    assert "save the last tabular result" not in matrix
+    assert "save it with `Ctrl+S`" in matrix
+
+
+def test_tui_workbench_svg_matches_repaired_run_buffer_and_active_result_labels() -> None:
+    workbench_svg = read_doc("docs/assets/localql-tui-workbench.svg")
+
+    assert "F12/Ctrl+B&#160;buffer" in workbench_svg
+    assert "standalone&#160;CSV&#160;path&#160;adds&#160;source" in workbench_svg
+    assert "Export&#160;active" in workbench_svg
+    assert "&#160;F3&#160;" in workbench_svg
+    for stale_text in (
+        "F12&#160;all",
+        "paste&#160;CSV&#160;path&#160;to&#160;add&#160;source",
+        "Export&#160;result",
+        "&#160;f3&#160;",
+    ):
+        assert stale_text not in workbench_svg
 
 
 def test_tui_qol_qa_gate_is_blocking_and_records_terminal_evidence() -> None:
