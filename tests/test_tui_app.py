@@ -18,6 +18,7 @@ from csvql.exceptions import CSVQLError
 from csvql.models import QueryResult
 from csvql.tui_app import CSVQLMenuApp
 from csvql.tui_result_store import TUIResultStore
+from csvql.tui_results import make_result_view_state
 from csvql.tui_state import TUIBufferResultTab, TUISessionState, TUISource
 from csvql.tui_workflows import export_last_result as workflows_export_last_result
 
@@ -2924,6 +2925,38 @@ def test_export_last_result_writes_text_when_path_ends_txt(tmp_path: Path) -> No
     assert "customer_id" in content
     assert "CUST-001" in content
     assert "1 row(s) in 12.35 ms" in content
+
+
+def test_export_from_spilled_result_writes_full_output(tmp_path: Path) -> None:
+    export_path = tmp_path / "exports" / "large.csv"
+    export_path.parent.mkdir()
+    rows = tuple((index,) for index in range(10001))
+    state = TUISessionState()
+    result = QueryResult(columns=("id",), rows=rows, elapsed_ms=1.0)
+
+    async def _inner() -> tuple[int, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            handle = app._result_store.put(result, sequence=1)
+            app.state.record_query_result_handle(1, handle)
+            view = make_result_view_state(result, source_result_sequence=1)
+            app.state.record_query_success(1, "SELECT * FROM large", result, view)
+            app._refresh_results_display()
+            await pilot.press("f7")
+            await pilot.pause()
+            app.screen.query_one("#export-path", Input).value = str(export_path)
+            await pilot.press("enter")
+            await _settled_operation_idle(pilot, app)
+            return (
+                len(export_path.read_text(encoding="utf-8").splitlines()),
+                app.query_one("#results-message", Static).content,
+            )
+
+    line_count, message = asyncio.run(_inner())
+
+    assert line_count == 10002
+    assert "Showing first 1,000 of 10,001 returned row(s)." in message
 
 
 def test_export_uses_recalled_history_result(tmp_path: Path) -> None:

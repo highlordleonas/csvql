@@ -54,6 +54,17 @@ def populate_result_table(table: _ResultTable, view: TUIResultViewState) -> None
         table.add_row(*row)
 
 
+def result_preview_message(view: TUIResultViewState) -> str:
+    """Return the status text for the current result preview."""
+
+    if view.is_truncated:
+        return (
+            f"Showing first {view.preview_row_cap:,} of {view.total_row_count:,} "
+            "returned row(s). Export/save use the full active result."
+        )
+    return f"Showing {view.total_row_count} returned row(s)."
+
+
 def _display_cell(value: object, *, cell_char_cap: int) -> str:
     text = "" if value is None else str(value)
     if len(text) <= cell_char_cap:

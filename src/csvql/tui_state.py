@@ -266,6 +266,14 @@ class TUISessionState:
 
         return self._query_result_handles.get(sequence)
 
+    def active_query_result_handle(self) -> TUIResultHandle | None:
+        """Return the handle for the currently active exportable result, if any."""
+
+        sequence = self.active_result.sequence
+        if sequence is None:
+            return None
+        return self.query_result_handle(sequence)
+
     def query_result_view(self, sequence: int) -> TUIResultViewState | None:
         """Return the stored result-grid view for a successful query."""
 

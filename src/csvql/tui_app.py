@@ -24,7 +24,11 @@ from csvql.models import ProfileResult, QueryResult, SampleResult
 from csvql.table_mapping import parse_table_mapping
 from csvql.tui_editor import all_sql_statements, selected_or_current_sql
 from csvql.tui_help import WORKBENCH_HELP
-from csvql.tui_results import make_result_view_state, populate_result_table
+from csvql.tui_results import (
+    make_result_view_state,
+    populate_result_table,
+    result_preview_message,
+)
 from csvql.tui_result_store import TUIResultStore
 from csvql.tui_state import (
     TUIBufferResultTab,
@@ -827,7 +831,7 @@ class CSVQLMenuApp(App[None]):
             return
         if self._is_focused("#history"):
             self._show_selected_history_result()
-        if self.state.last_result is None:
+        if self._active_query_result() is None:
             self._show_error(CSVQLError("Run a query before exporting."))
             return
 
@@ -844,7 +848,7 @@ class CSVQLMenuApp(App[None]):
             return
         if self._is_focused("#history"):
             self._show_selected_history_result()
-        result = self.state.last_result
+        result = self._active_query_result()
         if result is None:
             if self.state.last_result_status == "no_result":
                 self._show_error(CSVQLError("The last statement did not produce a tabular result."))
@@ -1014,7 +1018,7 @@ class CSVQLMenuApp(App[None]):
             populate_result_table(self.query_one("#results", DataTable), view)
             self._refresh_results_title()
             self._refresh_result_tabs()
-            self.query_one("#results-message", Static).update(_result_message(view))
+            self.query_one("#results-message", Static).update(result_preview_message(view))
             self._set_status(f"{outcome.source_name}: {len(outcome.result.rows)} sample row(s).")
             return
         if isinstance(outcome, _SourceColumnsOutcome):
@@ -1031,7 +1035,8 @@ class CSVQLMenuApp(App[None]):
         if isinstance(outcome, _ExportOutcome):
             display_path = _display_path(outcome.path, self.start_dir)
             self._set_status(f"Exported to {display_path}.")
-            self.query_one("#results-message", Static).update(f"Exported to {display_path}.")
+            if not self.state.result_view.is_truncated:
+                self.query_one("#results-message", Static).update(f"Exported to {display_path}.")
             return
         if isinstance(outcome, _SaveResultSourceOutcome):
             source = outcome.source
@@ -1044,7 +1049,8 @@ class CSVQLMenuApp(App[None]):
                 "Use Save sources to persist the alias in .csvql.yml."
             )
             self._set_status(message)
-            self.query_one("#results-message", Static).update(message)
+            if not self.state.result_view.is_truncated:
+                self.query_one("#results-message", Static).update(message)
             return
 
         self._show_error(
@@ -1359,6 +1365,8 @@ class CSVQLMenuApp(App[None]):
             self._clear_result_grid()
         self._refresh_results_title()
         self._refresh_result_tabs()
+        if view.columns or view.total_row_count:
+            self.query_one("#results-message", Static).update(result_preview_message(view))
 
     def _show_output_text(self, message: str) -> None:
         self._clear_result_grid()
@@ -1486,7 +1494,7 @@ class CSVQLMenuApp(App[None]):
         if path_value is None:
             return
 
-        result = self.state.last_result
+        result = self._active_query_result()
         if result is None:
             self._show_error(CSVQLError("Run a query before exporting."))
             return
@@ -1536,7 +1544,7 @@ class CSVQLMenuApp(App[None]):
         if alias is None:
             return
 
-        result = self.state.last_result
+        result = self._active_query_result()
         if result is None:
             self._show_error(CSVQLError("Run a query before saving a result as a source."))
             return
@@ -1598,6 +1606,14 @@ class CSVQLMenuApp(App[None]):
             return None
         return item.sequence
 
+    def _active_query_result(self) -> QueryResult | None:
+        sequence = self.state.active_result.sequence
+        if sequence is not None:
+            handle = self.state.active_query_result_handle()
+            if handle is not None:
+                return self._result_store.get(handle)
+        return self.state.last_result
+
     def _show_selected_history_result(self) -> None:
         item = self._selected_history_item()
         if item is None:
@@ -1619,7 +1635,7 @@ class CSVQLMenuApp(App[None]):
             self._refresh_results_title()
             self._refresh_result_tabs()
             self.query_one("#results-message", Static).update(
-                f"History query {item.sequence}. {_result_message(view)}"
+                f"History query {item.sequence}. {result_preview_message(view)}"
             )
             self._set_status(f"Showing query {item.sequence} result from History.")
             return
@@ -1678,7 +1694,7 @@ class CSVQLMenuApp(App[None]):
         self._refresh_results_title()
         self._refresh_result_tabs()
         self.query_one("#results-message", Static).update(
-            f"Buffer result {tab.sequence}.{tab.index}. {_result_message(view)}"
+            f"Buffer result {tab.sequence}.{tab.index}. {result_preview_message(view)}"
         )
         self._set_status(f"Showing buffer result {tab.sequence}.{tab.index}.")
 
@@ -1796,7 +1812,7 @@ class CSVQLMenuApp(App[None]):
             )
             self._set_status(completion_message)
             self.query_one("#results-message", Static).update(
-                _result_message(self.state.result_view)
+                result_preview_message(self.state.result_view)
             )
         elif latest_outcome is not None and latest_outcome.status == "no_result":
             message = "Statement completed; no tabular result to display."
@@ -1838,7 +1854,7 @@ class CSVQLMenuApp(App[None]):
                 f"{outcome.result.row_count} returned row(s) in {outcome.result.elapsed_ms:.1f} ms."
             )
             self.query_one("#run-status", Static).update("Ready.")
-            self.query_one("#results-message", Static).update(_result_message(view))
+            self.query_one("#results-message", Static).update(result_preview_message(view))
             self.query_one("#sql", TextArea).focus()
             return
         if outcome.status == "no_result":
@@ -2328,12 +2344,6 @@ def _choose_csv_paths_with_native_picker() -> tuple[str, ...]:
         )
 
     return tuple(line.strip() for line in result.stdout.splitlines() if line.strip())
-
-
-def _result_message(view: TUIResultViewState) -> str:
-    if view.is_truncated:
-        return f"Showing first {view.preview_row_cap} of {view.total_row_count} returned rows."
-    return f"Showing {view.total_row_count} returned row(s)."
 
 
 def _added_sources_message(sources: Sequence[TUISource]) -> str:
