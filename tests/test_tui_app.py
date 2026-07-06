@@ -2341,6 +2341,76 @@ def test_source_worker_failure_preserves_csv_error_message_and_suggestion(
     assert is_running is False
 
 
+def test_sample_worker_failure_preserves_previous_active_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_failing_sample_source(source: TUISource) -> object:
+        started.set()
+        assert release.wait(timeout=2)
+        raise CSVQLError(
+            "Cannot sample source.",
+            suggestion="Check the CSV path.",
+        )
+
+    monkeypatch.setattr("csvql.tui_app.sample_source", slow_failing_sample_source)
+
+    async def _inner() -> tuple[bool, bool, bool, str, str, bool]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT * FROM customers")
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+
+            previous_result = app.state.last_result
+            previous_active_result = app.state.active_result
+            previous_view = app.state.result_view
+            assert previous_result is not None
+
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("s")
+            await pilot.pause(0.1)
+
+            running_result_preserved = app.state.last_result == previous_result
+            running_active_result_preserved = app.state.active_result == previous_active_result
+            running_view_preserved = app.state.result_view == previous_view
+
+            release.set()
+            await pilot.pause(0.2)
+
+            return (
+                running_result_preserved,
+                running_active_result_preserved,
+                running_view_preserved,
+                app.query_one("#status", Static).content,
+                app.query_one("#results-message", Static).content,
+                app.state.operation_run.is_running,
+            )
+
+    (
+        running_result_preserved,
+        running_active_result_preserved,
+        running_view_preserved,
+        status,
+        results_message,
+        is_running,
+    ) = asyncio.run(_inner())
+
+    assert started.is_set()
+    assert running_result_preserved is True
+    assert running_active_result_preserved is True
+    assert running_view_preserved is True
+    assert "Error: Cannot sample source." in status
+    assert "Suggestion: Check the CSV path." in results_message
+    assert is_running is False
+
+
 def test_escape_cancels_running_source_operation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2375,6 +2445,80 @@ def test_escape_cancels_running_source_operation(
 
     assert started.is_set()
     assert "Cancelled Inspecting customers." in status
+    assert is_running is False
+
+
+def test_cancelled_sample_worker_preserves_previous_active_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_sample_source(source: TUISource) -> object:
+        started.set()
+        assert release.wait(timeout=2)
+        from csvql.tui_workflows import sample_source as real_sample_source
+
+        return real_sample_source(source)
+
+    monkeypatch.setattr("csvql.tui_app.sample_source", slow_sample_source)
+
+    async def _inner() -> tuple[bool, bool, bool, str, str, bool]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT * FROM customers")
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+
+            previous_result = app.state.last_result
+            previous_active_result = app.state.active_result
+            previous_view = app.state.result_view
+            previous_message = app.query_one("#results-message", Static).content
+            assert previous_result is not None
+
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("s")
+            await pilot.pause(0.1)
+
+            running_result_preserved = app.state.last_result == previous_result
+            running_active_result_preserved = app.state.active_result == previous_active_result
+            running_view_preserved = app.state.result_view == previous_view
+
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+            release.set()
+            await pilot.pause(0.2)
+
+            return (
+                running_result_preserved,
+                running_active_result_preserved,
+                running_view_preserved,
+                app.query_one("#status", Static).content,
+                previous_message,
+                app.query_one("#results-message", Static).content,
+                app.state.operation_run.is_running,
+            )
+
+    (
+        running_result_preserved,
+        running_active_result_preserved,
+        running_view_preserved,
+        status,
+        previous_message,
+        results_message,
+        is_running,
+    ) = asyncio.run(_inner())
+
+    assert started.is_set()
+    assert running_result_preserved is True
+    assert running_active_result_preserved is True
+    assert running_view_preserved is True
+    assert "Cancelled Sampling customers." in status
+    assert results_message == previous_message
     assert is_running is False
 
 

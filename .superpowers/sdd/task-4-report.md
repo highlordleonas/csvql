@@ -91,3 +91,32 @@ git diff --check
 ```
 
 Result: clean
+
+Verified the sample worker start path no longer clears the prior active/exportable result until the worker succeeds, and added regression coverage for failing and cancelled sample workers preserving the previous `last_result` / active result state.
+
+Commands run:
+
+```bash
+env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run --all-extras pytest \
+  tests/test_tui_app.py::test_source_intelligence_action_uses_operation_worker \
+  tests/test_tui_app.py::test_source_worker_failure_preserves_csv_error_message_and_suggestion \
+  tests/test_tui_app.py::test_escape_cancels_running_source_operation \
+  tests/test_tui_app.py::test_sample_worker_failure_preserves_previous_active_result \
+  tests/test_tui_app.py::test_cancelled_sample_worker_preserves_previous_active_result \
+  tests/test_tui_app.py::test_inspect_sample_and_profile_selected_source_update_output \
+  tests/test_tui_app.py::test_sample_after_query_clears_exportable_result_and_export_refuses -q
+```
+
+Result: `7 passed`
+
+```bash
+env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run ruff check src/csvql/tui_app.py src/csvql/tui_state.py tests/test_tui_app.py
+```
+
+Result: `All checks passed!`
+
+```bash
+git diff --check
+```
+
+Result: clean

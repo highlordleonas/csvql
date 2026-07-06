@@ -572,7 +572,6 @@ class CSVQLMenuApp(App[None]):
             self._show_error(CSVQLError("No source selected."))
             return
 
-        self.state.clear_last_result()
         self._start_operation_worker(
             kind="sample",
             label=f"Sampling {source.name}",
