@@ -24,12 +24,12 @@ from csvql.models import ProfileResult, QueryResult, SampleResult
 from csvql.table_mapping import parse_table_mapping
 from csvql.tui_editor import all_sql_statements, selected_or_current_sql
 from csvql.tui_help import WORKBENCH_HELP
+from csvql.tui_result_store import TUIResultStore
 from csvql.tui_results import (
     make_result_view_state,
     populate_result_table,
     result_preview_message,
 )
-from csvql.tui_result_store import TUIResultStore
 from csvql.tui_state import (
     TUIBufferResultTab,
     TUIFocusPane,
@@ -39,7 +39,6 @@ from csvql.tui_state import (
     TUIQueryOutcome,
     TUIQueryRunMode,
     TUIQueryRunState,
-    TUIResultViewState,
     TUISessionState,
     TUISource,
     TUISourceColumn,

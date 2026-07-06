@@ -2931,18 +2931,21 @@ def test_export_from_spilled_result_writes_full_output(tmp_path: Path) -> None:
     export_path = tmp_path / "exports" / "large.csv"
     export_path.parent.mkdir()
     rows = tuple((index,) for index in range(10001))
+    stored_result = QueryResult(columns=("id",), rows=rows, elapsed_ms=1.0)
+    sentinel_result = QueryResult(columns=("id",), rows=(("preview-only",),), elapsed_ms=0.1)
     state = TUISessionState()
-    result = QueryResult(columns=("id",), rows=rows, elapsed_ms=1.0)
 
     async def _inner() -> tuple[int, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            handle = app._result_store.put(result, sequence=1)
+            handle = app._result_store.put(stored_result, sequence=1)
             app.state.record_query_result_handle(1, handle)
-            view = make_result_view_state(result, source_result_sequence=1)
-            app.state.record_query_success(1, "SELECT * FROM large", result, view)
+            view = make_result_view_state(stored_result, source_result_sequence=1)
+            app.state.record_query_success(1, "SELECT * FROM large", stored_result, view)
+            app.state.set_last_result(sentinel_result)
             app._refresh_results_display()
+            assert app.state.last_result == sentinel_result
             await pilot.press("f7")
             await pilot.pause()
             app.screen.query_one("#export-path", Input).value = str(export_path)
@@ -2957,6 +2960,62 @@ def test_export_from_spilled_result_writes_full_output(tmp_path: Path) -> None:
 
     assert line_count == 10002
     assert "Showing first 1,000 of 10,001 returned row(s)." in message
+    assert export_path.read_text(encoding="utf-8").splitlines()[1] == "0"
+
+
+def test_save_result_as_source_writes_full_output_from_spilled_result(
+    tmp_path: Path,
+) -> None:
+    export_path = tmp_path / ".csvql" / "results" / "large_rows.csv"
+    rows = tuple((index,) for index in range(10001))
+    stored_result = QueryResult(columns=("id",), rows=rows, elapsed_ms=1.0)
+    sentinel_result = QueryResult(columns=("id",), rows=(("preview-only",),), elapsed_ms=0.1)
+    state = TUISessionState()
+
+    async def _inner() -> tuple[tuple[TUISource, ...], str | None, str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            handle = app._result_store.put(stored_result, sequence=1)
+            app.state.record_query_result_handle(1, handle)
+            view = make_result_view_state(stored_result, source_result_sequence=1)
+            app.state.record_query_success(1, "SELECT * FROM large", stored_result, view)
+            app.state.set_last_result(sentinel_result)
+            app._refresh_results_display()
+            assert app.state.last_result == sentinel_result
+
+            await pilot.press("f11")
+            await pilot.pause()
+            alias_input = app.screen.query_one("#derived-source-alias", Input)
+            alias_input.value = "large_rows"
+            await pilot.press("enter")
+            await _settled_operation_idle(pilot, app)
+
+            return (
+                app.state.sources,
+                app.state.selected_alias,
+                app.query_one("#status", Static).content,
+                app.query_one("#results-message", Static).content,
+                export_path.read_text(encoding="utf-8"),
+            )
+
+    sources, selected_alias, status, message, content = asyncio.run(_inner())
+
+    assert sources == (
+        TUISource(
+            name="large_rows",
+            path=export_path.resolve(),
+            origin="session",
+            kind="derived",
+        ),
+    )
+    assert selected_alias == "large_rows"
+    assert "Saved result as derived source large_rows" in status
+    assert "Showing first 1,000 of 10,001 returned row(s)." in message
+    assert content.splitlines()[0] == "id"
+    assert len(content.splitlines()) == 10002
+    assert content.splitlines()[1] == "0"
+    assert content.splitlines()[-1] == "10000"
 
 
 def test_export_uses_recalled_history_result(tmp_path: Path) -> None:
