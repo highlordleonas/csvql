@@ -229,7 +229,7 @@ the last result view visible. Query history is in-memory session state only: it
 is not written to disk, logged, or sent anywhere by CSVQL, and it clears when
 the TUI exits.
 
-`Ctrl+S` saves the last successful tabular query result as a derived source.
+`Ctrl+S` saves the active tabular result as a derived source.
 `Alt+S` is also bound for terminals that emit Alt key events, and `F11` is
 available where it is not intercepted by the OS. macOS may intercept `F11` for
 Show Desktop. CSVQL prompts for an alias, writes

@@ -2993,7 +2993,11 @@ def test_help_text_documents_workbench_keymap() -> None:
     assert "F1                  Help" in help_text
     assert "?                   Help" not in help_text
     assert "Also opens help" not in help_text
-    assert "F7                  Export active result" in help_text
+    assert (
+        "F7                  Export active result (.csv, .json, .md, .markdown, .txt)"
+        in help_text
+    )
+    assert "last successful tabular" not in help_text
     assert "F9 / q              Quit outside text entry" in help_text
     assert "Ctrl+S              Save active result to .csvql/results/{alias}.csv" in help_text
     assert "r                   Rerun selected query with current session sources" in help_text

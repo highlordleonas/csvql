@@ -205,6 +205,22 @@ def test_release_notes_require_manual_qa_and_tui_qol_gates() -> None:
     assert "no failed, untested, or missing-media items" in release_notes
 
 
+def test_docs_describe_tui_active_result_not_last_successful_result() -> None:
+    docs = "\n".join(
+        [
+            read_doc("README.md"),
+            read_doc("docs/tui-guide.md"),
+            read_doc("docs/release-notes/v1.md"),
+        ]
+    )
+    normalized_docs = normalized_markdown_text(docs)
+
+    assert "active result" in normalized_docs
+    assert "last successful tabular query result" not in normalized_docs
+    assert "last successful tabular result" not in normalized_docs
+    assert ".markdown" in docs
+
+
 def test_public_launch_docs_state_security_and_release_boundaries() -> None:
     public_docs = "\n".join(
         [

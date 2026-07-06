@@ -33,7 +33,7 @@ History pane
 
 General
   F1                  Help
-  F7                  Export active result (.csv, .json, .md, .txt)
+  F7                  Export active result (.csv, .json, .md, .markdown, .txt)
   F9 / q              Quit outside text entry
   Esc                 Close help or modal
 

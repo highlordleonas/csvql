@@ -112,8 +112,8 @@ Relative export paths are resolved from the directory where you launched
 
 ## Save A Result As A Source
 
-After a successful tabular query, press `Ctrl+S` to save the active result as a
-derived CSV source. `Alt+S` is also available where terminals emit Alt key
+After a successful tabular query, press `Ctrl+S` to save the active tabular
+result as a derived CSV source. `Alt+S` is also available where terminals emit Alt key
 events, and `F11` is available where the OS does not intercept it. macOS may
 reserve `F11` for Show Desktop.
 
