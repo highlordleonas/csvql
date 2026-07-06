@@ -21,6 +21,7 @@ from csvql.tui_workflows import (
     save_derived_result_source,
     save_sources_to_project_catalog,
     sources_from_csv_path_text,
+    run_buffer_for_tui,
 )
 
 
@@ -269,6 +270,48 @@ def test_query_sources_supports_join_across_tui_aliases(tmp_path: Path) -> None:
     assert isinstance(result, QueryResult)
     assert result.columns == ("order_id", "name", "total")
     assert result.rows == (("O-1", "Ada", 10), ("O-2", "Bea", 20))
+
+
+def test_run_buffer_for_tui_shares_duckdb_session_across_statements(
+    tmp_path: Path,
+) -> None:
+    csv_path = _write_csv(tmp_path / "orders.csv", "id,value\n1,alpha\n")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
+
+    outcomes = run_buffer_for_tui(
+        (source,),
+        (
+            "CREATE TEMP TABLE scratch AS SELECT * FROM orders",
+            "SELECT COUNT(*) AS row_count FROM scratch",
+        ),
+        sequences=(1, 2),
+    )
+
+    assert [outcome.status for outcome in outcomes] == ["success", "success"]
+    assert outcomes[0].result is not None
+    assert outcomes[0].result.columns == ("Count",)
+    assert outcomes[1].result is not None
+    assert outcomes[1].result.rows == ((1,),)
+
+
+def test_run_buffer_for_tui_stops_after_first_failure(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path / "orders.csv", "id,value\n1,alpha\n")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
+
+    outcomes = run_buffer_for_tui(
+        (source,),
+        (
+            "SELECT COUNT(*) AS row_count FROM orders",
+            "SELECT * FROM missing_table",
+            "SELECT 3 AS should_not_run",
+        ),
+        sequences=(1, 2, 3),
+    )
+
+    assert [outcome.sequence for outcome in outcomes] == [1, 2]
+    assert [outcome.status for outcome in outcomes] == ["success", "error"]
+    assert outcomes[1].error_message is not None
+    assert "missing_table" in outcomes[1].error_message
 
 
 def test_export_last_result_writes_json_and_returns_resolved_path(tmp_path: Path) -> None:

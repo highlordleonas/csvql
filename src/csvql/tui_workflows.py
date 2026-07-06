@@ -142,6 +142,48 @@ def query_sources(sources: Sequence[TUISource], sql: str) -> QueryResult:
         return engine.query(sql)
 
 
+def run_buffer_for_tui(
+    sources: Sequence[TUISource],
+    statements: Sequence[str],
+    *,
+    sequences: Sequence[int],
+) -> tuple[TUIQueryOutcome, ...]:
+    """Run trusted local SQL statements in one DuckDB session for Run Buffer."""
+
+    if len(statements) != len(sequences):
+        raise ValueError("Run Buffer statements and sequences must have the same length.")
+
+    outcomes: list[TUIQueryOutcome] = []
+    with CSVQLEngine() as engine:
+        engine.register_tables(source.as_table_source() for source in sources)
+        for sql, sequence in zip(statements, sequences, strict=True):
+            try:
+                result = engine.query(sql)
+            except CSVQLError as exc:
+                outcomes.append(
+                    TUIQueryOutcome.error(
+                        sequence=sequence,
+                        sql=sql,
+                        error_message=exc.message,
+                        suggestion=exc.suggestion,
+                    )
+                )
+                break
+
+            if not result.columns:
+                outcomes.append(
+                    TUIQueryOutcome.no_result(
+                        sequence=sequence,
+                        sql=sql,
+                        elapsed_ms=result.elapsed_ms,
+                    )
+                )
+            else:
+                outcomes.append(TUIQueryOutcome.success(sequence=sequence, sql=sql, result=result))
+
+    return tuple(outcomes)
+
+
 def run_query_for_tui(
     sources: Sequence[TUISource],
     sql: str,
