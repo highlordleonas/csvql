@@ -1,14 +1,23 @@
+import pickle
+from pathlib import Path
+
+import pytest
+
 from csvql.models import QueryResult
 from csvql.tui_result_store import (
     TUI_RESULT_SPILL_CELL_THRESHOLD,
     TUI_RESULT_SPILL_ROW_THRESHOLD,
+    TUIResultHandle,
     TUIResultStore,
 )
 
 
 def _result(row_count: int, column_count: int = 1) -> QueryResult:
     columns = tuple(f"c{index}" for index in range(column_count))
-    rows = tuple(tuple(f"{row}-{column}" for column in range(column_count)) for row in range(row_count))
+    rows = tuple(
+        tuple(f"{row}-{column}" for column in range(column_count))
+        for row in range(row_count)
+    )
     return QueryResult(columns=columns, rows=rows, elapsed_ms=1.0)
 
 
@@ -48,3 +57,20 @@ def test_result_store_cleanup_removes_spilled_files(tmp_path):
     store.cleanup()
 
     assert not handle.temp_path.exists()
+
+
+def test_result_store_rejects_foreign_spilled_paths_without_unpickling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = TUIResultStore(temp_root=tmp_path)
+    foreign_path = tmp_path / "foreign-result.pickle"
+    foreign_path.write_bytes(pickle.dumps(_result(1)))
+    handle = TUIResultHandle(sequence=99, is_spilled=True, temp_path=foreign_path)
+
+    def fail_on_load(*args: object, **kwargs: object) -> object:
+        raise AssertionError("foreign spilled paths must not be unpickled")
+
+    monkeypatch.setattr("csvql.tui_result_store.pickle.load", fail_on_load)
+
+    with pytest.raises(KeyError):
+        store.get(handle)

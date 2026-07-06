@@ -61,6 +61,8 @@ class TUIResultStore:
             return self._memory_results[handle.sequence]
         if handle.temp_path is None:
             raise KeyError(f"Missing temp path for result {handle.sequence}.")
+        if handle.temp_path not in self._temp_paths:
+            raise KeyError(f"Unknown temp path for result {handle.sequence}.")
 
         with handle.temp_path.open("rb") as file:
             loaded = pickle.load(file)
