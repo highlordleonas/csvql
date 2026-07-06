@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
 from types import ModuleType
@@ -60,6 +61,19 @@ def test_forbidden_entries_detects_internal_and_ignored_paths() -> None:
         "localql-1.0.0/output/proof.json",
         "localql-1.0.0/csvql_project_pack.zip",
     ]
+
+
+def test_sdist_build_config_excludes_internal_superpowers_docs() -> None:
+    payload = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    sdist_target = (
+        payload.get("tool", {})
+        .get("hatch", {})
+        .get("build", {})
+        .get("targets", {})
+        .get("sdist", {})
+    )
+
+    assert "/docs/superpowers" in sdist_target.get("exclude", [])
 
 
 def test_find_archives_requires_wheel_and_sdist(tmp_path: Path) -> None:
