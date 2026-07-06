@@ -42,14 +42,17 @@ def write_text_atomic(
     *,
     encoding: str = "utf-8",
     newline: str | None = None,
+    overwrite: bool = True,
     token: OperationToken | None = None,
 ) -> None:
-    """Write text through a temp sibling file and atomically replace the target."""
+    """Write text through a temp sibling file and atomically publish the target.
+
+    When ``overwrite`` is ``False``, the final path is only created if it does
+    not already exist.
+    """
 
     if token is not None:
         token.raise_if_cancelled()
-
-    path.parent.mkdir(parents=True, exist_ok=True)
 
     fd, temp_name = tempfile.mkstemp(
         prefix=f".{path.name}.",
@@ -65,9 +68,14 @@ def write_text_atomic(
             os.fsync(file.fileno())
         if token is not None:
             token.raise_if_cancelled()
-        os.replace(temp_path, path)
+        if overwrite:
+            os.replace(temp_path, path)
+        else:
+            os.link(temp_path, path)
+            temp_path.unlink(missing_ok=True)
     except BaseException:
         try:
             temp_path.unlink(missing_ok=True)
-        finally:
-            raise
+        except OSError:
+            pass
+        raise

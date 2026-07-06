@@ -449,13 +449,13 @@ def _existing_derived_result_path(result_dir: Path, source_name: str) -> Path | 
 
 
 def _write_derived_result_file(path: Path, content: str) -> None:
-    if path.exists():
+    try:
+        write_text_atomic(path, content, newline="", overwrite=False)
+    except FileExistsError as exc:
         raise ExportError(
             f"Derived result already exists at {path}.",
             suggestion="Choose a different alias for this derived result source.",
-        )
-    try:
-        write_text_atomic(path, content, newline="")
+        ) from exc
     except OSError as exc:
         raise ExportError(
             f"Failed to write derived source to {path}.",

@@ -31,3 +31,9 @@ Completed.
 
 - No remaining known issues in the touched scope.
 - The helper is intentionally local and dependency-free, with no lockfile or package changes.
+
+## Review Fix
+
+- `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run --all-extras pytest tests/test_atomic_write.py tests/test_export.py tests/test_tui_workflows.py tests/test_project_config.py -q` -> `120 passed`
+- `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run ruff check src/csvql/atomic_write.py src/csvql/export.py src/csvql/project_config.py src/csvql/tui_workflows.py tests/test_atomic_write.py tests/test_export.py tests/test_tui_workflows.py tests/test_project_config.py` -> passed
+- `git diff --check` -> passed

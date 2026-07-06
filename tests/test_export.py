@@ -78,3 +78,13 @@ def test_write_export_file_writes_utf8_text(tmp_path: Path) -> None:
     write_export_file(output_path, "hello\n")
 
     assert output_path.read_text(encoding="utf-8") == "hello\n"
+
+
+def test_write_export_file_requires_existing_parent_directory(tmp_path: Path) -> None:
+    output_path = tmp_path / "missing" / "result.csv"
+
+    with pytest.raises(ExportError) as exc_info:
+        write_export_file(output_path, "hello\n")
+
+    assert "Failed to write export output" in exc_info.value.message
+    assert not output_path.parent.exists()

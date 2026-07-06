@@ -498,6 +498,21 @@ def test_save_project_persists_sorted_tables(tmp_path: Path) -> None:
     )
 
 
+def test_save_project_creates_parent_directory(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_path = project_root / "nested" / CONFIG_FILENAME
+    context = ProjectContext(
+        project_root=project_root.resolve(),
+        config_path=config_path.resolve(),
+        config=ProjectConfig(version=SUPPORTED_VERSION, tables=()),
+    )
+
+    save_project(context)
+
+    assert config_path.read_text(encoding="utf-8") == "version: 1\ntables: {}\n"
+    assert config_path.parent.is_dir()
+
+
 def test_save_project_preserves_null_min_max_values(tmp_path: Path) -> None:
     config_path = tmp_path / CONFIG_FILENAME
     config_path.write_text(

@@ -567,6 +567,43 @@ def test_save_derived_result_source_refuses_existing_output_file(tmp_path: Path)
     assert output_path.read_text(encoding="utf-8") == "id\nexisting\n"
 
 
+def test_save_derived_result_source_refuses_file_created_during_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
+    output_dir = tmp_path / ".csvql" / "results"
+    output_dir.mkdir(parents=True)
+    output_path = output_dir / "race.csv"
+    output_path.write_text("id\nexisting\n", encoding="utf-8")
+
+    def racing_existing_derived_result_path(result_dir: Path, source_name: str) -> None:
+        del source_name
+        assert result_dir == output_dir.resolve()
+
+    def racing_link(source: Path, target: Path) -> None:
+        del source
+        target.write_text("id\nexisting\n", encoding="utf-8")
+        raise FileExistsError(target)
+
+    monkeypatch.setattr(
+        "csvql.tui_workflows._existing_derived_result_path",
+        racing_existing_derived_result_path,
+    )
+    monkeypatch.setattr("csvql.atomic_write.os.link", racing_link)
+
+    with pytest.raises(ExportError, match=r"Derived result already exists"):
+        save_derived_result_source(
+            result,
+            "race",
+            existing_sources=(),
+            start_dir=tmp_path,
+        )
+
+    assert output_path.read_text(encoding="utf-8") == "id\nexisting\n"
+    assert not tuple(output_dir.glob(".race.csv.*.tmp"))
+
+
 def test_save_derived_result_source_refuses_case_variant_output_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
