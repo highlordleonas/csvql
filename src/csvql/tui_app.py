@@ -72,6 +72,41 @@ _FOOTER_KEY_ORDER_BY_PANE: dict[TUIFocusPane, tuple[str, ...]] = {
     "results": ("f1", "f2", "f6", "f7", "f8", "f9", "ctrl+s"),
 }
 
+_MODAL_BLOCKED_APP_ACTIONS = {
+    "add_source",
+    "choose_csv_source",
+    "export_last_result",
+    "focus_history",
+    "focus_results",
+    "focus_sources",
+    "focus_sql",
+    "inspect_source",
+    "insert_source_alias",
+    "insert_starter_select",
+    "new_query",
+    "profile_source",
+    "quit",
+    "quit_from_non_editor",
+    "remove_source",
+    "reopen_history",
+    "rerun_history",
+    "run_buffer",
+    "run_query",
+    "run_selected_or_current_query",
+    "sample_source",
+    "save_result_as_source",
+    "save_sources",
+    "select_next_buffer_result",
+    "select_previous_buffer_result",
+    "show_help",
+    "show_source_columns",
+}
+
+_RESULTS_ONLY_ACTIONS = {
+    "select_next_buffer_result",
+    "select_previous_buffer_result",
+}
+
 
 class _PromptInputScreen(ModalScreen[str | None]):
     """Generic modal prompt for one-line TUI input."""
@@ -370,6 +405,9 @@ class CSVQLMenuApp(App[None]):
     def _prompt_screen_active(self) -> bool:
         return isinstance(self.screen, (_HelpScreen, _PromptInputScreen, _ConfirmationScreen))
 
+    def _input_or_confirmation_screen_active(self) -> bool:
+        return isinstance(self.screen, (_PromptInputScreen, _ConfirmationScreen))
+
     def action_choose_csv_source(self) -> None:
         if self._prompt_screen_active():
             return
@@ -414,6 +452,8 @@ class CSVQLMenuApp(App[None]):
         self.exit()
 
     def action_new_query(self) -> None:
+        if self._input_or_confirmation_screen_active():
+            return
         sql_widget = self.query_one("#sql", TextArea)
         sql_widget.load_text("")
         sql_widget.focus()
@@ -874,6 +914,10 @@ class CSVQLMenuApp(App[None]):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool:
         del parameters
+        if self._app_action_blocked_by_modal(action):
+            return False
+        if action in _RESULTS_ONLY_ACTIONS and not self._is_focused("#results"):
+            return False
         if isinstance(self.focused, TextArea):
             text_entry_actions = {
                 "quit_from_non_editor",
@@ -888,8 +932,6 @@ class CSVQLMenuApp(App[None]):
                 "insert_starter_select",
                 "rerun_history",
                 "reopen_history",
-                "select_previous_buffer_result",
-                "select_next_buffer_result",
             }
             if action in text_entry_actions:
                 return False
@@ -910,6 +952,9 @@ class CSVQLMenuApp(App[None]):
         if action in history_actions and not self._is_focused("#history"):
             return False
         return True
+
+    def _app_action_blocked_by_modal(self, action: str) -> bool:
+        return self._input_or_confirmation_screen_active() and action in _MODAL_BLOCKED_APP_ACTIONS
 
     def _refresh_sources_table(self) -> None:
         sources_table = self.query_one("#sources", DataTable)

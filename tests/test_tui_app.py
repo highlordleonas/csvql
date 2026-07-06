@@ -714,6 +714,39 @@ def test_run_buffer_recovers_from_empty_worker_outcome(
     assert final_run_status == "Ready."
 
 
+def test_buffer_result_navigation_only_works_from_results_pane(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text(
+                "SELECT customer_id FROM customers ORDER BY customer_id;"
+                "SELECT email FROM customers ORDER BY email;"
+            )
+            await pilot.press("f12")
+            await pilot.pause(0.2)
+            initial_label = app.state.active_result.label
+
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("[")
+            await pilot.pause()
+            sources_label = app.state.active_result.label
+
+            app.query_one("#results", DataTable).focus()
+            await pilot.press("[")
+            await pilot.pause()
+            results_label = app.state.active_result.label
+            return initial_label, sources_label, results_label
+
+    initial_label, sources_label, results_label = asyncio.run(_inner())
+
+    assert sources_label == initial_label
+    assert results_label != initial_label
+
+
 def test_run_shortcut_records_sql_run_mode_and_history_column(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
@@ -1732,6 +1765,30 @@ def test_f1_does_not_stack_help_over_add_source_prompt(
     assert screen_state == "same"
 
 
+def test_export_prompt_blocks_global_new_query_action(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+    state.set_last_result(QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0))
+
+    async def _inner() -> tuple[str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT * FROM customers")
+            await pilot.press("f7")
+            await pilot.pause()
+            screen_name = type(app.screen).__name__
+            await pilot.press("f10")
+            await pilot.pause()
+            return screen_name, type(app.screen).__name__, sql.text
+
+    first_screen, current_screen, sql_text = asyncio.run(_inner())
+
+    assert first_screen == "_PromptInputScreen"
+    assert current_screen == "_PromptInputScreen"
+    assert sql_text == "SELECT * FROM customers"
+
+
 def test_pasted_csv_path_adds_source_without_inserting_editor_text(tmp_path: Path) -> None:
     csv_path = _create_csv(
         tmp_path,
@@ -2075,6 +2132,31 @@ def test_remove_selected_source_can_be_cancelled(tmp_path: Path) -> None:
     assert row_count == 1
     assert len(sources) == 1
     assert "Source removal cancelled." in status
+
+
+def test_remove_source_confirmation_blocks_global_new_query_action(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, str, str, int]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT * FROM customers")
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("d")
+            await pilot.pause()
+            screen_name = type(app.screen).__name__
+            await pilot.press("f10")
+            await pilot.pause()
+            return screen_name, type(app.screen).__name__, sql.text, len(app.state.sources)
+
+    first_screen, current_screen, sql_text, source_count = asyncio.run(_inner())
+
+    assert first_screen == "_ConfirmationScreen"
+    assert current_screen == "_ConfirmationScreen"
+    assert sql_text == "SELECT * FROM customers"
+    assert source_count == 1
 
 
 def test_inspect_sample_and_profile_selected_source_update_output(tmp_path: Path) -> None:
