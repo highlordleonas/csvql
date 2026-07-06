@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from csvql.atomic_write import write_text_atomic
+from csvql.atomic_write import OperationCancelled, OperationToken, write_text_atomic
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import CSVQLError, ExportError, ProjectConfigError, TableMappingError
 from csvql.export import (
@@ -219,12 +219,13 @@ def export_last_result(
     export_format: ExportFormat,
     base_dir: Path,
     force: bool = False,
+    token: OperationToken | None = None,
 ) -> Path:
     """Export the last query result using the existing export helpers."""
 
     output_path = resolve_export_path(path_value, base_dir=base_dir, force=force)
     content = format_query_result_for_export(result, export_format)
-    write_export_file(output_path, content)
+    write_export_file(output_path, content, token=token)
     return output_path
 
 
@@ -234,6 +235,7 @@ def save_derived_result_source(
     *,
     existing_sources: Sequence[TUISource],
     start_dir: Path,
+    token: OperationToken | None = None,
 ) -> TUISource:
     """Write a query result as a project-local CSV and return a derived source."""
 
@@ -308,7 +310,9 @@ def save_derived_result_source(
     output_path = resolved_result_dir / f"{source_name}.csv"
     content = format_query_result_for_export(result, ExportFormat.csv)
     try:
-        _write_derived_result_file(output_path, content)
+        _write_derived_result_file(output_path, content, token=token)
+    except OperationCancelled:
+        raise
     except OSError as exc:
         raise ExportError(
             f"Failed to write derived source to {output_path}.",
@@ -448,9 +452,16 @@ def _existing_derived_result_path(result_dir: Path, source_name: str) -> Path | 
     return None
 
 
-def _write_derived_result_file(path: Path, content: str) -> None:
+def _write_derived_result_file(
+    path: Path,
+    content: str,
+    *,
+    token: OperationToken | None = None,
+) -> None:
     try:
-        write_text_atomic(path, content, newline="", overwrite=False)
+        write_text_atomic(path, content, newline="", overwrite=False, token=token)
+    except OperationCancelled:
+        raise
     except FileExistsError as exc:
         raise ExportError(
             f"Derived result already exists at {path}.",

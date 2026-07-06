@@ -17,6 +17,7 @@ from textual.widgets import DataTable, Footer, Input, Static, TextArea
 from textual.widgets._footer import FooterKey
 from textual.worker import Worker, WorkerState
 
+from csvql.atomic_write import OperationCancelled, OperationToken
 from csvql.exceptions import CSVQLError
 from csvql.export import ExportFormat
 from csvql.models import ProfileResult, QueryResult, SampleResult
@@ -200,6 +201,16 @@ class _SourceColumnsOutcome:
     columns: tuple[TUISourceColumn, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _ExportOutcome:
+    path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _SaveResultSourceOutcome:
+    source: TUISource
+
+
 class _OrderedFooter(Footer):
     """Footer that keeps CSVQL's key order stable across focused widgets."""
 
@@ -359,6 +370,8 @@ class CSVQLMenuApp(App[None]):
         self._suppress_sql_source_text_detection = False
         self._sql_source_text_revision = 0
         self._active_operation_worker: Worker[object] | None = None
+        self._active_operation_token: OperationToken | None = None
+        self._active_operation_worker_name: str | None = None
         self._cancelled_operation_names: set[str] = set()
         if initial_state is not None:
             self.state = initial_state
@@ -879,7 +892,7 @@ class CSVQLMenuApp(App[None]):
         *,
         kind: TUIOperationKind,
         label: str,
-        work: Callable[[], object],
+        work: Callable[[OperationToken], object],
     ) -> None:
         if self._operation_running():
             self._set_status(f"{self.state.operation_run.label} already running.")
@@ -887,10 +900,13 @@ class CSVQLMenuApp(App[None]):
 
         self.state.operation_run = TUIOperationRunState(is_running=True, kind=kind, label=label)
         self._set_status(f"{label}...")
+        token = OperationToken()
+        self._active_operation_token = token
         worker_name = f"operation-{kind}-{self._next_operation_worker_id}"
+        self._active_operation_worker_name = worker_name
         self._next_operation_worker_id += 1
         worker = self.run_worker(
-            work,
+            lambda: work(token),
             name=worker_name,
             group="operation",
             thread=True,
@@ -903,9 +919,12 @@ class CSVQLMenuApp(App[None]):
         if worker is None or worker.is_finished:
             return
 
+        token = self._active_operation_token
         label = self.state.operation_run.label
         worker_name = worker.name or ""
         self._cancelled_operation_names.add(worker_name)
+        if token is not None:
+            token.cancel()
         worker.cancel()
         self.state.operation_run = TUIOperationRunState()
         self._active_operation_worker = None
@@ -922,6 +941,9 @@ class CSVQLMenuApp(App[None]):
         worker_name = worker.name or ""
         if worker_name in self._cancelled_operation_names:
             self._cancelled_operation_names.discard(worker_name)
+            if self._active_operation_worker_name == worker_name:
+                self._active_operation_worker_name = None
+                self._active_operation_token = None
             if self._active_operation_worker is worker:
                 self._active_operation_worker = None
                 self.state.operation_run = TUIOperationRunState()
@@ -932,6 +954,9 @@ class CSVQLMenuApp(App[None]):
 
         self._active_operation_worker = None
         self.state.operation_run = TUIOperationRunState()
+        if self._active_operation_worker_name == worker_name:
+            self._active_operation_worker_name = None
+            self._active_operation_token = None
 
         if state == WorkerState.CANCELLED:
             return
@@ -984,6 +1009,24 @@ class CSVQLMenuApp(App[None]):
             )
             self._set_status(f"{outcome.source_name}: {len(outcome.columns)} columns loaded.")
             return
+        if isinstance(outcome, _ExportOutcome):
+            display_path = _display_path(outcome.path, self.start_dir)
+            self._set_status(f"Exported to {display_path}.")
+            self.query_one("#results-message", Static).update(f"Exported to {display_path}.")
+            return
+        if isinstance(outcome, _SaveResultSourceOutcome):
+            source = outcome.source
+            self.state.add_source(source)
+            self.state.select_source(source.name)
+            self._refresh_sources_table()
+            display_path = _display_path(source.path, self.start_dir)
+            message = (
+                f"Saved result as derived source {source.name} at {display_path}. "
+                "Use Save sources to persist the alias in .csvql.yml."
+            )
+            self._set_status(message)
+            self.query_one("#results-message", Static).update(message)
+            return
 
         self._show_error(
             CSVQLError(
@@ -993,6 +1036,8 @@ class CSVQLMenuApp(App[None]):
         )
 
     def _handle_operation_worker_failure(self, error: BaseException | None) -> None:
+        if isinstance(error, OperationCancelled):
+            return
         if isinstance(error, CSVQLError):
             self._show_error(error)
             return
@@ -1402,20 +1447,23 @@ class CSVQLMenuApp(App[None]):
 
         try:
             export_path_value, export_format = _export_path_and_format_for_prompt(path_value)
-            export_path = export_last_result(
-                result,
-                export_path_value,
-                export_format=export_format,
-                base_dir=self.start_dir,
-                force=False,
+            self._start_operation_worker(
+                kind="export",
+                label="Exporting active result",
+                work=lambda token: _ExportOutcome(
+                    path=export_last_result(
+                        result,
+                        export_path_value,
+                        export_format=export_format,
+                        base_dir=self.start_dir,
+                        force=False,
+                        token=token,
+                    )
+                ),
             )
         except CSVQLError as exc:
             self._show_error(exc)
             return
-
-        display_path = _display_path(export_path, self.start_dir)
-        self._set_status(f"Exported to {display_path}.")
-        self.query_one("#results-message", Static).update(f"Exported to {display_path}.")
 
     def _handle_save_sources_confirmation(self, confirmed: bool | None) -> None:
         if not confirmed:
@@ -1447,27 +1495,32 @@ class CSVQLMenuApp(App[None]):
             self._show_error(CSVQLError("Run a query before saving a result as a source."))
             return
 
-        try:
-            source = save_derived_result_source(
-                result,
-                alias,
-                existing_sources=self.state.sources,
-                start_dir=self.start_dir,
+        if any(source.name.casefold() == alias.casefold() for source in self.state.sources):
+            self._show_error(
+                CSVQLError(
+                    f"Source alias '{alias}' is already loaded in the TUI session.",
+                    suggestion="Choose a unique alias for the derived result source.",
+                )
             )
-            self.state.add_source(source)
-            self.state.select_source(source.name)
+            return
+
+        try:
+            self._start_operation_worker(
+                kind="save_result",
+                label="Saving active result as source",
+                work=lambda token: _SaveResultSourceOutcome(
+                    source=save_derived_result_source(
+                        result,
+                        alias,
+                        existing_sources=self.state.sources,
+                        start_dir=self.start_dir,
+                        token=token,
+                    )
+                ),
+            )
         except CSVQLError as exc:
             self._show_error(exc)
             return
-
-        self._refresh_sources_table()
-        display_path = _display_path(source.path, self.start_dir)
-        message = (
-            f"Saved result as derived source {source.name} at {display_path}. "
-            "Use Save sources to persist the alias in .csvql.yml."
-        )
-        self._set_status(message)
-        self.query_one("#results-message", Static).update(message)
 
     def _selected_source_row_index(self) -> int | None:
         selected_alias = self.state.selected_alias

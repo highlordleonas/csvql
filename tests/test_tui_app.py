@@ -12,10 +12,12 @@ from textual.pilot import Pilot
 from textual.widgets import DataTable, Input, Static, TextArea
 from textual.widgets._footer import FooterKey
 
+from csvql.atomic_write import OperationToken
 from csvql.exceptions import CSVQLError
 from csvql.models import QueryResult
 from csvql.tui_app import CSVQLMenuApp
 from csvql.tui_state import TUIBufferResultTab, TUISessionState, TUISource
+from csvql.tui_workflows import export_last_result as workflows_export_last_result
 
 
 def _read_readme_text() -> str:
@@ -104,6 +106,17 @@ async def _settled_footer_entries(
         if entries and (required_entry is None or required_entry in entries):
             return entries
     return _footer_entries(app)
+
+
+async def _settled_operation_idle(
+    pilot: Pilot[None],
+    app: CSVQLMenuApp,
+) -> None:
+    for _ in range(20):
+        await pilot.pause(0.05)
+        if not app.state.operation_run.is_running:
+            await pilot.pause(0.5)
+            return
 
 
 def _create_csv(tmp_path: Path, filename: str, content: str) -> Path:
@@ -2542,7 +2555,7 @@ def test_export_last_result_preserves_visible_result_grid(tmp_path: Path) -> Non
             await pilot.pause()
             app.screen.query_one("#export-path", Input).value = str(export_path)
             await pilot.press("enter")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
 
             after_columns, after_rows, message = _result_grid_snapshot(app)
             status = app.query_one("#status", Static).content
@@ -2564,6 +2577,49 @@ def test_export_last_result_preserves_visible_result_grid(tmp_path: Path) -> Non
     assert content.startswith("customer_id,email")
     assert "Exported to" in message
     assert "Exported to" in status
+
+
+def test_escape_cancels_running_export_before_final_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    export_path = tmp_path / "exports" / "customers.csv"
+    export_path.parent.mkdir()
+    state = TUISessionState()
+    state.set_last_result(QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0))
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_export_last_result(*args: object, **kwargs: object) -> Path:
+        token = kwargs["token"]
+        assert isinstance(token, OperationToken)
+        started.set()
+        release.wait(timeout=2)
+        token.raise_if_cancelled()
+        return workflows_export_last_result(*args, **kwargs)
+
+    monkeypatch.setattr("csvql.tui_app.export_last_result", slow_export_last_result)
+
+    async def _inner() -> tuple[str, bool]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f7")
+            await pilot.pause()
+            app.screen.query_one("#export-path", Input).value = str(export_path)
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            await pilot.press("escape")
+            await pilot.pause()
+            release.set()
+            await pilot.pause(0.2)
+            return app.query_one("#status", Static).content, export_path.exists()
+
+    status, exists = asyncio.run(_inner())
+
+    assert started.is_set()
+    assert "Cancelled Exporting active result." in status
+    assert exists is False
 
 
 def test_export_last_result_status_uses_relative_path_within_start_dir(tmp_path: Path) -> None:
@@ -2588,7 +2644,7 @@ def test_export_last_result_status_uses_relative_path_within_start_dir(tmp_path:
             export_input = app.screen.query_one("#export-path", Input)
             export_input.value = str(export_path)
             await pilot.press("enter")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
 
             return app.query_one("#status", Static).content
 
@@ -2620,7 +2676,7 @@ def test_export_last_result_defaults_extensionless_path_to_csv(tmp_path: Path) -
             export_input = app.screen.query_one("#export-path", Input)
             export_input.value = str(export_path)
             await pilot.press("enter")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
 
             status = app.query_one("#status", Static).content
             content = defaulted_path.read_text(encoding="utf-8")
@@ -2656,7 +2712,7 @@ def test_export_last_result_writes_text_when_path_ends_txt(tmp_path: Path) -> No
             export_input = app.screen.query_one("#export-path", Input)
             export_input.value = str(export_path)
             await pilot.press("enter")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
 
             return export_path.read_text(encoding="utf-8")
 
@@ -2698,7 +2754,7 @@ def test_export_uses_recalled_history_result(tmp_path: Path) -> None:
             export_input = app.screen.query_one("#export-path", Input)
             export_input.value = str(export_path)
             await pilot.press("enter")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
 
             return (
                 app.query_one("#status", Static).content,
@@ -2753,7 +2809,7 @@ def test_buffer_result_selector_controls_export_target(tmp_path: Path) -> None:
             export_input = app.screen.query_one("#export-path", Input)
             export_input.value = str(export_path)
             await pilot.press("enter")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
 
             return (
                 app.query_one("#results-title", Static).content,
@@ -2838,7 +2894,7 @@ def test_save_result_as_source_writes_csv_and_adds_derived_source(tmp_path: Path
             alias_input = app.screen.query_one("#derived-source-alias", Input)
             alias_input.value = "customer_emails"
             await pilot.press("enter")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
 
             output_path = tmp_path / ".csvql" / "results" / "customer_emails.csv"
             return (
@@ -2898,7 +2954,7 @@ def test_save_result_as_source_uses_recalled_history_result(tmp_path: Path) -> N
             alias_input = app.screen.query_one("#derived-source-alias", Input)
             alias_input.value = "recalled_first"
             await pilot.press("enter")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
 
             output_path = tmp_path / ".csvql" / "results" / "recalled_first.csv"
             return (
@@ -2940,7 +2996,7 @@ def test_save_result_source_shortcuts(tmp_path: Path, key: str) -> None:
             alias_input = app.screen.query_one("#derived-source-alias", Input)
             alias_input.value = "customer_ids"
             await pilot.press("enter")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
 
             return (
                 app.state.sources,
@@ -3013,7 +3069,11 @@ def test_save_result_as_source_refuses_duplicate_alias(tmp_path: Path) -> None:
             alias_input = app.screen.query_one("#derived-source-alias", Input)
             alias_input.value = "customers"
             await pilot.press("enter")
-            await pilot.pause()
+            for _ in range(40):
+                await pilot.pause(0.05)
+                status = app.query_one("#status", Static).content
+                if "Source alias 'customers' is already loaded" in status:
+                    break
 
             return (
                 app.query_one("#status", Static).content,

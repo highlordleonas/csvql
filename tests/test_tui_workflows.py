@@ -622,8 +622,14 @@ def test_save_derived_result_source_refuses_case_variant_output_file(
             return False
         return original_exists(path)
 
-    def fake_write_derived_result_file(path: Path, content: str) -> None:
+    def fake_write_derived_result_file(
+        path: Path,
+        content: str,
+        *,
+        token: object | None = None,
+    ) -> None:
         del content
+        assert token is None
         write_attempts.append(path)
 
     monkeypatch.setattr(Path, "exists", case_sensitive_exists)

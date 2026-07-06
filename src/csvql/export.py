@@ -5,7 +5,7 @@ from enum import StrEnum
 from io import StringIO
 from pathlib import Path
 
-from csvql.atomic_write import write_text_atomic
+from csvql.atomic_write import OperationCancelled, OperationToken, write_text_atomic
 from csvql.exceptions import ExportError
 from csvql.models import QueryResult
 from csvql.output import format_json_result, format_table_result
@@ -68,11 +68,13 @@ def format_query_result_for_export(result: QueryResult, export_format: ExportFor
     )
 
 
-def write_export_file(path: Path, content: str) -> None:
+def write_export_file(path: Path, content: str, *, token: OperationToken | None = None) -> None:
     """Write export content as UTF-8 text."""
 
     try:
-        write_text_atomic(path, content)
+        write_text_atomic(path, content, token=token)
+    except OperationCancelled:
+        raise
     except OSError as exc:
         raise ExportError(
             f"Failed to write export output: {path}",
