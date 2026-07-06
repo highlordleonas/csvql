@@ -62,3 +62,32 @@ Result: clean
 
 - Cancellation is best-effort. If a worker finishes after Esc, its late result is ignored rather than force-stopping the underlying thread.
 - No file export/save cancellation was added here; that remains for the later task.
+
+## Review Fix
+
+Verified the source-worker failure path now preserves original `CSVQLError` text and suggestion while still handling unexpected exceptions with a generic source-intelligence TUI error.
+
+Commands run:
+
+```bash
+env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run --all-extras pytest \
+  tests/test_tui_app.py::test_source_worker_failure_preserves_csv_error_message_and_suggestion \
+  tests/test_tui_app.py::test_source_intelligence_action_uses_operation_worker \
+  tests/test_tui_app.py::test_escape_cancels_running_source_operation \
+  tests/test_tui_app.py::test_inspect_sample_and_profile_selected_source_update_output \
+  tests/test_tui_app.py::test_source_intelligence_printable_keys_only_work_when_sources_focused -q
+```
+
+Result: `5 passed`
+
+```bash
+env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run ruff check src/csvql/tui_app.py src/csvql/tui_state.py tests/test_tui_app.py
+```
+
+Result: `All checks passed!`
+
+```bash
+git diff --check
+```
+
+Result: clean

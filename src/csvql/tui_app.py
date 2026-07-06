@@ -994,10 +994,17 @@ class CSVQLMenuApp(App[None]):
         )
 
     def _handle_operation_worker_failure(self, error: BaseException | None) -> None:
+        if isinstance(error, CSVQLError):
+            self._show_error(error)
+            return
+
+        error_message = "Unexpected worker failure while loading source intelligence."
+        if error is not None:
+            error_message = f"{error_message} {error}"
         self._show_error(
             CSVQLError(
-                "Operation failed.",
-                suggestion=str(error) if error is not None else None,
+                error_message,
+                suggestion="Try the source action again.",
             )
         )
 

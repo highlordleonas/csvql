@@ -2302,6 +2302,45 @@ def test_source_intelligence_action_uses_operation_worker(
     assert "customers: 2 columns." in final_status
 
 
+def test_source_worker_failure_preserves_csv_error_message_and_suggestion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+
+    def failing_inspect_source(source: TUISource) -> object:
+        del source
+        raise CSVQLError(
+            "Cannot inspect source.",
+            suggestion="Check the CSV path.",
+        )
+
+    monkeypatch.setattr("csvql.tui_app.inspect_source", failing_inspect_source)
+
+    async def _inner() -> tuple[str, str, str, bool]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("i")
+            await pilot.pause(0.2)
+            return (
+                app.query_one("#status", Static).content,
+                app.query_one("#results-message", Static).content,
+                app.query_one("#run-status", Static).content,
+                app.state.operation_run.is_running,
+            )
+
+    status, results_message, run_status, is_running = asyncio.run(_inner())
+
+    assert status == results_message
+    assert "Error: Cannot inspect source." in status
+    assert "Suggestion: Check the CSV path." in status
+    assert "Operation failed." not in status
+    assert run_status == "Ready."
+    assert is_running is False
+
+
 def test_escape_cancels_running_source_operation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
