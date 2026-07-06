@@ -311,6 +311,20 @@ def test_begin_query_run_prevents_overlapping_runs(tmp_path: Path) -> None:
         state.begin_query_run("SELECT COUNT(*) FROM orders")
 
 
+def test_begin_query_batch_reserves_contiguous_sequences(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
+
+    sequences = state.begin_query_batch(("SELECT 1", "SELECT 2", "SELECT 3"))
+
+    assert sequences == (1, 2, 3)
+    assert state.query_run.is_running is True
+    assert state.query_run.sequence == 1
+
+    with pytest.raises(RuntimeError, match="query is already running"):
+        state.begin_query_batch(("SELECT 4",))
+
+
 def test_tui_source_column_stores_name_and_duckdb_type() -> None:
     column = TUISourceColumn(name="Customer ID", duckdb_type="VARCHAR")
 

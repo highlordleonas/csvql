@@ -26,6 +26,7 @@ from csvql.tui_editor import all_sql_statements, selected_or_current_sql
 from csvql.tui_help import WORKBENCH_HELP
 from csvql.tui_results import make_result_view_state, populate_result_table
 from csvql.tui_state import (
+    TUIBufferResultTab,
     TUIFocusPane,
     TUIQueryHistoryItem,
     TUIQueryOutcome,
@@ -42,6 +43,7 @@ from csvql.tui_workflows import (
     inspect_source_columns,
     profile_source,
     render_duckdb_identifier,
+    run_buffer_for_tui,
     run_query_for_tui,
     sample_source,
     save_derived_result_source,
@@ -198,6 +200,10 @@ class CSVQLMenuApp(App[None]):
         height: 1;
     }
 
+    #result-tabs {
+        height: 1;
+    }
+
     .pane-title {
         height: 1;
     }
@@ -226,10 +232,12 @@ class CSVQLMenuApp(App[None]):
         Binding("f8", "focus_history", "History", priority=True),
         Binding("f9", "quit", "Quit", priority=True),
         Binding("f10,ctrl+n", "new_query", "New query", priority=True),
+        Binding("[", "select_previous_buffer_result", "Previous buffer result", show=False),
+        Binding("]", "select_next_buffer_result", "Next buffer result", show=False),
         Binding(
-            "f12",
-            "run_query",
-            "Run All",
+            "f12,ctrl+b",
+            "run_buffer",
+            "Run Buffer",
             key_display="F12",
             priority=True,
         ),
@@ -267,9 +275,6 @@ class CSVQLMenuApp(App[None]):
         self._active_query_run_modes: dict[int, TUIQueryRunMode] = {}
         self._run_editor_pending = False
         self._help_screen_open = False
-        self._editor_batch_queue: list[str] = []
-        self._editor_batch_total = 0
-        self._editor_batch_completed = 0
         self._suppress_sql_source_text_detection = False
         self._sql_source_text_revision = 0
         if initial_state is not None:
@@ -294,6 +299,7 @@ class CSVQLMenuApp(App[None]):
                 yield _SourcePathTextArea(id="sql")
                 yield Static("", id="run-status")
                 yield Static("", id="results-title", classes="pane-title")
+                yield Static("", id="result-tabs")
                 yield DataTable(id="results", cursor_type="cell")
                 yield Static("", id="results-message")
         yield Static("", id="context")
@@ -304,6 +310,7 @@ class CSVQLMenuApp(App[None]):
         self._refresh_history_table()
         self._set_status(self._status_message())
         self._set_run_status_ready()
+        self._refresh_results_display()
         self.query_one("#sql", TextArea).focus()
         self._refresh_pane_context()
 
@@ -495,7 +502,10 @@ class CSVQLMenuApp(App[None]):
         self._append_sql_text(f"SELECT *\nFROM {alias}\nLIMIT 10;")
 
     def action_run_query(self) -> None:
-        self._schedule_editor_query(self._run_query_from_editor, "Preparing all SQL...")
+        self.action_run_buffer()
+
+    def action_run_buffer(self) -> None:
+        self._schedule_editor_query(self._run_buffer_from_editor, "Preparing buffer SQL...")
 
     def action_run_selected_or_current_query(self) -> None:
         self._schedule_editor_query(
@@ -534,23 +544,60 @@ class CSVQLMenuApp(App[None]):
             )
 
     def _run_query_from_editor(self) -> None:
+        self.action_run_buffer()
+
+    def _run_buffer_from_editor(self) -> None:
         self._run_editor_pending = False
         sql_widget = self.query_one("#sql", TextArea)
         statements = all_sql_statements(sql_widget.text)
-        if len(statements) > 1:
-            self._start_editor_query_batch(statements)
+        if not statements:
+            self._show_rejected_run(
+                CSVQLError(
+                    "Enter SQL before running a query.",
+                    suggestion="Type SQL in the editor and try again.",
+                )
+            )
             return
-        sql = statements[0] if statements else ""
-        self._start_query_run(sql, run_label="all SQL", run_mode="buffer")
 
-    def _start_editor_query_batch(self, statements: Sequence[str]) -> None:
-        self._editor_batch_queue = list(statements[1:])
-        self._editor_batch_total = len(statements)
-        self._editor_batch_completed = 0
-        self._start_query_run(
-            statements[0],
-            run_label=f"statement 1/{self._editor_batch_total}",
+        if not self.state.sources:
+            self._show_rejected_run(
+                CSVQLError(
+                    "No sources loaded.",
+                    suggestion="Add a source before running SQL.",
+                )
+            )
+            return
+
+        try:
+            sequences = self.state.begin_query_batch(statements)
+        except RuntimeError:
+            self._show_rejected_run(
+                CSVQLError(
+                    "Query already running.",
+                    suggestion="Wait for the current query to finish.",
+                ),
+                reset_run_status=False,
+                simple_message_without_previous=True,
+            )
+            return
+
+        message = _run_start_message(
+            sequence=sequences[0],
+            run_label="buffer SQL",
             run_mode="buffer",
+            rerun_source_sequence=None,
+        )
+        self._set_status(message)
+        self.query_one("#run-status", Static).update(message)
+        self._active_query_sql[sequences[0]] = "\n".join(statements)
+        self._active_query_run_modes[sequences[0]] = "buffer"
+        sources = self.state.sources
+        self.run_worker(
+            lambda: run_buffer_for_tui(sources, statements, sequences=sequences),
+            name=f"buffer-{sequences[0]}-{sequences[-1]}",
+            group="query",
+            thread=True,
+            exit_on_error=False,
         )
 
     def _run_selected_or_current_query_from_editor(self) -> None:
@@ -692,6 +739,12 @@ class CSVQLMenuApp(App[None]):
             rerun_source_sequence=item.sequence,
         )
 
+    def action_select_previous_buffer_result(self) -> None:
+        self._select_relative_buffer_result(-1)
+
+    def action_select_next_buffer_result(self) -> None:
+        self._select_relative_buffer_result(1)
+
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         worker = event.worker
         if worker.group != "query" or not worker.is_finished:
@@ -705,6 +758,11 @@ class CSVQLMenuApp(App[None]):
         outcome = worker.result
         if isinstance(outcome, TUIQueryOutcome):
             self._handle_query_outcome(outcome)
+            return
+        if isinstance(outcome, tuple) and all(
+            isinstance(item, TUIQueryOutcome) for item in outcome
+        ):
+            self._handle_buffer_outcomes(outcome)
             return
 
         self._handle_query_worker_failure(
@@ -764,6 +822,8 @@ class CSVQLMenuApp(App[None]):
                 "insert_starter_select",
                 "rerun_history",
                 "reopen_history",
+                "select_previous_buffer_result",
+                "select_next_buffer_result",
             }
             if action in text_entry_actions:
                 return False
@@ -813,9 +873,7 @@ class CSVQLMenuApp(App[None]):
             self.query_one("#sql-title", Static).update(
                 _pane_title("SQL editor", active_pane == "editor")
             )
-            self.query_one("#results-title", Static).update(
-                _pane_title("Results", active_pane == "results")
-            )
+            self._refresh_results_title(is_active=active_pane == "results")
             self.query_one("#context", Static).update(_pane_context(active_pane))
         except NoMatches:
             return
@@ -884,6 +942,44 @@ class CSVQLMenuApp(App[None]):
 
     def _clear_result_grid(self) -> None:
         self.query_one("#results", DataTable).clear(columns=True)
+
+    def _refresh_results_title(self, *, is_active: bool | None = None) -> None:
+        label = self.state.active_result.label
+        if self.state.active_result.kind == "none":
+            label = "Results"
+        if is_active is None:
+            is_active = self._is_focused("#results")
+        self.query_one("#results-title", Static).update(_pane_title(label, is_active))
+
+    def _result_tabs_text(self) -> str:
+        tabs = self.state.buffer_result_tabs
+        if not tabs:
+            return "Buffer results: none"
+
+        active_result = self.state.active_result
+        entries: list[str] = []
+        for tab in tabs:
+            label = f"{tab.index}: {tab.label}"
+            if (
+                active_result.kind == "buffer"
+                and active_result.sequence == tab.sequence
+                and active_result.buffer_result_index == tab.index
+            ):
+                label = f"[{label}]"
+            entries.append(label)
+        return "Buffer results: " + " | ".join(entries)
+
+    def _refresh_result_tabs(self) -> None:
+        self.query_one("#result-tabs", Static).update(self._result_tabs_text())
+
+    def _refresh_results_display(self) -> None:
+        view = self.state.result_view
+        if view.columns:
+            populate_result_table(self.query_one("#results", DataTable), view)
+        else:
+            self._clear_result_grid()
+        self._refresh_results_title()
+        self._refresh_result_tabs()
 
     def _show_output_text(self, message: str) -> None:
         self._clear_result_grid()
@@ -1062,6 +1158,8 @@ class CSVQLMenuApp(App[None]):
                 return
             view = self.state.result_view
             populate_result_table(self.query_one("#results", DataTable), view)
+            self._refresh_results_title()
+            self._refresh_result_tabs()
             self.query_one("#results-message", Static).update(
                 f"History query {item.sequence}. {_result_message(view)}"
             )
@@ -1070,6 +1168,8 @@ class CSVQLMenuApp(App[None]):
 
         self.state.clear_last_result()
         self._clear_result_grid()
+        self._refresh_results_title()
+        self._refresh_result_tabs()
         if item.status == "no_result":
             self.state.last_result_status = "no_result"
             message = f"History query {item.sequence} completed with no tabular result."
@@ -1086,36 +1186,178 @@ class CSVQLMenuApp(App[None]):
         except Exception:
             return False
 
+    def _select_relative_buffer_result(self, offset: int) -> None:
+        tabs = self.state.buffer_result_tabs
+        if not tabs:
+            return
+
+        active_index = self._active_buffer_tab_index()
+        if active_index is None:
+            target_index = 0 if offset > 0 else len(tabs) - 1
+        else:
+            target_index = (active_index + offset) % len(tabs)
+        self._show_buffer_result_at_tab(tabs[target_index])
+
+    def _active_buffer_tab_index(self) -> int | None:
+        active_result = self.state.active_result
+        if active_result.kind != "buffer" or active_result.buffer_result_index is None:
+            return None
+
+        for index, tab in enumerate(self.state.buffer_result_tabs):
+            if (
+                tab.sequence == active_result.sequence
+                and tab.index == active_result.buffer_result_index
+            ):
+                return index
+        return None
+
+    def _show_buffer_result_at_tab(self, tab: TUIBufferResultTab) -> None:
+        if not self.state.select_buffer_result(tab.sequence):
+            return
+
+        view = self.state.result_view
+        populate_result_table(self.query_one("#results", DataTable), view)
+        self._refresh_results_title()
+        self._refresh_result_tabs()
+        self.query_one("#results-message", Static).update(
+            f"Buffer result {tab.sequence}.{tab.index}. {_result_message(view)}"
+        )
+        self._set_status(f"Showing buffer result {tab.sequence}.{tab.index}.")
+
+    def _handle_buffer_outcomes(self, outcomes: tuple[TUIQueryOutcome, ...]) -> None:
+        batch_sequence = outcomes[0].sequence if outcomes else self.state.query_run.sequence
+        if batch_sequence is not None:
+            self._active_query_sql.pop(batch_sequence, None)
+            self._active_query_run_modes.pop(batch_sequence, None)
+
+        buffer_tabs: list[TUIBufferResultTab] = []
+        latest_tabular_sequence: int | None = None
+        latest_outcome: TUIQueryOutcome | None = None
+        next_buffer_index = 0
+
+        for outcome in outcomes:
+            latest_outcome = outcome
+            if outcome.status == "success" and outcome.result is not None:
+                next_buffer_index += 1
+                view = make_result_view_state(
+                    outcome.result,
+                    source_result_sequence=outcome.sequence,
+                )
+                self.state.record_query_success(
+                    outcome.sequence,
+                    outcome.sql,
+                    outcome.result,
+                    view,
+                    run_mode="buffer",
+                    buffer_result_index=next_buffer_index,
+                )
+                buffer_tabs.append(
+                    TUIBufferResultTab(
+                        sequence=outcome.sequence,
+                        index=next_buffer_index,
+                        label=f"query {next_buffer_index}",
+                    )
+                )
+                latest_tabular_sequence = outcome.sequence
+                continue
+
+            if outcome.status == "no_result":
+                self.state.record_query_no_result(
+                    outcome.sequence,
+                    outcome.sql,
+                    outcome.elapsed_ms or 0.0,
+                    run_mode="buffer",
+                )
+                continue
+
+            self.state.record_query_error(
+                outcome.sequence,
+                outcome.sql,
+                outcome.error_message or "Query failed.",
+                run_mode="buffer",
+            )
+            break
+
+        if latest_tabular_sequence is None:
+            self.state.set_buffer_result_tabs(tuple(), selected_sequence=None)
+            self._clear_result_grid()
+            self._refresh_results_title()
+            self._refresh_result_tabs()
+            if latest_outcome is not None:
+                self._refresh_history_table_selecting(latest_outcome.sequence)
+            if latest_outcome is None:
+                message = "Statement completed; no tabular result to display."
+            elif latest_outcome.status == "error":
+                message = latest_outcome.error_message or "Query failed."
+            else:
+                message = "Statement completed; no tabular result to display."
+            self._set_status(message)
+            self.query_one("#results-message", Static).update(message)
+            self.query_one("#run-status", Static).update("Ready.")
+            self.query_one("#sql", TextArea).focus()
+            return
+
+        self.state.set_buffer_result_tabs(
+            tuple(buffer_tabs),
+            selected_sequence=latest_tabular_sequence,
+        )
+        self._refresh_results_display()
+        self._refresh_history_table_selecting(
+            latest_outcome.sequence if latest_outcome is not None else latest_tabular_sequence
+        )
+        self.query_one("#run-status", Static).update("Ready.")
+        if (
+            latest_outcome is not None
+            and latest_outcome.status == "success"
+            and latest_outcome.result is not None
+        ):
+            completion_message = (
+                f"{latest_outcome.result.row_count} returned row(s) "
+                f"in {latest_outcome.result.elapsed_ms:.1f} ms."
+            )
+            self._set_status(completion_message)
+            self.query_one("#results-message", Static).update(
+                _result_message(self.state.result_view)
+            )
+        elif latest_outcome is not None and latest_outcome.status == "no_result":
+            message = "Statement completed; no tabular result to display."
+            self._set_status(message)
+            self.query_one("#results-message", Static).update(message)
+        elif latest_outcome is not None and latest_outcome.status == "error":
+            error_message = latest_outcome.error_message or "Query failed."
+            self._set_status(error_message)
+            self.query_one("#results-message", Static).update(error_message)
+        self.query_one("#sql", TextArea).focus()
+
     def _handle_query_outcome(self, outcome: TUIQueryOutcome) -> None:
         if not self.state.is_current_query_sequence(outcome.sequence):
             return
         self._active_query_sql.pop(outcome.sequence, None)
         run_mode = self._active_query_run_modes.pop(outcome.sequence, "current")
+        if run_mode == "buffer":
+            self._handle_buffer_outcomes((outcome,))
+            return
         if outcome.status == "success" and outcome.result is not None:
             view = make_result_view_state(
                 outcome.result,
                 source_result_sequence=outcome.sequence,
             )
-            buffer_result_index = None
-            if run_mode == "buffer":
-                buffer_result_index = self._editor_batch_completed + 1
             self.state.record_query_success(
                 outcome.sequence,
                 outcome.sql,
                 outcome.result,
                 view,
                 run_mode=run_mode,
-                buffer_result_index=buffer_result_index,
             )
             populate_result_table(self.query_one("#results", DataTable), view)
+            self._refresh_results_title()
+            self._refresh_result_tabs()
             self._refresh_history_table_selecting(outcome.sequence)
             self._set_status(
                 f"{outcome.result.row_count} returned row(s) in {outcome.result.elapsed_ms:.1f} ms."
             )
             self.query_one("#run-status", Static).update("Ready.")
             self.query_one("#results-message", Static).update(_result_message(view))
-            if self._continue_editor_query_batch(outcome):
-                return
             self.query_one("#sql", TextArea).focus()
             return
         if outcome.status == "no_result":
@@ -1126,13 +1368,13 @@ class CSVQLMenuApp(App[None]):
                 run_mode=run_mode,
             )
             self.query_one("#results", DataTable).clear(columns=True)
+            self._refresh_results_title()
+            self._refresh_result_tabs()
             message = "Statement completed; no tabular result to display."
             self._refresh_history_table_selecting(outcome.sequence)
             self._set_status(message)
             self.query_one("#run-status", Static).update("Ready.")
             self.query_one("#results-message", Static).update(message)
-            if self._continue_editor_query_batch(outcome):
-                return
             self.query_one("#sql", TextArea).focus()
             return
         self.state.record_query_error(
@@ -1142,49 +1384,13 @@ class CSVQLMenuApp(App[None]):
             run_mode=run_mode,
         )
         self.query_one("#results", DataTable).clear(columns=True)
+        self._refresh_results_title()
+        self._refresh_result_tabs()
         error = CSVQLError(outcome.error_message or "Query failed.", suggestion=outcome.suggestion)
         self._refresh_history_table_selecting(outcome.sequence)
         self.query_one("#run-status", Static).update("Ready.")
         self._show_error(error)
-        self._clear_editor_query_batch()
         self.query_one("#sql", TextArea).focus()
-
-    def _continue_editor_query_batch(self, outcome: TUIQueryOutcome) -> bool:
-        if self._editor_batch_total == 0:
-            return False
-
-        self._editor_batch_completed += 1
-        if outcome.status == "error":
-            self._clear_editor_query_batch()
-            return False
-
-        if self._editor_batch_queue:
-            next_index = self._editor_batch_completed + 1
-            next_sql = self._editor_batch_queue.pop(0)
-            self._start_query_run(
-                next_sql,
-                run_label=f"statement {next_index}/{self._editor_batch_total}",
-                run_mode="buffer",
-            )
-            return True
-
-        total = self._editor_batch_total
-        self._clear_editor_query_batch()
-        if total > 1:
-            if outcome.status == "success" and outcome.result is not None:
-                self._set_status(
-                    f"Ran {total} statements. Showing query {outcome.sequence} result."
-                )
-            else:
-                self._set_status(
-                    f"Ran {total} statements. Final statement produced no tabular result."
-                )
-        return False
-
-    def _clear_editor_query_batch(self) -> None:
-        self._editor_batch_queue = []
-        self._editor_batch_total = 0
-        self._editor_batch_completed = 0
 
     def _handle_query_worker_failure(
         self,
@@ -1205,21 +1411,30 @@ class CSVQLMenuApp(App[None]):
         self._refresh_history_table_selecting(sequence)
         self.query_one("#run-status", Static).update("Ready.")
         self._clear_result_grid()
+        self._refresh_results_title()
+        self._refresh_result_tabs()
         self._show_error(
             CSVQLError(
                 error_message,
                 suggestion="Try running the query again.",
             )
         )
-        self._clear_editor_query_batch()
         self.query_one("#sql", TextArea).focus()
 
     def _sequence_from_worker(self, worker: Worker[object]) -> int | None:
         worker_name = worker.name or ""
-        if not worker_name.startswith("query-"):
-            return None
+        if worker_name.startswith("query-"):
+            try:
+                return int(worker_name.removeprefix("query-"))
+            except ValueError:
+                return None
+        if worker_name.startswith("buffer-"):
+            try:
+                return int(worker_name.removeprefix("buffer-").split("-", 1)[0])
+            except ValueError:
+                return None
         try:
-            return int(worker_name.removeprefix("query-"))
+            return int(worker_name)
         except ValueError:
             return None
 

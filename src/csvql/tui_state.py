@@ -1,5 +1,6 @@
 """In-memory session state for the CSVQL menu TUI."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -325,12 +326,21 @@ class TUISessionState:
     def begin_query_run(self, sql: str) -> int:
         """Start a query run and return its sequence id."""
 
+        return self.begin_query_batch((sql,))[0]
+
+    def begin_query_batch(self, statements: Sequence[str]) -> tuple[int, ...]:
+        """Start a batch run and reserve sequence ids for each statement."""
+
         if self.query_run.is_running:
             raise RuntimeError("A query is already running.")
-        sequence = self._next_query_sequence
-        self._next_query_sequence += 1
-        self.query_run = TUIQueryRunState(is_running=True, sequence=sequence)
-        return sequence
+        if not statements:
+            raise ValueError("At least one statement is required.")
+
+        start_sequence = self._next_query_sequence
+        sequences = tuple(range(start_sequence, start_sequence + len(statements)))
+        self._next_query_sequence += len(statements)
+        self.query_run = TUIQueryRunState(is_running=True, sequence=start_sequence)
+        return sequences
 
     def clear_last_result(self) -> None:
         """Clear stored exportable result and visible result state."""
