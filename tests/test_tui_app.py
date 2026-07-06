@@ -2261,6 +2261,84 @@ def test_inspect_sample_and_profile_selected_source_update_output(tmp_path: Path
     assert profile_message == "Source profile: customers."
 
 
+def test_source_intelligence_action_uses_operation_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_inspect_source(source: TUISource):
+        started.set()
+        release.wait(timeout=2)
+        from csvql.inspection import inspect_csv_source
+        from csvql.source import CSVSource, source_from_path
+
+        resolved = source_from_path(str(source.path))
+        return inspect_csv_source(CSVSource(resolved.path, source.name, resolved.fingerprint))
+
+    monkeypatch.setattr("csvql.tui_app.inspect_source", slow_inspect_source)
+
+    async def _inner() -> tuple[bool, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("i")
+            await pilot.pause(0.1)
+            running = app.state.operation_run.is_running
+            status = app.query_one("#status", Static).content
+            release.set()
+            await pilot.pause(0.2)
+            final_status = app.query_one("#status", Static).content
+            return running, status, final_status
+
+    running, status, final_status = asyncio.run(_inner())
+
+    assert started.is_set()
+    assert running is True
+    assert "Inspecting customers" in status
+    assert "customers: 2 columns." in final_status
+
+
+def test_escape_cancels_running_source_operation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_inspect_source(source: TUISource):
+        started.set()
+        release.wait(timeout=2)
+        from csvql.tui_workflows import inspect_source as real_inspect_source
+
+        return real_inspect_source(source)
+
+    monkeypatch.setattr("csvql.tui_app.inspect_source", slow_inspect_source)
+
+    async def _inner() -> tuple[str, bool]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("i")
+            await pilot.pause(0.1)
+            await pilot.press("escape")
+            await pilot.pause()
+            release.set()
+            await pilot.pause(0.2)
+            return app.query_one("#status", Static).content, app.state.operation_run.is_running
+
+    status, is_running = asyncio.run(_inner())
+
+    assert started.is_set()
+    assert "Cancelled Inspecting customers." in status
+    assert is_running is False
+
+
 def test_export_last_result_preserves_visible_result_grid(tmp_path: Path) -> None:
     export_dir = tmp_path / "exports"
     export_dir.mkdir()

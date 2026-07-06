@@ -17,6 +17,7 @@ TUIQueryHistoryStatus = Literal["success", "no_result", "error"]
 TUIQueryRunMode = Literal["current", "buffer", "rerun"]
 TUIActiveResultKind = Literal["none", "query", "history", "buffer"]
 TUIQueryOutcomeStatus = Literal["success", "no_result", "error"]
+TUIOperationKind = Literal["inspect", "sample", "profile", "columns", "export", "save_result"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +71,15 @@ class TUIQueryRunState:
 
     is_running: bool = False
     sequence: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TUIOperationRunState:
+    """Current cancellable non-query operation state."""
+
+    is_running: bool = False
+    kind: TUIOperationKind | None = None
+    label: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +171,7 @@ class TUISessionState:
     _buffer_result_tabs: list[TUIBufferResultTab] = field(default_factory=list)
     result_view: TUIResultViewState = field(default_factory=TUIResultViewState)
     query_run: TUIQueryRunState = field(default_factory=TUIQueryRunState)
+    operation_run: TUIOperationRunState = field(default_factory=TUIOperationRunState)
 
     @property
     def sources(self) -> tuple[TUISource, ...]:

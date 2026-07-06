@@ -3,6 +3,7 @@
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
@@ -18,7 +19,7 @@ from textual.worker import Worker, WorkerState
 
 from csvql.exceptions import CSVQLError
 from csvql.export import ExportFormat
-from csvql.models import ProfileResult, QueryResult
+from csvql.models import ProfileResult, QueryResult, SampleResult
 from csvql.table_mapping import parse_table_mapping
 from csvql.tui_editor import all_sql_statements, selected_or_current_sql
 from csvql.tui_help import WORKBENCH_HELP
@@ -26,6 +27,8 @@ from csvql.tui_results import make_result_view_state, populate_result_table
 from csvql.tui_state import (
     TUIBufferResultTab,
     TUIFocusPane,
+    TUIOperationKind,
+    TUIOperationRunState,
     TUIQueryHistoryItem,
     TUIQueryOutcome,
     TUIQueryRunMode,
@@ -173,6 +176,30 @@ class _HelpScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+@dataclass(frozen=True, slots=True)
+class _SourceInspectOutcome:
+    source_name: str
+    columns: tuple[TUISourceColumn, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceSampleOutcome:
+    source_name: str
+    result: SampleResult
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceProfileOutcome:
+    source_name: str
+    result: ProfileResult
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceColumnsOutcome:
+    source_name: str
+    columns: tuple[TUISourceColumn, ...]
+
+
 class _OrderedFooter(Footer):
     """Footer that keeps CSVQL's key order stable across focused widgets."""
 
@@ -309,6 +336,7 @@ class CSVQLMenuApp(App[None]):
         Binding("c", "show_source_columns", "Columns", show=False),
         Binding("l", "insert_source_alias", "Insert alias", show=False),
         Binding("x", "insert_starter_select", "Starter select", show=False),
+        Binding("escape", "cancel_operation", "Cancel operation", show=False),
         Binding("r", "rerun_history", "Rerun", show=False),
         Binding("enter", "reopen_history", "Open query", show=False),
     ]
@@ -325,10 +353,13 @@ class CSVQLMenuApp(App[None]):
         self.start_dir = (start_dir or Path.cwd()).resolve()
         self._active_query_sql: dict[int, str] = {}
         self._active_query_run_modes: dict[int, TUIQueryRunMode] = {}
+        self._next_operation_worker_id = 1
         self._run_editor_pending = False
         self._help_screen_open = False
         self._suppress_sql_source_text_detection = False
         self._sql_source_text_revision = 0
+        self._active_operation_worker: Worker[object] | None = None
+        self._cancelled_operation_names: set[str] = set()
         if initial_state is not None:
             self.state = initial_state
         else:
@@ -491,89 +522,85 @@ class CSVQLMenuApp(App[None]):
         self.query_one("#sources", DataTable).focus()
 
     def action_inspect_source(self) -> None:
+        if self._operation_running():
+            self._set_status(f"{self.state.operation_run.label} already running.")
+            return
+
         source = self.state.selected_source()
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
 
-        try:
-            result = inspect_source(source)
-        except CSVQLError as exc:
-            self._show_error(exc)
-            return
-
-        self._show_source_columns_table(
-            tuple(
-                TUISourceColumn(name=column.name, duckdb_type=column.duckdb_type)
-                for column in result.columns
+        self._start_operation_worker(
+            kind="inspect",
+            label=f"Inspecting {source.name}",
+            work=lambda: _SourceInspectOutcome(
+                source_name=source.name,
+                columns=tuple(
+                    TUISourceColumn(name=column.name, duckdb_type=column.duckdb_type)
+                    for column in inspect_source(source).columns
+                ),
             ),
-            message=f"Source inspect: {source.name}.",
         )
-        self._set_status(f"{source.name}: {len(result.columns)} columns.")
 
     def action_profile_source(self) -> None:
+        if self._operation_running():
+            self._set_status(f"{self.state.operation_run.label} already running.")
+            return
+
         source = self.state.selected_source()
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
 
-        try:
-            result = profile_source(source)
-        except CSVQLError as exc:
-            self._show_error(exc)
-            return
-
-        self._show_source_profile_table(result)
-        self._set_status(
-            f"{source.name}: {result.row_count} rows, "
-            f"{result.column_count} columns, {result.duplicate_row_count} duplicate rows.",
+        self._start_operation_worker(
+            kind="profile",
+            label=f"Profiling {source.name}",
+            work=lambda: _SourceProfileOutcome(
+                source_name=source.name,
+                result=profile_source(source),
+            ),
         )
 
     def action_sample_source(self) -> None:
+        if self._operation_running():
+            self._set_status(f"{self.state.operation_run.label} already running.")
+            return
+
         source = self.state.selected_source()
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
 
-        try:
-            result = sample_source(source)
-        except CSVQLError as exc:
-            self._show_error(exc)
-            return
-
         self.state.clear_last_result()
-        query_result = QueryResult(
-            columns=result.columns,
-            rows=result.rows,
-            elapsed_ms=0.0,
+        self._start_operation_worker(
+            kind="sample",
+            label=f"Sampling {source.name}",
+            work=lambda: _SourceSampleOutcome(
+                source_name=source.name,
+                result=sample_source(source),
+            ),
         )
-        view = make_result_view_state(query_result, source_result_sequence=0)
-        populate_result_table(self.query_one("#results", DataTable), view)
-        self._refresh_results_title()
-        self._refresh_result_tabs()
-        self.query_one("#results-message", Static).update(_result_message(view))
-        self._set_status(f"{source.name}: {len(result.rows)} sample row(s).")
 
     def action_show_source_columns(self) -> None:
+        if self._operation_running():
+            self._set_status(f"{self.state.operation_run.label} already running.")
+            return
+
         self.state.clear_last_result()
         source = self.state.selected_source()
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
 
-        try:
-            columns = inspect_source_columns(source)
-        except CSVQLError as exc:
-            self._show_error(exc)
-            return
-
-        self.state.set_source_columns(source.name, columns)
-        if not columns:
-            self._show_error(CSVQLError(f"Source '{source.name}' has no columns."))
-            return
-
-        self._show_source_columns_table(columns, message=f"Source columns: {source.name}.")
-        self._set_status(f"{source.name}: {len(columns)} columns loaded.")
+        self._start_operation_worker(
+            kind="columns",
+            label=f"Loading columns for {source.name}",
+            work=lambda: _SourceColumnsOutcome(
+                source_name=source.name,
+                columns=inspect_source_columns(source),
+            ),
+        )
 
     def action_insert_source_alias(self) -> None:
         source = self.state.selected_source()
@@ -845,8 +872,140 @@ class CSVQLMenuApp(App[None]):
     def action_select_next_buffer_result(self) -> None:
         self._select_relative_buffer_result(1)
 
+    def _operation_running(self) -> bool:
+        return self.state.operation_run.is_running
+
+    def _start_operation_worker(
+        self,
+        *,
+        kind: TUIOperationKind,
+        label: str,
+        work: Callable[[], object],
+    ) -> None:
+        if self._operation_running():
+            self._set_status(f"{self.state.operation_run.label} already running.")
+            return
+
+        self.state.operation_run = TUIOperationRunState(is_running=True, kind=kind, label=label)
+        self._set_status(f"{label}...")
+        worker_name = f"operation-{kind}-{self._next_operation_worker_id}"
+        self._next_operation_worker_id += 1
+        worker = self.run_worker(
+            work,
+            name=worker_name,
+            group="operation",
+            thread=True,
+            exit_on_error=False,
+        )
+        self._active_operation_worker = worker
+
+    def action_cancel_operation(self) -> None:
+        worker = self._active_operation_worker
+        if worker is None or worker.is_finished:
+            return
+
+        label = self.state.operation_run.label
+        worker_name = worker.name or ""
+        self._cancelled_operation_names.add(worker_name)
+        worker.cancel()
+        self.state.operation_run = TUIOperationRunState()
+        self._active_operation_worker = None
+        self._set_status(f"Cancelled {label}.")
+
+    def _handle_operation_worker_state(
+        self,
+        worker: Worker[object],
+        state: WorkerState,
+    ) -> None:
+        if not worker.is_finished:
+            return
+
+        worker_name = worker.name or ""
+        if worker_name in self._cancelled_operation_names:
+            self._cancelled_operation_names.discard(worker_name)
+            if self._active_operation_worker is worker:
+                self._active_operation_worker = None
+                self.state.operation_run = TUIOperationRunState()
+            return
+
+        if self._active_operation_worker is not worker:
+            return
+
+        self._active_operation_worker = None
+        self.state.operation_run = TUIOperationRunState()
+
+        if state == WorkerState.CANCELLED:
+            return
+        if state == WorkerState.ERROR:
+            self._handle_operation_worker_failure(worker.error)
+            return
+        if state != WorkerState.SUCCESS:
+            return
+
+        self._apply_operation_outcome(worker.result)
+
+    def _apply_operation_outcome(self, outcome: object) -> None:
+        if isinstance(outcome, _SourceInspectOutcome):
+            self._show_source_columns_table(
+                outcome.columns,
+                message=f"Source inspect: {outcome.source_name}.",
+            )
+            self._set_status(f"{outcome.source_name}: {len(outcome.columns)} columns.")
+            return
+        if isinstance(outcome, _SourceProfileOutcome):
+            self._show_source_profile_table(outcome.result)
+            self._set_status(
+                f"{outcome.source_name}: {outcome.result.row_count} rows, "
+                f"{outcome.result.column_count} columns, "
+                f"{outcome.result.duplicate_row_count} duplicate rows.",
+            )
+            return
+        if isinstance(outcome, _SourceSampleOutcome):
+            self.state.clear_last_result()
+            query_result = QueryResult(
+                columns=outcome.result.columns,
+                rows=outcome.result.rows,
+                elapsed_ms=0.0,
+            )
+            view = make_result_view_state(query_result, source_result_sequence=0)
+            populate_result_table(self.query_one("#results", DataTable), view)
+            self._refresh_results_title()
+            self._refresh_result_tabs()
+            self.query_one("#results-message", Static).update(_result_message(view))
+            self._set_status(f"{outcome.source_name}: {len(outcome.result.rows)} sample row(s).")
+            return
+        if isinstance(outcome, _SourceColumnsOutcome):
+            self.state.set_source_columns(outcome.source_name, outcome.columns)
+            if not outcome.columns:
+                self._show_error(CSVQLError(f"Source '{outcome.source_name}' has no columns."))
+                return
+            self._show_source_columns_table(
+                outcome.columns,
+                message=f"Source columns: {outcome.source_name}.",
+            )
+            self._set_status(f"{outcome.source_name}: {len(outcome.columns)} columns loaded.")
+            return
+
+        self._show_error(
+            CSVQLError(
+                "Unexpected worker result while loading source intelligence.",
+                suggestion="Try the source action again.",
+            )
+        )
+
+    def _handle_operation_worker_failure(self, error: BaseException | None) -> None:
+        self._show_error(
+            CSVQLError(
+                "Operation failed.",
+                suggestion=str(error) if error is not None else None,
+            )
+        )
+
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         worker = event.worker
+        if worker.group == "operation":
+            self._handle_operation_worker_state(worker, event.state)
+            return
         if worker.group != "query" or not worker.is_finished:
             return
         if event.state == WorkerState.ERROR:
@@ -914,6 +1073,16 @@ class CSVQLMenuApp(App[None]):
         if self._app_action_blocked_by_modal(action):
             return False
         if action in _RESULTS_ONLY_ACTIONS and not self._is_focused("#results"):
+            return False
+        operation_actions = {
+            "inspect_source",
+            "sample_source",
+            "profile_source",
+            "show_source_columns",
+            "export_last_result",
+            "save_result_as_source",
+        }
+        if self._operation_running() and action in operation_actions:
             return False
         if isinstance(self.focused, TextArea):
             text_entry_actions = {
