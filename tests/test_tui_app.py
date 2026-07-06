@@ -2526,9 +2526,7 @@ def test_help_text_documents_workbench_keymap() -> None:
     assert "Also opens help" not in help_text
     assert "F7                  Export active result" in help_text
     assert "F9 / q              Quit outside text entry" in help_text
-    assert (
-        "Ctrl+S              Save active result to .csvql/results/{alias}.csv" in help_text
-    )
+    assert "Ctrl+S              Save active result to .csvql/results/{alias}.csv" in help_text
     assert "r                   Rerun selected query with current session sources" in help_text
 
 
@@ -2550,8 +2548,7 @@ def test_troubleshooting_documents_portable_fallbacks() -> None:
     assert "- `F3` or `Ctrl+O`: choose CSV file(s) or prompt for paths" in troubleshooting
     assert "- `F12` or `Ctrl+B`: run the buffer as separate History rows" in troubleshooting
     assert (
-        "After `F12` or `Ctrl+B`, move through History to recall each successful"
-        in troubleshooting
+        "After `F12` or `Ctrl+B`, move through History to recall each successful" in troubleshooting
     )
 
 

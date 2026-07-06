@@ -1740,7 +1740,6 @@ def _text_index_from_location(text: str, location: tuple[int, int]) -> int:
     return index + min(max(column, 0), len(line_text))
 
 
-
 def _choose_csv_paths_with_native_picker() -> tuple[str, ...]:
     """Return CSV candidate paths selected through the local macOS file picker."""
 

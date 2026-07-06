@@ -74,10 +74,7 @@ def test_manual_qa_matrix_covers_cli_and_tui_release_paths() -> None:
     assert "CREATE TEMP TABLE movement_counts AS" in matrix
     assert "FROM revenue_movements" in matrix
     assert "FROM enerflo_payloads" not in matrix
-    assert (
-        "Expected: `F12` or `Ctrl+B` records one History row per statement, preserves"
-        in matrix
-    )
+    assert "Expected: `F12` or `Ctrl+B` records one History row per statement, preserves" in matrix
     assert "keep or select the intended active result" in matrix
     assert "save the last tabular result" not in matrix
     assert "save it with `Ctrl+S`" in matrix
