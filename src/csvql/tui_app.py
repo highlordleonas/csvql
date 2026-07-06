@@ -31,6 +31,7 @@ from csvql.tui_state import (
     TUIQueryHistoryItem,
     TUIQueryOutcome,
     TUIQueryRunMode,
+    TUIQueryRunState,
     TUIResultViewState,
     TUISessionState,
     TUISource,
@@ -759,6 +760,9 @@ class CSVQLMenuApp(App[None]):
         if isinstance(outcome, TUIQueryOutcome):
             self._handle_query_outcome(outcome)
             return
+        if isinstance(outcome, tuple) and len(outcome) == 0:
+            self._handle_empty_buffer_outcome(worker)
+            return
         if isinstance(outcome, tuple) and all(
             isinstance(item, TUIQueryOutcome) for item in outcome
         ):
@@ -1223,6 +1227,25 @@ class CSVQLMenuApp(App[None]):
             f"Buffer result {tab.sequence}.{tab.index}. {_result_message(view)}"
         )
         self._set_status(f"Showing buffer result {tab.sequence}.{tab.index}.")
+
+    def _handle_empty_buffer_outcome(self, worker: Worker[object]) -> None:
+        sequence = self._sequence_from_worker(worker)
+        if sequence is None or not self.state.is_current_query_sequence(sequence):
+            return
+
+        self._active_query_sql.pop(sequence, None)
+        self._active_query_run_modes.pop(sequence, None)
+        self.state.clear_last_result()
+        self.state.query_run = TUIQueryRunState()
+        self.state.set_buffer_result_tabs(tuple(), selected_sequence=None)
+        self._clear_result_grid()
+        self._refresh_results_title()
+        self._refresh_result_tabs()
+        message = "Run Buffer returned no tabular result."
+        self._set_status(message)
+        self.query_one("#results-message", Static).update(message)
+        self.query_one("#run-status", Static).update("Ready.")
+        self.query_one("#sql", TextArea).focus()
 
     def _handle_buffer_outcomes(self, outcomes: tuple[TUIQueryOutcome, ...]) -> None:
         batch_sequence = outcomes[0].sequence if outcomes else self.state.query_run.sequence

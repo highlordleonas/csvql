@@ -622,6 +622,76 @@ def test_run_buffer_stops_after_middle_outcome_failure(
     assert run_status == "Ready."
 
 
+def test_run_buffer_recovers_from_empty_worker_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+
+    def fake_run_buffer_for_tui(
+        sources: object,
+        statements: tuple[str, ...],
+        *,
+        sequences: tuple[int, ...],
+    ) -> tuple[object, ...]:
+        del sources, statements, sequences
+        return ()
+
+    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
+        del sources
+        from csvql.tui_state import TUIQueryOutcome
+
+        return TUIQueryOutcome.success(
+            sequence=sequence,
+            sql=sql,
+            result=QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+        )
+
+    monkeypatch.setattr("csvql.tui_app.run_buffer_for_tui", fake_run_buffer_for_tui)
+    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+
+    async def _inner() -> tuple[bool, str, str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.load_text("SELECT 1 AS first;")
+
+            await pilot.press("f12")
+            await pilot.pause(0.2)
+
+            buffer_status = app.query_one("#status", Static).content
+            buffer_run_status = app.query_one("#run-status", Static).content
+            is_running = app.state.query_run.is_running
+
+            sql.load_text("SELECT 1 AS value")
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+
+            return (
+                is_running,
+                buffer_status,
+                buffer_run_status,
+                app.query_one("#status", Static).content,
+                app.query_one("#run-status", Static).content,
+            )
+
+    (
+        is_running,
+        buffer_status,
+        buffer_run_status,
+        final_status,
+        final_run_status,
+    ) = asyncio.run(_inner())
+
+    assert is_running is False
+    assert buffer_run_status == "Ready."
+    assert "no tabular result" in buffer_status.lower() or "unexpected" in buffer_status.lower()
+    assert "Query already running." not in final_status
+    assert final_run_status == "Ready."
+
+
 def test_run_shortcut_records_sql_run_mode_and_history_column(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
