@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from csvql.atomic_write import write_text_atomic
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import CSVQLError, ExportError, ProjectConfigError, TableMappingError
 from csvql.export import (
@@ -448,14 +449,13 @@ def _existing_derived_result_path(result_dir: Path, source_name: str) -> Path | 
 
 
 def _write_derived_result_file(path: Path, content: str) -> None:
-    try:
-        with path.open("x", encoding="utf-8", newline="") as file:
-            file.write(content)
-    except FileExistsError as exc:
+    if path.exists():
         raise ExportError(
             f"Derived result already exists at {path}.",
             suggestion="Choose a different alias for this derived result source.",
-        ) from exc
+        )
+    try:
+        write_text_atomic(path, content, newline="")
     except OSError as exc:
         raise ExportError(
             f"Failed to write derived source to {path}.",

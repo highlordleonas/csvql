@@ -7,6 +7,7 @@ from typing import cast
 
 import yaml  # type: ignore[import-untyped]
 
+from csvql.atomic_write import write_text_atomic
 from csvql.exceptions import FileMissingError, ProjectConfigError, TableMappingError
 from csvql.models import TableSource
 from csvql.quality import CheckType, ConfiguredCheck, ForeignKeyReference
@@ -126,10 +127,7 @@ def save_project(context: ProjectContext) -> ProjectContext:
     config_path = context.config_path
     config_path.parent.mkdir(parents=True, exist_ok=True)
     payload = _project_config_payload(context.config)
-    config_path.write_text(
-        yaml.safe_dump(payload, sort_keys=False),
-        encoding="utf-8",
-    )
+    write_text_atomic(config_path, yaml.safe_dump(payload, sort_keys=False))
     return context
 
 
