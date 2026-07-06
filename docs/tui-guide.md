@@ -28,8 +28,9 @@ uv run --all-extras csvql menu
 ```
 
 You can also add sources after launch with `F3`. On macOS it opens a local CSV
-picker; elsewhere it opens a CSV path prompt. Pasting `.csv` paths into the SQL
-editor also turns those paths into session sources immediately.
+picker, and `Ctrl+O` is a portable fallback. Elsewhere it opens a CSV path
+prompt. Pasting `.csv` paths into the SQL editor also turns those paths into
+session sources immediately.
 
 ![Terminal screenshot of the LocalQL TUI workbench with project sources loaded and a query result visible](assets/localql-tui-workbench.svg)
 
@@ -48,18 +49,18 @@ The menu opens with the SQL editor focused.
 | Key | Action |
 | --- | --- |
 | `F4` or `Ctrl+R` | Run selected SQL or the current statement |
-| `F12` | Run all semicolon-delimited SQL in the editor as separate History rows |
+| `F12` or `Ctrl+B` | Run the buffer as separate History rows |
 | `F2` or `Ctrl+Down` | Focus SQL editor |
-| `F3` | Choose CSV file(s) on macOS or open a CSV path prompt elsewhere |
+| `F3` or `Ctrl+O` | Choose CSV file(s) or prompt for paths |
 | `F5` | Focus results |
 | `F6` or `Ctrl+Up` | Focus sources |
 | `F8` | Focus history |
-| `F9` | Quit |
+| `F9` or `q` | Quit outside text entry |
 | `F1` | Help |
 | `Ctrl+N` or `F10` | Clear editor for a new query |
 
 The History run column uses semantic labels: `current` for F4/Ctrl+R runs,
-`all` for F12 runs, and `rerun` for History reruns.
+`buffer` for F12/Ctrl+B runs, and `rerun` for History reruns.
 
 ## Source Actions
 
@@ -99,10 +100,10 @@ History clears when the TUI exits.
 
 ## Save A Result As A Source
 
-After a successful tabular query, press `Ctrl+S` to save the result as a derived
-CSV source. `Alt+S` is also available where terminals emit Alt key events, and
-`F11` is available where the OS does not intercept it. macOS may reserve `F11`
-for Show Desktop.
+After a successful tabular query, press `Ctrl+S` to save the active result as a
+derived CSV source. `Alt+S` is also available where terminals emit Alt key
+events, and `F11` is available where the OS does not intercept it. macOS may
+reserve `F11` for Show Desktop.
 
 CSVQL prompts for an alias, writes `.csvql/results/{alias}.csv`, and adds the
 alias to the current Sources pane with kind `derived`.

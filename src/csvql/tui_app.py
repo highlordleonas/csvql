@@ -218,7 +218,7 @@ class CSVQLMenuApp(App[None]):
         Binding("q", "quit_from_non_editor", "Quit", show=False),
         Binding("f1", "show_help", "Help", key_display="F1", priority=True),
         Binding("f2,ctrl+down", "focus_sql", "SQL", priority=True),
-        Binding("f3", "choose_csv_source", "Open CSV", priority=True),
+        Binding("f3,ctrl+o", "choose_csv_source", "Open CSV", key_display="F3", priority=True),
         Binding(
             "f4",
             "run_selected_or_current_query",
@@ -229,7 +229,7 @@ class CSVQLMenuApp(App[None]):
         Binding("ctrl+r", "run_selected_or_current_query", "Run SQL", show=False),
         Binding("f5", "focus_results", "Results", priority=True),
         Binding("f6,ctrl+up", "focus_sources", "Sources", priority=True),
-        Binding("f7", "export_last_result", "Export result", priority=True),
+        Binding("f7", "export_last_result", "Export active result", priority=True),
         Binding("f8", "focus_history", "History", priority=True),
         Binding("f9", "quit", "Quit", priority=True),
         Binding("f10,ctrl+n", "new_query", "New query", priority=True),
@@ -245,7 +245,7 @@ class CSVQLMenuApp(App[None]):
         Binding(
             "ctrl+s,alt+s,f11",
             "save_result_as_source",
-            "Save result source",
+            "Save active result",
             key_display="Ctrl+S/Alt+S",
             priority=True,
         ),
@@ -338,7 +338,7 @@ class CSVQLMenuApp(App[None]):
         self._show_help_once()
 
     def _show_help_once(self) -> None:
-        if self._help_screen_open or isinstance(self.screen, _HelpScreen):
+        if self._help_screen_open or isinstance(self.screen, (_HelpScreen, _PromptInputScreen)):
             return
         self._help_screen_open = True
         self.push_screen(_HelpScreen(), callback=lambda _: self._mark_help_closed())
@@ -1742,11 +1742,15 @@ def _pane_context(active_pane: TUIFocusPane) -> str:
         )
     if active_pane == "history":
         return (
-            "History: highlight recall | Enter reopen | r rerun | F7 export | "
-            "Ctrl+S/Alt+S save source"
+            "History: highlight recall | Enter reopen | r rerun | F7 export active result | "
+            "Ctrl+S/Alt+S save active result"
         )
     if active_pane == "results":
-        return "Results: arrow keys move | F7 export | Ctrl+S/Alt+S save source | F8 history"
+        return (
+            "Results: arrow keys move | F7 export active result | "
+            "Ctrl+S/Alt+S save active result | "
+            "F8 history"
+        )
     return (
         "SQL editor: type SQL | F4/Ctrl+R current | F12/Ctrl+B buffer | F10 new query | "
         "paste CSV path to add source"

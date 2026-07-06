@@ -22,6 +22,10 @@ def _read_readme_text() -> str:
     return (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
 
 
+def _read_doc_text(relative_path: str) -> str:
+    return (Path(__file__).resolve().parents[1] / relative_path).read_text(encoding="utf-8")
+
+
 def _normalized_markdown_text(text: str) -> str:
     return " ".join(text.split())
 
@@ -1501,6 +1505,73 @@ def test_choose_csv_source_action_falls_back_to_path_prompt(
     assert isinstance(focused, TextArea)
 
 
+def test_portable_open_csv_fallback_opens_add_source_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def unavailable_picker() -> tuple[str, ...]:
+        raise CSVQLError(
+            "Native CSV picker is only available on macOS.",
+            suggestion="Paste a CSV path instead.",
+        )
+
+    monkeypatch.setattr("csvql.tui_app._choose_csv_paths_with_native_picker", unavailable_picker)
+
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+
+            mapping_input = app.screen.query_one("#mapping-input", Input)
+            return type(app.screen).__name__, mapping_input.id or ""
+
+    screen_name, input_id = asyncio.run(_inner())
+
+    assert screen_name == "_PromptInputScreen"
+    assert input_id == "mapping-input"
+
+
+def test_f1_does_not_stack_help_over_add_source_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def unavailable_picker() -> tuple[str, ...]:
+        raise CSVQLError(
+            "Native CSV picker is only available on macOS.",
+            suggestion="Paste a CSV path instead.",
+        )
+
+    monkeypatch.setattr("csvql.tui_app._choose_csv_paths_with_native_picker", unavailable_picker)
+
+    async def _inner() -> tuple[str, str, str]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            prompt_screen = app.screen
+
+            await pilot.press("f1")
+            await pilot.pause()
+
+            mapping_input = app.screen.query_one("#mapping-input", Input)
+            return (
+                type(app.screen).__name__,
+                mapping_input.id or "",
+                "same" if app.screen is prompt_screen else "changed",
+            )
+
+    screen_name, input_id, screen_state = asyncio.run(_inner())
+
+    assert screen_name == "_PromptInputScreen"
+    assert input_id == "mapping-input"
+    assert screen_state == "same"
+
+
 def test_pasted_csv_path_adds_source_without_inserting_editor_text(tmp_path: Path) -> None:
     csv_path = _create_csv(
         tmp_path,
@@ -2379,12 +2450,35 @@ def test_help_text_documents_workbench_keymap() -> None:
     assert "Run SQL" in help_text
     assert "F4 / Ctrl+R         Run selected SQL, otherwise current statement" in help_text
     assert "Run selected SQL, otherwise current statement" in help_text
-    assert "F12 / Ctrl+B        Run buffer SQL as History rows" in help_text
-    assert "F3                  Choose CSV file(s) or prompt for paths" in help_text
+    assert "F12 / Ctrl+B        Run Buffer" in help_text
+    assert "F3 / Ctrl+O         Choose CSV file(s) or prompt for paths" in help_text
     assert "F1                  Help" in help_text
     assert "?                   Help" not in help_text
     assert "Also opens help" not in help_text
+    assert "F7                  Export active result" in help_text
+    assert "F9 / q              Quit outside text entry" in help_text
     assert "r                   Rerun selected query with current session sources" in help_text
+
+
+def test_tui_guide_documents_portable_fallbacks_and_run_labels() -> None:
+    guide = _normalized_markdown_text(_read_doc_text("docs/tui-guide.md"))
+
+    assert "`F12` or `Ctrl+B`" in guide
+    assert "`F3` or `Ctrl+O`" in guide
+    assert "save the active result" in guide
+    assert "`F9` or `q`" in guide
+    assert "`current`" in guide
+    assert "`buffer`" in guide
+    assert "`rerun`" in guide
+
+
+def test_troubleshooting_documents_portable_fallbacks() -> None:
+    troubleshooting = _normalized_markdown_text(_read_doc_text("docs/troubleshooting.md"))
+
+    assert "Ctrl+O" in troubleshooting
+    assert "Ctrl+B" in troubleshooting
+    assert "run the buffer" in troubleshooting
+    assert "After `F12` or `Ctrl+B`" in troubleshooting
 
 
 def test_question_mark_types_in_sql_editor_and_f1_opens_help(tmp_path: Path) -> None:

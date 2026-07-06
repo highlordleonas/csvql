@@ -4,7 +4,7 @@ WORKBENCH_HELP = """CSVQL Workbench Lite
 
 Run SQL
   F4 / Ctrl+R         Run selected SQL, otherwise current statement
-  F12 / Ctrl+B        Run buffer SQL as History rows
+  F12 / Ctrl+B        Run Buffer
   Ctrl+N / F10        Clear editor for a new query
 
 Focus
@@ -20,7 +20,7 @@ Source pane
   c                   Load/show selected source columns
   l                   Insert selected source alias
   x                   Insert SELECT * starter query
-  F3                  Choose CSV file(s) or prompt for paths
+  F3 / Ctrl+O         Choose CSV file(s) or prompt for paths
   a                   Add source
   paste .csv path     Add CSV path text as a session source
   d                   Remove source
@@ -33,12 +33,12 @@ History pane
 
 General
   F1                  Help
-  F7                  Export last tabular result
-  F9                  Quit
+  F7                  Export active result
+  F9 / q              Quit outside text entry
   Esc                 Close help or modal
 
 Derived sources
-  Ctrl+S              Save result to .csvql/results/{alias}.csv
+  Ctrl+S              Save active result to .csvql/results/{alias}.csv
   Alt+S / F11         Alternate save-result shortcuts
   w in Sources        Persist source paths to .csvql.yml
 """
