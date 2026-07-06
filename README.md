@@ -84,7 +84,7 @@ Implemented now:
 - `csvql inspect data/orders.csv --output json`
 - `csvql sample data/orders.csv --limit 10`
 - `csvql run queries/file.sql`
-- `csvql export queries/file.sql --format csv|json|markdown --out path`
+- `csvql export queries/file.sql --format csv|json|markdown|text --out path`
 - catalog-backed `csvql inspect alias`
 - catalog-backed `csvql sample alias`
 - `csvql profile data/orders.csv --output json`
@@ -205,9 +205,15 @@ Use `F2` or `Ctrl+Down` for the SQL editor, `F3` to choose CSV file(s), `F5`
 for results, `F6` or `Ctrl+Up` for sources, and `F8` for history. Printable keys
 type into SQL while the editor is focused. Source actions use letters only when
 the source pane is focused: `i` inspect, `s` sample, `p` profile, `a` add, `d`
-remove, and `w` save sources. In History, use `Enter` to reopen a query and `r`
-to rerun a query against the current session sources. Highlighting a successful
-History row restores that row's result in the Results pane. `F1` opens help.
+remove after confirmation, and `w` save sources. In History, use `Enter` to
+reopen a query and `r` to rerun a query against the current session sources.
+Highlighting a successful History row restores that row's result in the Results
+pane. `F1` opens help.
+
+Press `F7` to export the active tabular result. The output suffix chooses the
+format: `.csv`, `.json`, `.md`, `.markdown`, or `.txt`. If the path has no
+suffix, CSVQL writes `.csv` by default. Relative export paths are resolved from
+the directory where you launched `csvql menu`.
 
 The Add source prompt accepts either `name=path` or pasted `.csv` path(s). Direct
 path paste derives aliases from file names; duplicate aliases receive numeric
@@ -377,6 +383,11 @@ csvql export queries/revenue_health.sql \
 csvql export queries/revenue_health.sql \
   --format markdown \
   --out output/revenue-health.md \
+  --force
+
+csvql export queries/revenue_health.sql \
+  --format text \
+  --out output/revenue-health.txt \
   --force
 ```
 

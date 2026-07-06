@@ -53,7 +53,7 @@ Implemented:
 - `csvql run queries/file.sql`
 - registered-table support for `csvql inspect`
 - registered-table support for `csvql sample`
-- `csvql export queries/file.sql --format csv|json|markdown --out path`
+- `csvql export queries/file.sql --format csv|json|markdown|text --out path`
 - overwrite protection for export outputs with explicit `--force`
 
 ## v0.5.0 - Profiling

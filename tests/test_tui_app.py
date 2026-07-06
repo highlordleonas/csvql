@@ -1262,6 +1262,7 @@ def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
         tuple[tuple[str, str], ...],
         tuple[tuple[str, str], ...],
         tuple[tuple[str, str], ...],
+        tuple[tuple[str, str], ...],
     ]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
@@ -1274,25 +1275,34 @@ def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
                 required_entry=("F8", "History"),
             )
 
+            app.query_one("#history", DataTable).focus()
+            history_footer = await _settled_footer_entries(
+                pilot,
+                app,
+                required_entry=("F6", "Sources"),
+            )
+
             app.query_one("#results", DataTable).focus()
             results_footer = await _settled_footer_entries(
                 pilot,
                 app,
-                required_entry=("F7", "Export active"),
+                required_entry=("F6", "Sources"),
             )
 
-            return sql_footer, sources_footer, results_footer
+            return sql_footer, sources_footer, history_footer, results_footer
 
-    sql_footer, sources_footer, results_footer = asyncio.run(_inner())
+    sql_footer, sources_footer, history_footer, results_footer = asyncio.run(_inner())
 
     assert sql_footer == (
         ("F1", "Help"),
         ("F3", "Open CSV"),
         ("F4", "Run current"),
-        ("F12", "Run buffer"),
-        ("F10", "New query"),
         ("F5", "Results"),
+        ("F6", "Sources"),
+        ("F8", "History"),
         ("F9", "Quit"),
+        ("F10", "New query"),
+        ("F12", "Run buffer"),
     )
     assert sources_footer == (
         ("F1", "Help"),
@@ -1302,13 +1312,23 @@ def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
         ("F8", "History"),
         ("F9", "Quit"),
     )
+    assert history_footer == (
+        ("F1", "Help"),
+        ("F2", "SQL"),
+        ("F5", "Results"),
+        ("F6", "Sources"),
+        ("F7", "Export active"),
+        ("F9", "Quit"),
+        ("Ctrl+S/Alt+S", "Save active"),
+    )
     assert results_footer == (
         ("F1", "Help"),
         ("F2", "SQL"),
+        ("F6", "Sources"),
         ("F7", "Export active"),
-        ("Ctrl+S/Alt+S", "Save active"),
         ("F8", "History"),
         ("F9", "Quit"),
+        ("Ctrl+S/Alt+S", "Save active"),
     )
 
 
@@ -1393,6 +1413,47 @@ def test_pane_context_updates_with_active_focus(tmp_path: Path) -> None:
     assert history_title == "ACTIVE: History"
     assert "History: selected row" in history_context
     assert "Enter reopen" in history_context
+
+
+def test_focused_results_title_uses_active_result_banner(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+    sequence = state.begin_query_run("SELECT 1 AS value")
+    state.record_query_success(
+        sequence,
+        "SELECT 1 AS value",
+        QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+    )
+
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            unfocused_title = app.query_one("#results-title", Static).content
+
+            app.query_one("#results", DataTable).focus()
+            await pilot.pause()
+            focused_title = app.query_one("#results-title", Static).content
+
+            return unfocused_title, focused_title
+
+    unfocused_title, focused_title = asyncio.run(_inner())
+
+    assert unfocused_title == "        Active result: query 1"
+    assert focused_title == "ACTIVE RESULT: query 1"
+
+
+def test_result_tabs_are_blank_until_buffer_results_exist(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            return app.query_one("#result-tabs", Static).content
+
+    result_tabs = asyncio.run(_inner())
+
+    assert result_tabs == ""
 
 
 def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> None:
@@ -1971,6 +2032,31 @@ def test_export_action_requires_last_result(tmp_path: Path) -> None:
 def test_remove_selected_source_updates_state_and_table(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
+    async def _inner() -> tuple[int, tuple[TUISource, ...], str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("d")
+            await pilot.pause()
+            prompt = app.screen.query_one("#confirm-text", Static).content
+            await pilot.press("y")
+            await pilot.pause()
+            sources = app.query_one("#sources", DataTable)
+            status = app.query_one("#status", Static).content
+            return sources.row_count, app.state.sources, status, prompt
+
+    row_count, sources, status, prompt = asyncio.run(_inner())
+
+    assert "Remove source customers?" in prompt
+    assert row_count == 0
+    assert sources == ()
+    assert "No sources loaded." in status
+
+
+def test_remove_selected_source_can_be_cancelled(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
     async def _inner() -> tuple[int, tuple[TUISource, ...], str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
@@ -1978,21 +2064,35 @@ def test_remove_selected_source_updates_state_and_table(tmp_path: Path) -> None:
             app.query_one("#sources", DataTable).focus()
             await pilot.press("d")
             await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
             sources = app.query_one("#sources", DataTable)
             status = app.query_one("#status", Static).content
             return sources.row_count, app.state.sources, status
 
     row_count, sources, status = asyncio.run(_inner())
 
-    assert row_count == 0
-    assert sources == ()
-    assert "No sources loaded." in status
+    assert row_count == 1
+    assert len(sources) == 1
+    assert "Source removal cancelled." in status
 
 
 def test_inspect_sample_and_profile_selected_source_update_output(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
-    async def _inner() -> tuple[str, str, str, tuple[str, ...], int, str, str]:
+    async def _inner() -> tuple[
+        str,
+        tuple[str, ...],
+        tuple[str, str],
+        str,
+        tuple[str, ...],
+        int,
+        str,
+        str,
+        tuple[str, ...],
+        tuple[str, ...],
+        str,
+    ]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2001,7 +2101,12 @@ def test_inspect_sample_and_profile_selected_source_update_output(tmp_path: Path
             await pilot.press("i")
             await pilot.pause()
             inspect_status = app.query_one("#status", Static).content
-            inspect_results = app.query_one("#results-message", Static).content
+            inspect_table = app.query_one("#results", DataTable)
+            inspect_columns = tuple(str(column.label) for column in inspect_table.columns.values())
+            inspect_first_row = (
+                str(inspect_table.get_cell_at(Coordinate(0, 0))),
+                str(inspect_table.get_cell_at(Coordinate(0, 1))),
+            )
 
             await pilot.press("s")
             await pilot.pause()
@@ -2014,40 +2119,64 @@ def test_inspect_sample_and_profile_selected_source_update_output(tmp_path: Path
             await pilot.press("p")
             await pilot.pause()
             profile_status = app.query_one("#status", Static).content
-            profile_results = app.query_one("#results-message", Static).content
+            profile_results = app.query_one("#results", DataTable)
+            profile_columns = tuple(
+                str(column.label) for column in profile_results.columns.values()
+            )
+            profile_first_row = tuple(
+                str(profile_results.get_cell_at(Coordinate(0, column)))
+                for column in range(len(profile_columns))
+            )
+            profile_message = app.query_one("#results-message", Static).content
 
             return (
                 inspect_status,
-                inspect_results,
+                inspect_columns,
+                inspect_first_row,
                 sample_status,
                 sample_columns,
                 sample_row_count,
                 sample_message,
                 profile_status,
-                profile_results,
+                profile_columns,
+                profile_first_row,
+                profile_message,
             )
 
     (
         inspect_status,
-        inspect_results,
+        inspect_columns,
+        inspect_first_row,
         sample_status,
         sample_columns,
         sample_row_count,
         sample_message,
         profile_status,
-        profile_results,
+        profile_columns,
+        profile_first_row,
+        profile_message,
     ) = asyncio.run(_inner())
 
     assert "customers: 2 columns." in inspect_status
-    assert "customer_id, email" in inspect_results
+    assert inspect_columns == ("column", "type")
+    assert inspect_first_row == ("customer_id", "VARCHAR")
     assert "customers: 2 sample row(s)." in sample_status
     assert sample_columns == ("customer_id", "email")
     assert sample_row_count == 2
     assert "Showing 2 returned row(s)." in sample_message
     assert "customers: 2 rows, 2 columns, 0 duplicate rows." in profile_status
-    assert "Rows: 2" in profile_results
-    assert "Columns: 2" in profile_results
-    assert "Duplicate rows: 0" in profile_results
+    assert profile_columns == (
+        "column",
+        "type",
+        "non_null",
+        "null",
+        "null_%",
+        "distinct",
+        "min",
+        "max",
+    )
+    assert profile_first_row[:2] == ("customer_id", "VARCHAR")
+    assert profile_message == "Source profile: customers."
 
 
 def test_export_last_result_writes_file_when_result_exists(tmp_path: Path) -> None:
@@ -2087,6 +2216,107 @@ def test_export_last_result_writes_file_when_result_exists(tmp_path: Path) -> No
     assert content.startswith("customer_id,email")
     assert "Exported to" in status
     assert "Exported to" in results
+
+
+def test_export_last_result_status_uses_relative_path_within_start_dir(tmp_path: Path) -> None:
+    export_path = tmp_path / "exports" / "customers.csv"
+    export_path.parent.mkdir()
+    state = TUISessionState()
+    state.set_last_result(
+        QueryResult(
+            columns=("customer_id", "email"),
+            rows=(("CUST-001", "alex@example.com"),),
+            elapsed_ms=12.345,
+        ),
+    )
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f7")
+            await pilot.pause()
+
+            export_input = app.screen.query_one("#export-path", Input)
+            export_input.value = str(export_path)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            return app.query_one("#status", Static).content
+
+    status = asyncio.run(_inner())
+
+    assert status == "Exported to exports/customers.csv."
+
+
+def test_export_last_result_defaults_extensionless_path_to_csv(tmp_path: Path) -> None:
+    export_path = tmp_path / "customers"
+    defaulted_path = tmp_path / "customers.csv"
+
+    state = TUISessionState()
+    state.set_last_result(
+        QueryResult(
+            columns=("customer_id", "email"),
+            rows=(("CUST-001", "alex@example.com"),),
+            elapsed_ms=12.345,
+        ),
+    )
+
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f7")
+            await pilot.pause()
+
+            export_input = app.screen.query_one("#export-path", Input)
+            export_input.value = str(export_path)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            status = app.query_one("#status", Static).content
+            content = defaulted_path.read_text(encoding="utf-8")
+            return status, content
+
+    status, content = asyncio.run(_inner())
+
+    assert not export_path.exists()
+    assert defaulted_path.exists()
+    assert content.startswith("customer_id,email")
+    assert "customers.csv" in status
+
+
+def test_export_last_result_writes_text_when_path_ends_txt(tmp_path: Path) -> None:
+    export_path = tmp_path / "customers.txt"
+
+    state = TUISessionState()
+    state.set_last_result(
+        QueryResult(
+            columns=("customer_id", "email"),
+            rows=(("CUST-001", "alex@example.com"),),
+            elapsed_ms=12.345,
+        ),
+    )
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f7")
+            await pilot.pause()
+
+            export_input = app.screen.query_one("#export-path", Input)
+            export_input.value = str(export_path)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            return export_path.read_text(encoding="utf-8")
+
+    content = asyncio.run(_inner())
+
+    assert "customer_id" in content
+    assert "CUST-001" in content
+    assert "1 row(s) in 12.35 ms" in content
 
 
 def test_export_uses_recalled_history_result(tmp_path: Path) -> None:
@@ -2185,13 +2415,13 @@ def test_buffer_result_selector_controls_export_target(tmp_path: Path) -> None:
 
     results_title, status, rows = asyncio.run(_inner())
 
-    assert "Active result: buffer 1.1" in results_title
+    assert results_title == "ACTIVE RESULT: buffer 1.1"
     assert "Exported to" in status
     assert rows == (("first",),)
     assert export_path.read_text(encoding="utf-8") == "label\nfirst\n"
 
 
-def test_sources_pane_keeps_origin_before_long_path(tmp_path: Path) -> None:
+def test_sources_pane_keeps_origin_before_relative_project_path(tmp_path: Path) -> None:
     state = TUISessionState()
     state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
     state.add_source(
@@ -2203,7 +2433,7 @@ def test_sources_pane_keeps_origin_before_long_path(tmp_path: Path) -> None:
         )
     )
 
-    async def _inner() -> tuple[tuple[str, ...], int]:
+    async def _inner() -> tuple[tuple[str, ...], int, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2211,12 +2441,14 @@ def test_sources_pane_keeps_origin_before_long_path(tmp_path: Path) -> None:
             return (
                 tuple(str(column.label) for column in sources.columns.values()),
                 sources.row_count,
+                str(sources.get_cell_at(Coordinate(1, 3))),
             )
 
-    columns, row_count = asyncio.run(_inner())
+    columns, row_count, derived_path = asyncio.run(_inner())
 
     assert columns == ("alias", "kind", "origin", "path")
     assert row_count == 2
+    assert derived_path == ".csvql/results/order_names.csv"
 
 
 def test_save_result_as_source_requires_query_result(tmp_path: Path) -> None:
@@ -2282,6 +2514,8 @@ def test_save_result_as_source_writes_csv_and_adds_derived_source(tmp_path: Path
     assert selected_alias == "customer_emails"
     assert "Saved result as derived source customer_emails" in status
     assert "Saved result as derived source customer_emails" in message
+    assert ".csvql/results/customer_emails.csv" in status
+    assert str(tmp_path) not in status
     assert "Use Save sources to persist the alias in .csvql.yml." in status
     assert "Use Save sources to persist the alias in .csvql.yml." in message
     assert content == "customer_id,email\nCUST-001,alex@example.com\n"
@@ -2721,7 +2955,7 @@ def test_readme_documents_history_rerun_keymap() -> None:
 def test_source_letter_actions_only_work_when_sources_focused(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
-    async def _inner() -> tuple[str, str, str]:
+    async def _inner() -> tuple[str, str, tuple[str, ...], tuple[str, str]]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2734,14 +2968,20 @@ def test_source_letter_actions_only_work_when_sources_focused(tmp_path: Path) ->
             await pilot.pause()
 
             status = app.query_one("#status", Static).content
-            message = app.query_one("#results-message", Static).content
-            return editor_text, status, message
+            results = app.query_one("#results", DataTable)
+            columns = tuple(str(column.label) for column in results.columns.values())
+            first_row = (
+                str(results.get_cell_at(Coordinate(0, 0))),
+                str(results.get_cell_at(Coordinate(0, 1))),
+            )
+            return editor_text, status, columns, first_row
 
-    editor_text, status, message = asyncio.run(_inner())
+    editor_text, status, columns, first_row = asyncio.run(_inner())
 
     assert editor_text == "i"
     assert "customers: 2 columns." in status
-    assert "customer_id, email" in message
+    assert columns == ("column", "type")
+    assert first_row == ("customer_id", "VARCHAR")
 
 
 def test_documented_keys_have_predictable_pane_behavior(tmp_path: Path) -> None:
@@ -3329,11 +3569,18 @@ def test_history_rerun_uses_current_session_sources(tmp_path: Path) -> None:
     assert history_statuses == ["success", "success", "error"]
 
 
-def test_source_columns_loads_displays_and_disables_export(tmp_path: Path) -> None:
+def test_source_columns_loads_grid_and_disables_export(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
     state.set_last_result(QueryResult(columns=("old",), rows=(("stale",),), elapsed_ms=1.0))
 
-    async def _inner() -> tuple[object | None, str, str, str, str]:
+    async def _inner() -> tuple[
+        object | None,
+        str,
+        tuple[str, ...],
+        tuple[str, str],
+        str,
+        str,
+    ]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3341,7 +3588,12 @@ def test_source_columns_loads_displays_and_disables_export(tmp_path: Path) -> No
             await pilot.press("c")
             await pilot.pause()
             column_status = app.query_one("#status", Static).content
-            column_message = app.query_one("#results-message", Static).content
+            columns_table = app.query_one("#results", DataTable)
+            column_headers = tuple(str(column.label) for column in columns_table.columns.values())
+            first_column = (
+                str(columns_table.get_cell_at(Coordinate(0, 0))),
+                str(columns_table.get_cell_at(Coordinate(0, 1))),
+            )
 
             await pilot.press("f7")
             await pilot.pause()
@@ -3349,7 +3601,8 @@ def test_source_columns_loads_displays_and_disables_export(tmp_path: Path) -> No
             return (
                 app.state.last_result,
                 column_status,
-                column_message,
+                column_headers,
+                first_column,
                 app.query_one("#status", Static).content,
                 app.query_one("#results-message", Static).content,
             )
@@ -3357,16 +3610,16 @@ def test_source_columns_loads_displays_and_disables_export(tmp_path: Path) -> No
     (
         last_result,
         column_status,
-        column_message,
+        column_headers,
+        first_column,
         export_status,
         export_message,
     ) = asyncio.run(_inner())
 
     assert last_result is None
     assert "customers: 2 columns loaded." in column_status
-    assert "customers columns" in column_message
-    assert "customer_id VARCHAR" in column_message
-    assert "email VARCHAR" in column_message
+    assert column_headers == ("column", "type")
+    assert first_column == ("customer_id", "VARCHAR")
     assert "Run a query before exporting." in export_status
     assert "Run a query before exporting." in export_message
 
@@ -3376,7 +3629,7 @@ def test_source_intelligence_printable_keys_only_work_when_sources_focused(
 ) -> None:
     state = _make_source_state(tmp_path)
 
-    async def _inner() -> tuple[str, str]:
+    async def _inner() -> tuple[str, tuple[str, ...]]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3389,13 +3642,14 @@ def test_source_intelligence_printable_keys_only_work_when_sources_focused(
             app.query_one("#sources", DataTable).focus()
             await pilot.press("c")
             await pilot.pause()
-            message = app.query_one("#results-message", Static).content
-            return editor_text, message
+            columns_table = app.query_one("#results", DataTable)
+            column_headers = tuple(str(column.label) for column in columns_table.columns.values())
+            return editor_text, column_headers
 
-    editor_text, message = asyncio.run(_inner())
+    editor_text, column_headers = asyncio.run(_inner())
 
     assert editor_text == "clx"
-    assert "customers columns" in message
+    assert column_headers == ("column", "type")
 
 
 def test_insert_source_alias_appends_rendered_alias_and_preserves_result(
@@ -3405,7 +3659,7 @@ def test_insert_source_alias_appends_rendered_alias_and_preserves_result(
     existing_result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
     state.set_last_result(existing_result)
 
-    async def _inner() -> tuple[str, object | None]:
+    async def _inner() -> tuple[str, object | None, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3414,12 +3668,13 @@ def test_insert_source_alias_appends_rendered_alias_and_preserves_result(
             app.query_one("#sources", DataTable).focus()
             await pilot.press("l")
             await pilot.pause()
-            return sql.text, app.state.last_result
+            return sql.text, app.state.last_result, app.query_one("#status", Static).content
 
-    editor_text, last_result = asyncio.run(_inner())
+    editor_text, last_result, status = asyncio.run(_inner())
 
     assert editor_text == 'SELECT * FROM\n"customers"'
     assert last_result == existing_result
+    assert status == "Inserted alias customers into SQL editor."
 
 
 def test_insert_starter_select_appends_rendered_select_and_preserves_result(
@@ -3429,19 +3684,24 @@ def test_insert_starter_select_appends_rendered_select_and_preserves_result(
     existing_result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
     state.set_last_result(existing_result)
 
-    async def _inner() -> tuple[str, object | None]:
+    async def _inner() -> tuple[str, object | None, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("x")
             await pilot.pause()
-            return app.query_one("#sql", TextArea).text, app.state.last_result
+            return (
+                app.query_one("#sql", TextArea).text,
+                app.state.last_result,
+                app.query_one("#status", Static).content,
+            )
 
-    editor_text, last_result = asyncio.run(_inner())
+    editor_text, last_result, status = asyncio.run(_inner())
 
     assert editor_text == 'SELECT *\nFROM "customers"\nLIMIT 10;'
     assert last_result == existing_result
+    assert status == "Inserted starter SELECT for customers."
 
 
 def test_source_insert_error_clears_exportable_result_when_no_source_selected(

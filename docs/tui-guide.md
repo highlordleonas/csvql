@@ -75,7 +75,7 @@ When the Sources pane is focused:
 | `p` | Profile selected source |
 | `a` | Add source |
 | paste `.csv` paths | Add CSV path text as session sources |
-| `d` | Remove source from the session |
+| `d` | Remove selected source from the session after confirmation |
 | `w` | Save current sources to `.csvql.yml` |
 | `c` | Load or show source columns |
 | `l` | Insert selected source alias into SQL |
@@ -99,6 +99,16 @@ When the History pane is focused:
 - `r` reruns a query against the current session sources
 
 History clears when the TUI exits.
+
+## Export Active Result
+
+Press `F7` to export the active tabular result shown in Results. CSVQL prompts
+for a file path. The file suffix chooses the format: `.csv`, `.json`, `.md`,
+`.markdown`, or `.txt`. If the path has no suffix, CSVQL writes `.csv` by
+default.
+
+Relative export paths are resolved from the directory where you launched
+`csvql menu`.
 
 ## Save A Result As A Source
 

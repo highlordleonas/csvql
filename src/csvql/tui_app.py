@@ -18,8 +18,7 @@ from textual.worker import Worker, WorkerState
 
 from csvql.exceptions import CSVQLError
 from csvql.export import ExportFormat
-from csvql.models import QueryResult
-from csvql.output import format_profile_result_table
+from csvql.models import ProfileResult, QueryResult
 from csvql.table_mapping import parse_table_mapping
 from csvql.tui_editor import all_sql_statements, selected_or_current_sql
 from csvql.tui_help import WORKBENCH_HELP
@@ -67,10 +66,10 @@ _FOOTER_KEY_ORDER = (
 )
 
 _FOOTER_KEY_ORDER_BY_PANE: dict[TUIFocusPane, tuple[str, ...]] = {
-    "editor": ("f1", "f3", "f4", "f12", "f10", "f5", "f9"),
+    "editor": ("f1", "f3", "f4", "f5", "f6", "f8", "f9", "f10", "f12"),
     "sources": ("f1", "f2", "f3", "f5", "f8", "f9"),
-    "history": ("f1", "f2", "f5", "f7", "ctrl+s", "f9"),
-    "results": ("f1", "f2", "f7", "ctrl+s", "f8", "f9"),
+    "history": ("f1", "f2", "f5", "f6", "f7", "f9", "ctrl+s"),
+    "results": ("f1", "f2", "f6", "f7", "f8", "f9", "ctrl+s"),
 }
 
 
@@ -98,6 +97,28 @@ class _PromptInputScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class _ConfirmationScreen(ModalScreen[bool]):
+    """Small yes/no confirmation modal for destructive TUI actions."""
+
+    BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
+        Binding("y,enter", "confirm", "Confirm"),
+        Binding("n,escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, prompt: str) -> None:
+        super().__init__()
+        self.prompt = prompt
+
+    def compose(self) -> ComposeResult:
+        yield Static(self.prompt, id="confirm-text")
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
 
 
 class _HelpScreen(ModalScreen[None]):
@@ -335,7 +356,10 @@ class CSVQLMenuApp(App[None]):
         self._show_help_once()
 
     def _show_help_once(self) -> None:
-        if self._help_screen_open or isinstance(self.screen, (_HelpScreen, _PromptInputScreen)):
+        if self._help_screen_open or isinstance(
+            self.screen,
+            (_HelpScreen, _PromptInputScreen, _ConfirmationScreen),
+        ):
             return
         self._help_screen_open = True
         self.push_screen(_HelpScreen(), callback=lambda _: self._mark_help_closed())
@@ -344,7 +368,7 @@ class CSVQLMenuApp(App[None]):
         self._help_screen_open = False
 
     def _prompt_screen_active(self) -> bool:
-        return isinstance(self.screen, (_HelpScreen, _PromptInputScreen))
+        return isinstance(self.screen, (_HelpScreen, _PromptInputScreen, _ConfirmationScreen))
 
     def action_choose_csv_source(self) -> None:
         if self._prompt_screen_active():
@@ -401,9 +425,30 @@ class CSVQLMenuApp(App[None]):
             self._show_error(CSVQLError("No source selected."))
             return
 
-        removed_source = self.state.remove_source(selected_source.name)
+        source_name = selected_source.name
+        self.push_screen(
+            _ConfirmationScreen(f"Remove source {source_name}? Press y to remove or n to cancel."),
+            callback=lambda confirmed: self._handle_remove_source_confirmation(
+                source_name,
+                confirmed,
+            ),
+        )
+
+    def _handle_remove_source_confirmation(self, source_name: str, confirmed: bool | None) -> None:
+        if not confirmed:
+            self._set_status("Source removal cancelled.")
+            self.query_one("#sources", DataTable).focus()
+            return
+
+        try:
+            removed_source = self.state.remove_source(source_name)
+        except CSVQLError as exc:
+            self._show_error(exc)
+            return
+
         self._refresh_sources_table()
         self._set_status(f"Removed source {removed_source.name}. {self._status_message()}")
+        self.query_one("#sources", DataTable).focus()
 
     def action_inspect_source(self) -> None:
         source = self.state.selected_source()
@@ -417,9 +462,13 @@ class CSVQLMenuApp(App[None]):
             self._show_error(exc)
             return
 
-        self.state.clear_last_result()
-        column_names = ", ".join(column.name for column in result.columns) or "(none)"
-        self._show_output_text(f"Columns: {column_names}")
+        self._show_source_columns_table(
+            tuple(
+                TUISourceColumn(name=column.name, duckdb_type=column.duckdb_type)
+                for column in result.columns
+            ),
+            message=f"Source inspect: {source.name}.",
+        )
         self._set_status(f"{source.name}: {len(result.columns)} columns.")
 
     def action_profile_source(self) -> None:
@@ -434,8 +483,7 @@ class CSVQLMenuApp(App[None]):
             self._show_error(exc)
             return
 
-        self.state.clear_last_result()
-        self._show_output_text(format_profile_result_table(result))
+        self._show_source_profile_table(result)
         self._set_status(
             f"{source.name}: {result.row_count} rows, "
             f"{result.column_count} columns, {result.duplicate_row_count} duplicate rows.",
@@ -461,6 +509,8 @@ class CSVQLMenuApp(App[None]):
         )
         view = make_result_view_state(query_result, source_result_sequence=0)
         populate_result_table(self.query_one("#results", DataTable), view)
+        self._refresh_results_title()
+        self._refresh_result_tabs()
         self.query_one("#results-message", Static).update(_result_message(view))
         self._set_status(f"{source.name}: {len(result.rows)} sample row(s).")
 
@@ -482,7 +532,7 @@ class CSVQLMenuApp(App[None]):
             self._show_error(CSVQLError(f"Source '{source.name}' has no columns."))
             return
 
-        self._show_output_text(_format_source_columns(source.name, columns))
+        self._show_source_columns_table(columns, message=f"Source columns: {source.name}.")
         self._set_status(f"{source.name}: {len(columns)} columns loaded.")
 
     def action_insert_source_alias(self) -> None:
@@ -493,6 +543,7 @@ class CSVQLMenuApp(App[None]):
             return
 
         self._append_sql_text(render_duckdb_identifier(source.name))
+        self._set_status(f"Inserted alias {source.name} into SQL editor.")
 
     def action_insert_starter_select(self) -> None:
         source = self.state.selected_source()
@@ -503,6 +554,7 @@ class CSVQLMenuApp(App[None]):
 
         alias = render_duckdb_identifier(source.name)
         self._append_sql_text(f"SELECT *\nFROM {alias}\nLIMIT 10;")
+        self._set_status(f"Inserted starter SELECT for {source.name}.")
 
     def action_run_query(self) -> None:
         self.action_run_buffer()
@@ -682,7 +734,10 @@ class CSVQLMenuApp(App[None]):
             return
 
         self.push_screen(
-            _PromptInputScreen("Enter an export path.", input_id="export-path"),
+            _PromptInputScreen(
+                "Export active result to path (.csv, .json, .md, .txt; blank suffix uses .csv).",
+                input_id="export-path",
+            ),
             callback=self._handle_export_last_result,
         )
 
@@ -722,8 +777,9 @@ class CSVQLMenuApp(App[None]):
             self._show_error(exc)
             return
 
-        self._set_status(f"Saved sources to {context.config_path}.")
-        self._show_output_text(f"Saved sources to {context.config_path}.")
+        display_path = _display_path(context.config_path, self.start_dir)
+        self._set_status(f"Saved sources to {display_path}.")
+        self._show_output_text(f"Saved sources to {display_path}.")
 
     def action_reopen_history(self) -> None:
         item = self._selected_history_item()
@@ -860,7 +916,12 @@ class CSVQLMenuApp(App[None]):
         sources_table.clear(columns=True)
         sources_table.add_columns("alias", "kind", "origin", "path")
         for source in self.state.sources:
-            sources_table.add_row(source.name, source.kind, source.origin, str(source.path))
+            sources_table.add_row(
+                source.name,
+                source.kind,
+                source.origin,
+                _display_path(source.path, self.start_dir),
+            )
 
         selected_row = self._selected_source_row_index()
         if selected_row is not None:
@@ -955,17 +1016,16 @@ class CSVQLMenuApp(App[None]):
         self.query_one("#results", DataTable).clear(columns=True)
 
     def _refresh_results_title(self, *, is_active: bool | None = None) -> None:
-        label = self.state.active_result.label
-        if self.state.active_result.kind == "none":
-            label = "Results"
         if is_active is None:
             is_active = self._is_focused("#results")
-        self.query_one("#results-title", Static).update(_pane_title(label, is_active))
+        self.query_one("#results-title", Static).update(
+            _results_title(self.state.active_result.label, is_active)
+        )
 
     def _result_tabs_text(self) -> str:
         tabs = self.state.buffer_result_tabs
         if not tabs:
-            return "Buffer results: none"
+            return ""
 
         active_result = self.state.active_result
         entries: list[str] = []
@@ -995,6 +1055,54 @@ class CSVQLMenuApp(App[None]):
     def _show_output_text(self, message: str) -> None:
         self._clear_result_grid()
         self.query_one("#results-message", Static).update(message)
+
+    def _show_non_query_result_table(
+        self,
+        columns: tuple[str, ...],
+        rows: Sequence[Sequence[object]],
+        *,
+        message: str,
+    ) -> None:
+        self.state.clear_last_result()
+        results_table = self.query_one("#results", DataTable)
+        results_table.clear(columns=True)
+        results_table.add_columns(*columns)
+        for row in rows:
+            results_table.add_row(*(str(value) for value in row))
+        self._refresh_results_title()
+        self._refresh_result_tabs()
+        self.query_one("#results-message", Static).update(message)
+
+    def _show_source_columns_table(
+        self,
+        columns: tuple[TUISourceColumn, ...],
+        *,
+        message: str,
+    ) -> None:
+        self._show_non_query_result_table(
+            ("column", "type"),
+            tuple((column.name, column.duckdb_type) for column in columns),
+            message=message,
+        )
+
+    def _show_source_profile_table(self, result: ProfileResult) -> None:
+        self._show_non_query_result_table(
+            ("column", "type", "non_null", "null", "null_%", "distinct", "min", "max"),
+            tuple(
+                (
+                    column.name,
+                    column.duckdb_type,
+                    column.non_null_count,
+                    column.null_count,
+                    f"{column.null_percentage:.1f}",
+                    column.distinct_count,
+                    column.min,
+                    column.max,
+                )
+                for column in result.columns
+            ),
+            message=f"Source profile: {result.source.get('display_path', 'source')}.",
+        )
 
     def _show_error(self, error: CSVQLError) -> None:
         message = _error_message(error)
@@ -1075,11 +1183,11 @@ class CSVQLMenuApp(App[None]):
             self._show_error(CSVQLError("Run a query before exporting."))
             return
 
-        export_format = _export_format_for_path(path_value)
         try:
+            export_path_value, export_format = _export_path_and_format_for_prompt(path_value)
             export_path = export_last_result(
                 result,
-                path_value,
+                export_path_value,
                 export_format=export_format,
                 base_dir=self.start_dir,
                 force=False,
@@ -1088,8 +1196,9 @@ class CSVQLMenuApp(App[None]):
             self._show_error(exc)
             return
 
-        self._set_status(f"Exported to {export_path}.")
-        self._show_output_text(f"Exported to {export_path}.")
+        display_path = _display_path(export_path, self.start_dir)
+        self._set_status(f"Exported to {display_path}.")
+        self._show_output_text(f"Exported to {display_path}.")
 
     def _handle_save_result_as_source(self, alias: str | None) -> None:
         if alias is None:
@@ -1114,8 +1223,9 @@ class CSVQLMenuApp(App[None]):
             return
 
         self._refresh_sources_table()
+        display_path = _display_path(source.path, self.start_dir)
         message = (
-            f"Saved result as derived source {source.name} at {source.path}. "
+            f"Saved result as derived source {source.name} at {display_path}. "
             "Use Save sources to persist the alias in .csvql.yml."
         )
         self._set_status(message)
@@ -1711,13 +1821,36 @@ class _SourcePathTextArea(TextArea):
         return before_text, expected_single_paste_text, expected_double_paste_text
 
 
-def _export_format_for_path(path_value: str) -> ExportFormat:
-    suffix = Path(path_value).suffix.lower()
+def _export_path_and_format_for_prompt(path_value: str) -> tuple[str, ExportFormat]:
+    cleaned_path = path_value.strip()
+    if not cleaned_path:
+        raise CSVQLError("Enter an export path.")
+
+    path = Path(cleaned_path)
+    suffix = path.suffix.lower()
+    if not suffix:
+        return str(path.with_suffix(".csv")), ExportFormat.csv
     if suffix == ".csv":
-        return ExportFormat.csv
-    if suffix == ".md":
-        return ExportFormat.markdown
-    return ExportFormat.json
+        return cleaned_path, ExportFormat.csv
+    if suffix == ".json":
+        return cleaned_path, ExportFormat.json
+    if suffix in {".md", ".markdown"}:
+        return cleaned_path, ExportFormat.markdown
+    if suffix == ".txt":
+        return cleaned_path, ExportFormat.text
+    raise CSVQLError(
+        f"Unsupported export file type: {suffix}",
+        suggestion="Use .csv, .json, .md, .markdown, or .txt.",
+    )
+
+
+def _display_path(path: Path, base_dir: Path) -> str:
+    try:
+        resolved_path = path.resolve(strict=False)
+        resolved_base = base_dir.resolve(strict=False)
+        return str(resolved_path.relative_to(resolved_base))
+    except (OSError, ValueError):
+        return str(path)
 
 
 _PREVIOUS_RESULT_AVAILABLE = "Previous result is still available."
@@ -1770,6 +1903,15 @@ def _pane_title(label: str, is_active: bool) -> str:
     if is_active:
         return f"ACTIVE: {label}"
     return f"        {label}"
+
+
+def _results_title(active_result_label: str, is_active: bool) -> str:
+    if active_result_label == "No active result":
+        return _pane_title("Results", is_active)
+    if is_active:
+        result_label = active_result_label.removeprefix("Active result: ")
+        return f"ACTIVE RESULT: {result_label}"
+    return _pane_title(active_result_label, is_active)
 
 
 def _pane_context(active_pane: TUIFocusPane) -> str:
@@ -1845,12 +1987,6 @@ def _choose_csv_paths_with_native_picker() -> tuple[str, ...]:
         )
 
     return tuple(line.strip() for line in result.stdout.splitlines() if line.strip())
-
-
-def _format_source_columns(alias: str, columns: tuple[TUISourceColumn, ...]) -> str:
-    lines = [f"{alias} columns"]
-    lines.extend(f"  {column.name} {column.duckdb_type}" for column in columns)
-    return "\n".join(lines)
 
 
 def _result_message(view: TUIResultViewState) -> str:

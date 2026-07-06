@@ -7,7 +7,7 @@ from pathlib import Path
 
 from csvql.exceptions import ExportError
 from csvql.models import QueryResult
-from csvql.output import format_json_result
+from csvql.output import format_json_result, format_table_result
 
 
 class ExportFormat(StrEnum):
@@ -16,6 +16,7 @@ class ExportFormat(StrEnum):
     csv = "csv"
     json = "json"
     markdown = "markdown"
+    text = "text"
 
 
 def resolve_export_path(
@@ -58,9 +59,11 @@ def format_query_result_for_export(result: QueryResult, export_format: ExportFor
         return format_json_result(result) + "\n"
     if export_format is ExportFormat.markdown:
         return _format_markdown(result)
+    if export_format is ExportFormat.text:
+        return format_table_result(result)
     raise ExportError(
         f"Unsupported export format: {export_format}",
-        suggestion="Use csv, json, or markdown.",
+        suggestion="Use csv, json, markdown, or text.",
     )
 
 

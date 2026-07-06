@@ -47,6 +47,14 @@ def test_format_query_result_for_markdown_export_escapes_cells() -> None:
     )
 
 
+def test_format_query_result_for_text_export_matches_table_output() -> None:
+    output = format_query_result_for_export(_result(), ExportFormat.text)
+
+    assert "name" in output
+    assert "Alex" in output
+    assert "2 row(s) in 1.23 ms" in output
+
+
 def test_resolve_export_path_refuses_existing_file_without_force(tmp_path: Path) -> None:
     output_path = tmp_path / "result.csv"
     output_path.write_text("existing", encoding="utf-8")

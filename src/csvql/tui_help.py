@@ -23,7 +23,7 @@ Source pane
   F3 / Ctrl+O         Choose CSV file(s) or prompt for paths
   a                   Add source
   paste .csv path     Add CSV path text as a session source
-  d                   Remove source
+  d                   Remove selected source after confirmation
   w                   Save sources to project catalog
 
 History pane
@@ -33,7 +33,7 @@ History pane
 
 General
   F1                  Help
-  F7                  Export active result
+  F7                  Export active result (.csv, .json, .md, .txt)
   F9 / q              Quit outside text entry
   Esc                 Close help or modal
 

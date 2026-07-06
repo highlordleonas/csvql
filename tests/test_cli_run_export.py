@@ -196,6 +196,27 @@ def test_export_sql_file_writes_markdown(tmp_path: Path, monkeypatch) -> None:
     assert output_path.read_text(encoding="utf-8") == ("| order_count |\n| --- |\n| 1 |\n")
 
 
+def test_export_sql_file_writes_text(tmp_path: Path, monkeypatch) -> None:
+    _init_catalog(tmp_path, monkeypatch)
+    orders = tmp_path / "data" / "orders.csv"
+    query = tmp_path / "queries" / "count_orders.sql"
+    output_path = tmp_path / "result.txt"
+    _write_csv(orders, "order_id,total_amount\nORD-001,20.00\n")
+    query.parent.mkdir()
+    query.write_text("SELECT COUNT(*) AS order_count FROM orders", encoding="utf-8")
+    assert runner.invoke(app, ["add", "orders", "data/orders.csv"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["export", "queries/count_orders.sql", "--format", "text", "--out", "result.txt"],
+    )
+
+    assert result.exit_code == 0, result.output
+    content = output_path.read_text(encoding="utf-8")
+    assert "order_count" in content
+    assert "1 row(s)" in content
+
+
 def test_export_refuses_overwrite_without_force(tmp_path: Path, monkeypatch) -> None:
     _init_catalog(tmp_path, monkeypatch)
     orders = tmp_path / "data" / "orders.csv"
