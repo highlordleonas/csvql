@@ -2457,6 +2457,9 @@ def test_help_text_documents_workbench_keymap() -> None:
     assert "Also opens help" not in help_text
     assert "F7                  Export active result" in help_text
     assert "F9 / q              Quit outside text entry" in help_text
+    assert (
+        "Ctrl+S              Save active result to .csvql/results/{alias}.csv" in help_text
+    )
     assert "r                   Rerun selected query with current session sources" in help_text
 
 
@@ -2466,6 +2469,7 @@ def test_tui_guide_documents_portable_fallbacks_and_run_labels() -> None:
     assert "| `F7` | Export active result |" in guide
     assert "| `F12` or `Ctrl+B` | Run the buffer as separate History rows |" in guide
     assert "| `F3` or `Ctrl+O` | Choose CSV file(s) or prompt for paths |" in guide
+    assert "| `F9` or `q` | Quit outside text entry |" in guide
     assert "The History run column uses semantic labels: `current` for F4/Ctrl+R runs," in guide
     assert "`buffer` for F12/Ctrl+B runs" in guide
     assert "`rerun` for History reruns." in guide
