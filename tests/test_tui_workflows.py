@@ -314,6 +314,47 @@ def test_run_buffer_for_tui_stops_after_first_failure(tmp_path: Path) -> None:
     assert "missing_table" in outcomes[1].error_message
 
 
+def test_run_buffer_for_tui_rejects_sequence_length_mismatch(
+    tmp_path: Path,
+) -> None:
+    csv_path = _write_csv(tmp_path / "orders.csv", "id,value\n1,alpha\n")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
+
+    with pytest.raises(
+        ValueError,
+        match=r"Run Buffer statements and sequences must have the same length\.",
+    ):
+        run_buffer_for_tui((source,), ("SELECT 1", "SELECT 2"), sequences=(1,))
+
+
+def test_run_buffer_for_tui_returns_no_result_for_empty_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCSVQLEngine:
+        def __enter__(self) -> "FakeCSVQLEngine":
+            return self
+
+        def __exit__(self, *exc_info: object) -> None:
+            return None
+
+        def register_tables(self, table_sources: object) -> None:
+            del table_sources
+
+        def query(self, sql: str) -> QueryResult:
+            del sql
+            return QueryResult(columns=(), rows=(), elapsed_ms=3.25)
+
+    monkeypatch.setattr("csvql.tui_workflows.CSVQLEngine", FakeCSVQLEngine)
+
+    outcome = run_buffer_for_tui((), ("CREATE TABLE scratch(id INTEGER)",), sequences=(8,))
+
+    assert len(outcome) == 1
+    assert outcome[0].sequence == 8
+    assert outcome[0].status == "no_result"
+    assert outcome[0].result is None
+    assert outcome[0].elapsed_ms == 3.25
+
+
 def test_export_last_result_writes_json_and_returns_resolved_path(tmp_path: Path) -> None:
     csv_path = _write_csv(tmp_path / "orders.csv", "order_id,status\nORD-1,paid\n")
     source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
