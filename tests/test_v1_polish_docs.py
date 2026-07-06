@@ -61,6 +61,7 @@ def test_manual_qa_matrix_covers_cli_and_tui_release_paths() -> None:
     assert "- [ ] CLI export and reuse as CSV source" in matrix
     assert "- [ ] TUI launch" in matrix
     assert "- [ ] TUI repeated query" in matrix
+    assert "- [ ] TUI Run Buffer exercise" in matrix
     assert "- [ ] TUI derived save and query" in matrix
     assert "- [ ] Bad SQL" in matrix
     assert "- [ ] TUI DDL metadata result" in matrix
@@ -70,6 +71,13 @@ def test_manual_qa_matrix_covers_cli_and_tui_release_paths() -> None:
     assert "- [ ] Missing file behavior" in matrix
     assert "- [ ] Quit path" in matrix
     assert "- [ ] Mac keybinding path" in matrix
+    assert "CREATE TEMP TABLE movement_counts AS" in matrix
+    assert "FROM revenue_movements" in matrix
+    assert "FROM enerflo_payloads" not in matrix
+    assert (
+        "Expected: `F12` or `Ctrl+B` records one History row per statement, preserves"
+        in matrix
+    )
 
 
 def test_tui_qol_qa_gate_is_blocking_and_records_terminal_evidence() -> None:
@@ -125,6 +133,14 @@ def test_tui_qol_qa_gate_is_blocking_and_records_terminal_evidence() -> None:
     ):
         assert required_text in matrix
     assert "Run Buffer with `F12` or `Ctrl+B`" in normalized_matrix
+    stale_wording_scan = "\n".join(
+        [
+            matrix,
+            read_doc("docs/v1-manual-qa.md"),
+            read_doc("docs/getting-started.md"),
+        ]
+    )
+    assert "Run full-buffer multi-statement SQL with `F12`" not in stale_wording_scan
 
 
 def test_manual_qa_matrix_links_tui_qol_gate() -> None:

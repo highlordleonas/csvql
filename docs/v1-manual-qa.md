@@ -90,9 +90,9 @@ Expected: prints `1.0.0`.
 
   ```sql
   CREATE TEMP TABLE movement_counts AS
-  SELECT name, COUNT(*) AS movement_count
-  FROM enerflo_payloads
-  GROUP BY name;
+  SELECT movement_type, COUNT(*) AS movement_count
+  FROM revenue_movements
+  GROUP BY movement_type;
 
   SELECT * FROM movement_counts ORDER BY movement_count DESC;
   ```
