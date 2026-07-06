@@ -541,7 +541,7 @@ class CSVQLMenuApp(App[None]):
             self._start_editor_query_batch(statements)
             return
         sql = statements[0] if statements else ""
-        self._start_query_run(sql, run_label="all SQL", run_mode="editor")
+        self._start_query_run(sql, run_label="all SQL", run_mode="buffer")
 
     def _start_editor_query_batch(self, statements: Sequence[str]) -> None:
         self._editor_batch_queue = list(statements[1:])
@@ -550,7 +550,7 @@ class CSVQLMenuApp(App[None]):
         self._start_query_run(
             statements[0],
             run_label=f"statement 1/{self._editor_batch_total}",
-            run_mode="editor",
+            run_mode="buffer",
         )
 
     def _run_selected_or_current_query_from_editor(self) -> None:
@@ -561,7 +561,7 @@ class CSVQLMenuApp(App[None]):
             cursor_location=sql_widget.cursor_location,
             selected_text=sql_widget.selected_text,
         )
-        self._start_query_run(sql, run_label="current SQL", run_mode="sql")
+        self._start_query_run(sql, run_label="current SQL", run_mode="current")
 
     def _start_query_run(
         self,
@@ -1090,18 +1090,22 @@ class CSVQLMenuApp(App[None]):
         if not self.state.is_current_query_sequence(outcome.sequence):
             return
         self._active_query_sql.pop(outcome.sequence, None)
-        run_mode = self._active_query_run_modes.pop(outcome.sequence, "sql")
+        run_mode = self._active_query_run_modes.pop(outcome.sequence, "current")
         if outcome.status == "success" and outcome.result is not None:
             view = make_result_view_state(
                 outcome.result,
                 source_result_sequence=outcome.sequence,
             )
+            buffer_result_index = None
+            if run_mode == "buffer":
+                buffer_result_index = self._editor_batch_completed + 1
             self.state.record_query_success(
                 outcome.sequence,
                 outcome.sql,
                 outcome.result,
                 view,
                 run_mode=run_mode,
+                buffer_result_index=buffer_result_index,
             )
             populate_result_table(self.query_one("#results", DataTable), view)
             self._refresh_history_table_selecting(outcome.sequence)
@@ -1160,7 +1164,7 @@ class CSVQLMenuApp(App[None]):
             self._start_query_run(
                 next_sql,
                 run_label=f"statement {next_index}/{self._editor_batch_total}",
-                run_mode="editor",
+                run_mode="buffer",
             )
             return True
 
@@ -1192,7 +1196,7 @@ class CSVQLMenuApp(App[None]):
             return
 
         sql = self._active_query_sql.pop(sequence, "<unknown>")
-        run_mode = self._active_query_run_modes.pop(sequence, "sql")
+        run_mode = self._active_query_run_modes.pop(sequence, "current")
         error_message = "Unexpected worker failure while running query."
         if error is not None:
             error_message = f"{error_message} {error}"
@@ -1464,11 +1468,7 @@ def _one_line_sql(sql: str) -> str:
 
 
 def _run_mode_display(run_mode: TUIQueryRunMode) -> str:
-    if run_mode == "sql":
-        return "current"
-    if run_mode == "editor":
-        return "all"
-    return "rerun"
+    return run_mode
 
 
 def _run_start_message(
@@ -1480,8 +1480,12 @@ def _run_start_message(
 ) -> str:
     if run_mode == "rerun" and rerun_source_sequence is not None:
         return f"Rerunning history query {rerun_source_sequence} as query {sequence}..."
-    if run_mode == "sql":
+    if run_mode == "current":
         return f"Running current SQL as query {sequence}..."
+    if run_mode == "buffer":
+        if run_label.startswith("statement "):
+            return f"Running buffer {run_label} as query {sequence}..."
+        return f"Running buffer SQL as query {sequence}..."
     if run_label.startswith("statement "):
         return f"Running all SQL {run_label} as query {sequence}..."
     return f"Running all SQL as query {sequence}..."

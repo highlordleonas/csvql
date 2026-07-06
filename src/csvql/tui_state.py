@@ -261,14 +261,24 @@ class TUISessionState:
     ) -> None:
         """Store the current buffered-result tabs and optionally select one."""
 
+        previous_active_result = self.active_result
         self._buffer_result_tabs = list(tabs)
         if selected_sequence is not None:
-            self.select_buffer_result(selected_sequence)
+            if self.select_buffer_result(selected_sequence):
+                return
+            self.active_result = TUIActiveResultState()
+            return
+        if previous_active_result.kind == "buffer" and previous_active_result.sequence is not None:
+            if self.select_buffer_result(previous_active_result.sequence):
+                return
+        self.active_result = TUIActiveResultState()
 
     def clear_buffer_result_tabs(self) -> None:
         """Clear all buffered-result tabs."""
 
         self._buffer_result_tabs.clear()
+        if self.active_result.kind == "buffer":
+            self.active_result = TUIActiveResultState()
 
     def select_buffer_result(self, sequence: int) -> bool:
         """Select a buffered query result for viewing."""
@@ -342,6 +352,9 @@ class TUISessionState:
         buffer_result_index: int | None = None,
     ) -> None:
         """Record a successful query and store its result."""
+
+        if run_mode == "buffer" and buffer_result_index is None:
+            raise ValueError("buffer_result_index is required for buffer results.")
 
         self.last_result = result
         self.last_result_status = "query"

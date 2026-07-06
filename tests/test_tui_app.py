@@ -628,7 +628,7 @@ def test_run_shortcut_records_sql_run_mode_and_history_column(tmp_path: Path) ->
 
     run_modes, columns, run_labels, status = asyncio.run(_inner())
 
-    assert run_modes == ["sql"]
+    assert run_modes == ["current"]
     assert columns == ("seq", "run", "status", "rows", "sql")
     assert run_labels == ("current",)
     assert "1 returned row(s)" in status
@@ -656,8 +656,8 @@ def test_run_all_shortcut_records_editor_run_mode(tmp_path: Path) -> None:
 
     run_modes, run_labels, status = asyncio.run(_inner())
 
-    assert run_modes == ["editor"]
-    assert run_labels == ("all",)
+    assert run_modes == ["buffer"]
+    assert run_labels == ("buffer",)
     assert "1 returned row(s)" in status
 
 
@@ -715,7 +715,7 @@ def test_history_rerun_records_rerun_mode_and_status_message(tmp_path: Path) -> 
 
     run_modes, run_labels, run_status, sql_text, seen_sql = asyncio.run(_inner())
 
-    assert run_modes == ["sql", "rerun"]
+    assert run_modes == ["current", "rerun"]
     assert run_labels == ("current", "rerun")
     assert run_status == "Rerunning history query 1 as query 2..."
     assert sql_text == "SELECT COUNT(*) AS count FROM customers"
@@ -2359,7 +2359,7 @@ def test_no_result_outcome_clears_last_result_and_disables_export(
     assert "no tabular result" in status
     assert "no tabular result" in message
     assert app_history_statuses(state) == ["no_result"]
-    assert app_history_run_modes(state) == ["sql"]
+    assert app_history_run_modes(state) == ["current"]
 
 
 def test_error_outcome_records_run_mode_and_marks_history(
@@ -2398,7 +2398,7 @@ def test_error_outcome_records_run_mode_and_marks_history(
     assert "boom" in status
     assert "boom" in message
     assert app_history_statuses(state) == ["error"]
-    assert app_history_run_modes(state) == ["sql"]
+    assert app_history_run_modes(state) == ["current"]
 
 
 def test_unexpected_worker_failure_records_error_and_allows_retry(
@@ -2464,7 +2464,7 @@ def test_unexpected_worker_failure_records_error_and_allows_retry(
     assert run_status == "Ready."
     assert last_result is not None
     assert history_statuses == ["error", "success"]
-    assert app_history_run_modes(state) == ["sql", "sql"]
+    assert app_history_run_modes(state) == ["current", "current"]
     assert "1 returned row(s)" in second_status
 
 

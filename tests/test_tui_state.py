@@ -318,13 +318,13 @@ def test_tui_source_column_stores_name_and_duckdb_type() -> None:
     assert column.duckdb_type == "VARCHAR"
 
 
-def test_query_history_item_defaults_to_sql_run_mode() -> None:
+def test_query_history_item_defaults_to_current_run_mode() -> None:
     item = TUIQueryHistoryItem(sequence=1, sql="SELECT 1", status="success")
 
     assert item.run_mode == "current"
 
 
-def test_record_query_success_stores_run_mode(tmp_path: Path) -> None:
+def test_record_query_success_stores_buffer_run_mode(tmp_path: Path) -> None:
     state = TUISessionState()
     state.add_source(
         TUISource(name="customers", path=tmp_path / "customers.csv", origin="argument")
@@ -336,9 +336,79 @@ def test_record_query_success_stores_run_mode(tmp_path: Path) -> None:
         "SELECT 1",
         QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
         run_mode="buffer",
+        buffer_result_index=1,
     )
 
     assert state.query_history[-1].run_mode == "buffer"
+    assert state.active_result == TUIActiveResultState(
+        kind="buffer",
+        label="Active result: buffer 1.1",
+        sequence=1,
+        buffer_result_index=1,
+    )
+
+
+def test_record_query_success_requires_buffer_result_index(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(
+        TUISource(name="customers", path=tmp_path / "customers.csv", origin="argument")
+    )
+    sequence = state.begin_query_run("SELECT 1")
+
+    with pytest.raises(ValueError, match="buffer_result_index is required for buffer results"):
+        state.record_query_success(
+            sequence,
+            "SELECT 1",
+            QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+            run_mode="buffer",
+        )
+
+    assert state.last_result is None
+    assert state.active_result == TUIActiveResultState()
+
+
+def test_buffer_result_tabs_reset_stale_active_result_when_cleared_or_replaced(
+    tmp_path: Path,
+) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
+
+    first_sequence = state.begin_query_run("SELECT 1 AS first")
+    state.record_query_success(
+        first_sequence,
+        "SELECT 1 AS first",
+        QueryResult(columns=("first",), rows=((1,),), elapsed_ms=1.0),
+        run_mode="buffer",
+        buffer_result_index=1,
+    )
+    state.set_buffer_result_tabs((TUIBufferResultTab(sequence=1, index=1, label="query 1"),))
+
+    state.clear_buffer_result_tabs()
+
+    assert state.buffer_result_tabs == ()
+    assert state.active_result == TUIActiveResultState()
+
+    second_sequence = state.begin_query_run("SELECT 2 AS second")
+    state.record_query_success(
+        second_sequence,
+        "SELECT 2 AS second",
+        QueryResult(columns=("second",), rows=((2,),), elapsed_ms=1.0),
+        run_mode="buffer",
+        buffer_result_index=2,
+    )
+    state.set_buffer_result_tabs((TUIBufferResultTab(sequence=2, index=2, label="query 2"),))
+
+    assert state.active_result == TUIActiveResultState(
+        kind="buffer",
+        label="Active result: buffer 2.2",
+        sequence=2,
+        buffer_result_index=2,
+    )
+
+    state.set_buffer_result_tabs((TUIBufferResultTab(sequence=3, index=1, label="query 3"),))
+
+    assert state.buffer_result_tabs == (TUIBufferResultTab(sequence=3, index=1, label="query 3"),)
+    assert state.active_result == TUIActiveResultState()
 
 
 def test_record_query_no_result_stores_run_mode(tmp_path: Path) -> None:
