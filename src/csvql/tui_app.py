@@ -66,6 +66,13 @@ _FOOTER_KEY_ORDER = (
     "ctrl+s",
 )
 
+_FOOTER_KEY_ORDER_BY_PANE: dict[TUIFocusPane, tuple[str, ...]] = {
+    "editor": ("f1", "f3", "f4", "f12", "f10", "f5", "f9"),
+    "sources": ("f1", "f2", "f3", "f5", "f8", "f9"),
+    "history": ("f1", "f2", "f5", "f7", "ctrl+s", "f9"),
+    "results": ("f1", "f2", "f7", "ctrl+s", "f8", "f9"),
+}
+
 
 class _PromptInputScreen(ModalScreen[str | None]):
     """Generic modal prompt for one-line TUI input."""
@@ -119,7 +126,7 @@ class _OrderedFooter(Footer):
 
         active_bindings = self.screen.active_bindings
         ordered_footer_keys: list[FooterKey] = []
-        for key in _FOOTER_KEY_ORDER:
+        for key in self._active_footer_key_order():
             if active_binding := active_bindings.get(key):
                 binding = active_binding.binding
                 if not binding.show:
@@ -138,21 +145,10 @@ class _OrderedFooter(Footer):
 
         yield from ordered_footer_keys
 
-        if self.show_command_palette and self.app.ENABLE_COMMAND_PALETTE:
-            try:
-                active_binding = active_bindings[self.app.COMMAND_PALETTE_BINDING]
-            except KeyError:
-                return
-            binding = active_binding.binding
-            yield FooterKey(
-                binding.key,
-                self.app.get_key_display(binding),
-                binding.description,
-                binding.action,
-                classes="-command-palette",
-                disabled=not active_binding.enabled,
-                tooltip=binding.tooltip or binding.description,
-            )
+    def _active_footer_key_order(self) -> tuple[str, ...]:
+        if isinstance(self.app, CSVQLMenuApp):
+            return _FOOTER_KEY_ORDER_BY_PANE.get(self.app.state.active_pane, _FOOTER_KEY_ORDER)
+        return _FOOTER_KEY_ORDER
 
 
 class CSVQLMenuApp(App[None]):
@@ -164,7 +160,7 @@ class CSVQLMenuApp(App[None]):
     }
 
     #sources {
-        height: 5;
+        height: 7;
     }
 
     #workbench {
@@ -172,11 +168,11 @@ class CSVQLMenuApp(App[None]):
     }
 
     #left-pane {
-        width: 32%;
+        width: 38%;
     }
 
     #right-pane {
-        width: 68%;
+        width: 62%;
     }
 
     #history {
@@ -188,7 +184,7 @@ class CSVQLMenuApp(App[None]):
     }
 
     #sql {
-        height: 8;
+        height: 10;
     }
 
     #results {
@@ -216,35 +212,35 @@ class CSVQLMenuApp(App[None]):
     BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
         Binding("q", "quit_from_non_editor", "Quit", show=False),
         Binding("f1", "show_help", "Help", key_display="F1", priority=True),
-        Binding("f2,ctrl+down", "focus_sql", "SQL", priority=True),
+        Binding("f2,ctrl+down", "focus_sql", "SQL", key_display="F2", priority=True),
         Binding("f3,ctrl+o", "choose_csv_source", "Open CSV", key_display="F3", priority=True),
         Binding(
             "f4",
             "run_selected_or_current_query",
-            "Run SQL",
+            "Run current",
             key_display="F4",
             priority=True,
         ),
         Binding("ctrl+r", "run_selected_or_current_query", "Run SQL", show=False),
-        Binding("f5", "focus_results", "Results", priority=True),
-        Binding("f6,ctrl+up", "focus_sources", "Sources", priority=True),
-        Binding("f7", "export_last_result", "Export active result", priority=True),
-        Binding("f8", "focus_history", "History", priority=True),
-        Binding("f9", "quit", "Quit", priority=True),
-        Binding("f10,ctrl+n", "new_query", "New query", priority=True),
+        Binding("f5", "focus_results", "Results", key_display="F5", priority=True),
+        Binding("f6,ctrl+up", "focus_sources", "Sources", key_display="F6", priority=True),
+        Binding("f7", "export_last_result", "Export active", key_display="F7", priority=True),
+        Binding("f8", "focus_history", "History", key_display="F8", priority=True),
+        Binding("f9", "quit", "Quit", key_display="F9", priority=True),
+        Binding("f10,ctrl+n", "new_query", "New query", key_display="F10", priority=True),
         Binding("[", "select_previous_buffer_result", "Previous buffer result", show=False),
         Binding("]", "select_next_buffer_result", "Next buffer result", show=False),
         Binding(
             "f12,ctrl+b",
             "run_buffer",
-            "Run Buffer",
+            "Run buffer",
             key_display="F12",
             priority=True,
         ),
         Binding(
             "ctrl+s,alt+s,f11",
             "save_result_as_source",
-            "Save active result",
+            "Save active",
             key_display="Ctrl+S/Alt+S",
             priority=True,
         ),
@@ -862,9 +858,9 @@ class CSVQLMenuApp(App[None]):
     def _refresh_sources_table(self) -> None:
         sources_table = self.query_one("#sources", DataTable)
         sources_table.clear(columns=True)
-        sources_table.add_columns("alias", "kind", "path", "origin")
+        sources_table.add_columns("alias", "kind", "origin", "path")
         for source in self.state.sources:
-            sources_table.add_row(source.name, source.kind, str(source.path), source.origin)
+            sources_table.add_row(source.name, source.kind, source.origin, str(source.path))
 
         selected_row = self._selected_source_row_index()
         if selected_row is not None:
@@ -889,6 +885,7 @@ class CSVQLMenuApp(App[None]):
             )
             self._refresh_results_title(is_active=active_pane == "results")
             self.query_one("#context", Static).update(_pane_context(active_pane))
+            self.query_one(_OrderedFooter).refresh(recompose=True)
         except NoMatches:
             return
 
@@ -1594,16 +1591,20 @@ class CSVQLMenuApp(App[None]):
 class _SourcePathTextArea(TextArea):
     """SQL editor that turns pasted CSV path payloads into sources."""
 
+    _last_regular_paste_text: str | None = None
+    _last_regular_paste_result_text: str | None = None
+
     async def _on_paste(self, event: events.Paste) -> None:
         if not isinstance(self.app, CSVQLMenuApp):
             return
 
+        event.stop()
+        event.prevent_default()
         before_text, expected_single_paste_text, expected_double_paste_text = (
             self._paste_text_expectations(event.text)
         )
         if self.app._handle_pasted_csv_sources(event.text):
             self.app._suppress_sql_source_text_detection = True
-            event.stop()
             if not self.call_after_refresh(
                 lambda: self.app._remove_pasted_source_text_from_sql_editor(
                     before_text=before_text,
@@ -1615,17 +1616,84 @@ class _SourcePathTextArea(TextArea):
             self.focus()
             return
 
+        if deduplicated_text := self._deduplicated_regular_paste_text(event.text, before_text):
+            self.load_text(deduplicated_text)
+            self.focus()
+            return
+
+        if default_inserted_text := self._default_inserted_regular_paste_text(
+            event.text,
+            before_text,
+        ):
+            self._remember_regular_paste_event(
+                pasted_text=event.text,
+                result_text=default_inserted_text,
+            )
+            self.call_after_refresh(
+                lambda: self.app._normalize_pasted_text_in_sql_editor(
+                    expected_single_paste_text=default_inserted_text,
+                    expected_double_paste_text=f"{default_inserted_text}{event.text}",
+                )
+            )
+            self.focus()
+            return
+
         if not self.read_only:
             if result := self._replace_via_keyboard(event.text, *self.selection):
                 self.move_cursor(result.end_location)
                 self.focus()
-        event.stop()
+        self._remember_regular_paste_event(
+            pasted_text=event.text,
+            result_text=expected_single_paste_text,
+        )
         self.call_after_refresh(
             lambda: self.app._normalize_pasted_text_in_sql_editor(
                 expected_single_paste_text=expected_single_paste_text,
                 expected_double_paste_text=expected_double_paste_text,
             )
         )
+
+    def _deduplicated_regular_paste_text(
+        self,
+        pasted_text: str,
+        before_text: str,
+    ) -> str | None:
+        if pasted_text != self._last_regular_paste_text:
+            return None
+        result_text = self._last_regular_paste_result_text
+        if result_text is None:
+            return None
+        if before_text in {result_text, f"{result_text}{pasted_text}"}:
+            return result_text
+        return None
+
+    def _default_inserted_regular_paste_text(
+        self,
+        pasted_text: str,
+        before_text: str,
+    ) -> str | None:
+        if not pasted_text or self.selection.start != self.selection.end:
+            return None
+        cursor_index = _text_index_from_location(before_text, self.selection.end)
+        pasted_start_index = cursor_index - len(pasted_text)
+        if pasted_start_index < 0:
+            return None
+        if before_text[pasted_start_index:cursor_index] != pasted_text:
+            return None
+        return before_text
+
+    def _remember_regular_paste_event(self, *, pasted_text: str, result_text: str) -> None:
+        self._last_regular_paste_text = pasted_text
+        self._last_regular_paste_result_text = result_text
+        self.call_after_refresh(lambda: self._clear_regular_paste_event(pasted_text, result_text))
+
+    def _clear_regular_paste_event(self, pasted_text: str, result_text: str) -> None:
+        if (
+            self._last_regular_paste_text == pasted_text
+            and self._last_regular_paste_result_text == result_text
+        ):
+            self._last_regular_paste_text = None
+            self._last_regular_paste_result_text = None
 
     def _paste_text_expectations(self, pasted_text: str) -> tuple[str, str, str]:
         before_text = self.text
@@ -1699,31 +1767,25 @@ def _run_start_message(
 
 
 def _pane_title(label: str, is_active: bool) -> str:
-    prefix = ">" if is_active else " "
-    return f"{prefix} {label}"
+    if is_active:
+        return f"ACTIVE: {label}"
+    return f"        {label}"
 
 
 def _pane_context(active_pane: TUIFocusPane) -> str:
     if active_pane == "sources":
         return (
-            "Sources: F3 picker | a add source | i inspect | s sample | p profile | "
-            "c columns | l alias | x starter | d remove | w save"
+            "Sources: F3 pick | a add | i inspect | s sample | p profile | "
+            "c columns | l alias | x starter | d remove | w save catalog"
         )
     if active_pane == "history":
         return (
-            "History: highlight recall | Enter reopen | r rerun | F7 export active result | "
-            "Ctrl+S/Alt+S save active result"
+            "History: selected row | Enter reopen | r rerun | F7 export active | "
+            "Ctrl+S/Alt+S save active"
         )
     if active_pane == "results":
-        return (
-            "Results: arrow keys move | F7 export active result | "
-            "Ctrl+S/Alt+S save active result | "
-            "F8 history"
-        )
-    return (
-        "SQL editor: type SQL | F4/Ctrl+R current | F12/Ctrl+B buffer | F10 new query | "
-        "paste CSV path to add source"
-    )
+        return "Result target: active result. Export and save use the active result shown above."
+    return "Editor target: current SQL buffer. Buffer run keeps statements in one DuckDB session."
 
 
 def _text_index_from_location(text: str, location: tuple[int, int]) -> int:

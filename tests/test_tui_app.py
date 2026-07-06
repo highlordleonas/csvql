@@ -62,6 +62,10 @@ def _footer_key_displays(app: CSVQLMenuApp) -> tuple[str, ...]:
     return tuple(key.key_display for key in app.query(FooterKey))
 
 
+def _footer_entries(app: CSVQLMenuApp) -> tuple[tuple[str, str], ...]:
+    return tuple((key.key_display, key.description) for key in app.query(FooterKey))
+
+
 def _history_run_column_values(app: CSVQLMenuApp) -> tuple[str, ...]:
     history = app.query_one("#history", DataTable)
     return tuple(str(history.get_cell_at(Coordinate(row, 1))) for row in range(history.row_count))
@@ -86,6 +90,20 @@ async def _settled_footer_key_displays(
         if key_displays and (required_key is None or required_key in key_displays):
             return key_displays
     return _footer_key_displays(app)
+
+
+async def _settled_footer_entries(
+    pilot: Pilot[None],
+    app: CSVQLMenuApp,
+    *,
+    required_entry: tuple[str, str] | None = None,
+) -> tuple[tuple[str, str], ...]:
+    for _ in range(5):
+        await pilot.pause(0.1)
+        entries = _footer_entries(app)
+        if entries and (required_entry is None or required_entry in entries):
+            return entries
+    return _footer_entries(app)
 
 
 def _create_csv(tmp_path: Path, filename: str, content: str) -> Path:
@@ -1237,50 +1255,83 @@ def test_core_panes_mount_and_remain_focusable_at_simulated_viewport_sizes(
     assert sql_focus == "sql"
 
 
-def test_footer_key_order_is_stable_between_sql_and_sources(tmp_path: Path) -> None:
+def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
-    async def _inner() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    async def _inner() -> tuple[
+        tuple[tuple[str, str], ...],
+        tuple[tuple[str, str], ...],
+        tuple[tuple[str, str], ...],
+    ]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
-            sql_footer = await _settled_footer_key_displays(pilot, app)
+            sql_footer = await _settled_footer_entries(pilot, app)
 
             app.query_one("#sources", DataTable).focus()
-            sources_footer = await _settled_footer_key_displays(pilot, app, required_key="F1")
-            return sql_footer, sources_footer
+            sources_footer = await _settled_footer_entries(
+                pilot,
+                app,
+                required_entry=("F8", "History"),
+            )
 
-    sql_footer, sources_footer = asyncio.run(_inner())
+            app.query_one("#results", DataTable).focus()
+            results_footer = await _settled_footer_entries(
+                pilot,
+                app,
+                required_entry=("F7", "Export active"),
+            )
 
-    assert sql_footer[:12] == (
-        "F1",
-        "f2",
-        "F3",
-        "F4",
-        "f5",
-        "f6",
-        "f7",
-        "f8",
-        "f9",
-        "f10",
-        "F12",
-        "Ctrl+S/Alt+S",
+            return sql_footer, sources_footer, results_footer
+
+    sql_footer, sources_footer, results_footer = asyncio.run(_inner())
+
+    assert sql_footer == (
+        ("F1", "Help"),
+        ("F3", "Open CSV"),
+        ("F4", "Run current"),
+        ("F12", "Run buffer"),
+        ("F10", "New query"),
+        ("F5", "Results"),
+        ("F9", "Quit"),
     )
-    assert "?" not in sql_footer
-    assert sources_footer[:12] == (
-        "F1",
-        "f2",
-        "F3",
-        "F4",
-        "f5",
-        "f6",
-        "f7",
-        "f8",
-        "f9",
-        "f10",
-        "F12",
-        "Ctrl+S/Alt+S",
+    assert sources_footer == (
+        ("F1", "Help"),
+        ("F2", "SQL"),
+        ("F3", "Open CSV"),
+        ("F5", "Results"),
+        ("F8", "History"),
+        ("F9", "Quit"),
     )
-    assert "?" not in sources_footer
+    assert results_footer == (
+        ("F1", "Help"),
+        ("F2", "SQL"),
+        ("F7", "Export active"),
+        ("Ctrl+S/Alt+S", "Save active"),
+        ("F8", "History"),
+        ("F9", "Quit"),
+    )
+
+
+def test_workbench_layout_prioritizes_sources_and_editor(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            return (
+                str(app.query_one("#left-pane").styles.width),
+                str(app.query_one("#right-pane").styles.width),
+                str(app.query_one("#sources").styles.height),
+                str(app.query_one("#sql").styles.height),
+            )
+
+    left_width, right_width, sources_height, sql_height = asyncio.run(_inner())
+
+    assert left_width == "38w"
+    assert right_width == "62w"
+    assert sources_height == "7"
+    assert sql_height == "10"
 
 
 def test_pane_context_updates_with_active_focus(tmp_path: Path) -> None:
@@ -1327,12 +1378,20 @@ def test_pane_context_updates_with_active_focus(tmp_path: Path) -> None:
         history_context,
     ) = asyncio.run(_inner())
 
-    assert initial_sql_title.startswith("> SQL editor")
-    assert "F4/Ctrl+R current" in initial_context
-    assert "F12/Ctrl+B buffer" in initial_context
-    assert sources_title.startswith("> Sources")
-    assert "a add source" in sources_context
-    assert history_title.startswith("> History")
+    assert initial_sql_title == "ACTIVE: SQL editor"
+    assert "Editor target: current SQL buffer" in initial_context
+    assert "one DuckDB session" in initial_context
+    assert sources_title == "ACTIVE: Sources"
+    assert sources_context == (
+        "Sources: F3 pick | a add | i inspect | s sample | p profile | "
+        "c columns | l alias | x starter | d remove | w save catalog"
+    )
+    assert len(sources_context) <= 121
+    assert "i inspect" in sources_context
+    assert "c columns" in sources_context
+    assert "w save catalog" in sources_context
+    assert history_title == "ACTIVE: History"
+    assert "History: selected row" in history_context
     assert "Enter reopen" in history_context
 
 
@@ -1835,6 +1894,63 @@ def test_regular_sql_paste_stays_in_sql_editor(tmp_path: Path) -> None:
     assert sources == state.sources
 
 
+def test_duplicate_regular_sql_paste_event_is_deduplicated(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+    pasted_sql = (
+        "CREATE TEMP TABLE customer_counts AS\n"
+        "SELECT email, COUNT(*) AS customer_count\n"
+        "FROM customers\n"
+        "GROUP BY email;\n\n"
+        "SELECT * FROM customer_counts ORDER BY customer_count DESC;"
+    )
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+
+            sql.post_message(events.Paste(pasted_sql))
+            sql.post_message(events.Paste(pasted_sql))
+            await pilot.pause()
+
+            return sql.text
+
+    editor_text = asyncio.run(_inner())
+
+    assert editor_text == pasted_sql
+
+
+def test_default_inserted_regular_sql_paste_is_deduplicated(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+    pasted_sql = (
+        "CREATE TEMP TABLE customer_counts AS\n"
+        "SELECT email, COUNT(*) AS customer_count\n"
+        "FROM customers\n"
+        "GROUP BY email;\n\n"
+        "SELECT * FROM customer_counts ORDER BY customer_count DESC;"
+    )
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+
+            sql.load_text(pasted_sql)
+            sql.move_cursor((5, len("SELECT * FROM customer_counts ORDER BY customer_count DESC;")))
+            sql.post_message(events.Paste(pasted_sql))
+            await pilot.pause()
+
+            return sql.text
+
+    editor_text = asyncio.run(_inner())
+
+    assert editor_text == pasted_sql
+
+
 def test_export_action_requires_last_result(tmp_path: Path) -> None:
     async def _inner() -> tuple[str, str]:
         app = CSVQLMenuApp(start_dir=tmp_path)
@@ -2075,7 +2191,7 @@ def test_buffer_result_selector_controls_export_target(tmp_path: Path) -> None:
     assert export_path.read_text(encoding="utf-8") == "label\nfirst\n"
 
 
-def test_sources_pane_shows_source_kind(tmp_path: Path) -> None:
+def test_sources_pane_keeps_origin_before_long_path(tmp_path: Path) -> None:
     state = TUISessionState()
     state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
     state.add_source(
@@ -2099,7 +2215,7 @@ def test_sources_pane_shows_source_kind(tmp_path: Path) -> None:
 
     columns, row_count = asyncio.run(_inner())
 
-    assert columns == ("alias", "kind", "path", "origin")
+    assert columns == ("alias", "kind", "origin", "path")
     assert row_count == 2
 
 
