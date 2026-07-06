@@ -553,12 +553,12 @@ def test_run_buffer_shortcut_records_buffer_rows_and_selects_latest_tab(
     assert active_rows == ((2,),)
 
 
-def test_run_all_stops_batch_after_middle_statement_failure(
+def test_run_buffer_stops_after_middle_outcome_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _make_source_state(tmp_path)
-    seen_statements: list[str] = []
+    submitted_statements: list[str] = []
 
     def fake_run_buffer_for_tui(
         sources: object,
@@ -569,7 +569,7 @@ def test_run_all_stops_batch_after_middle_statement_failure(
         del sources, sequences
         from csvql.tui_state import TUIQueryOutcome
 
-        seen_statements.extend(statements)
+        submitted_statements.extend(statements)
         return (
             TUIQueryOutcome.success(
                 sequence=1,
@@ -598,7 +598,7 @@ def test_run_all_stops_batch_after_middle_statement_failure(
             await pilot.pause(0.2)
 
             return (
-                seen_statements,
+                submitted_statements,
                 app_history_statuses(app.state),
                 [item.sequence for item in app.state.query_history],
                 app.query_one("#status", Static).content,
@@ -606,11 +606,11 @@ def test_run_all_stops_batch_after_middle_statement_failure(
                 app.query_one("#run-status", Static).content,
             )
 
-    seen_statements, statuses, sequences, status, results_message, run_status = asyncio.run(
+    submitted_statements, statuses, sequences, status, results_message, run_status = asyncio.run(
         _inner()
     )
 
-    assert seen_statements == [
+    assert submitted_statements == [
         "SELECT 1 AS first",
         "SELECT broken FROM customers",
         "SELECT 3 AS third",
@@ -1255,6 +1255,7 @@ def test_pane_context_updates_with_active_focus(tmp_path: Path) -> None:
 
     assert initial_sql_title.startswith("> SQL editor")
     assert "F4/Ctrl+R current" in initial_context
+    assert "F12/Ctrl+B buffer" in initial_context
     assert sources_title.startswith("> Sources")
     assert "a add source" in sources_context
     assert history_title.startswith("> History")
@@ -2308,7 +2309,7 @@ def test_help_text_documents_workbench_keymap() -> None:
     assert "Run SQL" in help_text
     assert "F4 / Ctrl+R         Run selected SQL, otherwise current statement" in help_text
     assert "Run selected SQL, otherwise current statement" in help_text
-    assert "F12                 Run all SQL in editor" in help_text
+    assert "F12 / Ctrl+B        Run buffer SQL as History rows" in help_text
     assert "F3                  Choose CSV file(s) or prompt for paths" in help_text
     assert "F1                  Help" in help_text
     assert "?                   Help" not in help_text
@@ -2350,10 +2351,9 @@ def test_readme_documents_editor_quality_keymap() -> None:
     readme = _normalized_markdown_text(_read_readme_text())
 
     assert "`F4` or `Ctrl+R` to run selected SQL" in readme
-    assert "`F12` runs every semicolon-delimited statement" in readme
+    assert "`F12` or `Ctrl+B` runs the buffer of semicolon-delimited statements" in readme
     assert "current statement around the cursor" in readme
-    assert "labels current-statement runs as `current`" in readme
-    assert "F12 runs as `all`" in readme
+    assert "statement runs as `current`, buffer runs as `buffer`" in readme
     assert "History reruns as `rerun`" in readme
 
 

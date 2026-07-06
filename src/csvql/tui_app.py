@@ -1725,7 +1725,7 @@ def _pane_context(active_pane: TUIFocusPane) -> str:
     if active_pane == "results":
         return "Results: arrow keys move | F7 export | Ctrl+S/Alt+S save source | F8 history"
     return (
-        "SQL editor: type SQL | F4/Ctrl+R current | F12 all | F10 new query | "
+        "SQL editor: type SQL | F4/Ctrl+R current | F12/Ctrl+B buffer | F10 new query | "
         "paste CSV path to add source"
     )
 
