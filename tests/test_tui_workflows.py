@@ -16,12 +16,12 @@ from csvql.tui_workflows import (
     profile_source,
     query_sources,
     render_duckdb_identifier,
+    run_buffer_for_tui,
     run_query_for_tui,
     sample_source,
     save_derived_result_source,
     save_sources_to_project_catalog,
     sources_from_csv_path_text,
-    run_buffer_for_tui,
 )
 
 
