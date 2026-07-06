@@ -326,6 +326,8 @@ class CSVQLMenuApp(App[None]):
         self._open_add_source_prompt("Enter name=path or paste CSV path(s).")
 
     def _open_add_source_prompt(self, prompt: str) -> None:
+        if self._prompt_screen_active():
+            return
         self.push_screen(
             _PromptInputScreen(
                 prompt,
@@ -346,7 +348,12 @@ class CSVQLMenuApp(App[None]):
     def _mark_help_closed(self) -> None:
         self._help_screen_open = False
 
+    def _prompt_screen_active(self) -> bool:
+        return isinstance(self.screen, (_HelpScreen, _PromptInputScreen))
+
     def action_choose_csv_source(self) -> None:
+        if self._prompt_screen_active():
+            return
         try:
             path_values = _choose_csv_paths_with_native_picker()
             sources = self._sources_from_csv_path_values(path_values)
@@ -671,6 +678,8 @@ class CSVQLMenuApp(App[None]):
         )
 
     def action_export_last_result(self) -> None:
+        if self._prompt_screen_active():
+            return
         if self._is_focused("#history"):
             self._show_selected_history_result()
         if self.state.last_result is None:
@@ -683,6 +692,8 @@ class CSVQLMenuApp(App[None]):
         )
 
     def action_save_result_as_source(self) -> None:
+        if self._prompt_screen_active():
+            return
         if self._is_focused("#history"):
             self._show_selected_history_result()
         result = self.state.last_result

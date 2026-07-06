@@ -1534,6 +1534,46 @@ def test_portable_open_csv_fallback_opens_add_source_prompt(
     assert input_id == "mapping-input"
 
 
+def test_ctrl_o_does_not_stack_add_source_prompts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def unavailable_picker() -> tuple[str, ...]:
+        raise CSVQLError(
+            "Native CSV picker is only available on macOS.",
+            suggestion="Paste a CSV path instead.",
+        )
+
+    monkeypatch.setattr("csvql.tui_app._choose_csv_paths_with_native_picker", unavailable_picker)
+
+    async def _inner() -> tuple[bool, int, int, str]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            first_screen = app.screen
+            first_stack_len = len(app.screen_stack)
+            first_input_id = app.screen.query_one("#mapping-input", Input).id or ""
+
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+
+            return (
+                app.screen is first_screen,
+                len(app.screen_stack),
+                first_stack_len,
+                first_input_id,
+            )
+
+    same_screen, second_stack_len, first_stack_len, input_id = asyncio.run(_inner())
+
+    assert input_id == "mapping-input"
+    assert same_screen is True
+    assert second_stack_len == first_stack_len
+
+
 def test_f1_does_not_stack_help_over_add_source_prompt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
