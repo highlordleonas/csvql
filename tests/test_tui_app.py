@@ -2770,11 +2770,10 @@ def test_save_sources_requires_confirmation_before_writing_catalog(tmp_path: Pat
     state = _make_source_state(tmp_path)
     config_path = tmp_path / ".csvql.yml"
 
-    async def _inner() -> tuple[str, bool, bool, str]:
+    async def _inner() -> tuple[str, bool, bool, str, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            before = config_path.exists()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("w")
             await pilot.pause()
@@ -2784,15 +2783,17 @@ def test_save_sources_requires_confirmation_before_writing_catalog(tmp_path: Pat
             await pilot.pause()
             after = config_path.exists()
             status = app.query_one("#status", Static).content
-            return prompt, before_confirm, after, status
+            results_message = app.query_one("#results-message", Static).content
+            return prompt, before_confirm, after, status, results_message
 
-    prompt, before, after, status = asyncio.run(_inner())
+    prompt, before_confirm, after, status, results_message = asyncio.run(_inner())
 
     assert "Save 1 source path" in prompt
     assert ".csvql.yml" in prompt
-    assert before is False
+    assert before_confirm is False
     assert after is True
     assert "Saved sources to" in status
+    assert "Saved sources to" in results_message
 
 
 def test_save_sources_confirmation_can_be_cancelled(tmp_path: Path) -> None:
