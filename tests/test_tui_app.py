@@ -1574,7 +1574,33 @@ def test_terminal_size_warning_clears_after_resize_above_minimum(tmp_path: Path)
 
     status = asyncio.run(_inner())
 
-    assert status == "1 source loaded."
+    assert status == "Ready."
+
+
+def test_terminal_size_warning_keeps_newer_status_after_recovery(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test(size=(99, 29)) as pilot:
+            await pilot.pause()
+            assert app.query_one("#status", Static).content == (
+                "Terminal too small for full workbench; use at least 100x30."
+            )
+
+            app._set_status("Query finished.")
+            app._apply_terminal_size_warning(width=98, height=29)
+            assert app.query_one("#status", Static).content == (
+                "Terminal too small for full workbench; use at least 100x30."
+            )
+
+            app._apply_terminal_size_warning(width=120, height=36)
+            await pilot.pause()
+            return app.query_one("#status", Static).content
+
+    status = asyncio.run(_inner())
+
+    assert status == "Ready."
 
 
 def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> None:
