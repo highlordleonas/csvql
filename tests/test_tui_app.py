@@ -17,6 +17,7 @@ from csvql.atomic_write import OperationToken
 from csvql.exceptions import CSVQLError
 from csvql.models import QueryResult
 from csvql.tui_app import CSVQLMenuApp
+from csvql.tui_result_store import TUIResultStore
 from csvql.tui_state import TUIBufferResultTab, TUISessionState, TUISource
 from csvql.tui_workflows import export_last_result as workflows_export_last_result
 
@@ -168,6 +169,52 @@ def test_app_runs_query_and_updates_status_and_results(tmp_path: Path) -> None:
     assert columns == ("customer_id", "email")
     assert row_count == 2
     assert "Showing 2 returned row(s)." in message
+
+
+def test_app_runs_query_records_result_handle_and_cleans_up_spilled_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    store = TUIResultStore(temp_root=tmp_path)
+
+    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
+        del sources, sql
+        from csvql.tui_state import TUIQueryOutcome
+
+        rows = tuple((index,) for index in range(10_001))
+        return TUIQueryOutcome.success(
+            sequence=sequence,
+            sql="SELECT * FROM customers",
+            result=QueryResult(columns=("value",), rows=rows, elapsed_ms=1.0),
+        )
+
+    monkeypatch.setattr("csvql.tui_app.TUIResultStore", lambda: store)
+    monkeypatch.setattr("csvql.tui_result_store._should_spill", lambda result: True)
+    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+
+    async def _inner() -> tuple[bool, bool, Path | None]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT * FROM customers")
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+
+            handle = app.state.query_result_handle(1)
+            return (
+                handle is not None,
+                handle.is_spilled if handle is not None else False,
+                handle.temp_path if handle is not None else None,
+            )
+
+    has_handle, is_spilled, temp_path = asyncio.run(_inner())
+
+    assert has_handle is True
+    assert is_spilled is True
+    assert temp_path is not None
+    assert not temp_path.exists()
 
 
 @pytest.mark.parametrize("key", ["f4", "f12"])
@@ -582,6 +629,8 @@ def test_run_buffer_shortcut_records_buffer_rows_and_selects_latest_tab(
     assert seen_sequences == [1, 2]
     assert run_modes == ["buffer", "buffer"]
     assert run_labels == ("buffer", "buffer")
+    assert state.query_result_handle(1) is not None
+    assert state.query_result_handle(2) is not None
     assert columns == ("second",)
     assert "Active result: buffer 2.2" in results_title
     assert "1: query 1" in result_tabs

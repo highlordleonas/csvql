@@ -8,6 +8,7 @@ from typing import Literal
 from csvql.exceptions import TableMappingError
 from csvql.models import QueryResult, TableSource
 from csvql.table_mapping import validate_table_alias
+from csvql.tui_result_store import TUIResultHandle
 
 SourceOrigin = Literal["argument", "catalog", "session"]
 SourceKind = Literal["csv", "derived"]
@@ -162,6 +163,7 @@ class TUISessionState:
     _selected_alias: str | None = None
     _query_history: list[TUIQueryHistoryItem] = field(default_factory=list)
     _query_results: dict[int, QueryResult] = field(default_factory=dict)
+    _query_result_handles: dict[int, TUIResultHandle] = field(default_factory=dict)
     _query_result_views: dict[int, TUIResultViewState] = field(default_factory=dict)
     _next_query_sequence: int = 1
     active_pane: TUIFocusPane = "editor"
@@ -253,6 +255,16 @@ class TUISessionState:
         """Return the stored tabular result for a successful query."""
 
         return self._query_results.get(sequence)
+
+    def record_query_result_handle(self, sequence: int, handle: TUIResultHandle) -> None:
+        """Store the result-store handle for a successful query."""
+
+        self._query_result_handles[sequence] = handle
+
+    def query_result_handle(self, sequence: int) -> TUIResultHandle | None:
+        """Return the stored result-store handle for a successful query."""
+
+        return self._query_result_handles.get(sequence)
 
     def query_result_view(self, sequence: int) -> TUIResultViewState | None:
         """Return the stored result-grid view for a successful query."""

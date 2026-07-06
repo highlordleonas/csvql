@@ -25,6 +25,7 @@ from csvql.table_mapping import parse_table_mapping
 from csvql.tui_editor import all_sql_statements, selected_or_current_sql
 from csvql.tui_help import WORKBENCH_HELP
 from csvql.tui_results import make_result_view_state, populate_result_table
+from csvql.tui_result_store import TUIResultStore
 from csvql.tui_state import (
     TUIBufferResultTab,
     TUIFocusPane,
@@ -388,6 +389,7 @@ class CSVQLMenuApp(App[None]):
                 table_mappings=table_mappings,
                 start_dir=self.start_dir,
             )
+        self._result_store = TUIResultStore()
 
     def compose(self) -> ComposeResult:
         yield Static("", id="status")
@@ -418,6 +420,9 @@ class CSVQLMenuApp(App[None]):
         self._refresh_pane_context()
         self._apply_terminal_size_warning(width=self.size.width, height=self.size.height)
         self._terminal_size_warning_initialized = True
+
+    def on_unmount(self) -> None:
+        self._result_store.cleanup()
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         del event
@@ -1715,6 +1720,8 @@ class CSVQLMenuApp(App[None]):
                     outcome.result,
                     source_result_sequence=outcome.sequence,
                 )
+                handle = self._result_store.put(outcome.result, sequence=outcome.sequence)
+                self.state.record_query_result_handle(outcome.sequence, handle)
                 self.state.record_query_success(
                     outcome.sequence,
                     outcome.sql,
@@ -1814,6 +1821,8 @@ class CSVQLMenuApp(App[None]):
                 outcome.result,
                 source_result_sequence=outcome.sequence,
             )
+            handle = self._result_store.put(outcome.result, sequence=outcome.sequence)
+            self.state.record_query_result_handle(outcome.sequence, handle)
             self.state.record_query_success(
                 outcome.sequence,
                 outcome.sql,

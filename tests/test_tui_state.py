@@ -4,6 +4,7 @@ import pytest
 
 from csvql.exceptions import TableMappingError
 from csvql.models import QueryResult, TableSource
+from csvql.tui_result_store import TUIResultHandle
 from csvql.tui_state import (
     TUIActiveResultState,
     TUIBufferResultTab,
@@ -200,6 +201,20 @@ def test_query_history_records_success_error_and_no_result(tmp_path: Path) -> No
     assert state.query_history[2].error_message == "missing table"
     assert state.query_run.is_running is False
     assert state.last_result is None
+
+
+def test_query_history_records_result_handles(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
+    result = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=7.5)
+    handle = TUIResultHandle(sequence=1, is_spilled=False)
+
+    sequence = state.begin_query_run("SELECT COUNT(*) FROM orders")
+    state.record_query_result_handle(sequence, handle)
+    state.record_query_success(sequence, "SELECT COUNT(*) FROM orders", result)
+
+    assert state.query_result_handle(sequence) == handle
+    assert state.query_result_handle(99) is None
 
 
 def test_query_success_sets_active_query_result(tmp_path: Path) -> None:
