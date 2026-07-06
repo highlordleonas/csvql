@@ -74,6 +74,7 @@ def test_manual_qa_matrix_covers_cli_and_tui_release_paths() -> None:
 
 def test_tui_qol_qa_gate_is_blocking_and_records_terminal_evidence() -> None:
     matrix = read_doc("docs/tui-qol-qa.md")
+    normalized_matrix = normalized_markdown_text(matrix)
 
     assert "# TUI QoL QA Gate" in matrix
     assert "Any failed item blocks `release-candidate eligible`." in matrix
@@ -90,16 +91,16 @@ def test_tui_qol_qa_gate_is_blocking_and_records_terminal_evidence() -> None:
         "Launch empty",
         "Launch with one CSV",
         "Launch from a project catalog",
-        "Add a source with `F3`",
+        "Add a source with `F3` or `Ctrl+O`",
         "Add a source through the Add Source prompt",
-        "Add a source by pasted path",
+        "Add source by pasted standalone path",
         "Run selected SQL",
         "Run the current statement",
-        "Run full-buffer multi-statement SQL with `F12`",
-        "Recall History results",
+        "Run Buffer with `F12` or `Ctrl+B`",
+        "Select multi-result output from Run Buffer",
         "Rerun History rows",
-        "Export a recalled result",
-        "Save a derived source from the latest result",
+        "Export active result",
+        "Save active result as a derived source",
         "Save a derived source from a recalled History result",
         "Open and close help repeatedly from every pane",
         "Try every documented key from every pane",
@@ -117,6 +118,13 @@ def test_tui_qol_qa_gate_is_blocking_and_records_terminal_evidence() -> None:
         "Which source, query, History row, result, export, or derived-source target is affected?"
         in matrix
     )
+    for required_text in (
+        "multi-result selection",
+        "active result",
+        "CSV paths inside SQL strings, comments, or expressions",
+    ):
+        assert required_text in matrix
+    assert "Run Buffer with `F12` or `Ctrl+B`" in normalized_matrix
 
 
 def test_manual_qa_matrix_links_tui_qol_gate() -> None:

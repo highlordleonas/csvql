@@ -124,8 +124,9 @@ csvql menu data/revenue_movements.csv
 
 ![Terminal screenshot of the TUI workbench after running the SaaS revenue movement query](assets/localql-tui-workbench.svg)
 
-Use `F4` or `Ctrl+R` to run the current SQL, `F6` for sources, `F5` for
-results, `F8` for history, and `F9` to quit. See
+Use `F4` or `Ctrl+R` to run selected SQL or the current statement, `F12` or
+`Ctrl+B` to run the full editor buffer, `F6` for sources, `F5` for results,
+`F8` for history, and `F9` or `q` outside text entry to quit. See
 [Terminal menu guide](tui-guide.md) for the full workflow.
 
 ## Safety Boundary

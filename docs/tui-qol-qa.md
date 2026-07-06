@@ -70,16 +70,16 @@ Run every item in every required terminal.
 | QOL-01 | Launch empty | Workbench opens, SQL editor is focused, and the status explains no sources are loaded. |
 | QOL-02 | Launch with one CSV | Source appears with expected alias, kind, path, and origin. |
 | QOL-03 | Launch from a project catalog | Catalog sources appear without extra prompt work. |
-| QOL-04 | Add a source with `F3` | Native picker works where available; otherwise the documented path prompt appears and accepts a CSV path. |
+| QOL-04 | Add a source with `F3` or `Ctrl+O` | Native picker works where available; otherwise the documented picker fallback prompt appears and accepts a CSV path. |
 | QOL-05 | Add a source through the Add Source prompt | `name=path` adds the expected session source and selects it predictably. |
-| QOL-06 | Add a source by pasted path | Pasted CSV path becomes a session source and does not remain as SQL text. |
+| QOL-06 | Add source by pasted standalone path | A pasted standalone CSV path becomes a session source and does not remain as SQL text; CSV paths inside SQL strings, comments, or expressions remain SQL text. |
 | QOL-07 | Run selected SQL | Only the selected SQL runs and History records one attempt. |
 | QOL-08 | Run the current statement | `F4` and `Ctrl+R` run the statement around the cursor, not unrelated editor text. |
-| QOL-09 | Run full-buffer multi-statement SQL with `F12` | Each statement is recorded as a separate History row and successful rows can be recalled. |
-| QOL-10 | Recall History results | Highlighting a successful History row restores that result without rerunning SQL. |
+| QOL-09 | Run Buffer with `F12` or `Ctrl+B` | Statements run in order in one DuckDB session, each statement is recorded as a separate History row, temp tables or DDL can feed later statements, and execution stops on the first failure. |
+| QOL-10 | Select multi-result output from Run Buffer | Successful tabular Run Buffer results support multi-result selection, and the selected result becomes the active result. |
 | QOL-11 | Rerun History rows | Rerun appends a new sequence and selects the new query row. |
-| QOL-12 | Export a recalled result | Export writes the recalled result, not a stale or unrelated result. |
-| QOL-13 | Save a derived source from the latest result | Derived CSV is written under `.csvql/results/`, added as a session source, and queryable. |
+| QOL-12 | Export active result | Export writes the active result, including a recalled History result or selected buffer result. |
+| QOL-13 | Save active result as a derived source | Derived CSV is written under `.csvql/results/`, added as a session source, and queryable. |
 | QOL-14 | Save a derived source from a recalled History result | Derived CSV uses the recalled result, not the most recently executed result. |
 | QOL-15 | Open and close help repeatedly from every pane | Help does not stack; one `Esc` closes one help modal and returns to a predictable pane. |
 | QOL-16 | Try every documented key from every pane | Each key acts, types text, or is intentionally unavailable according to the active pane. |
@@ -103,6 +103,9 @@ The flow fails if the TUI crashes, hangs, stacks duplicate modals, loses focus i
 an unclear way, exports or saves the wrong result, reruns when it should only
 recall, silently ignores an important documented action without a clear fallback,
 or leaves the tester unable to identify the active state or action target.
+
+Before export or save-source actions are accepted, the footer, pane title,
+result selector, or status line must identify the active result.
 
 ## Evidence Rules
 

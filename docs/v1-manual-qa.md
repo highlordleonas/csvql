@@ -84,6 +84,23 @@ Expected: prints `1.0.0`.
   Expected: both runs complete, history records both attempts, and the editor
   remains usable.
 
+- [ ] TUI Run Buffer exercise
+
+  In the TUI, run:
+
+  ```sql
+  CREATE TEMP TABLE movement_counts AS
+  SELECT name, COUNT(*) AS movement_count
+  FROM enerflo_payloads
+  GROUP BY name;
+
+  SELECT * FROM movement_counts ORDER BY movement_count DESC;
+  ```
+
+  Expected: `F12` or `Ctrl+B` records one History row per statement, preserves
+  the temp table for the second statement, shows a selectable tabular buffer
+  result, and labels the selected result as active.
+
 - [ ] TUI derived save and query
 
   In the TUI, save the last tabular result with `Ctrl+S`, use alias
