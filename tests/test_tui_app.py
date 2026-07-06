@@ -2622,6 +2622,64 @@ def test_escape_cancels_running_export_before_final_file(
     assert exists is False
 
 
+def test_escape_cancels_running_save_result_before_final_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+    state.set_last_result(
+        QueryResult(
+            columns=("customer_id", "email"),
+            rows=(("CUST-001", "alex@example.com"),),
+            elapsed_ms=1.0,
+        )
+    )
+    started = threading.Event()
+    release = threading.Event()
+    derived_path = tmp_path / ".csvql" / "results" / "customer_emails.csv"
+
+    def slow_save_derived_result_source(*args: object, **kwargs: object):
+        token = kwargs["token"]
+        assert isinstance(token, OperationToken)
+        started.set()
+        release.wait(timeout=2)
+        token.raise_if_cancelled()
+        from csvql.tui_workflows import (
+            save_derived_result_source as real_save_derived_result_source,
+        )
+
+        return real_save_derived_result_source(*args, **kwargs)
+
+    monkeypatch.setattr("csvql.tui_app.save_derived_result_source", slow_save_derived_result_source)
+
+    async def _inner() -> tuple[str, bool, tuple[TUISource, ...]]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f11")
+            await pilot.pause()
+            alias_input = app.screen.query_one("#derived-source-alias", Input)
+            alias_input.value = "customer_emails"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            await pilot.press("escape")
+            await pilot.pause()
+            release.set()
+            await pilot.pause(0.2)
+            return (
+                app.query_one("#status", Static).content,
+                derived_path.exists(),
+                app.state.sources,
+            )
+
+    status, exists, sources = asyncio.run(_inner())
+
+    assert started.is_set()
+    assert "Cancelled Saving active result as source." in status
+    assert exists is False
+    assert sources == _make_source_state(tmp_path).sources
+
+
 def test_export_last_result_status_uses_relative_path_within_start_dir(tmp_path: Path) -> None:
     export_path = tmp_path / "exports" / "customers.csv"
     export_path.parent.mkdir()

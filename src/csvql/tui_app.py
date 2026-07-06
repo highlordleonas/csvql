@@ -547,7 +547,7 @@ class CSVQLMenuApp(App[None]):
         self._start_operation_worker(
             kind="inspect",
             label=f"Inspecting {source.name}",
-            work=lambda: _SourceInspectOutcome(
+            work=lambda _token: _SourceInspectOutcome(
                 source_name=source.name,
                 columns=tuple(
                     TUISourceColumn(name=column.name, duckdb_type=column.duckdb_type)
@@ -569,7 +569,7 @@ class CSVQLMenuApp(App[None]):
         self._start_operation_worker(
             kind="profile",
             label=f"Profiling {source.name}",
-            work=lambda: _SourceProfileOutcome(
+            work=lambda _token: _SourceProfileOutcome(
                 source_name=source.name,
                 result=profile_source(source),
             ),
@@ -588,7 +588,7 @@ class CSVQLMenuApp(App[None]):
         self._start_operation_worker(
             kind="sample",
             label=f"Sampling {source.name}",
-            work=lambda: _SourceSampleOutcome(
+            work=lambda _token: _SourceSampleOutcome(
                 source_name=source.name,
                 result=sample_source(source),
             ),
@@ -608,7 +608,7 @@ class CSVQLMenuApp(App[None]):
         self._start_operation_worker(
             kind="columns",
             label=f"Loading columns for {source.name}",
-            work=lambda: _SourceColumnsOutcome(
+            work=lambda _token: _SourceColumnsOutcome(
                 source_name=source.name,
                 columns=inspect_source_columns(source),
             ),
