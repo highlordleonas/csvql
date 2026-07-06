@@ -8,6 +8,7 @@ pytest.importorskip("textual")
 
 from textual import events
 from textual.coordinate import Coordinate
+from textual.geometry import Size
 from textual.pilot import Pilot
 from textual.widgets import DataTable, Input, Static, TextArea
 from textual.widgets._footer import FooterKey
@@ -1535,6 +1536,45 @@ def test_terminal_size_warning_below_minimum(tmp_path: Path) -> None:
         "Terminal too small for full workbench; use at least 100x30."
     )
     assert app._terminal_size_warning(width=100, height=30) is None
+
+
+def test_terminal_size_warning_shows_on_mount_below_minimum(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test(size=(99, 29)) as pilot:
+            await pilot.pause()
+            return app.query_one("#status", Static).content
+
+    status = asyncio.run(_inner())
+
+    assert status == "Terminal too small for full workbench; use at least 100x30."
+
+
+def test_terminal_size_warning_clears_after_resize_above_minimum(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test(size=(99, 29)) as pilot:
+            await pilot.pause()
+            assert app.query_one("#status", Static).content == (
+                "Terminal too small for full workbench; use at least 100x30."
+            )
+
+            app.on_resize(
+                events.Resize(
+                    size=Size(120, 36),
+                    virtual_size=Size(120, 36),
+                )
+            )
+            await pilot.pause()
+            return app.query_one("#status", Static).content
+
+    status = asyncio.run(_inner())
+
+    assert status == "1 source loaded."
 
 
 def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> None:
