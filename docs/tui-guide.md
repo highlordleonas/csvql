@@ -90,6 +90,10 @@ paths. Direct path paste derives aliases from file names, and duplicate aliases
 receive numeric suffixes such as `orders_2`. Added sources are session-local
 until you save sources to `.csvql.yml`.
 
+Saving sources to `.csvql.yml` may persist local filesystem paths. Project-relative
+paths are portable; external absolute paths are allowed for local workflows but can
+reveal machine-specific locations if you share the catalog.
+
 Column metadata is session-local and is not written to `.csvql.yml`.
 
 ## History

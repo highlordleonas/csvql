@@ -45,6 +45,7 @@ from csvql.tui_state import (
 )
 from csvql.tui_workflows import (
     build_initial_state,
+    external_catalog_source_paths,
     export_last_result,
     inspect_source,
     inspect_source_columns,
@@ -872,9 +873,16 @@ class CSVQLMenuApp(App[None]):
 
         source_count = len(self.state.sources)
         noun = "source path" if source_count == 1 else "source paths"
+        external_paths = external_catalog_source_paths(self.state.sources, start_dir=self.start_dir)
+        warning = ""
+        if external_paths:
+            warning = (
+                " Warning: this catalog will persist external local filesystem paths "
+                "and may reveal machine-specific locations if shared."
+            )
         self.push_screen(
             _ConfirmationScreen(
-                f"Save {source_count} {noun} to .csvql.yml? Press y to save or n to cancel."
+                f"Save {source_count} {noun} to .csvql.yml?{warning} Press y to save or n to cancel."
             ),
             callback=self._handle_save_sources_confirmation,
         )

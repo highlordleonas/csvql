@@ -100,6 +100,24 @@ def sources_from_csv_path_text(
     return tuple(sources)
 
 
+def external_catalog_source_paths(
+    sources: Sequence[TUISource],
+    *,
+    start_dir: Path,
+) -> tuple[Path, ...]:
+    """Return catalog source paths that resolve outside the TUI start directory."""
+
+    base_dir = start_dir.expanduser().resolve()
+    external_paths: list[Path] = []
+    for source in sources:
+        resolved_path = source.path.expanduser().resolve(strict=False)
+        try:
+            resolved_path.relative_to(base_dir)
+        except ValueError:
+            external_paths.append(resolved_path)
+    return tuple(external_paths)
+
+
 def inspect_source(source: TUISource, *, exact: bool = False) -> InspectResult:
     """Inspect a TUI source using the existing CSV inspection service."""
 

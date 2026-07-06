@@ -3412,6 +3412,30 @@ def test_save_sources_requires_confirmation_before_writing_catalog(tmp_path: Pat
     assert "Saved sources to" in results_message
 
 
+def test_save_sources_confirmation_warns_for_external_paths(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    external_root = tmp_path / "external"
+    project_root.mkdir()
+    external_root.mkdir()
+    external_csv = _create_csv(external_root, "orders.csv", "id\n1\n")
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=external_csv.resolve(), origin="session"))
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=project_root)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("w")
+            await pilot.pause()
+            return app.screen.query_one("#confirm-text", Static).content
+
+    prompt = asyncio.run(_inner())
+
+    assert "external local filesystem path" in prompt
+    assert "may reveal machine-specific locations" in prompt
+
+
 def test_save_sources_confirmation_can_be_cancelled(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
     config_path = tmp_path / ".csvql.yml"

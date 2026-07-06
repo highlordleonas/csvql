@@ -52,6 +52,13 @@ def test_public_onboarding_uses_installed_cli_command() -> None:
         assert f"uv run csvql {command}" not in public_docs
 
 
+def test_docs_warn_catalog_paths_can_reveal_local_locations() -> None:
+    docs = "\n".join([read_doc("README.md"), read_doc("docs/tui-guide.md")])
+
+    assert "external absolute paths are allowed for local workflows" in docs
+    assert "machine-specific locations" in docs
+
+
 def test_manual_qa_matrix_covers_cli_and_tui_release_paths() -> None:
     matrix = read_doc("docs/v1-manual-qa.md")
 

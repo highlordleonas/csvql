@@ -10,6 +10,7 @@ from csvql.project_config import CONFIG_FILENAME, initialize_project, load_proje
 from csvql.tui_state import TUISessionState, TUISource, TUISourceColumn
 from csvql.tui_workflows import (
     build_initial_state,
+    external_catalog_source_paths,
     export_last_result,
     inspect_source,
     inspect_source_columns,
@@ -179,6 +180,38 @@ def test_sources_from_csv_path_text_ignores_non_path_sql_paste(tmp_path: Path) -
     )
 
     assert sources == ()
+
+
+def test_external_catalog_source_paths_detects_absolute_external_path(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    external_root = tmp_path / "external"
+    project_root.mkdir()
+    external_root.mkdir()
+    external_csv = _write_csv(external_root / "orders.csv")
+    source = TUISource(name="orders", path=external_csv.resolve(), origin="session")
+
+    paths = external_catalog_source_paths((source,), start_dir=project_root)
+
+    assert paths == (external_csv.resolve(),)
+
+
+def test_external_catalog_source_paths_resolves_symlinked_external_path(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    external_root = tmp_path / "external"
+    project_root.mkdir()
+    external_root.mkdir()
+    external_csv = _write_csv(external_root / "orders.csv")
+    linked_csv = project_root / "linked-orders.csv"
+    linked_csv.symlink_to(external_csv)
+    source = TUISource(name="orders", path=linked_csv, origin="session")
+
+    paths = external_catalog_source_paths((source,), start_dir=project_root)
+
+    assert paths == (external_csv.resolve(),)
 
 
 def test_build_initial_state_propagates_invalid_catalog_yaml(
