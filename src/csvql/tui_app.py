@@ -111,6 +111,11 @@ _RESULTS_ONLY_ACTIONS = {
     "select_previous_buffer_result",
 }
 
+_MIN_TERMINAL_WIDTH = 100
+_MIN_TERMINAL_HEIGHT = 30
+_RECOMMENDED_TERMINAL_WIDTH = 120
+_RECOMMENDED_TERMINAL_HEIGHT = 36
+
 
 class _PromptInputScreen(ModalScreen[str | None]):
     """Generic modal prompt for one-line TUI input."""
@@ -369,6 +374,8 @@ class CSVQLMenuApp(App[None]):
         self._help_screen_open = False
         self._suppress_sql_source_text_detection = False
         self._sql_source_text_revision = 0
+        self._terminal_size_warning_ready = False
+        self._last_terminal_size: tuple[int, int] | None = None
         self._active_operation_worker: Worker[object] | None = None
         self._active_operation_token: OperationToken | None = None
         self._active_operation_worker_name: str | None = None
@@ -409,10 +416,26 @@ class CSVQLMenuApp(App[None]):
         self._refresh_results_display()
         self.query_one("#sql", TextArea).focus()
         self._refresh_pane_context()
+        self._last_terminal_size = (self.size.width, self.size.height)
+        self._terminal_size_warning_ready = True
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         del event
         self._refresh_pane_context()
+
+    def on_resize(self, event: events.Resize) -> None:
+        if not self._terminal_size_warning_ready:
+            return
+        current_size = (event.size.width, event.size.height)
+        if current_size == self._last_terminal_size:
+            return
+        self._last_terminal_size = current_size
+        warning = self._terminal_size_warning(
+            width=event.size.width,
+            height=event.size.height,
+        )
+        if warning is not None:
+            self._set_status(warning)
 
     def _set_run_status_ready(self) -> None:
         self.query_one("#run-status", Static).update("Ready.")
@@ -1300,7 +1323,15 @@ class CSVQLMenuApp(App[None]):
             ):
                 label = f"[{label}]"
             entries.append(label)
-        return "Buffer results: " + " | ".join(entries)
+        return "Buffer results ([ and ] in Results): " + " | ".join(entries)
+
+    def _terminal_size_warning(self, *, width: int, height: int) -> str | None:
+        if width < _MIN_TERMINAL_WIDTH or height < _MIN_TERMINAL_HEIGHT:
+            return (
+                "Terminal too small for full workbench; "
+                f"use at least {_MIN_TERMINAL_WIDTH}x{_MIN_TERMINAL_HEIGHT}."
+            )
+        return None
 
     def _refresh_result_tabs(self) -> None:
         self.query_one("#result-tabs", Static).update(self._result_tabs_text())

@@ -1502,6 +1502,41 @@ def test_result_tabs_are_blank_until_buffer_results_exist(tmp_path: Path) -> Non
     assert result_tabs == ""
 
 
+def test_buffer_result_tabs_show_navigation_hint(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text(
+                "SELECT customer_id FROM customers ORDER BY customer_id;"
+                "SELECT email FROM customers ORDER BY email;"
+            )
+            await pilot.press("f12")
+            await pilot.pause(0.2)
+            return app.query_one("#result-tabs", Static).content
+
+    tabs = asyncio.run(_inner())
+
+    assert "Buffer results" in tabs
+    assert "[/] Results only" not in tabs
+    assert "[ / ]" not in tabs
+    assert "[ and ]" in tabs
+
+
+def test_terminal_size_warning_below_minimum(tmp_path: Path) -> None:
+    app = CSVQLMenuApp(start_dir=tmp_path)
+
+    assert app._terminal_size_warning(width=99, height=30) == (
+        "Terminal too small for full workbench; use at least 100x30."
+    )
+    assert app._terminal_size_warning(width=100, height=29) == (
+        "Terminal too small for full workbench; use at least 100x30."
+    )
+    assert app._terminal_size_warning(width=100, height=30) is None
+
+
 def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> None:
     csv_path = _create_csv(
         tmp_path,
@@ -3377,6 +3412,7 @@ def test_help_text_documents_workbench_keymap() -> None:
         in help_text
     )
     assert "last successful tabular" not in help_text
+    assert "[ / ]               Previous/next buffer result when Results is focused" in help_text
     assert "F9 / q              Quit outside text entry" in help_text
     assert "Ctrl+S              Save active result to .csvql/results/{alias}.csv" in help_text
     assert "r                   Rerun selected query with current session sources" in help_text

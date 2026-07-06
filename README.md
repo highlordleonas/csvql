@@ -197,7 +197,8 @@ The SQL editor is focused when the menu opens. Type SQL directly, then press
 to the current statement around the cursor. `F12` or `Ctrl+B` runs the buffer
 of semicolon-delimited statements in the editor, records each statement in
 History, and shows the final tabular result. Move through History to recall
-each successful statement's result set. The History run column labels current-
+each successful statement's result set. When Results is focused, `[` and `]`
+step through the buffer results. The History run column labels current-
 statement runs as `current`, buffer runs as `buffer`, and History reruns as
 `rerun`.
 
@@ -242,6 +243,9 @@ the same trusted local DuckDB SQL posture as other CSVQL sources.
 
 The SQL editor uses the same trusted local DuckDB execution posture as the rest
 of CSVQL. Do not run untrusted SQL.
+
+The full workbench needs at least 100 columns by 30 rows. A 120x36 terminal is
+recommended.
 
 See [Terminal menu guide](docs/tui-guide.md) for a focused walkthrough of the
 panes, keybindings, and derived result source workflow.

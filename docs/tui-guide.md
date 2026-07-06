@@ -41,7 +41,8 @@ The menu opens with the SQL editor focused.
 
 - SQL editor: write selected SQL, the current statement, or the full buffer
 - Sources: inspect, sample, profile, add, remove, and save source mappings
-- Results: view the latest or recalled tabular result
+- Results: view the latest or recalled tabular result; `[` and `]` move between
+  buffer results when Results is focused
 - History: recall results, reopen queries, or rerun queries from the current session
 - Help: view available keybindings inside the app
 
@@ -63,6 +64,9 @@ The menu opens with the SQL editor focused.
 
 The History run column uses semantic labels: `current` for F4/Ctrl+R runs,
 `buffer` for F12/Ctrl+B runs, and `rerun` for History reruns.
+
+The full workbench needs at least 100 columns by 30 rows. A 120x36 terminal is
+recommended.
 
 ## Source Actions
 

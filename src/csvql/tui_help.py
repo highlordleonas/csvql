@@ -31,6 +31,9 @@ History pane
   Enter               Reopen selected query
   r                   Rerun selected query with current session sources
 
+Results
+  [ / ]               Previous/next buffer result when Results is focused
+
 General
   F1                  Help
   F7                  Export active result (.csv, .json, .md, .markdown, .txt)

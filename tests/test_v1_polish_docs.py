@@ -219,6 +219,8 @@ def test_docs_describe_tui_active_result_not_last_successful_result() -> None:
     assert "last successful tabular query result" not in normalized_docs
     assert "last successful tabular result" not in normalized_docs
     assert ".markdown" in docs
+    assert "When Results is focused, `[` and `]` step through the buffer results." in normalized_docs
+    assert "The full workbench needs at least 100 columns by 30 rows." in normalized_docs
 
 
 def test_public_launch_docs_state_security_and_release_boundaries() -> None:
@@ -246,6 +248,7 @@ def test_public_launch_docs_state_security_and_release_boundaries() -> None:
         "claim `v1-stable`",
         "production readiness",
         "broad large-file proof",
+        "The full workbench needs at least 100 columns by 30 rows.",
     )
     for boundary in required_boundaries:
         assert boundary in public_docs
