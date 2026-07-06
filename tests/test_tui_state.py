@@ -5,6 +5,8 @@ import pytest
 from csvql.exceptions import TableMappingError
 from csvql.models import QueryResult, TableSource
 from csvql.tui_state import (
+    TUIActiveResultState,
+    TUIBufferResultTab,
     TUIQueryHistoryItem,
     TUIResultViewState,
     TUISessionState,
@@ -200,6 +202,101 @@ def test_query_history_records_success_error_and_no_result(tmp_path: Path) -> No
     assert state.last_result is None
 
 
+def test_query_success_sets_active_query_result(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
+    result = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=7.5)
+
+    sequence = state.begin_query_run("SELECT COUNT(*) FROM orders")
+    state.record_query_success(sequence, "SELECT COUNT(*) FROM orders", result)
+
+    assert state.active_result == TUIActiveResultState(
+        kind="query",
+        label="Active result: query 1",
+        sequence=1,
+    )
+    assert state.last_result == result
+    assert state.last_result_status == "query"
+
+
+def test_restore_query_result_marks_history_preview(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
+    result = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=7.5)
+    sequence = state.begin_query_run("SELECT COUNT(*) FROM orders")
+    state.record_query_success(sequence, "SELECT COUNT(*) FROM orders", result)
+
+    assert state.restore_query_result(sequence) is True
+
+    assert state.active_result == TUIActiveResultState(
+        kind="history",
+        label="History preview: query 1",
+        sequence=1,
+    )
+    assert state.last_result == result
+
+
+def test_buffer_result_tabs_select_active_result(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
+    first = QueryResult(columns=("first",), rows=((1,),), elapsed_ms=1.0)
+    second = QueryResult(columns=("second",), rows=((2,),), elapsed_ms=1.0)
+
+    first_sequence = state.begin_query_run("SELECT 1 AS first")
+    state.record_query_success(
+        first_sequence,
+        "SELECT 1 AS first",
+        first,
+        run_mode="buffer",
+        buffer_result_index=1,
+    )
+    second_sequence = state.begin_query_run("SELECT 2 AS second")
+    state.record_query_success(
+        second_sequence,
+        "SELECT 2 AS second",
+        second,
+        run_mode="buffer",
+        buffer_result_index=2,
+    )
+    state.set_buffer_result_tabs(
+        (
+            TUIBufferResultTab(sequence=1, index=1, label="query 1"),
+            TUIBufferResultTab(sequence=2, index=2, label="query 2"),
+        ),
+        selected_sequence=1,
+    )
+
+    assert state.select_buffer_result(2) is True
+
+    assert state.active_result == TUIActiveResultState(
+        kind="buffer",
+        label="Active result: buffer 2.2",
+        sequence=2,
+        buffer_result_index=2,
+    )
+    assert state.last_result == second
+
+
+def test_clear_last_result_resets_active_result_and_buffer_tabs(tmp_path: Path) -> None:
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
+    sequence = state.begin_query_run("SELECT 1")
+    state.record_query_success(
+        sequence,
+        "SELECT 1",
+        QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+        run_mode="buffer",
+        buffer_result_index=1,
+    )
+    state.set_buffer_result_tabs((TUIBufferResultTab(sequence=1, index=1, label="query 1"),))
+
+    state.clear_last_result()
+
+    assert state.last_result is None
+    assert state.active_result == TUIActiveResultState()
+    assert state.buffer_result_tabs == ()
+
+
 def test_begin_query_run_prevents_overlapping_runs(tmp_path: Path) -> None:
     state = TUISessionState()
     state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
@@ -224,7 +321,7 @@ def test_tui_source_column_stores_name_and_duckdb_type() -> None:
 def test_query_history_item_defaults_to_sql_run_mode() -> None:
     item = TUIQueryHistoryItem(sequence=1, sql="SELECT 1", status="success")
 
-    assert item.run_mode == "sql"
+    assert item.run_mode == "current"
 
 
 def test_record_query_success_stores_run_mode(tmp_path: Path) -> None:
@@ -238,10 +335,10 @@ def test_record_query_success_stores_run_mode(tmp_path: Path) -> None:
         sequence,
         "SELECT 1",
         QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
-        run_mode="editor",
+        run_mode="buffer",
     )
 
-    assert state.query_history[-1].run_mode == "editor"
+    assert state.query_history[-1].run_mode == "buffer"
 
 
 def test_record_query_no_result_stores_run_mode(tmp_path: Path) -> None:
