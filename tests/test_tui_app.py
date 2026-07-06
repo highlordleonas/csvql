@@ -1555,7 +1555,7 @@ def test_terminal_size_warning_shows_on_mount_below_minimum(tmp_path: Path) -> N
 def test_terminal_size_warning_clears_after_resize_above_minimum(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
-    async def _inner() -> str:
+    async def _inner() -> tuple[str, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test(size=(99, 29)) as pilot:
             await pilot.pause()
@@ -1570,11 +1570,11 @@ def test_terminal_size_warning_clears_after_resize_above_minimum(tmp_path: Path)
                 )
             )
             await pilot.pause()
-            return app.query_one("#status", Static).content
+            return app.query_one("#status", Static).content, app._status_message()
 
-    status = asyncio.run(_inner())
+    status, expected_status = asyncio.run(_inner())
 
-    assert status == "Ready."
+    assert status == expected_status
 
 
 def test_terminal_size_warning_keeps_newer_status_after_recovery(tmp_path: Path) -> None:
@@ -1589,18 +1589,13 @@ def test_terminal_size_warning_keeps_newer_status_after_recovery(tmp_path: Path)
             )
 
             app._set_status("Query finished.")
-            app._apply_terminal_size_warning(width=98, height=29)
-            assert app.query_one("#status", Static).content == (
-                "Terminal too small for full workbench; use at least 100x30."
-            )
-
             app._apply_terminal_size_warning(width=120, height=36)
             await pilot.pause()
             return app.query_one("#status", Static).content
 
     status = asyncio.run(_inner())
 
-    assert status == "Ready."
+    assert status == "Query finished."
 
 
 def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> None:

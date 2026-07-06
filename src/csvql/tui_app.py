@@ -1341,7 +1341,7 @@ class CSVQLMenuApp(App[None]):
             f"use at least {_MIN_TERMINAL_WIDTH}x{_MIN_TERMINAL_HEIGHT}."
         )
         if current_status == warning_message:
-            self._set_status("Ready.")
+            self._set_status(self._status_message())
 
     def _refresh_result_tabs(self) -> None:
         self.query_one("#result-tabs", Static).update(self._result_tabs_text())
