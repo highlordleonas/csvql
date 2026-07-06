@@ -42,3 +42,14 @@ Completed.
 
 - I did not run the full repository test suite, only the focused export/save worker slice plus the touched workflow helper slice.
 - The save-as-source duplicate-alias path now preflights in the TUI before the worker starts, which keeps the error immediate but is a small extra validation branch outside the worker commit path.
+
+## Review Fix
+
+- Updated the Task 4 source-action worker callbacks in `src/csvql/tui_app.py` to accept the `OperationToken` argument and ignore it, restoring compatibility with `_start_operation_worker(work(token))`.
+- Added a save-as-source cancellation regression in `tests/test_tui_app.py` that cancels before the derived CSV commit and asserts no final file and no new source.
+- Verification:
+  - `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run --all-extras pytest tests/test_tui_app.py -k "source_intelligence_action_uses_operation_worker or source_columns_loads_grid_and_disables_export or escape_cancels_running_source_operation or cancelled_sample_worker_preserves_previous_active_result or source_worker_failure_preserves_csv_error_message_and_suggestion or sample_worker_failure_preserves_csv_error_message_and_suggestion" -q` -> `6 passed, 111 deselected`
+  - `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run --all-extras pytest tests/test_tui_app.py -k "export_last_result or save_result_as_source or cancels_running_export or cancels_running_save_result" -q` -> `11 passed, 106 deselected`
+  - `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run --all-extras pytest tests/test_tui_workflows.py -k "save_derived_result_source or export_last_result" -q` -> `14 passed, 31 deselected`
+  - `env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run ruff check src/csvql/tui_app.py src/csvql/tui_workflows.py src/csvql/export.py tests/test_tui_app.py tests/test_tui_workflows.py` -> passed
+  - `git diff --check` -> passed
