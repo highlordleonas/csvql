@@ -803,23 +803,20 @@ class CSVQLMenuApp(App[None]):
         )
 
     def action_save_sources(self) -> None:
+        if self._input_or_confirmation_screen_active():
+            return
         if not self.state.sources:
             self._show_error(CSVQLError("No sources loaded to save."))
             return
 
-        try:
-            context = save_sources_to_project_catalog(
-                self.state.sources,
-                start_dir=self.start_dir,
-                replace=True,
-            )
-        except CSVQLError as exc:
-            self._show_error(exc)
-            return
-
-        display_path = _display_path(context.config_path, self.start_dir)
-        self._set_status(f"Saved sources to {display_path}.")
-        self._show_output_text(f"Saved sources to {display_path}.")
+        source_count = len(self.state.sources)
+        noun = "source path" if source_count == 1 else "source paths"
+        self.push_screen(
+            _ConfirmationScreen(
+                f"Save {source_count} {noun} to .csvql.yml? Press y to save or n to cancel."
+            ),
+            callback=self._handle_save_sources_confirmation,
+        )
 
     def action_reopen_history(self) -> None:
         item = self._selected_history_item()
@@ -1243,7 +1240,28 @@ class CSVQLMenuApp(App[None]):
 
         display_path = _display_path(export_path, self.start_dir)
         self._set_status(f"Exported to {display_path}.")
-        self._show_output_text(f"Exported to {display_path}.")
+        self.query_one("#results-message", Static).update(f"Exported to {display_path}.")
+
+    def _handle_save_sources_confirmation(self, confirmed: bool | None) -> None:
+        if not confirmed:
+            self._set_status("Source catalog save cancelled.")
+            self.query_one("#sources", DataTable).focus()
+            return
+
+        try:
+            context = save_sources_to_project_catalog(
+                self.state.sources,
+                start_dir=self.start_dir,
+                replace=True,
+            )
+        except CSVQLError as exc:
+            self._show_error(exc)
+            return
+
+        display_path = _display_path(context.config_path, self.start_dir)
+        self._set_status(f"Saved sources to {display_path}.")
+        self.query_one("#results-message", Static).update(f"Saved sources to {display_path}.")
+        self.query_one("#sources", DataTable).focus()
 
     def _handle_save_result_as_source(self, alias: str | None) -> None:
         if alias is None:

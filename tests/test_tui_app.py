@@ -2261,43 +2261,48 @@ def test_inspect_sample_and_profile_selected_source_update_output(tmp_path: Path
     assert profile_message == "Source profile: customers."
 
 
-def test_export_last_result_writes_file_when_result_exists(tmp_path: Path) -> None:
+def test_export_last_result_preserves_visible_result_grid(tmp_path: Path) -> None:
     export_dir = tmp_path / "exports"
     export_dir.mkdir()
     export_path = export_dir / "customers.csv"
+    state = _make_source_state(tmp_path)
 
-    state = TUISessionState()
-    state.set_last_result(
-        QueryResult(
-            columns=("customer_id", "email"),
-            rows=(("CUST-001", "alex@example.com"),),
-            elapsed_ms=12.345,
-        ),
-    )
-
-    async def _inner() -> tuple[str, str, str]:
+    async def _inner() -> tuple[tuple[str, ...], int, tuple[str, ...], int, str, str, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT * FROM customers ORDER BY customer_id")
+            await pilot.press("f4")
+            await pilot.pause(0.2)
+            before_columns, before_rows, _ = _result_grid_snapshot(app)
+
             await pilot.press("f7")
             await pilot.pause()
-
-            export_input = app.screen.query_one("#export-path", Input)
-            export_input.value = str(export_path)
+            app.screen.query_one("#export-path", Input).value = str(export_path)
             await pilot.press("enter")
             await pilot.pause()
 
+            after_columns, after_rows, message = _result_grid_snapshot(app)
             status = app.query_one("#status", Static).content
-            results = app.query_one("#results-message", Static).content
             content = export_path.read_text(encoding="utf-8")
-            return status, results, content
+            return before_columns, before_rows, after_columns, after_rows, message, status, content
 
-    status, results, content = asyncio.run(_inner())
+    (
+        before_columns,
+        before_rows,
+        after_columns,
+        after_rows,
+        message,
+        status,
+        content,
+    ) = asyncio.run(_inner())
 
-    assert export_path.exists()
+    assert before_columns == after_columns == ("customer_id", "email")
+    assert before_rows == after_rows == 2
     assert content.startswith("customer_id,email")
+    assert "Exported to" in message
     assert "Exported to" in status
-    assert "Exported to" in results
 
 
 def test_export_last_result_status_uses_relative_path_within_start_dir(tmp_path: Path) -> None:
@@ -2761,11 +2766,11 @@ def test_save_result_as_source_refuses_duplicate_alias(tmp_path: Path) -> None:
     assert not (tmp_path / ".csvql" / "results").exists()
 
 
-def test_save_sources_creates_catalog_only_when_invoked(tmp_path: Path) -> None:
+def test_save_sources_requires_confirmation_before_writing_catalog(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
     config_path = tmp_path / ".csvql.yml"
 
-    async def _inner() -> tuple[bool, bool, str]:
+    async def _inner() -> tuple[str, bool, bool, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2773,34 +2778,65 @@ def test_save_sources_creates_catalog_only_when_invoked(tmp_path: Path) -> None:
             app.query_one("#sources", DataTable).focus()
             await pilot.press("w")
             await pilot.pause()
+            prompt = app.screen.query_one("#confirm-text", Static).content
+            before_confirm = config_path.exists()
+            await pilot.press("y")
+            await pilot.pause()
             after = config_path.exists()
             status = app.query_one("#status", Static).content
-            return before, after, status
+            return prompt, before_confirm, after, status
 
-    before, after, status = asyncio.run(_inner())
+    prompt, before, after, status = asyncio.run(_inner())
 
+    assert "Save 1 source path" in prompt
+    assert ".csvql.yml" in prompt
     assert before is False
     assert after is True
     assert "Saved sources to" in status
 
 
-def test_save_sources_surfaces_project_config_errors(tmp_path: Path) -> None:
+def test_save_sources_confirmation_can_be_cancelled(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
-    (tmp_path / ".csvql.yml").write_text("version: [", encoding="utf-8")
+    config_path = tmp_path / ".csvql.yml"
 
-    async def _inner() -> tuple[str, str]:
+    async def _inner() -> tuple[bool, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("w")
             await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            return config_path.exists(), app.query_one("#status", Static).content
+
+    exists, status = asyncio.run(_inner())
+
+    assert exists is False
+    assert "Source catalog save cancelled." in status
+
+
+def test_save_sources_surfaces_project_config_errors(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+    (tmp_path / ".csvql.yml").write_text("version: [", encoding="utf-8")
+
+    async def _inner() -> tuple[str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("w")
+            await pilot.pause()
+            prompt = app.screen.query_one("#confirm-text", Static).content
+            await pilot.press("y")
+            await pilot.pause()
             status = app.query_one("#status", Static).content
             results = app.query_one("#results-message", Static).content
-            return status, results
+            return prompt, status, results
 
-    status, results = asyncio.run(_inner())
+    prompt, status, results = asyncio.run(_inner())
 
+    assert "Save 1 source path" in prompt
     assert "Error:" in status
     assert "Error:" in results
 
