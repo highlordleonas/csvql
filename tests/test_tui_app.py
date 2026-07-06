@@ -2461,24 +2461,25 @@ def test_help_text_documents_workbench_keymap() -> None:
 
 
 def test_tui_guide_documents_portable_fallbacks_and_run_labels() -> None:
-    guide = _normalized_markdown_text(_read_doc_text("docs/tui-guide.md"))
+    guide = _read_doc_text("docs/tui-guide.md")
 
-    assert "`F12` or `Ctrl+B`" in guide
-    assert "`F3` or `Ctrl+O`" in guide
-    assert "save the active result" in guide
-    assert "`F9` or `q`" in guide
-    assert "`current`" in guide
-    assert "`buffer`" in guide
-    assert "`rerun`" in guide
+    assert "| `F7` | Export active result |" in guide
+    assert "| `F12` or `Ctrl+B` | Run the buffer as separate History rows |" in guide
+    assert "| `F3` or `Ctrl+O` | Choose CSV file(s) or prompt for paths |" in guide
+    assert "The History run column uses semantic labels: `current` for F4/Ctrl+R runs," in guide
+    assert "`buffer` for F12/Ctrl+B runs" in guide
+    assert "`rerun` for History reruns." in guide
 
 
 def test_troubleshooting_documents_portable_fallbacks() -> None:
-    troubleshooting = _normalized_markdown_text(_read_doc_text("docs/troubleshooting.md"))
+    troubleshooting = _read_doc_text("docs/troubleshooting.md")
 
-    assert "Ctrl+O" in troubleshooting
-    assert "Ctrl+B" in troubleshooting
-    assert "run the buffer" in troubleshooting
-    assert "After `F12` or `Ctrl+B`" in troubleshooting
+    assert "- `F3` or `Ctrl+O`: choose CSV file(s) or prompt for paths" in troubleshooting
+    assert "- `F12` or `Ctrl+B`: run the buffer as separate History rows" in troubleshooting
+    assert (
+        "After `F12` or `Ctrl+B`, move through History to recall each successful"
+        in troubleshooting
+    )
 
 
 def test_question_mark_types_in_sql_editor_and_f1_opens_help(tmp_path: Path) -> None:

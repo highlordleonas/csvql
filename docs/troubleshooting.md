@@ -119,6 +119,7 @@ prompt where you can paste CSV path(s) or enter `name=path`.
 Core fallbacks:
 
 - `F4` or `Ctrl+R`: run selected SQL or the current statement
+- `F3` or `Ctrl+O`: choose CSV file(s) or prompt for paths
 - `F12` or `Ctrl+B`: run the buffer as separate History rows
 - `F6`: sources
 - `F5`: results

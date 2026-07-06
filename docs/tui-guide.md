@@ -49,6 +49,7 @@ The menu opens with the SQL editor focused.
 | Key | Action |
 | --- | --- |
 | `F4` or `Ctrl+R` | Run selected SQL or the current statement |
+| `F7` | Export active result |
 | `F12` or `Ctrl+B` | Run the buffer as separate History rows |
 | `F2` or `Ctrl+Down` | Focus SQL editor |
 | `F3` or `Ctrl+O` | Choose CSV file(s) or prompt for paths |
