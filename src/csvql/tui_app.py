@@ -1,6 +1,5 @@
 """Minimal Textual shell for the CSVQL menu TUI."""
 
-import re
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -1506,14 +1505,6 @@ class CSVQLMenuApp(App[None]):
         if not raw_text.strip():
             return False
 
-        sources, cleaned_text = self._sources_from_embedded_editor_csv_paths(raw_text)
-        if sources:
-            return self._add_editor_path_sources(
-                sources,
-                sql_widget=sql_widget,
-                cleaned_text=cleaned_text,
-            )
-
         try:
             sources = sources_from_csv_path_text(
                 raw_text,
@@ -1532,39 +1523,6 @@ class CSVQLMenuApp(App[None]):
             )
 
         return False
-
-    def _sources_from_embedded_editor_csv_paths(
-        self,
-        raw_text: str,
-    ) -> tuple[tuple[TUISource, ...], str]:
-        fragments = _editor_csv_path_fragments(raw_text)
-        if not fragments:
-            return (), raw_text
-
-        reserved_sources = list(self.state.sources)
-        sources: list[TUISource] = []
-        consumed_spans: list[tuple[int, int]] = []
-        for start_index, end_index, candidate_text in fragments:
-            try:
-                candidate_sources = sources_from_csv_path_text(
-                    candidate_text,
-                    existing_sources=tuple(reserved_sources),
-                    start_dir=self.start_dir,
-                )
-            except CSVQLError:
-                continue
-
-            if not candidate_sources:
-                continue
-
-            sources.extend(candidate_sources)
-            reserved_sources.extend(candidate_sources)
-            consumed_spans.append((start_index, end_index))
-
-        if not sources:
-            return (), raw_text
-
-        return tuple(sources), _remove_text_spans(raw_text, consumed_spans)
 
     def _remove_pasted_text_from_sql_editor(
         self,
@@ -1781,61 +1739,6 @@ def _text_index_from_location(text: str, location: tuple[int, int]) -> int:
     line_text = lines[row].removesuffix("\n").removesuffix("\r")
     return index + min(max(column, 0), len(line_text))
 
-
-_QUOTED_CSV_PATH_FRAGMENT = re.compile(
-    r"(?P<quote>['\"])(?P<path>(?:file://)?(?:~|/).*?\.csv)(?P=quote)",
-    flags=re.IGNORECASE,
-)
-_UNQUOTED_CSV_PATH_FRAGMENT = re.compile(
-    r"(?P<path>(?:file://)?(?:~|/)(?:\\.|[^\s'\"<>|])+?\.csv)",
-    flags=re.IGNORECASE,
-)
-
-
-def _editor_csv_path_fragments(text: str) -> tuple[tuple[int, int, str], ...]:
-    fragments: list[tuple[int, int, str]] = []
-    occupied_spans: list[tuple[int, int]] = []
-
-    for match in _QUOTED_CSV_PATH_FRAGMENT.finditer(text):
-        start_index, end_index = match.span()
-        if not _has_editor_path_text_boundary(text, start_index, end_index):
-            continue
-        fragments.append((start_index, end_index, match.group()))
-        occupied_spans.append((start_index, end_index))
-
-    for match in _UNQUOTED_CSV_PATH_FRAGMENT.finditer(text):
-        start_index, end_index = match.span()
-        if any(
-            start_index < occupied_end and end_index > occupied_start
-            for occupied_start, occupied_end in occupied_spans
-        ):
-            continue
-        if not _has_editor_path_text_boundary(text, start_index, end_index):
-            continue
-        fragments.append((start_index, end_index, match.group("path")))
-
-    return tuple(sorted(fragments, key=lambda fragment: fragment[0]))
-
-
-def _has_editor_path_text_boundary(text: str, start_index: int, end_index: int) -> bool:
-    before = text[start_index - 1] if start_index > 0 else ""
-    after = text[end_index] if end_index < len(text) else ""
-    before_ok = not before or before.isspace() or before in ";,"
-    after_ok = not after or after.isspace() or after in ";,"
-    return before_ok and after_ok
-
-
-def _remove_text_spans(text: str, spans: Sequence[tuple[int, int]]) -> str:
-    if not spans:
-        return text
-
-    chunks: list[str] = []
-    cursor = 0
-    for start_index, end_index in sorted(spans):
-        chunks.append(text[cursor:start_index])
-        cursor = end_index
-    chunks.append(text[cursor:])
-    return "".join(chunks).strip()
 
 
 def _choose_csv_paths_with_native_picker() -> tuple[str, ...]:
