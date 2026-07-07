@@ -102,10 +102,13 @@ async def _settled_footer_entries(
     app: CSVQLMenuApp,
     *,
     required_entry: tuple[str, str] | None = None,
+    expected_entries: tuple[tuple[str, str], ...] | None = None,
 ) -> tuple[tuple[str, str], ...]:
     for _ in range(5):
         await pilot.pause(0.1)
         entries = _footer_entries(app)
+        if expected_entries is not None and entries == expected_entries:
+            return entries
         if entries and (required_entry is None or required_entry in entries):
             return entries
     return _footer_entries(app)
@@ -1371,43 +1374,7 @@ def test_core_panes_mount_and_remain_focusable_at_simulated_viewport_sizes(
 
 def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
-
-    async def _inner() -> tuple[
-        tuple[tuple[str, str], ...],
-        tuple[tuple[str, str], ...],
-        tuple[tuple[str, str], ...],
-        tuple[tuple[str, str], ...],
-    ]:
-        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
-        async with app.run_test() as pilot:
-            sql_footer = await _settled_footer_entries(pilot, app)
-
-            app.query_one("#sources", DataTable).focus()
-            sources_footer = await _settled_footer_entries(
-                pilot,
-                app,
-                required_entry=("F8", "History"),
-            )
-
-            app.query_one("#history", DataTable).focus()
-            history_footer = await _settled_footer_entries(
-                pilot,
-                app,
-                required_entry=("F6", "Sources"),
-            )
-
-            app.query_one("#results", DataTable).focus()
-            results_footer = await _settled_footer_entries(
-                pilot,
-                app,
-                required_entry=("F6", "Sources"),
-            )
-
-            return sql_footer, sources_footer, history_footer, results_footer
-
-    sql_footer, sources_footer, history_footer, results_footer = asyncio.run(_inner())
-
-    assert sql_footer == (
+    expected_sql_footer = (
         ("F1", "Help"),
         ("F3", "Open CSV"),
         ("F4", "Run current"),
@@ -1418,7 +1385,7 @@ def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
         ("F10", "New query"),
         ("F12", "Run buffer"),
     )
-    assert sources_footer == (
+    expected_sources_footer = (
         ("F1", "Help"),
         ("F2", "SQL"),
         ("F3", "Open CSV"),
@@ -1426,7 +1393,7 @@ def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
         ("F8", "History"),
         ("F9", "Quit"),
     )
-    assert history_footer == (
+    expected_history_footer = (
         ("F1", "Help"),
         ("F2", "SQL"),
         ("F5", "Results"),
@@ -1435,7 +1402,7 @@ def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
         ("F9", "Quit"),
         ("Ctrl+S/Alt+S", "Save active"),
     )
-    assert results_footer == (
+    expected_results_footer = (
         ("F1", "Help"),
         ("F2", "SQL"),
         ("F6", "Sources"),
@@ -1444,6 +1411,50 @@ def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
         ("F9", "Quit"),
         ("Ctrl+S/Alt+S", "Save active"),
     )
+
+    async def _inner() -> tuple[
+        tuple[tuple[str, str], ...],
+        tuple[tuple[str, str], ...],
+        tuple[tuple[str, str], ...],
+        tuple[tuple[str, str], ...],
+    ]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            sql_footer = await _settled_footer_entries(
+                pilot,
+                app,
+                expected_entries=expected_sql_footer,
+            )
+
+            app.query_one("#sources", DataTable).focus()
+            sources_footer = await _settled_footer_entries(
+                pilot,
+                app,
+                expected_entries=expected_sources_footer,
+            )
+
+            app.query_one("#history", DataTable).focus()
+            history_footer = await _settled_footer_entries(
+                pilot,
+                app,
+                expected_entries=expected_history_footer,
+            )
+
+            app.query_one("#results", DataTable).focus()
+            results_footer = await _settled_footer_entries(
+                pilot,
+                app,
+                expected_entries=expected_results_footer,
+            )
+
+            return sql_footer, sources_footer, history_footer, results_footer
+
+    sql_footer, sources_footer, history_footer, results_footer = asyncio.run(_inner())
+
+    assert sql_footer == expected_sql_footer
+    assert sources_footer == expected_sources_footer
+    assert history_footer == expected_history_footer
+    assert results_footer == expected_results_footer
 
 
 def test_workbench_layout_prioritizes_sources_and_editor(tmp_path: Path) -> None:

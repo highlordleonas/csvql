@@ -243,7 +243,7 @@ def export_last_result(
     force: bool = False,
     token: OperationToken | None = None,
 ) -> Path:
-    """Export the last query result using the existing export helpers."""
+    """Export the selected TUI query result using the existing export helpers."""
 
     output_path = resolve_export_path(path_value, base_dir=base_dir, force=force)
     content = format_query_result_for_export(result, export_format)
