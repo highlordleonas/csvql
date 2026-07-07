@@ -1981,7 +1981,7 @@ def test_run_shortcut_does_not_consume_typed_csv_path_text(tmp_path: Path) -> No
         "customer_id,email\nCUST-101,zoe@example.com\n",
     )
 
-    async def _inner() -> tuple[str, tuple[TUISource, ...]]:
+    async def _inner() -> tuple[str, tuple[TUISource, ...], str, str, str]:
         app = CSVQLMenuApp(start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -1990,13 +1990,22 @@ def test_run_shortcut_does_not_consume_typed_csv_path_text(tmp_path: Path) -> No
 
             sql.load_text(str(csv_path))
             await pilot.press("f4")
-            await pilot.pause(0.2)
-            return sql.text, app.state.sources
+            await _settled_operation_idle(pilot, app)
+            return (
+                sql.text,
+                app.state.sources,
+                app.query_one("#run-status", Static).content,
+                app.query_one("#status", Static).content,
+                app.query_one("#results-message", Static).content,
+            )
 
-    editor_text, sources = asyncio.run(_inner())
+    editor_text, sources, run_status, status, results_message = asyncio.run(_inner())
 
     assert editor_text == str(csv_path)
     assert sources == ()
+    assert run_status == "Ready."
+    assert "No sources loaded." in status
+    assert "No sources loaded." in results_message
 
 
 def test_idle_editor_csv_path_text_does_not_add_source(tmp_path: Path) -> None:
