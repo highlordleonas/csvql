@@ -2,9 +2,16 @@
 
 ## Status
 
-Approved design for a narrow TUI keybinding repair. This document specifies the
-intended behavior, implementation boundaries, acceptance tests, and verification
-path. Implementation planning and code changes are separate follow-up work.
+Superseded after failed pre-churn reachability evidence and user rescope.
+
+This design was approved, but the pre-churn VS Code integrated-terminal gate
+failed on 2026-07-07: with default isolated VS Code settings on macOS, `Alt+H`
+inserted the macOS Option-H dot glyph into the SQL editor instead of opening
+TUI Help. The temporary spike bindings/tests were reverted, no implementation
+commit was created, and user-facing help/footer/docs were not changed.
+
+The lane is now closed. Do not implement this VS Code-specific fallback design
+unless a new design review explicitly reopens terminal compatibility work.
 
 ## Context
 

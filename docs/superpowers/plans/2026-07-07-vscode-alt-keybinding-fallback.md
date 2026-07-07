@@ -1,6 +1,20 @@
 # VS Code Alt Keybinding Fallback Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Closed plan:** Do not execute this plan. It remains as historical record for
+> the abandoned VS Code fallback lane.
+
+## Status
+
+Closed after failed pre-churn reachability evidence and user rescope.
+
+The pre-churn VS Code integrated-terminal gate failed on 2026-07-07: with
+default isolated VS Code settings on macOS, `Alt+H` inserted the macOS Option-H
+dot glyph into the SQL editor instead of opening TUI Help. The temporary spike
+bindings/tests were reverted, no implementation commit was created, and
+user-facing help/footer/docs were not changed.
+
+VS Code integrated-terminal compatibility is now out of scope. Do not continue
+the tasks below unless a new design review explicitly reopens this lane.
 
 **Goal:** Add verified VS Code-friendly non-printing TUI key fallbacks for Help, Results, and Sources while preserving existing function-key behavior and keeping buffer-result navigation on existing Results-only brackets unless proven insufficient.
 
