@@ -234,6 +234,13 @@ def test_docs_describe_tui_active_result_not_last_successful_result() -> None:
     assert "The full workbench needs at least 100 columns by 30 rows." in normalized_docs
 
 
+def test_docs_limit_csv_path_ingestion_to_paste_or_drop() -> None:
+    docs = "\n".join([read_doc("docs/tui-guide.md"), read_doc("docs/tui-qol-qa.md")])
+
+    assert "Pasting or dropping standalone `.csv` path text" in docs
+    assert "ordinary editor text leaves it" in docs
+
+
 def test_public_launch_docs_state_security_and_release_boundaries() -> None:
     public_docs = "\n".join(
         [

@@ -1974,16 +1974,14 @@ def test_pasted_csv_path_adds_source_without_inserting_editor_text(tmp_path: Pat
     assert "Added source customers." in status
 
 
-def test_inserted_csv_path_text_adds_source_after_editor_settles(
-    tmp_path: Path,
-) -> None:
+def test_editor_text_change_to_csv_path_does_not_add_source(tmp_path: Path) -> None:
     csv_path = _create_csv(
         tmp_path,
-        "terminal_path.csv",
+        "customers.csv",
         "customer_id,email\nCUST-101,zoe@example.com\n",
     )
 
-    async def _inner() -> tuple[str, tuple[TUISource, ...], str]:
+    async def _inner() -> tuple[str, tuple[TUISource, ...]]:
         app = CSVQLMenuApp(start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -1991,48 +1989,13 @@ def test_inserted_csv_path_text_adds_source_after_editor_settles(
             sql.focus()
 
             sql.load_text(str(csv_path))
-            await pilot.pause(0.1)
+            await pilot.pause(0.2)
+            return sql.text, app.state.sources
 
-            status = app.query_one("#status", Static).content
-            return sql.text, app.state.sources, status
+    editor_text, sources = asyncio.run(_inner())
 
-    sql_text, sources, status = asyncio.run(_inner())
-
-    assert sql_text == ""
-    assert sources == (TUISource(name="terminal_path", path=csv_path.resolve(), origin="session"),)
-    assert "Added source terminal_path." in status
-
-
-def test_incremental_terminal_path_text_adds_source_after_editor_settles(
-    tmp_path: Path,
-) -> None:
-    csv_path = _create_csv(
-        tmp_path,
-        "incremental_path.csv",
-        "customer_id,email\nCUST-101,zoe@example.com\n",
-    )
-
-    async def _inner() -> tuple[str, tuple[TUISource, ...], str]:
-        app = CSVQLMenuApp(start_dir=tmp_path)
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            sql = app.query_one("#sql", TextArea)
-            sql.focus()
-
-            for character in str(csv_path):
-                sql.load_text(f"{sql.text}{character}")
-            await pilot.pause(0.1)
-
-            status = app.query_one("#status", Static).content
-            return sql.text, app.state.sources, status
-
-    sql_text, sources, status = asyncio.run(_inner())
-
-    assert sql_text == ""
-    assert sources == (
-        TUISource(name="incremental_path", path=csv_path.resolve(), origin="session"),
-    )
-    assert "Added source incremental_path." in status
+    assert editor_text == str(csv_path)
+    assert sources == ()
 
 
 def test_embedded_terminal_path_text_inside_sql_is_not_consumed(
@@ -2091,38 +2054,6 @@ def test_sql_comment_with_csv_path_is_not_consumed(tmp_path: Path) -> None:
     assert editor_text == f"-- inspect {csv_path}\nSELECT 1 AS value;"
     assert sources == ()
     assert "Added source" not in status
-
-
-def test_run_shortcut_recovers_stuck_csv_path_text_as_source(tmp_path: Path) -> None:
-    csv_path = _create_csv(
-        tmp_path,
-        "stuck_path.csv",
-        "customer_id,email\nCUST-101,zoe@example.com\n",
-    )
-
-    async def _inner() -> tuple[str, tuple[TUISource, ...], str, str]:
-        app = CSVQLMenuApp(start_dir=tmp_path)
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            sql = app.query_one("#sql", TextArea)
-            sql.focus()
-
-            app._suppress_sql_source_text_detection = True
-            sql.load_text(str(csv_path))
-            app._suppress_sql_source_text_detection = False
-            await pilot.press("f4")
-            await pilot.pause()
-
-            status = app.query_one("#status", Static).content
-            run_status = app.query_one("#run-status", Static).content
-            return sql.text, app.state.sources, status, run_status
-
-    sql_text, sources, status, run_status = asyncio.run(_inner())
-
-    assert sql_text == ""
-    assert sources == (TUISource(name="stuck_path", path=csv_path.resolve(), origin="session"),)
-    assert "Added source stuck_path." in status
-    assert run_status == "Ready."
 
 
 def test_sql_string_with_csv_path_is_not_treated_as_pasted_path_text(tmp_path: Path) -> None:

@@ -675,9 +675,6 @@ class CSVQLMenuApp(App[None]):
         callback: Callable[[], None],
         preparing_message: str,
     ) -> None:
-        if self._consume_sql_editor_csv_path_text(self.query_one("#sql", TextArea)):
-            return
-
         if self._run_editor_pending or self.state.query_run.is_running:
             self._show_rejected_run(
                 CSVQLError(
@@ -1141,17 +1138,8 @@ class CSVQLMenuApp(App[None]):
             event.stop()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        if event.text_area.id != "sql" or self._suppress_sql_source_text_detection:
-            return
-        self._sql_source_text_revision += 1
-        revision = self._sql_source_text_revision
-        self.set_timer(
-            0.05,
-            lambda: self._consume_sql_editor_csv_path_text(
-                event.text_area,
-                revision=revision,
-            ),
-        )
+        if event.text_area.id == "sql":
+            self._sql_source_text_revision += 1
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool:
         del parameters
@@ -1965,38 +1953,6 @@ class CSVQLMenuApp(App[None]):
             start_dir=self.start_dir,
         )
 
-    def _consume_sql_editor_csv_path_text(
-        self,
-        sql_widget: TextArea,
-        *,
-        revision: int | None = None,
-    ) -> bool:
-        if revision is not None and revision != self._sql_source_text_revision:
-            return False
-
-        raw_text = sql_widget.text
-        if not raw_text.strip():
-            return False
-
-        try:
-            sources = sources_from_csv_path_text(
-                raw_text,
-                existing_sources=self.state.sources,
-                start_dir=self.start_dir,
-            )
-        except CSVQLError as exc:
-            self._show_error(exc)
-            return True
-
-        if sources:
-            return self._add_editor_path_sources(
-                sources,
-                sql_widget=sql_widget,
-                cleaned_text="",
-            )
-
-        return False
-
     def _remove_pasted_text_from_sql_editor(
         self,
         *,
@@ -2046,22 +2002,6 @@ class CSVQLMenuApp(App[None]):
             self.state.select_source(sources[0].name)
         self._refresh_sources_table()
         self._set_status(f"{_added_sources_message(sources)} {self._status_message()}")
-
-    def _add_editor_path_sources(
-        self,
-        sources: Sequence[TUISource],
-        *,
-        sql_widget: TextArea,
-        cleaned_text: str,
-    ) -> bool:
-        self._suppress_sql_source_text_detection = True
-        try:
-            sql_widget.load_text(cleaned_text)
-        finally:
-            self._suppress_sql_source_text_detection = False
-        self._add_session_sources(sources)
-        sql_widget.focus()
-        return True
 
 
 class _SourcePathTextArea(TextArea):
