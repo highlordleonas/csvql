@@ -167,6 +167,92 @@ def test_tui_qol_qa_gate_is_blocking_and_records_terminal_evidence() -> None:
     assert "Run full-buffer multi-statement SQL with `F12`" not in stale_wording_scan
 
 
+def test_tui_qol_docs_record_scope_closeout_without_release_eligibility() -> None:
+    matrix = read_doc("docs/tui-qol-qa.md")
+    normalized_matrix = normalized_markdown_text(matrix)
+
+    assert "## Current Closeout Status" in matrix
+    assert "macOS Terminal is the verified local pass row for this lane." in matrix
+    assert "output/tui-qol-qa/20260706-c604a46/macos-terminal/" in matrix
+    assert "VS Code integrated terminal is out of scope for this closeout." in matrix
+    assert "recorded a keybinding failure" in matrix
+    assert "iTerm2 is blocked locally because the app was unavailable." in matrix
+    assert "Linux terminal and Windows Terminal were not run locally." in matrix
+    assert "tmux/SSH is blocked locally because `tmux` was unavailable." in matrix
+    assert (
+        "This closeout does not make the project `release-candidate eligible`."
+        in matrix
+    )
+    assert (
+        "A future complete TUI QoL run used for release-candidate eligibility must cover:"
+        in normalized_matrix
+    )
+
+
+def test_release_docs_keep_tui_qol_closeout_out_of_candidate_eligibility() -> None:
+    manual_qa = read_doc("docs/v1-manual-qa.md")
+    readiness = read_doc("docs/release-readiness.md")
+    release_notes = read_doc("docs/release-notes/v1.md")
+
+    assert (
+        "The current TUI QoL scope closeout records macOS Terminal evidence and "
+        "terminal gaps only; it does not satisfy the full TUI QoL terminal matrix."
+        in manual_qa
+    )
+
+    required_release_wording = (
+        "A local TUI QoL scope closeout that records only macOS Terminal evidence "
+        "and terminal gaps is not enough for `release-candidate eligible`; the "
+        "full required terminal matrix must pass with media evidence."
+    )
+    assert required_release_wording in readiness
+    assert required_release_wording in release_notes
+
+
+def test_public_docs_do_not_advertise_rejected_vscode_alt_fallbacks() -> None:
+    public_docs = "\n".join(
+        [
+            read_doc("README.md"),
+            read_doc("docs/getting-started.md"),
+            read_doc("docs/tui-guide.md"),
+            read_doc("docs/troubleshooting.md"),
+            read_doc("docs/tui-qol-qa.md"),
+            read_doc("docs/v1-manual-qa.md"),
+            read_doc("docs/release-readiness.md"),
+            read_doc("docs/release-notes/v1.md"),
+        ]
+    )
+
+    for rejected_claim in (
+        "`Alt+H`",
+        "`Alt+R`",
+        "`Alt+U`",
+        "VS Code-friendly",
+        "VS Code fallback",
+    ):
+        assert rejected_claim not in public_docs
+
+
+def test_closed_vscode_fallback_spec_and_plan_remain_non_executable() -> None:
+    spec = read_doc(
+        "docs/superpowers/specs/2026-07-07-vscode-alt-keybinding-fallback-design.md"
+    )
+    plan = read_doc(
+        "docs/superpowers/plans/2026-07-07-vscode-alt-keybinding-fallback.md"
+    )
+
+    assert (
+        "Superseded after failed pre-churn reachability evidence and user rescope."
+        in spec
+    )
+    assert (
+        "The lane is now closed. Do not implement this VS Code-specific fallback design"
+        in spec
+    )
+    assert "**Closed plan:** Do not execute this plan." in plan
+    assert "VS Code integrated-terminal compatibility is now out of scope." in plan
+
+
 def test_manual_qa_matrix_links_tui_qol_gate() -> None:
     matrix = read_doc("docs/v1-manual-qa.md")
 

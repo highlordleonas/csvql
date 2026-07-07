@@ -78,6 +78,8 @@ files, quit behavior, and Mac keybinding paths.
 Run the TUI QoL QA gate for required terminal coverage, media evidence, and
 state-clarity checks. Any failed TUI QoL matrix item blocks `release-candidate eligible`.
 
+A local TUI QoL scope closeout that records only macOS Terminal evidence and terminal gaps is not enough for `release-candidate eligible`; the full required terminal matrix must pass with media evidence.
+
 ## Benchmark Proof
 
 Refresh or explicitly cite local benchmark evidence before making performance

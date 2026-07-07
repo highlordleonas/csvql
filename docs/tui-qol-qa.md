@@ -10,6 +10,22 @@ Any failed item blocks `release-candidate eligible`.
 If a terminal or flow is untested, failed, or missing required media evidence,
 the candidate status remains `not eligible yet`.
 
+## Current Closeout Status
+
+The current local TUI QoL closeout is macOS Terminal-focused evidence, not a
+full cross-terminal release gate pass.
+
+- macOS Terminal is the verified local pass row for this lane. Local proof
+  artifacts live under `output/tui-qol-qa/20260706-c604a46/macos-terminal/`.
+- VS Code integrated terminal is out of scope for this closeout. The 2026-07-07
+  spike recorded a keybinding failure where default macOS Option-key handling
+  inserted text instead of opening TUI Help.
+- iTerm2 is blocked locally because the app was unavailable.
+- Linux terminal and Windows Terminal were not run locally.
+- tmux/SSH is blocked locally because `tmux` was unavailable.
+
+This closeout does not make the project `release-candidate eligible`.
+
 ## Scope
 
 This gate covers the existing optional terminal TUI:
@@ -28,7 +44,7 @@ SQL execution, production readiness, or broad large-file proof.
 
 ## Required Terminals
 
-Every complete TUI QoL run must cover:
+A future complete TUI QoL run used for release-candidate eligibility must cover:
 
 | Terminal path | Required evidence directory |
 | --- | --- |

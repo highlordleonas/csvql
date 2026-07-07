@@ -7,6 +7,7 @@ This matrix is local evidence only. It does not publish, tag, upload, or claim
 
 For terminal usability coverage, also run the [TUI QoL QA gate](tui-qol-qa.md).
 The TUI QoL QA gate is blocking for `release-candidate eligible`.
+The current TUI QoL scope closeout records macOS Terminal evidence and terminal gaps only; it does not satisfy the full TUI QoL terminal matrix.
 
 Run from the repository root unless a step explicitly changes directories.
 
