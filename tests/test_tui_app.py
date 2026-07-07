@@ -114,7 +114,18 @@ async def _settled_footer_entries(
 async def _settled_operation_idle(
     pilot: Pilot[None],
     app: CSVQLMenuApp,
+    *,
+    wait_for_status_settle: bool = True,
 ) -> None:
+    if not wait_for_status_settle:
+        for _ in range(60):
+            await pilot.pause(0.05)
+            if not app.state.operation_run.is_running:
+                await pilot.pause(0.5)
+                return
+        pytest.fail("Timed out waiting for TUI operation to finish.")
+        return
+
     for _ in range(1800):
         await pilot.pause(0.05)
         status_widget = app.query_one("#status", Static)
@@ -2672,13 +2683,7 @@ def test_export_last_result_preserves_visible_result_grid(tmp_path: Path) -> Non
             await pilot.pause()
             app.screen.query_one("#export-path", Input).value = str(export_path)
             await pilot.press("enter")
-            for _ in range(60):
-                await pilot.pause(0.05)
-                if not app.state.operation_run.is_running:
-                    await pilot.pause(0.5)
-                    break
-            else:
-                pytest.fail("Timed out waiting for export completion.")
+            await _settled_operation_idle(pilot, app, wait_for_status_settle=False)
 
             after_columns, after_rows, _ = _result_grid_snapshot(app)
             content = export_path.read_text(encoding="utf-8")
