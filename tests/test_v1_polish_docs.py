@@ -179,10 +179,7 @@ def test_tui_qol_docs_record_scope_closeout_without_release_eligibility() -> Non
     assert "iTerm2 is blocked locally because the app was unavailable." in matrix
     assert "Linux terminal and Windows Terminal were not run locally." in matrix
     assert "tmux/SSH is blocked locally because `tmux` was unavailable." in matrix
-    assert (
-        "This closeout does not make the project `release-candidate eligible`."
-        in matrix
-    )
+    assert "This closeout does not make the project `release-candidate eligible`." in matrix
     assert (
         "A future complete TUI QoL run used for release-candidate eligibility must cover:"
         in normalized_matrix
@@ -196,8 +193,7 @@ def test_release_docs_keep_tui_qol_closeout_out_of_candidate_eligibility() -> No
 
     assert (
         "The current TUI QoL scope closeout records macOS Terminal evidence and "
-        "terminal gaps only; it does not satisfy the full TUI QoL terminal matrix."
-        in manual_qa
+        "terminal gaps only; it does not satisfy the full TUI QoL terminal matrix." in manual_qa
     )
 
     required_release_wording = (
@@ -234,21 +230,11 @@ def test_public_docs_do_not_advertise_rejected_vscode_alt_fallbacks() -> None:
 
 
 def test_closed_vscode_fallback_spec_and_plan_remain_non_executable() -> None:
-    spec = read_doc(
-        "docs/superpowers/specs/2026-07-07-vscode-alt-keybinding-fallback-design.md"
-    )
-    plan = read_doc(
-        "docs/superpowers/plans/2026-07-07-vscode-alt-keybinding-fallback.md"
-    )
+    spec = read_doc("docs/superpowers/specs/2026-07-07-vscode-alt-keybinding-fallback-design.md")
+    plan = read_doc("docs/superpowers/plans/2026-07-07-vscode-alt-keybinding-fallback.md")
 
-    assert (
-        "Superseded after failed pre-churn reachability evidence and user rescope."
-        in spec
-    )
-    assert (
-        "The lane is now closed. Do not implement this VS Code-specific fallback design"
-        in spec
-    )
+    assert "Superseded after failed pre-churn reachability evidence and user rescope." in spec
+    assert "The lane is now closed. Do not implement this VS Code-specific fallback design" in spec
     assert "**Closed plan:** Do not execute this plan." in plan
     assert "VS Code integrated-terminal compatibility is now out of scope." in plan
 
