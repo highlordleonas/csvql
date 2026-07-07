@@ -1999,6 +1999,30 @@ def test_run_shortcut_does_not_consume_typed_csv_path_text(tmp_path: Path) -> No
     assert sources == ()
 
 
+def test_idle_editor_csv_path_text_does_not_add_source(tmp_path: Path) -> None:
+    csv_path = _create_csv(
+        tmp_path,
+        "customers.csv",
+        "customer_id,email\nCUST-101,zoe@example.com\n",
+    )
+
+    async def _inner() -> tuple[str, tuple[TUISource, ...]]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+
+            sql.load_text(str(csv_path))
+            await pilot.pause(0.2)
+            return sql.text, app.state.sources
+
+    editor_text, sources = asyncio.run(_inner())
+
+    assert editor_text == str(csv_path)
+    assert sources == ()
+
+
 def test_embedded_terminal_path_text_inside_sql_is_not_consumed(
     tmp_path: Path,
 ) -> None:
