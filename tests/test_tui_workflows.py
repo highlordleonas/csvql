@@ -10,8 +10,8 @@ from csvql.project_config import CONFIG_FILENAME, initialize_project, load_proje
 from csvql.tui_state import TUISessionState, TUISource, TUISourceColumn
 from csvql.tui_workflows import (
     build_initial_state,
-    external_catalog_source_paths,
     export_last_result,
+    external_catalog_source_paths,
     inspect_source,
     inspect_source_columns,
     profile_source,
@@ -212,6 +212,23 @@ def test_external_catalog_source_paths_resolves_symlinked_external_path(
     paths = external_catalog_source_paths((source,), start_dir=project_root)
 
     assert paths == (external_csv.resolve(),)
+
+
+def test_external_catalog_source_paths_ignores_relative_project_path_when_cwd_differs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    external_root = tmp_path / "external"
+    project_root.mkdir()
+    external_root.mkdir()
+    _write_csv(project_root / "orders.csv")
+    monkeypatch.chdir(external_root)
+    source = TUISource(name="orders", path=Path("orders.csv"), origin="session")
+
+    paths = external_catalog_source_paths((source,), start_dir=project_root)
+
+    assert paths == ()
 
 
 def test_build_initial_state_propagates_invalid_catalog_yaml(

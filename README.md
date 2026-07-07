@@ -221,8 +221,9 @@ path paste derives aliases from file names; duplicate aliases receive numeric
 suffixes such as `orders_2`.
 
 Saving sources to `.csvql.yml` may persist local filesystem paths. Project-relative
-paths are portable; external absolute paths are allowed for local workflows but can
-reveal machine-specific locations if you share the catalog.
+paths are portable; external absolute paths and symlink-resolved paths outside the
+start directory are allowed for local workflows but can reveal machine-specific
+locations if you share the catalog.
 
 When the source pane is focused, Source Intelligence actions use `c` to
 load/show columns, `l` to insert the selected source alias, and `x` to insert a

@@ -110,7 +110,11 @@ def external_catalog_source_paths(
     base_dir = start_dir.expanduser().resolve()
     external_paths: list[Path] = []
     for source in sources:
-        resolved_path = source.path.expanduser().resolve(strict=False)
+        source_path = source.path.expanduser()
+        if source_path.is_absolute():
+            resolved_path = source_path.resolve(strict=False)
+        else:
+            resolved_path = (base_dir / source_path).resolve(strict=False)
         try:
             resolved_path.relative_to(base_dir)
         except ValueError:

@@ -54,9 +54,10 @@ def test_public_onboarding_uses_installed_cli_command() -> None:
 
 def test_docs_warn_catalog_paths_can_reveal_local_locations() -> None:
     docs = "\n".join([read_doc("README.md"), read_doc("docs/tui-guide.md")])
+    normalized_docs = normalized_markdown_text(docs)
 
-    assert "external absolute paths are allowed for local workflows" in docs
-    assert "machine-specific locations" in docs
+    assert "external absolute paths and symlink-resolved paths outside the" in normalized_docs
+    assert "machine-specific locations" in normalized_docs
 
 
 def test_manual_qa_matrix_covers_cli_and_tui_release_paths() -> None:
@@ -226,7 +227,10 @@ def test_docs_describe_tui_active_result_not_last_successful_result() -> None:
     assert "last successful tabular query result" not in normalized_docs
     assert "last successful tabular result" not in normalized_docs
     assert ".markdown" in docs
-    assert "When Results is focused, `[` and `]` step through the buffer results." in normalized_docs
+    assert (
+        "When Results is focused, `[` and `]` step through the buffer results."
+        in normalized_docs
+    )
     assert "The full workbench needs at least 100 columns by 30 rows." in normalized_docs
 
 
