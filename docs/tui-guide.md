@@ -64,6 +64,11 @@ The menu opens with the SQL editor focused.
 | `F1` | Help |
 | `Ctrl+N` or `F10` | Clear editor for a new query |
 
+`F4` or `Ctrl+R` runs the selected/current statement in a fresh DuckDB session.
+`F12` or `Ctrl+B` Run Buffer runs the editor's semicolon-delimited statements in
+one shared DuckDB session, so earlier temporary tables can feed later statements
+in that buffer.
+
 The History run column uses semantic labels: `current` for F4/Ctrl+R runs,
 `buffer` for F12/Ctrl+B runs, and `rerun` for History reruns.
 

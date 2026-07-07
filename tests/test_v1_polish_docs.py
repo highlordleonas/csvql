@@ -228,10 +228,18 @@ def test_docs_describe_tui_active_result_not_last_successful_result() -> None:
     assert "last successful tabular result" not in normalized_docs
     assert ".markdown" in docs
     assert (
-        "When Results is focused, `[` and `]` step through the buffer results."
-        in normalized_docs
+        "When Results is focused, `[` and `]` step through the buffer results." in normalized_docs
     )
     assert "The full workbench needs at least 100 columns by 30 rows." in normalized_docs
+
+
+def test_docs_distinguish_f4_and_run_buffer_sessions() -> None:
+    guide = read_doc("docs/tui-guide.md")
+
+    assert "F4" in guide
+    assert "fresh DuckDB session" in guide
+    assert "Run Buffer" in guide
+    assert "one shared DuckDB session" in guide
 
 
 def test_docs_limit_csv_path_ingestion_to_paste_or_drop() -> None:

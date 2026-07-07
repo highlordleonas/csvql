@@ -264,6 +264,30 @@ def test_restore_query_result_marks_history_preview(tmp_path: Path) -> None:
     assert state.last_result == result
 
 
+def test_restore_query_result_reuses_stored_result_view() -> None:
+    state = TUISessionState()
+    result = QueryResult(
+        columns=("id",),
+        rows=tuple((index,) for index in range(1001)),
+        elapsed_ms=1.0,
+    )
+    view = TUIResultViewState(
+        columns=("id",),
+        display_rows=(("0",),),
+        total_row_count=1001,
+        is_truncated=True,
+        source_result_sequence=1,
+    )
+    state.record_query_success(1, "SELECT * FROM large", result, view)
+    state.clear_last_result()
+
+    restored = state.restore_query_result(1)
+
+    assert restored is True
+    assert state.result_view is view
+    assert state.result_view.display_rows == (("0",),)
+
+
 def test_buffer_result_tabs_select_active_result(tmp_path: Path) -> None:
     state = TUISessionState()
     state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
