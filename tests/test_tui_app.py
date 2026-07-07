@@ -1974,7 +1974,7 @@ def test_pasted_csv_path_adds_source_without_inserting_editor_text(tmp_path: Pat
     assert "Added source customers." in status
 
 
-def test_editor_text_change_to_csv_path_does_not_add_source(tmp_path: Path) -> None:
+def test_run_shortcut_does_not_consume_typed_csv_path_text(tmp_path: Path) -> None:
     csv_path = _create_csv(
         tmp_path,
         "customers.csv",
@@ -1989,6 +1989,7 @@ def test_editor_text_change_to_csv_path_does_not_add_source(tmp_path: Path) -> N
             sql.focus()
 
             sql.load_text(str(csv_path))
+            await pilot.press("f4")
             await pilot.pause(0.2)
             return sql.text, app.state.sources
 

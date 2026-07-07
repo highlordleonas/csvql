@@ -377,7 +377,6 @@ class CSVQLMenuApp(App[None]):
         self._next_operation_worker_id = 1
         self._run_editor_pending = False
         self._help_screen_open = False
-        self._suppress_sql_source_text_detection = False
         self._terminal_size_warning_initialized = False
         self._terminal_size_warning_active = False
         self._active_operation_worker: Worker[object] | None = None
@@ -1962,22 +1961,6 @@ class CSVQLMenuApp(App[None]):
         sql.load_text(before_text)
         sql.focus()
 
-    def _remove_pasted_source_text_from_sql_editor(
-        self,
-        *,
-        before_text: str,
-        expected_single_paste_text: str,
-        expected_double_paste_text: str,
-    ) -> None:
-        try:
-            self._remove_pasted_text_from_sql_editor(
-                before_text=before_text,
-                expected_single_paste_text=expected_single_paste_text,
-                expected_double_paste_text=expected_double_paste_text,
-            )
-        finally:
-            self._suppress_sql_source_text_detection = False
-
     def _normalize_pasted_text_in_sql_editor(
         self,
         *,
@@ -2015,15 +1998,13 @@ class _SourcePathTextArea(TextArea):
             self._paste_text_expectations(event.text)
         )
         if self.app._handle_pasted_csv_sources(event.text):
-            self.app._suppress_sql_source_text_detection = True
-            if not self.call_after_refresh(
-                lambda: self.app._remove_pasted_source_text_from_sql_editor(
+            self.call_after_refresh(
+                lambda: self.app._remove_pasted_text_from_sql_editor(
                     before_text=before_text,
                     expected_single_paste_text=expected_single_paste_text,
                     expected_double_paste_text=expected_double_paste_text,
                 )
-            ):
-                self.app._suppress_sql_source_text_detection = False
+            )
             self.focus()
             return
 
