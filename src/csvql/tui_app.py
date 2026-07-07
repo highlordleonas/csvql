@@ -832,7 +832,10 @@ class CSVQLMenuApp(App[None]):
 
         self.push_screen(
             _PromptInputScreen(
-                "Export active result to path (.csv, .json, .md, .txt; blank suffix uses .csv).",
+                (
+                    "Export active result to path "
+                    "(.csv, .json, .md, .markdown, .txt; blank suffix uses .csv)."
+                ),
                 input_id="export-path",
             ),
             callback=self._handle_export_last_result,
@@ -978,6 +981,7 @@ class CSVQLMenuApp(App[None]):
         if self._active_operation_worker is not worker:
             return
 
+        operation_label = self.state.operation_run.label.strip()
         self._active_operation_worker = None
         self.state.operation_run = TUIOperationRunState()
         if self._active_operation_worker_name == worker_name:
@@ -987,14 +991,14 @@ class CSVQLMenuApp(App[None]):
         if state == WorkerState.CANCELLED:
             return
         if state == WorkerState.ERROR:
-            self._handle_operation_worker_failure(worker.error)
+            self._handle_operation_worker_failure(worker.error, operation_label=operation_label)
             return
         if state != WorkerState.SUCCESS:
             return
 
-        self._apply_operation_outcome(worker.result)
+        self._apply_operation_outcome(worker.result, operation_label=operation_label)
 
-    def _apply_operation_outcome(self, outcome: object) -> None:
+    def _apply_operation_outcome(self, outcome: object, *, operation_label: str) -> None:
         if isinstance(outcome, _SourceInspectOutcome):
             self._show_source_columns_table(
                 outcome.columns,
@@ -1058,27 +1062,42 @@ class CSVQLMenuApp(App[None]):
 
         self._show_error(
             CSVQLError(
-                "Unexpected worker result while loading source intelligence.",
-                suggestion="Try the source action again.",
+                self._unexpected_operation_worker_result_message(operation_label),
+                suggestion="Try the action again.",
             )
         )
 
-    def _handle_operation_worker_failure(self, error: BaseException | None) -> None:
+    def _handle_operation_worker_failure(
+        self,
+        error: BaseException | None,
+        *,
+        operation_label: str,
+    ) -> None:
         if isinstance(error, OperationCancelled):
             return
         if isinstance(error, CSVQLError):
             self._show_error(error)
             return
 
-        error_message = "Unexpected worker failure while loading source intelligence."
+        error_message = self._unexpected_operation_worker_failure_message(operation_label)
         if error is not None:
             error_message = f"{error_message} {error}"
         self._show_error(
             CSVQLError(
                 error_message,
-                suggestion="Try the source action again.",
+                suggestion="Try the action again.",
             )
         )
+
+    def _unexpected_operation_worker_result_message(self, operation_label: str) -> str:
+        if not operation_label:
+            return "Unexpected worker result while running the operation."
+        return f"Unexpected worker result while {operation_label.lower()}."
+
+    def _unexpected_operation_worker_failure_message(self, operation_label: str) -> str:
+        if not operation_label:
+            return "Unexpected worker failure while running the operation."
+        return f"Unexpected worker failure while {operation_label.lower()}."
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         worker = event.worker
@@ -1491,20 +1510,28 @@ class CSVQLMenuApp(App[None]):
 
         try:
             export_path_value, export_format = _export_path_and_format_for_prompt(path_value)
-            self._start_operation_worker(
-                kind="export",
-                label="Exporting active result",
-                work=lambda token: _ExportOutcome(
-                    path=export_last_result(
-                        result,
-                        export_path_value,
-                        export_format=export_format,
-                        base_dir=self.start_dir,
-                        force=False,
-                        token=token,
+            if not self.call_after_refresh(
+                lambda: self._start_operation_worker(
+                    kind="export",
+                    label="Exporting active result",
+                    work=lambda token: _ExportOutcome(
+                        path=export_last_result(
+                            result,
+                            export_path_value,
+                            export_format=export_format,
+                            base_dir=self.start_dir,
+                            force=False,
+                            token=token,
+                        )
+                    ),
+                )
+            ):
+                self._show_error(
+                    CSVQLError(
+                        "Unable to schedule export.",
+                        suggestion="Try exporting the active result again.",
                     )
-                ),
-            )
+                )
         except CSVQLError as exc:
             self._show_error(exc)
             return
@@ -1549,19 +1576,27 @@ class CSVQLMenuApp(App[None]):
             return
 
         try:
-            self._start_operation_worker(
-                kind="save_result",
-                label="Saving active result as source",
-                work=lambda token: _SaveResultSourceOutcome(
-                    source=save_derived_result_source(
-                        result,
-                        alias,
-                        existing_sources=self.state.sources,
-                        start_dir=self.start_dir,
-                        token=token,
+            if not self.call_after_refresh(
+                lambda: self._start_operation_worker(
+                    kind="save_result",
+                    label="Saving active result as source",
+                    work=lambda token: _SaveResultSourceOutcome(
+                        source=save_derived_result_source(
+                            result,
+                            alias,
+                            existing_sources=self.state.sources,
+                            start_dir=self.start_dir,
+                            token=token,
+                        )
+                    ),
+                )
+            ):
+                self._show_error(
+                    CSVQLError(
+                        "Unable to schedule save-result export.",
+                        suggestion="Try saving the active result again.",
                     )
-                ),
-            )
+                )
         except CSVQLError as exc:
             self._show_error(exc)
             return
