@@ -29,9 +29,10 @@ uv run --all-extras csvql menu
 
 You can also add sources after launch with `F3`. On macOS it opens a local CSV
 picker, and `Ctrl+O` is a portable fallback. Elsewhere it opens a CSV path
-prompt. Pasting or dropping standalone `.csv` path text into the SQL editor
-adds session sources. Typing a path as ordinary editor text leaves it as SQL
-editor text, and CSV-looking paths inside SQL strings, comments, or
+prompt. Pasted standalone `.csv` path text into the SQL editor adds session
+sources. Typing a path as ordinary editor text leaves it as SQL editor text.
+If a terminal delivers a file drop as pasted path text, the same pasted-path
+behavior applies there too. CSV-looking paths inside SQL strings, comments, or
 expressions stay as normal SQL text.
 
 ![Terminal screenshot of the LocalQL TUI workbench with project sources loaded and a query result visible](assets/localql-tui-workbench.svg)

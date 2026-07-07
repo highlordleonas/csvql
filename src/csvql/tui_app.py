@@ -378,7 +378,6 @@ class CSVQLMenuApp(App[None]):
         self._run_editor_pending = False
         self._help_screen_open = False
         self._suppress_sql_source_text_detection = False
-        self._sql_source_text_revision = 0
         self._terminal_size_warning_initialized = False
         self._terminal_size_warning_active = False
         self._active_operation_worker: Worker[object] | None = None
@@ -1136,10 +1135,6 @@ class CSVQLMenuApp(App[None]):
             return
         if self._handle_pasted_csv_sources(event.text):
             event.stop()
-
-    def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        if event.text_area.id == "sql":
-            self._sql_source_text_revision += 1
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool:
         del parameters

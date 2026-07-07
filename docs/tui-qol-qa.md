@@ -72,7 +72,7 @@ Run every item in every required terminal.
 | QOL-03 | Launch from a project catalog | Catalog sources appear without extra prompt work. |
 | QOL-04 | Add a source with `F3` or `Ctrl+O` | Native picker works where available; otherwise the documented picker fallback prompt appears and accepts a CSV path. |
 | QOL-05 | Add a source through the Add Source prompt | `name=path` adds the expected session source and selects it predictably. |
-| QOL-06 | Add source by pasted standalone path | Pasting or dropping standalone `.csv` path text into the SQL editor adds session sources. Typing a path as ordinary editor text leaves it as SQL/editor text; CSV paths inside SQL strings, comments, or expressions remain SQL text. |
+| QOL-06 | Add source by pasted standalone path | Pasted standalone `.csv` path text into the SQL editor adds session sources. Typing a path as ordinary editor text leaves it as SQL/editor text. If a terminal delivers a file drop as pasted path text, the same pasted-path behavior applies there too. CSV paths inside SQL strings, comments, or expressions remain SQL text. |
 | QOL-07 | Run selected SQL | Only the selected SQL runs and History records one attempt. |
 | QOL-08 | Run the current statement | `F4` and `Ctrl+R` run the statement around the cursor, not unrelated editor text. |
 | QOL-09 | Run Buffer with `F12` or `Ctrl+B` | Statements run in order in one DuckDB session, each statement is recorded as a separate History row, temp tables or DDL can feed later statements, and execution stops on the first failure. |
