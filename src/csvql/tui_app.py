@@ -876,8 +876,7 @@ class CSVQLMenuApp(App[None]):
                 "and may reveal machine-specific locations if shared."
             )
         prompt = (
-            f"Save {source_count} {noun} to .csvql.yml?{warning} "
-            "Press y to save or n to cancel."
+            f"Save {source_count} {noun} to .csvql.yml?{warning} Press y to save or n to cancel."
         )
         self.push_screen(
             _ConfirmationScreen(prompt),

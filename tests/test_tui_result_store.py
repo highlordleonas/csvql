@@ -15,8 +15,7 @@ from csvql.tui_result_store import (
 def _result(row_count: int, column_count: int = 1) -> QueryResult:
     columns = tuple(f"c{index}" for index in range(column_count))
     rows = tuple(
-        tuple(f"{row}-{column}" for column in range(column_count))
-        for row in range(row_count)
+        tuple(f"{row}-{column}" for column in range(column_count)) for row in range(row_count)
     )
     return QueryResult(columns=columns, rows=rows, elapsed_ms=1.0)
 

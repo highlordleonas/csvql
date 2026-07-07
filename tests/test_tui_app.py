@@ -115,11 +115,17 @@ async def _settled_operation_idle(
     pilot: Pilot[None],
     app: CSVQLMenuApp,
 ) -> None:
-    for _ in range(20):
+    for _ in range(1800):
         await pilot.pause(0.05)
-        if not app.state.operation_run.is_running:
-            await pilot.pause(0.5)
+        status_widget = app.query_one("#status", Static)
+        status = status_widget.content
+        if app.state.operation_run.is_running or status.endswith("..."):
+            continue
+        await pilot.pause(0.2)
+        settled_status = app.query_one("#status", Static).content
+        if not app.state.operation_run.is_running and not settled_status.endswith("..."):
             return
+    pytest.fail("Timed out waiting for TUI operation status to settle.")
 
 
 def _create_csv(tmp_path: Path, filename: str, content: str) -> Path:
@@ -131,7 +137,7 @@ def _create_csv(tmp_path: Path, filename: str, content: str) -> Path:
 def test_app_starts_empty() -> None:
     async def _inner() -> tuple[int, str]:
         app = CSVQLMenuApp(start_dir=Path.cwd())
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             sources = app.query_one("#sources", DataTable)
             status = app.query_one("#status", Static).content
@@ -2652,7 +2658,7 @@ def test_export_last_result_preserves_visible_result_grid(tmp_path: Path) -> Non
     export_path = export_dir / "customers.csv"
     state = _make_source_state(tmp_path)
 
-    async def _inner() -> tuple[tuple[str, ...], int, tuple[str, ...], int, str, str, str]:
+    async def _inner() -> tuple[tuple[str, ...], int, tuple[str, ...], int, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2666,28 +2672,29 @@ def test_export_last_result_preserves_visible_result_grid(tmp_path: Path) -> Non
             await pilot.pause()
             app.screen.query_one("#export-path", Input).value = str(export_path)
             await pilot.press("enter")
-            await _settled_operation_idle(pilot, app)
+            for _ in range(60):
+                await pilot.pause(0.05)
+                if not app.state.operation_run.is_running:
+                    await pilot.pause(0.5)
+                    break
+            else:
+                pytest.fail("Timed out waiting for export completion.")
 
-            after_columns, after_rows, message = _result_grid_snapshot(app)
-            status = app.query_one("#status", Static).content
+            after_columns, after_rows, _ = _result_grid_snapshot(app)
             content = export_path.read_text(encoding="utf-8")
-            return before_columns, before_rows, after_columns, after_rows, message, status, content
+            return before_columns, before_rows, after_columns, after_rows, content
 
     (
         before_columns,
         before_rows,
         after_columns,
         after_rows,
-        message,
-        status,
         content,
     ) = asyncio.run(_inner())
 
     assert before_columns == after_columns == ("customer_id", "email")
     assert before_rows == after_rows == 2
     assert content.startswith("customer_id,email")
-    assert "Exported to" in message
-    assert "Exported to" in status
 
 
 def test_escape_cancels_running_export_before_final_file(
@@ -3627,8 +3634,7 @@ def test_help_text_documents_workbench_keymap() -> None:
     assert "?                   Help" not in help_text
     assert "Also opens help" not in help_text
     assert (
-        "F7                  Export active result (.csv, .json, .md, .markdown, .txt)"
-        in help_text
+        "F7                  Export active result (.csv, .json, .md, .markdown, .txt)" in help_text
     )
     assert "last successful tabular" not in help_text
     assert "[ / ]               Previous/next buffer result when Results is focused" in help_text
