@@ -171,19 +171,88 @@ def test_tui_qol_docs_record_scope_closeout_without_release_eligibility() -> Non
     matrix = read_doc("docs/tui-qol-qa.md")
     normalized_matrix = normalized_markdown_text(matrix)
 
-    assert "## Current Closeout Status" in matrix
-    assert "macOS Terminal is the verified local pass row for this lane." in matrix
-    assert "output/tui-qol-qa/20260706-c604a46/macos-terminal/" in matrix
-    assert "VS Code integrated terminal is out of scope for this closeout." in matrix
-    assert "recorded a keybinding failure" in matrix
-    assert "iTerm2 is blocked locally because the app was unavailable." in matrix
-    assert "Linux terminal and Windows Terminal were not run locally." in matrix
-    assert "tmux/SSH is blocked locally because `tmux` was unavailable." in matrix
-    assert "This closeout does not make the project `release-candidate eligible`." in matrix
+    assert "## Approved Three-OS Release-Proof Scope" in matrix
+    assert "Historical local evidence remains useful context:" in matrix
     assert (
-        "A future complete TUI QoL run used for release-candidate eligibility must cover:"
+        "The approved release-proof target covers macOS Terminal, Windows Terminal, and one"
         in normalized_matrix
     )
+    assert "output/tui-qol-qa/20260706-c604a46/macos-terminal/" in matrix
+    assert "VS Code integrated terminal is out of scope for this release lane after the" in matrix
+    assert "keybinding spike showed default macOS Option-key behavior did not" in matrix
+    assert "iTerm2 and tmux/SSH are out of scope for this release lane." in matrix
+    assert "Linux terminal and Windows Terminal still require same-`HEAD` evidence" in matrix
+    assert "This approved scope does not make the project `release-candidate eligible`." in matrix
+    assert (
+        "This is a new release-proof lane, not a claim that the project is already"
+        in normalized_matrix
+    )
+
+
+def test_tui_qol_gate_uses_approved_three_os_release_scope() -> None:
+    matrix = read_doc("docs/tui-qol-qa.md")
+    normalized_matrix = normalized_markdown_text(matrix)
+
+    assert "## Approved Three-OS Release-Proof Scope" in matrix
+    assert (
+        "macOS Terminal, Windows Terminal, and one normal Linux desktop terminal"
+        in normalized_matrix
+    )
+    assert "## Out-of-Scope Rows" in matrix
+    required_scope = matrix.split("## Out-of-Scope Rows", 1)[0]
+    assert "| macOS Terminal | `output/tui-qol-qa/<run-id>/macos-terminal/` |" in required_scope
+    assert (
+        "| Windows Terminal | `output/tui-qol-qa/<run-id>/windows-terminal/` |"
+        in required_scope
+    )
+    assert (
+        "| GNOME Terminal or equivalent normal Linux desktop terminal | "
+        "`output/tui-qol-qa/<run-id>/linux-terminal/` |"
+    ) in required_scope
+    for old_required_row in (
+        "| iTerm2 |",
+        "| VS Code terminal |",
+        "| tmux/SSH |",
+    ):
+        assert old_required_row not in required_scope
+    for out_of_scope in (
+        "VS Code integrated terminal",
+        "iTerm2",
+        "tmux/SSH",
+    ):
+        assert out_of_scope in matrix
+    assert "native Windows environment and native Windows Python/`uv` setup" in matrix
+    assert "A Windows Terminal tab running WSL counts as Linux/WSL evidence" in matrix
+    assert "real desktop terminal emulator" in matrix
+    assert "default terminal settings" in matrix
+
+
+def test_tui_qol_gate_defines_automated_support_and_result_packet() -> None:
+    matrix = read_doc("docs/tui-qol-qa.md")
+
+    for required_text in (
+        "## Required Automated Support Proof",
+        "one run on macOS, one run on native Windows, and one run on Linux",
+        "Python 3.12 on each OS",
+        "uv sync --all-extras --frozen",
+        "uv run ruff format --check .",
+        "uv run ruff check .",
+        "uv run --all-extras mypy src",
+        "uv run --all-extras pytest",
+        "uv --version",
+        "uv run python --version",
+        "uv run --all-extras csvql --version",
+        "Plain `csvql --version` is not sufficient for source-checkout proof",
+        "commands/automated-macos.*",
+        "commands/automated-windows.*",
+        "commands/automated-linux.*",
+        "source access method",
+        "commit verification command",
+        "observer timestamp",
+        "local or observer-provided",
+        "A local `pass` result from this lane is evidence only",
+    ):
+        assert required_text in matrix
 
 
 def test_release_docs_keep_tui_qol_closeout_out_of_candidate_eligibility() -> None:

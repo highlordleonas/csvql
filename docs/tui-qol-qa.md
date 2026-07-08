@@ -10,21 +10,24 @@ Any failed item blocks `release-candidate eligible`.
 If a terminal or flow is untested, failed, or missing required media evidence,
 the candidate status remains `not eligible yet`.
 
-## Current Closeout Status
+## Approved Three-OS Release-Proof Scope
 
-The current local TUI QoL closeout is macOS Terminal-focused evidence, not a
-full cross-terminal release gate pass.
+The approved release-proof target covers macOS Terminal, Windows Terminal, and
+one normal Linux desktop terminal. This is a new release-proof lane, not a claim
+that the project is already release-candidate eligible.
 
-- macOS Terminal is the verified local pass row for this lane. Local proof
-  artifacts live under `output/tui-qol-qa/20260706-c604a46/macos-terminal/`.
-- VS Code integrated terminal is out of scope for this closeout. The 2026-07-07
-  spike recorded a keybinding failure where default macOS Option-key handling
-  inserted text instead of opening TUI Help.
-- iTerm2 is blocked locally because the app was unavailable.
-- Linux terminal and Windows Terminal were not run locally.
-- tmux/SSH is blocked locally because `tmux` was unavailable.
+Historical local evidence remains useful context:
 
-This closeout does not make the project `release-candidate eligible`.
+- macOS Terminal previously passed local TUI QoL evidence under
+  `output/tui-qol-qa/20260706-c604a46/macos-terminal/`.
+- VS Code integrated terminal is out of scope for this release lane after the
+  2026-07-07 keybinding spike showed default macOS Option-key behavior did not
+  reliably reach the TUI.
+- iTerm2 and tmux/SSH are out of scope for this release lane.
+- Linux terminal and Windows Terminal still require same-`HEAD` evidence before
+  the final TUI proof result can pass.
+
+This approved scope does not make the project `release-candidate eligible`.
 
 ## Scope
 
@@ -44,38 +47,106 @@ SQL execution, production readiness, or broad large-file proof.
 
 ## Required Terminals
 
-A future complete TUI QoL run used for release-candidate eligibility must cover:
+A complete TUI QoL run used for this release-proof lane must cover:
 
 | Terminal path | Required evidence directory |
 | --- | --- |
 | macOS Terminal | `output/tui-qol-qa/<run-id>/macos-terminal/` |
-| iTerm2 | `output/tui-qol-qa/<run-id>/iterm2/` |
-| VS Code terminal | `output/tui-qol-qa/<run-id>/vscode-terminal/` |
-| Linux terminal | `output/tui-qol-qa/<run-id>/linux-terminal/` |
 | Windows Terminal | `output/tui-qol-qa/<run-id>/windows-terminal/` |
-| tmux/SSH | `output/tui-qol-qa/<run-id>/tmux-ssh/` |
+| GNOME Terminal or equivalent normal Linux desktop terminal | `output/tui-qol-qa/<run-id>/linux-terminal/` |
 
-If a terminal cannot be tested locally, the result row must name the outside
-observer and the collected local media path.
+The Windows Terminal row must use a native Windows environment and native Windows Python/`uv` setup. A Windows Terminal tab running WSL counts as Linux/WSL evidence, not Windows evidence, unless a separate design review
+explicitly approves a different classification before proof execution.
+
+The Linux row must use a real desktop terminal emulator, not an IDE-integrated
+terminal, CI pseudo-terminal, browser shell, SSH-only session, or terminal
+multiplexer. GNOME Terminal is preferred. Konsole, Xfce Terminal, xterm, or
+another normal locally displayed Linux desktop terminal is acceptable only if
+the evidence names the terminal and version.
+
+Terminal proof should use default terminal settings. A non-default setting is
+allowed only when explicitly approved before the run and recorded as a
+deviation in the result packet.
+
+## Out-of-Scope Rows
+
+These rows do not block this release-proof lane:
+
+- VS Code integrated terminal
+- iTerm2
+- tmux/SSH
+
+Out of scope does not mean unsupported forever. It means those terminal hosts
+must not be used to claim pass or fail status for the macOS, Windows, and Linux
+target.
 
 ## Required Setup
 
 Run from the repository root unless a step says otherwise.
 
-Use the same candidate commit for every terminal:
+Use the same candidate commit for every terminal and automated support proof
+source. Each manual platform row and automated platform proof must include a
+transcript path or embedded transcript that records:
 
 ```bash
 pwd -P
 git status --short --branch
 git log -1 --oneline
-env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run --all-extras csvql --version
+git remote -v
+git tag --points-at HEAD
+uv --version
+uv run python --version
+uv run --all-extras csvql --version
 ```
 
 Expected:
 
-- working tree is clean before the run
+- working tree state is recorded before the run
 - commit SHA is recorded in the result summary
 - version prints `1.0.0`
+- empty `git remote -v` or `git tag --points-at HEAD` output is recorded
+  explicitly rather than omitted
+
+Plain `csvql --version` is not sufficient for source-checkout proof because the
+console script may not be on `PATH`. It is allowed only for installed-wheel
+proof, and the result packet must record the wheel source, install command, and
+why installed-wheel proof was used.
+
+## Required Automated Support Proof
+
+The final proof result cannot be `pass` without same-`HEAD` automated support
+proof for macOS, native Windows, and Linux.
+
+Minimum automated support proof:
+
+- one run on macOS, one run on native Windows, and one run on Linux
+- Python 3.12 on each OS
+- dependency setup through `uv sync --all-extras --frozen`
+- exact dependency install command, output path, and exit status recorded
+- `uv run ruff format --check .`
+- `uv run ruff check .`
+- `uv run --all-extras mypy src`
+- `uv run --all-extras pytest`
+- baseline truth transcript, including `uv --version`,
+  `uv run python --version`, and `uv run --all-extras csvql --version`
+
+Any dependency install command other than `uv sync --all-extras --frozen` is a
+deviation. The result packet must record the exact command, reason, environment
+constraint, and why the output is still comparable.
+
+Release-readiness proof, package-content audit, benchmark proof, and
+unsupported-claim scans remain required same-`HEAD` release-readiness evidence,
+but they do not need to run on all three OS families for this lane unless a
+later approved plan explicitly broadens them.
+
+Automated support proof outputs should use a clearly mapped naming convention:
+
+- `commands/automated-macos.*`
+- `commands/automated-windows.*`
+- `commands/automated-linux.*`
+
+An equivalent naming scheme is acceptable only if `RESULT.md` maps each file to
+the OS family, runner, command set, and proof status.
 
 ## Behavior Matrix
 
@@ -128,14 +199,26 @@ result selector, or status line must identify the active result.
 Each terminal run must record:
 
 - date
-- commit SHA
-- tester
-- OS
+- candidate commit SHA
+- tester or outside observer
+- evidence source: local or observer-provided
+- source access method
+- commit verification command
+- OS name and version
 - terminal name and version
+- shell name and version
+- whether terminal settings are default or non-default
+- relevant locale or encoding settings if they affect rendering or keyboard
+  behavior
+- Python and `uv` setup path
 - viewport size range tested
 - pass/fail for each flow
 - blocker notes
 - media artifact paths
+- deviations, skipped steps, and failures
+
+Outside-observer evidence must also include the observer label, observer timestamp and timezone, setup transcript, source or evidence transfer method,
+and per-flow notes for every TUI QoL matrix item.
 
 Local media evidence is required for every terminal run, not only failures.
 Screenshots or recordings live under ignored proof paths:
@@ -152,43 +235,68 @@ The media files are local proof artifacts. Do not commit them.
 # TUI QoL QA Result
 
 - Run id:
-- Commit:
-- Overall status: pass | fail | blocked
-- Tester:
-- Date:
+- Candidate commit SHA:
+- Final status: pass | fail | blocked
+- A local `pass` result from this lane is evidence only; release-candidate eligibility requires separate same-`HEAD` proof agreement:
+- Local proof result only; release label changes require separate explicit approval:
+- No tag, publish, release artifact upload, version change, remote configuration, or release action occurred:
 
-| Terminal | OS | Version | Viewports | Media path | Status | Blockers |
-| --- | --- | --- | --- | --- | --- | --- |
-| macOS Terminal |  |  |  | output/tui-qol-qa/<run-id>/macos-terminal/ |  |  |
-| iTerm2 |  |  |  | output/tui-qol-qa/<run-id>/iterm2/ |  |  |
-| VS Code terminal |  |  |  | output/tui-qol-qa/<run-id>/vscode-terminal/ |  |  |
-| Linux terminal |  |  |  | output/tui-qol-qa/<run-id>/linux-terminal/ |  |  |
-| Windows Terminal |  |  |  | output/tui-qol-qa/<run-id>/windows-terminal/ |  |  |
-| tmux/SSH |  |  |  | output/tui-qol-qa/<run-id>/tmux-ssh/ |  |  |
+## Baseline Truth
 
-| Flow | macOS Terminal | iTerm2 | VS Code | Linux | Windows | tmux/SSH | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| QOL-01 |  |  |  |  |  |  |  |
-| QOL-02 |  |  |  |  |  |  |  |
-| QOL-03 |  |  |  |  |  |  |  |
-| QOL-04 |  |  |  |  |  |  |  |
-| QOL-05 |  |  |  |  |  |  |  |
-| QOL-06 |  |  |  |  |  |  |  |
-| QOL-07 |  |  |  |  |  |  |  |
-| QOL-08 |  |  |  |  |  |  |  |
-| QOL-09 |  |  |  |  |  |  |  |
-| QOL-10 |  |  |  |  |  |  |  |
-| QOL-11 |  |  |  |  |  |  |  |
-| QOL-12 |  |  |  |  |  |  |  |
-| QOL-13 |  |  |  |  |  |  |  |
-| QOL-14 |  |  |  |  |  |  |  |
-| QOL-15 |  |  |  |  |  |  |  |
-| QOL-16 |  |  |  |  |  |  |  |
-| QOL-17 |  |  |  |  |  |  |  |
-| QOL-18 |  |  |  |  |  |  |  |
-| QOL-19 |  |  |  |  |  |  |  |
-| QOL-20 |  |  |  |  |  |  |  |
-| QOL-21 |  |  |  |  |  |  |  |
+| Evidence item | Source access method | Commit verification command | Transcript path | Status |
+| --- | --- | --- | --- | --- |
+| macOS Terminal |  |  |  |  |
+| Windows Terminal |  |  |  |  |
+| Linux terminal |  |  |  |  |
+| Automated macOS |  |  | commands/automated-macos.* |  |
+| Automated Windows |  |  | commands/automated-windows.* |  |
+| Automated Linux |  |  | commands/automated-linux.* |  |
+
+## Automated Support Proof
+
+| OS | Runner | Python | uv | Install command | Command set | Output path | Status | Deviations |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| macOS |  |  |  | `uv sync --all-extras --frozen` | Ruff format, Ruff check, mypy, pytest | commands/automated-macos.* |  |  |
+| Windows |  |  |  | `uv sync --all-extras --frozen` | Ruff format, Ruff check, mypy, pytest | commands/automated-windows.* |  |  |
+| Linux |  |  |  | `uv sync --all-extras --frozen` | Ruff format, Ruff check, mypy, pytest | commands/automated-linux.* |  |  |
+
+## Manual Terminal Rows
+
+| Terminal | OS | Shell | Settings | Viewports | Evidence source | Media path | Status | Blockers |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| macOS Terminal |  |  | default |  | local | output/tui-qol-qa/<run-id>/macos-terminal/ |  |  |
+| Windows Terminal |  |  | default |  | local or observer-provided | output/tui-qol-qa/<run-id>/windows-terminal/ |  |  |
+| Linux terminal |  |  | default |  | local or observer-provided | output/tui-qol-qa/<run-id>/linux-terminal/ |  |  |
+
+## Flow Matrix
+
+| Flow | macOS Terminal | Windows Terminal | Linux terminal | Notes |
+| --- | --- | --- | --- | --- |
+| QOL-01 |  |  |  |  |
+| QOL-02 |  |  |  |  |
+| QOL-03 |  |  |  |  |
+| QOL-04 |  |  |  |  |
+| QOL-05 |  |  |  |  |
+| QOL-06 |  |  |  |  |
+| QOL-07 |  |  |  |  |
+| QOL-08 |  |  |  |  |
+| QOL-09 |  |  |  |  |
+| QOL-10 |  |  |  |  |
+| QOL-11 |  |  |  |  |
+| QOL-12 |  |  |  |  |
+| QOL-13 |  |  |  |  |
+| QOL-14 |  |  |  |  |
+| QOL-15 |  |  |  |  |
+| QOL-16 |  |  |  |  |
+| QOL-17 |  |  |  |  |
+| QOL-18 |  |  |  |  |
+| QOL-19 |  |  |  |  |
+| QOL-20 |  |  |  |  |
+| QOL-21 |  |  |  |  |
+
+## Out-of-Scope Rows
+
+VS Code integrated terminal, iTerm2, and tmux/SSH were out of scope for this release-proof lane.
 ```
 
 ## Automation Boundary
