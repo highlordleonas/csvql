@@ -1426,21 +1426,21 @@ def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
                 expected_entries=expected_sql_footer,
             )
 
-            app.query_one("#sources", DataTable).focus()
+            await pilot.press("f6")
             sources_footer = await _settled_footer_entries(
                 pilot,
                 app,
                 expected_entries=expected_sources_footer,
             )
 
-            app.query_one("#history", DataTable).focus()
+            await pilot.press("f8")
             history_footer = await _settled_footer_entries(
                 pilot,
                 app,
                 expected_entries=expected_history_footer,
             )
 
-            app.query_one("#results", DataTable).focus()
+            await pilot.press("f5")
             results_footer = await _settled_footer_entries(
                 pilot,
                 app,
