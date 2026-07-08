@@ -99,6 +99,24 @@ def test_single_source_completion_uses_bare_columns() -> None:
     assert column_items[0].insert_text == "customer_id"
 
 
+def test_single_source_completion_quotes_unsafe_column_identifiers() -> None:
+    source = _source("customers", SQLAssistColumn("Customer ID", "VARCHAR", "text"))
+    items = build_completion_items((source,), text="SELECT Cust", cursor_index=len("SELECT Cust"))
+
+    column_items = [item for item in items if item.item_kind == "column"]
+    assert len(column_items) == 1
+    assert column_items[0].insert_text == '"Customer ID"'
+
+
+def test_single_source_completion_quotes_reserved_column_identifiers() -> None:
+    source = _source("customers", SQLAssistColumn("select", "VARCHAR", "text"))
+    items = build_completion_items((source,), text="SELECT sel", cursor_index=len("SELECT sel"))
+
+    column_items = [item for item in items if item.item_kind == "column"]
+    assert len(column_items) == 1
+    assert column_items[0].insert_text == '"select"'
+
+
 def test_multi_source_completion_uses_source_qualified_columns() -> None:
     customers = _source("customers", SQLAssistColumn("customer_id", "VARCHAR", "text"))
     orders = _source("orders", SQLAssistColumn("customer_id", "VARCHAR", "text"))

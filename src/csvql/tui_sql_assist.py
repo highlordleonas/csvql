@@ -47,6 +47,7 @@ _KEYWORD_SNIPPETS = (
 )
 
 _TOKEN_PREFIX_PATTERN = re.compile(r'[A-Za-z0-9_."]')
+_UNQUOTED_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _NUMERIC_TYPES = {
     "INTEGER",
     "BIGINT",
@@ -544,7 +545,11 @@ def _column_completion_items(
     rendered_source = render_duckdb_identifier(source_name)
     for column in columns:
         rendered_column = render_duckdb_identifier(column.name)
-        insert_text = f"{rendered_source}.{rendered_column}" if force_qualified else column.name
+        insert_text = (
+            f"{rendered_source}.{rendered_column}"
+            if force_qualified
+            else _single_source_insert_text(column.name, rendered_column)
+        )
         items.append(
             SQLCompletionItem(
                 key=f"column:{source_name}:{column.name}",
@@ -555,6 +560,14 @@ def _column_completion_items(
             )
         )
     return items
+
+
+def _single_source_insert_text(column_name: str, rendered_column: str) -> str:
+    if _UNQUOTED_IDENTIFIER_PATTERN.fullmatch(column_name) and (
+        column_name.casefold() not in _RESERVED_GENERATED_IDENTIFIERS
+    ):
+        return column_name
+    return rendered_column
 
 
 def _matches_prefix(item: SQLCompletionItem, token_prefix: str) -> bool:
