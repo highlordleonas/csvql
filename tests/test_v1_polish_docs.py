@@ -310,12 +310,20 @@ def test_release_docs_require_approved_three_os_tui_proof_gate() -> None:
 
 def test_ci_workflow_collects_three_os_automated_support_gate() -> None:
     ci = read_doc(".github/workflows/ci.yml")
+    include_block = ci.split("        include:\n", 1)[1].split("    steps:\n", 1)[0]
+    expected_include_block = """          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: macos-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.12"
+"""
+
+    assert include_block == expected_include_block
 
     for required_text in (
-        '- os: ubuntu-latest\n            python-version: "3.11"',
-        '- os: ubuntu-latest\n            python-version: "3.12"',
-        '- os: macos-latest\n            python-version: "3.12"',
-        '- os: windows-latest\n            python-version: "3.12"',
         "ubuntu-latest",
         "macos-latest",
         "windows-latest",
