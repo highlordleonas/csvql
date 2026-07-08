@@ -48,8 +48,7 @@ Historical local evidence remains useful context:
   self-referential run id for their own commit unless a separate two-SHA proof
   recording model is approved.
 - Windows and Linux require same-`HEAD` automated support proof before the
-  final TUI proof result can pass; screenshots are not required for those OS
-  rows.
+  final TUI proof result can pass; screenshots are not required for those OS rows.
 
 This approved scope does not make the project `release-candidate eligible`.
 
