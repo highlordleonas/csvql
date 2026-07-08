@@ -1494,7 +1494,7 @@ class CSVQLMenuApp(App[None]):
         result: InspectResult,
         columns: tuple[TUISourceColumn, ...],
     ) -> None:
-        source = self.state.get_source(result.source["display_path"])
+        source = self.state.get_source(str(result.source["display_path"]))
         if result.row_count.exact and result.row_count.value is not None:
             row_count_status = str(result.row_count.value)
         else:
