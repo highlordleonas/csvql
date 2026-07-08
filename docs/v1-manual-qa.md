@@ -25,7 +25,7 @@ Expected: prints `1.0.0`.
 - [ ] CLI single-file query
 
   ```bash
-  env UV_CACHE_DIR=/private/tmp/uv-cache uv run csvql query \
+  env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run csvql query \
     examples/saas_revenue/data/revenue_movements.csv \
     "SELECT COUNT(*) AS movement_count FROM revenue_movements"
   ```
@@ -36,7 +36,7 @@ Expected: prints `1.0.0`.
 
   ```bash
   cd examples/saas_revenue
-  env UV_CACHE_DIR=/private/tmp/uv-cache uv run csvql query \
+  env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run csvql query \
     "SELECT COUNT(*) AS customer_count FROM customers"
   ```
 
@@ -47,11 +47,11 @@ Expected: prints `1.0.0`.
   ```bash
   cd examples/saas_revenue
   mkdir -p .csvql/results
-  env UV_CACHE_DIR=/private/tmp/uv-cache uv run csvql export queries/revenue_health.sql \
+  env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run csvql export queries/revenue_health.sql \
     --format csv \
     --out .csvql/results/revenue_health.csv \
     --force
-  env UV_CACHE_DIR=/private/tmp/uv-cache uv run csvql query \
+  env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run csvql query \
     --table revenue_health_result=.csvql/results/revenue_health.csv \
     "SELECT COUNT(*) AS result_rows FROM revenue_health_result"
   ```
@@ -61,7 +61,7 @@ Expected: prints `1.0.0`.
 - [ ] TUI launch
 
   ```bash
-  env UV_CACHE_DIR=/private/tmp/uv-cache uv run --all-extras csvql menu \
+  env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run --all-extras csvql menu \
     examples/saas_revenue/data/revenue_movements.csv
   ```
 
@@ -121,7 +121,7 @@ Expected: prints `1.0.0`.
   Run:
 
   ```bash
-  env UV_CACHE_DIR=/private/tmp/uv-cache uv run csvql query \
+  env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run csvql query \
     --table revenue_movements=examples/saas_revenue/data/revenue_movements.csv \
     "SELECT missing_column FROM revenue_movements"
   ```
@@ -145,13 +145,13 @@ Expected: prints `1.0.0`.
   ```bash
   cd examples/saas_revenue
   mkdir -p output
-  env UV_CACHE_DIR=/private/tmp/uv-cache uv run csvql export queries/revenue_health.sql \
+  env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run csvql export queries/revenue_health.sql \
     --format csv \
     --out output/revenue-health.csv
-  env UV_CACHE_DIR=/private/tmp/uv-cache uv run csvql export queries/revenue_health.sql \
+  env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run csvql export queries/revenue_health.sql \
     --format csv \
     --out output/revenue-health.csv
-  env UV_CACHE_DIR=/private/tmp/uv-cache uv run csvql export queries/revenue_health.sql \
+  env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run csvql export queries/revenue_health.sql \
     --format csv \
     --out output/revenue-health.csv \
     --force
@@ -163,7 +163,7 @@ Expected: prints `1.0.0`.
 - [ ] Missing file behavior
 
   ```bash
-  env UV_CACHE_DIR=/private/tmp/uv-cache uv run csvql query missing.csv "SELECT 1"
+  env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run csvql query missing.csv "SELECT 1"
   ```
 
   Expected: exit code `4` and a message that the CSV file was not found.

@@ -111,9 +111,14 @@ Run candidate evaluation from a clean worktree on `main`.
 1. Capture baseline truth:
 
    ```bash
-   pwd
+   pwd -P
    git status --short --branch
    git log -1 --oneline
+   git remote -v
+   git tag --points-at HEAD
+   uv --version
+   uv run python --version
+   uv run --all-extras csvql --version
    ```
 
 2. Confirm authority docs agree with implemented runtime behavior:
@@ -167,8 +172,12 @@ Run candidate evaluation from a clean worktree on `main`.
    - `release-candidate eligible`: release package exists, full local gate
      passes, release-readiness proof passes, benchmark proof is refreshed or a
      same-HEAD local benchmark artifact is cited with benchmark JSON and
-     Markdown summary paths, authority docs agree, and unsupported claims are
-     absent.
+     Markdown summary paths, authority docs agree, the TUI QoL QA gate passes
+     on macOS Terminal, Windows Terminal, and one normal Linux desktop terminal
+     with a recorded run id, media artifact paths, baseline transcripts, source
+     access method, commit verification command, and no failed, untested, or
+     missing-media items, same-`HEAD` three-OS automated support proof passes
+     on macOS, native Windows, and Linux, and unsupported claims are absent.
    - `blocked`: a named proof, contract, docs, environment, dependency, or
      tooling blocker prevents honest candidate classification.
 
@@ -197,6 +206,8 @@ Use `release-candidate eligible` only as an assessment result after:
   failed, untested, or missing-media items
 - three-OS automated support proof passes on macOS, native Windows, and Linux
   for the same candidate `HEAD`
+- baseline transcripts and automated support proof are same-`HEAD` evidence for
+  the candidate state being classified
 - changelog and release-note material exists for the implemented surfaces
 - docs make no unsupported sandbox, security-isolation, production-readiness,
   or large-file performance claims

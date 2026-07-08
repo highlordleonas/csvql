@@ -86,6 +86,8 @@ def test_manual_qa_matrix_covers_cli_and_tui_release_paths() -> None:
     assert "keep or select the intended active result" in matrix
     assert "save the last tabular result" not in matrix
     assert "save it with `Ctrl+S`" in matrix
+    assert "/private/tmp/uv-cache-csvql-localql" in matrix
+    assert "UV_CACHE_DIR=/private/tmp/uv-cache uv run" not in matrix
 
 
 def test_tui_workbench_svg_matches_repaired_run_buffer_and_active_result_labels() -> None:
@@ -239,6 +241,7 @@ def test_tui_qol_gate_uses_approved_three_os_release_scope() -> None:
 
 def test_tui_qol_gate_defines_automated_support_and_result_packet() -> None:
     matrix = read_doc("docs/tui-qol-qa.md")
+    normalized_matrix = normalized_markdown_text(matrix)
 
     for required_text in (
         "## Required Automated Support Proof",
@@ -261,8 +264,15 @@ def test_tui_qol_gate_defines_automated_support_and_result_packet() -> None:
         "observer timestamp",
         "local or observer-provided",
         "A local `pass` result from this lane is evidence only",
+        "## Classification Rules",
     ):
         assert required_text in matrix
+    for required_text in (
+        "`pass`: all three manual terminal rows pass, all three automated support rows pass",
+        "`fail`: a required manual flow runs and fails, or a required automated",
+        "`blocked`: required evidence is missing, stale, untrusted, lacks approved",
+    ):
+        assert required_text in normalized_matrix
 
 
 def test_release_docs_keep_tui_qol_closeout_out_of_candidate_eligibility() -> None:
@@ -334,6 +344,7 @@ def test_ci_workflow_collects_three_os_automated_support_gate() -> None:
         "uv --version",
         "uv run python --version",
         "uv run --all-extras csvql --version",
+        "fetch-depth: 0",
         "uv run ruff format --check .",
         "uv run ruff check .",
         "uv run --all-extras mypy src",
@@ -386,6 +397,7 @@ def test_manual_qa_matrix_links_tui_qol_gate() -> None:
 
 def test_release_readiness_links_manual_qa_matrix() -> None:
     readiness = read_doc("docs/release-readiness.md")
+    normalized_readiness = normalized_markdown_text(readiness)
 
     assert "[Manual v1 QA matrix](v1-manual-qa.md)" in readiness
     assert "[TUI QoL QA gate](tui-qol-qa.md)" in readiness
@@ -398,6 +410,26 @@ def test_release_readiness_links_manual_qa_matrix() -> None:
     assert "three-OS automated support proof" in readiness
     assert "Plain `csvql --version` is not sufficient for source-checkout proof" in readiness
     assert "A local `pass` result from this lane is evidence only." in readiness
+    local_candidate_workflow = readiness.split("## Local Candidate Workflow", 1)[1]
+    for required_text in (
+        "pwd -P",
+        "git status --short --branch",
+        "git log -1 --oneline",
+        "git remote -v",
+        "git tag --points-at HEAD",
+        "uv --version",
+        "uv run python --version",
+        "uv run --all-extras csvql --version",
+    ):
+        assert required_text in local_candidate_workflow
+    for required_text in (
+        "baseline transcripts",
+        "source access method",
+        "commit verification command",
+        "no failed, untested, or missing-media items",
+        "same-`HEAD` three-OS automated support proof passes",
+    ):
+        assert required_text in normalized_readiness
 
 
 def test_release_notes_require_manual_qa_and_tui_qol_gates() -> None:
@@ -412,11 +444,15 @@ def test_release_notes_require_manual_qa_and_tui_qol_gates() -> None:
     assert "manual v1 QA matrix is recorded for the candidate state" in release_notes
     assert "three-OS automated support proof" in release_notes
     assert "A local `pass` result from this lane is evidence only." in release_notes
+    assert "baseline transcripts" in release_notes
+    assert "source access method" in release_notes
+    assert "commit verification command" in release_notes
     assert (
         "the TUI QoL QA gate passes on macOS Terminal, Windows Terminal, and one normal"
         in release_notes
     )
     assert "no failed, untested, or missing-media items" in release_notes
+    assert "same candidate `HEAD`" in release_notes
 
 
 def test_docs_describe_tui_active_result_not_last_successful_result() -> None:

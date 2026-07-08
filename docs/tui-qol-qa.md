@@ -229,6 +229,18 @@ output/tui-qol-qa/<run-id>/<terminal-id>/
 
 The media files are local proof artifacts. Do not commit them.
 
+## Classification Rules
+
+- `pass`: all three manual terminal rows pass, all three automated support rows
+  pass, the evidence is same-`HEAD`, and the required baseline transcripts,
+  source access method, commit verification command, and media artifacts are
+  complete.
+- `fail`: a required manual flow runs and fails, or a required automated
+  command runs and fails.
+- `blocked`: required evidence is missing, stale, untrusted, lacks approved
+  source access, lacks media or commit identity, or same-`HEAD` evidence cannot
+  be proven.
+
 ## Result Summary Template
 
 ```markdown
