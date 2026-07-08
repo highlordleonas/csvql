@@ -116,7 +116,8 @@ def test_sample_rejects_non_positive_limit(tmp_path: Path) -> None:
     result = runner.invoke(app, ["sample", str(csv_path), "--limit", "0"], terminal_width=120)
 
     assert result.exit_code == 2
-    assert "--limit" in result.output
+    assert "Invalid value" in result.output
+    assert "range x>=1" in result.output
 
 
 def test_inspect_missing_file_uses_existing_file_error() -> None:

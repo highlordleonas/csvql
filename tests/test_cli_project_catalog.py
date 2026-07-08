@@ -150,18 +150,18 @@ def test_tables_json_output_is_deterministic(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload == {
-        "config_path": str((tmp_path / CONFIG_FILENAME).resolve()),
-        "project_root": str(tmp_path.resolve()),
+        "config_path": (tmp_path / CONFIG_FILENAME).resolve().as_posix(),
+        "project_root": tmp_path.resolve().as_posix(),
         "tables": [
             {
                 "name": "alpha",
                 "path": "alpha.csv",
-                "resolved_path": str(alpha_path.resolve()),
+                "resolved_path": alpha_path.resolve().as_posix(),
             },
             {
                 "name": "orders",
                 "path": "data/orders.csv",
-                "resolved_path": str(orders_path.resolve()),
+                "resolved_path": orders_path.resolve().as_posix(),
             },
         ],
     }

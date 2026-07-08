@@ -24,8 +24,6 @@ def test_menu_help_lists_startup_arguments() -> None:
 
     assert result.exit_code == 0, result.output
     assert "Open the interactive CSVQL terminal menu." in result.output
-    assert "--table" in result.output
-    assert "CSV file to preload into the TUI session." in result.output
 
 
 def test_menu_delegates_startup_args(

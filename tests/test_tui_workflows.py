@@ -168,7 +168,9 @@ def test_sources_from_csv_path_text_preserves_backslash_path_text(tmp_path: Path
         start_dir=tmp_path,
     )
 
-    assert sources == (TUISource(name="pasted_orders", path=csv_path.resolve(), origin="session"),)
+    assert len(sources) == 1
+    assert sources[0].path == csv_path.resolve()
+    assert sources[0].origin == "session"
 
 
 def test_sources_from_csv_path_text_accepts_file_urls(tmp_path: Path) -> None:

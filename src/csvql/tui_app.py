@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
@@ -1226,7 +1226,11 @@ class CSVQLMenuApp(App[None]):
             sources_table.move_cursor(row=0)
 
     def _refresh_pane_context(self) -> None:
-        if isinstance(self.screen, (_HelpScreen, _PromptInputScreen)):
+        try:
+            current_screen = self.screen
+        except ScreenStackError:
+            return
+        if isinstance(current_screen, (_HelpScreen, _PromptInputScreen)):
             return
         try:
             active_pane = self._active_focus_pane()

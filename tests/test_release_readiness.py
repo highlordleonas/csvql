@@ -159,7 +159,10 @@ version = "0.1.0"
         "install",
         "--python",
         str(python_path),
-        f"localql[tui] @ file://{repo_root / 'out' / 'dist' / 'localql-0.1.0-py3-none-any.whl'}",
+        (
+            "localql[tui] @ "
+            f"{(repo_root / 'out' / 'dist' / 'localql-0.1.0-py3-none-any.whl').resolve().as_uri()}"
+        ),
     ] in seen_commands
 
 

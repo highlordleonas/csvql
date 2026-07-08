@@ -25,7 +25,9 @@ def _copy_example_project(tmp_path: Path) -> Path:
 
 def _hash_csv_outputs(project_root: Path) -> dict[str, str]:
     return {
-        csv_path.name: sha256(csv_path.read_bytes()).hexdigest()
+        csv_path.name: sha256(
+            csv_path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
+        ).hexdigest()
         for csv_path in sorted(project_root.glob("data/*.csv"))
     }
 
