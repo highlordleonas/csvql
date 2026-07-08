@@ -5,16 +5,19 @@
 Approved design pending implementation.
 
 The conversation-level design and tracked revised spec were approved on
-2026-07-08. Implementation must follow the Skill Activation Contract and the
-approved implementation plan.
+2026-07-08. A follow-up design revision approved on 2026-07-08 changes the
+SQL-editor completion trigger contract: `Tab` is the primary completion key,
+`Ctrl+Space` remains a secondary trigger where terminals deliver it, and plain
+`Tab` falls back to four-space indentation instead of pane focus. Implementation
+must follow the Skill Activation Contract and the approved implementation plan.
 
 ## Baseline Truth
 
 Design-session repo truth:
 
 - branch: `main`
-- tracked status: clean and tracking `origin/main`
-- `HEAD`: `0990fd3 test: wait for tui sample before export refusal`
+- tracked status: clean and `main...origin/main [ahead 10]`
+- `HEAD`: `88a62cd fix: quote unsafe tui completion identifiers`
 - `origin`: `https://github.com/highlordleonas/csvql.git`
 - no tag points at `HEAD`
 - no repo-local `AGENTS.md` or `AGENTS.override.md` was found in the checked
@@ -76,6 +79,11 @@ The product direction remains local-first and deterministic. This feature
 should help users write DuckDB SQL faster from known local CSV metadata. It must
 not become natural-language execution, hidden analytics, or automatic query
 execution.
+
+Manual proof on the current implementation showed that `c`, `i`, and `x` work
+live in Terminal, but `Ctrl+Space` could not be proven as a reliable primary
+completion trigger in the default macOS Terminal path. This follow-up revision
+resolves that trigger decision in favor of editor-owned `Tab`.
 
 ## Goals
 
@@ -347,11 +355,17 @@ range-alias-qualified columns.
 
 The completion palette is v1 autocomplete. It is explicit, not as-you-type.
 
-It works only from the SQL editor in this slice. `Ctrl+Space` is the preferred
-primary trigger. This spec does not name a fallback key. The implementation
-plan must include a Textual key-behavior check and make a documented fallback
-decision before docs claim one. If no reliable fallback is found, the
-implementation must document `Ctrl+Space` as the only supported v1 trigger.
+It works only from the SQL editor in this slice.
+
+Plain `Tab` in the SQL editor is the primary trigger. The SQL editor owns this
+key rather than pane-focus traversal. When the current caret context has
+completion items, `Tab` opens the palette. When no completion items are
+available, `Tab` inserts four spaces and keeps focus in the SQL editor.
+
+`Ctrl+Space` remains a secondary trigger where the terminal delivers it. This
+slice does not add `Ctrl+Tab`, `Ctrl+Shift+Tab`, reverse-pane cycling, or any
+other modified-`Tab` pane-navigation contract. Pane focus remains on the
+existing explicit focus keys and documented control-key paths.
 
 The palette should offer:
 
@@ -410,6 +424,9 @@ the end of the editor.
 - If the typed qualifier is unknown, including an undeclared generated range
   alias such as `rm.`, v1 must not infer what it means and should show no column
   completions for that qualifier.
+- The same deterministic helper decision applies to `Tab` and `Ctrl+Space`. If
+  the current caret context yields no completion items, `Tab` must not guess
+  and should insert indentation instead.
 - Existing append helpers for `l` and the current starter query are not
   sufficient for completion behavior.
 
@@ -483,12 +500,12 @@ must not auto-read the CSV as a side effect of opening the picker. Preview and
 row-count templates should still be available because they require only the
 selected source alias/table name.
 
-If no completion items are available, the palette should close or show a clear
-status message without changing editor text.
+If no completion items are available and the user pressed `Tab`, the editor
+should insert four spaces and keep focus in the SQL editor.
 
-If the fallback completion key is not reliable in Textual tests, the
-implementation plan must choose a different fallback or document `Ctrl+Space`
-as the only supported trigger for the first slice.
+If no completion items are available and the user pressed `Ctrl+Space`, the
+palette should close or show a clear status message without changing editor
+text.
 
 ## Acceptance Criteria
 
@@ -515,10 +532,13 @@ as the only supported trigger for the first slice.
   DuckDB identifier rendering where helpful.
 - Generated SQL range aliases and generated output aliases are deterministic,
   valid DuckDB identifiers, and collision-safe.
-- SQL editor completion opens with `Ctrl+Space`.
-- The implementation records a documented fallback-key decision after verifying
-  Textual key behavior. The decision may be "no fallback in v1" if no reliable
-  fallback is found.
+- SQL editor completion opens with `Tab` from the SQL editor when completion
+  items exist.
+- When no completion items are available, `Tab` inserts four spaces and keeps
+  focus in the SQL editor.
+- `Ctrl+Space` remains supported as a secondary SQL-editor completion trigger
+  where the terminal delivers it.
+- Plain `Tab` no longer moves focus out of the SQL editor.
 - Completion suggests source aliases/table names immediately.
 - Completion keeps source aliases/table names distinct from generated SQL range
   aliases.
@@ -534,8 +554,10 @@ as the only supported trigger for the first slice.
   otherwise replaces the current lexical token prefix.
 - Opening completion or the template picker does not read CSV files, run SQL, or
   mutate results.
-- Docs and help text describe the new behavior without implying AI, hidden
-  execution, or safety for untrusted SQL.
+- Docs and help text describe `Tab` as the primary SQL-editor completion key,
+  `Ctrl+Space` as secondary where terminals deliver it, and the existing
+  explicit pane-focus keys as unchanged, without implying AI, hidden execution,
+  or safety for untrusted SQL.
 
 ## Test Plan
 
@@ -582,7 +604,13 @@ TUI interaction tests should cover:
 - `x` opens a picker and inserts selected SQL without running it
 - `x` does not inspect or load columns automatically when metadata is missing
 - `x` still offers preview and row-count templates when metadata is missing
-- completion palette opens from the SQL editor
+- `Tab` opens the completion palette from the SQL editor when completion items
+  exist
+- `Tab` inserts four spaces and keeps focus in the SQL editor when no
+  completion items are available
+- plain `Tab` no longer moves focus out of the SQL editor
+- `Ctrl+Space` still opens the completion palette from the SQL editor where the
+  terminal delivers it
 - completion palette is not active from unrelated panes
 - selecting a source alias/table name inserts text
 - selecting a loaded column inserts text
@@ -592,14 +620,13 @@ TUI interaction tests should cover:
 - token replacement after a source-qualified prefix such as
   `"revenue_movements".` produces a rendered source-qualified column
 - token replacement after an unknown qualifier such as `rm.` does not infer a
-  generated range alias and shows no column completions for that qualifier
+  generated range alias and shows no column completions for that qualifier; if
+  `Tab` triggered the request, it falls through to indentation
 - spies or monkeypatches prove that opening completion or a template picker does
   not call inspect, column loading, sample, profile, query execution, export,
   save, or result mutation paths
 - generated SQL insertion changes only the editor text until the user explicitly
   runs SQL
-- fallback key behavior is verified before docs claim it, or docs explicitly
-  say no fallback is supported in v1
 
 Verification for the implementation lane should include targeted unit tests,
 targeted TUI tests, Ruff format check, Ruff lint, mypy over `src`, and full
