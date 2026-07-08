@@ -4522,6 +4522,34 @@ def test_inspect_source_is_distinct_from_columns_and_loads_completion_metadata(
     assert "customers: 2 columns inspected." in status
 
 
+def test_inspect_source_shows_display_path_distinct_from_alias(tmp_path: Path) -> None:
+    csv_path = tmp_path / "orders_data.csv"
+    csv_path.write_text("order_id,total\nORD-1,10\n", encoding="utf-8")
+    state = TUISessionState()
+    state.add_source(TUISource(name="orders", path=csv_path, origin="argument"))
+
+    async def _inner() -> dict[str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("i")
+            await pilot.pause()
+
+            table = app.query_one("#results", DataTable)
+            return {
+                str(table.get_cell_at(Coordinate(row, 0))): str(
+                    table.get_cell_at(Coordinate(row, 1))
+                )
+                for row in range(table.row_count)
+            }
+
+    rows = asyncio.run(_inner())
+
+    assert rows["source alias/table name"] == "orders"
+    assert rows["display path"] == "orders_data.csv"
+
+
 def test_starter_picker_offers_metadata_free_templates_without_loading_columns(
     tmp_path: Path,
 ) -> None:
@@ -4716,6 +4744,46 @@ def test_sql_completion_does_not_call_inspect_or_query_paths(
             return type(app.screen).__name__
 
     assert asyncio.run(_inner()) == "_SQLAssistPickerScreen"
+
+
+def test_remove_source_is_blocked_while_inspect_operation_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_inspect_source(source: TUISource) -> object:
+        started.set()
+        assert release.wait(timeout=2)
+        from csvql.tui_workflows import inspect_source as real_inspect_source
+
+        return real_inspect_source(source)
+
+    monkeypatch.setattr("csvql.tui_app.inspect_source", slow_inspect_source)
+
+    async def _inner() -> tuple[int, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("i")
+            await pilot.pause(0.1)
+            await pilot.press("d")
+            await pilot.press("y")
+            await pilot.pause(0.1)
+            release.set()
+            await pilot.pause(0.2)
+            return app.query_one("#sources", DataTable).row_count, app.query_one(
+                "#status", Static
+            ).content
+
+    row_count, status = asyncio.run(_inner())
+
+    assert started.is_set()
+    assert row_count == 1
+    assert "customers: 2 columns inspected." in status
 
 
 def test_source_insert_error_clears_exportable_result_when_no_source_selected(

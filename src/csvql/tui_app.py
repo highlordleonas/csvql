@@ -1238,6 +1238,7 @@ class CSVQLMenuApp(App[None]):
             "sample_source",
             "profile_source",
             "show_source_columns",
+            "remove_source",
             "export_last_result",
             "save_result_as_source",
         }
@@ -1502,7 +1503,7 @@ class CSVQLMenuApp(App[None]):
         rows: list[tuple[object, object]] = [
             ("source alias/table name", source.name),
             ("origin", source.origin),
-            ("display path", result.source.get("display_path", "")),
+            ("display path", _display_path(source.path, self.start_dir)),
             ("row-count status", row_count_status),
             ("column count", len(columns)),
             ("delimiter", result.dialect.delimiter or ""),
