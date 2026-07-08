@@ -107,18 +107,31 @@ def test_tui_workbench_svg_matches_repaired_run_buffer_and_active_result_labels(
 def test_tui_qol_qa_gate_is_blocking_and_records_terminal_evidence() -> None:
     matrix = read_doc("docs/tui-qol-qa.md")
     normalized_matrix = normalized_markdown_text(matrix)
+    required_scope = matrix.split("## Out-of-Scope Rows", 1)[0]
 
     assert "# TUI QoL QA Gate" in matrix
     assert "Any failed item blocks `release-candidate eligible`." in matrix
-    for terminal in (
-        "macOS Terminal",
+    for terminal_row in (
+        "| macOS Terminal | `output/tui-qol-qa/<run-id>/macos-terminal/` |",
+        "| Windows Terminal | `output/tui-qol-qa/<run-id>/windows-terminal/` |",
+        "| GNOME Terminal or equivalent normal Linux desktop terminal | "
+        "`output/tui-qol-qa/<run-id>/linux-terminal/` |",
+    ):
+        assert terminal_row in required_scope
+    for stale_required_row in (
+        "| iTerm2 |",
+        "| VS Code terminal |",
+        "| VS Code integrated terminal |",
+        "| Linux terminal |",
+        "| tmux/SSH |",
+    ):
+        assert stale_required_row not in required_scope
+    for out_of_scope_terminal in (
+        "VS Code integrated terminal",
         "iTerm2",
-        "VS Code terminal",
-        "Linux terminal",
-        "Windows Terminal",
         "tmux/SSH",
     ):
-        assert terminal in matrix
+        assert out_of_scope_terminal in matrix
     for flow in (
         "Launch empty",
         "Launch with one CSV",
