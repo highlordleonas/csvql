@@ -7,8 +7,11 @@ This matrix is local evidence only. It does not publish, tag, upload, or claim
 
 For terminal usability coverage, also run the [TUI QoL QA gate](tui-qol-qa.md).
 The TUI QoL QA gate is blocking for `release-candidate eligible`.
-The approved TUI release-proof target covers macOS Terminal, Windows Terminal, and one normal Linux desktop terminal, plus same-`HEAD` three-OS automated
-support proof. VS Code integrated terminal, iTerm2, and tmux/SSH are out of scope for this release lane.
+The approved TUI release-proof target now requires same-`HEAD` automated support
+proof on macOS, native Windows, and Linux. Windows and Linux screenshots or
+manual terminal media are no longer required for this release lane. VS Code
+integrated terminal, iTerm2, and tmux/SSH are out of scope for this release
+lane.
 
 Run from the repository root unless a step explicitly changes directories.
 

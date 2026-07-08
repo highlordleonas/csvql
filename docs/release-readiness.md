@@ -75,8 +75,12 @@ The matrix covers CLI-only reuse, optional TUI flows, derived-source save and
 query, bad SQL, TUI DDL metadata results, export overwrite behavior, missing
 files, quit behavior, and Mac keybinding paths.
 
-Run the TUI QoL QA gate for required terminal coverage, media evidence, and
-state-clarity checks. The approved TUI release-proof target covers macOS Terminal, Windows Terminal, and one normal Linux desktop terminal. VS Code integrated terminal, iTerm2, and tmux/SSH are out of scope for this release lane.
+Run the TUI QoL QA gate for rescoped terminal/TUI evidence and state-clarity
+checks. The approved TUI release-proof target now requires same-`HEAD`
+automated support proof on macOS, native Windows, and Linux. Windows and Linux
+screenshots or manual terminal media are no longer required for this release
+lane. VS Code integrated terminal, iTerm2, and tmux/SSH are out of scope for
+this release lane.
 
 The final TUI proof result also requires same-`HEAD` three-OS automated support
 proof for macOS, native Windows, and Linux. Minimum automated support proof uses
@@ -141,11 +145,11 @@ Run candidate evaluation from a clean worktree on `main`.
 4. Run release-readiness proof.
 5. Run the manual v1 QA matrix and record the date, commit SHA, terminal app,
    passed items, and blockers.
-6. Confirm `docs/tui-qol-qa.md` defines the approved three-OS TUI proof gate.
-   Run the TUI QoL QA gate and record the TUI QoL run id, required terminal
-   coverage, media artifact paths, passed items, blockers, source access
-   method, commit verification command, baseline transcripts, observer labels,
-   and deviations.
+6. Confirm `docs/tui-qol-qa.md` defines the approved cross-OS automated TUI
+   proof gate. Run the TUI QoL QA gate and record the TUI QoL run id, required
+   automated proof outputs, any cited manual terminal context, passed items,
+   blockers, source access method, commit verification command, baseline
+   transcripts, observer labels, and deviations.
 7. Record three-OS automated support proof for macOS, native Windows, and
    Linux on the same candidate `HEAD`.
 8. Run benchmark proof or explicitly cite a current local benchmark artifact.
@@ -172,12 +176,12 @@ Run candidate evaluation from a clean worktree on `main`.
    - `release-candidate eligible`: release package exists, full local gate
      passes, release-readiness proof passes, benchmark proof is refreshed or a
      same-HEAD local benchmark artifact is cited with benchmark JSON and
-     Markdown summary paths, authority docs agree, the TUI QoL QA gate passes
-     on macOS Terminal, Windows Terminal, and one normal Linux desktop terminal
-     with a recorded run id, media artifact paths, baseline transcripts, source
-     access method, commit verification command, and no failed, untested, or
-     missing-media items, same-`HEAD` three-OS automated support proof passes
-     on macOS, native Windows, and Linux, and unsupported claims are absent.
+     Markdown summary paths, authority docs agree, the TUI QoL QA gate records
+     the required automated proof outputs and any cited manual terminal
+     context, same-`HEAD` three-OS automated support proof passes on macOS,
+     native Windows, and Linux with baseline transcripts, source access method,
+     commit verification command, and no failed or missing required checks, and
+     unsupported claims are absent.
    - `blocked`: a named proof, contract, docs, environment, dependency, or
      tooling blocker prevents honest candidate classification.
 
@@ -200,10 +204,10 @@ Use `release-candidate eligible` only as an assessment result after:
 - benchmark proof is refreshed or a same-HEAD local benchmark artifact is cited
   with benchmark JSON and Markdown summary paths
 - the full local gate passes
-- the TUI QoL QA gate passes on macOS Terminal, Windows Terminal, and one normal
-  Linux desktop terminal with a recorded run id, media artifact paths, baseline
-  transcripts, source access method, commit verification command, and no
-  failed, untested, or missing-media items
+- the TUI QoL QA gate records the required automated proof outputs and any
+  cited manual terminal context with a recorded run id, baseline transcripts,
+  source access method, commit verification command, and no failed or missing
+  required checks
 - three-OS automated support proof passes on macOS, native Windows, and Linux
   for the same candidate `HEAD`
 - baseline transcripts and automated support proof are same-`HEAD` evidence for

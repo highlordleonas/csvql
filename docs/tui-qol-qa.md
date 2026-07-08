@@ -1,31 +1,43 @@
 # TUI QoL QA Gate
 
-Status: blocking manual quality-of-life gate for `csvql menu`.
+Status: blocking release-proof gate for `csvql menu` deterministic behavior and
+cross-OS automated support.
 
 This gate is local release evidence only. It does not publish, tag, upload,
 push, bump version, or claim `v1-stable`.
 
-Any failed item blocks `release-candidate eligible`.
+Any failed required item blocks `release-candidate eligible`.
 
-If a terminal or flow is untested, failed, or missing required media evidence,
-the candidate status remains `not eligible yet`.
+If required automated support proof is untested, failed, stale, or missing
+same-`HEAD` identity, the candidate status remains `not eligible yet`.
+Windows and Linux screenshots or manual terminal media are not required for
+this rescoped lane.
 
-## Approved Three-OS Release-Proof Scope
+## Approved Cross-OS Automated Release-Proof Scope
 
-The approved release-proof target covers macOS Terminal, Windows Terminal, and
-one normal Linux desktop terminal. This is a new release-proof lane, not a claim
-that the project is already release-candidate eligible.
+The approved release-proof target now uses same-`HEAD` automated support proof
+on macOS, native Windows, and Linux. Windows and Linux manual terminal
+screenshots are no longer required for this lane. This is a rescoped
+release-proof lane, not a claim that the project is already release-candidate
+eligible.
+
+This proof shows that the source checkout, CLI, Python package, optional
+Textual-backed TUI code, and deterministic test-covered behavior pass on those
+OS families. It does not prove OS-level Windows or Linux terminal UX details
+such as function-key delivery, Alt-key delivery, native picker focus, or visual
+terminal rendering. A separate approved manual terminal proof lane is required
+before making those OS-level UX claims.
 
 Historical local evidence remains useful context:
 
-- macOS Terminal previously passed local TUI QoL evidence under
-  `output/tui-qol-qa/20260706-c604a46/macos-terminal/`.
+- macOS Terminal local TUI QoL evidence has been recorded under
+  `output/tui-qol-qa/20260707-0a946cc-three-os-tui/macos-terminal/`.
 - VS Code integrated terminal is out of scope for this release lane after the
   2026-07-07 keybinding spike showed default macOS Option-key behavior did not
   reliably reach the TUI.
 - iTerm2 and tmux/SSH are out of scope for this release lane.
-- Linux terminal and Windows Terminal still require same-`HEAD` evidence before
-  the final TUI proof result can pass.
+- Windows and Linux require same-`HEAD` automated support proof before the final
+  TUI proof result can pass; screenshots are not required for those OS rows.
 
 This approved scope does not make the project `release-candidate eligible`.
 
@@ -45,28 +57,29 @@ It does not add a web UI, cloud workflow, plugin system, NLP execution path, or
 broader product platform scope. It does not claim sandbox safety, safe untrusted
 SQL execution, production readiness, or broad large-file proof.
 
-## Required Terminals
+## Manual Terminal Evidence
 
-A complete TUI QoL run used for this release-proof lane must cover:
+A manual terminal run is optional context for this rescoped lane unless a later
+approved plan makes a specific manual row required. The retained manual terminal
+context for the current lane is macOS Terminal:
 
 | Terminal path | Required evidence directory |
 | --- | --- |
 | macOS Terminal | `output/tui-qol-qa/<run-id>/macos-terminal/` |
-| Windows Terminal | `output/tui-qol-qa/<run-id>/windows-terminal/` |
-| GNOME Terminal or equivalent normal Linux desktop terminal | `output/tui-qol-qa/<run-id>/linux-terminal/` |
 
-The Windows Terminal row must use a native Windows environment and native Windows Python/`uv` setup. A Windows Terminal tab running WSL counts as Linux/WSL evidence, not Windows evidence, unless a separate design review
+Optional Windows or Linux manual terminal evidence may be recorded under
+`output/tui-qol-qa/<run-id>/windows-terminal/` or
+`output/tui-qol-qa/<run-id>/linux-terminal/`, but those media paths are not
+required for `release-candidate eligible` in this lane.
+
+Native Windows automated proof must use a native Windows environment and native
+Windows Python/`uv` setup. A Windows Terminal tab running WSL counts as
+Linux/WSL context, not native Windows proof, unless a separate design review
 explicitly approves a different classification before proof execution.
 
-The Linux row must use a real desktop terminal emulator, not an IDE-integrated
-terminal, CI pseudo-terminal, browser shell, SSH-only session, or terminal
-multiplexer. GNOME Terminal is preferred. Konsole, Xfce Terminal, xterm, or
-another normal locally displayed Linux desktop terminal is acceptable only if
-the evidence names the terminal and version.
-
-Terminal proof should use default terminal settings. A non-default setting is
-allowed only when explicitly approved before the run and recorded as a
-deviation in the result packet.
+Any manual terminal proof that is cited should use default terminal settings. A
+non-default setting is allowed only when explicitly approved before the run and
+recorded as a deviation in the result packet.
 
 ## Out-of-Scope Rows
 
@@ -84,8 +97,9 @@ target.
 
 Run from the repository root unless a step says otherwise.
 
-Use the same candidate commit for every terminal and automated support proof
-source. Each manual platform row and automated platform proof must include a
+Use the same candidate commit for every cited manual terminal context and every
+automated support proof source. Each cited manual row and automated platform
+proof must include a
 transcript path or embedded transcript that records:
 
 ```bash
@@ -115,7 +129,8 @@ why installed-wheel proof was used.
 ## Required Automated Support Proof
 
 The final proof result cannot be `pass` without same-`HEAD` automated support
-proof for macOS, native Windows, and Linux.
+proof for macOS, native Windows, and Linux. This is the required Windows and
+Linux proof for the rescoped lane.
 
 Minimum automated support proof:
 
@@ -148,9 +163,11 @@ Automated support proof outputs should use a clearly mapped naming convention:
 An equivalent naming scheme is acceptable only if `RESULT.md` maps each file to
 the OS family, runner, command set, and proof status.
 
-## Behavior Matrix
+## Manual Behavior Matrix
 
-Run every item in every required terminal.
+Use this matrix for any manual terminal evidence that is cited. Windows and
+Linux manual runs are optional context for this lane; automated proof is the
+required Windows and Linux gate.
 
 | ID | Flow | Pass condition |
 | --- | --- | --- |
@@ -196,7 +213,7 @@ result selector, or status line must identify the active result.
 
 ## Evidence Rules
 
-Each terminal run must record:
+Each cited manual terminal run must record:
 
 - date
 - candidate commit SHA
@@ -214,32 +231,35 @@ Each terminal run must record:
 - viewport size range tested
 - pass/fail for each flow
 - blocker notes
-- media artifact paths
+- media artifact paths, when media is collected
 - deviations, skipped steps, and failures
 
-Outside-observer evidence must also include the observer label, observer timestamp and timezone, setup transcript, source or evidence transfer method,
+Outside-observer manual evidence must also include the observer label, observer
+timestamp and timezone, setup transcript, source or evidence transfer method,
 and per-flow notes for every TUI QoL matrix item.
 
-Local media evidence is required for every terminal run, not only failures.
-Screenshots or recordings live under ignored proof paths:
+Local media evidence is required only for manual terminal rows that are cited as
+manual proof. Screenshots or recordings live under ignored proof paths:
 
 ```text
 output/tui-qol-qa/<run-id>/<terminal-id>/
 ```
 
-The media files are local proof artifacts. Do not commit them.
+The media files are local proof artifacts. Do not commit them. Windows and
+Linux screenshots are optional context in this rescoped lane and are not
+required for pass status.
 
 ## Classification Rules
 
-- `pass`: all three manual terminal rows pass, all three automated support rows
-  pass, the evidence is same-`HEAD`, and the required baseline transcripts,
-  source access method, commit verification command, and media artifacts are
-  complete.
-- `fail`: a required manual flow runs and fails, or a required automated
-  command runs and fails.
+- `pass`: all three automated support rows pass, the evidence is same-`HEAD`,
+  and the required baseline transcripts, source access method, commit
+  verification command, and command outputs are complete. Any cited required
+  manual terminal context must not have failed required flows.
+- `fail`: a required automated command runs and fails, or a cited required
+  manual flow runs and fails.
 - `blocked`: required evidence is missing, stale, untrusted, lacks approved
-  source access, lacks media or commit identity, or same-`HEAD` evidence cannot
-  be proven.
+  source access, lacks commit identity, or same-`HEAD` evidence cannot be
+  proven.
 
 ## Result Summary Template
 
@@ -257,9 +277,7 @@ The media files are local proof artifacts. Do not commit them.
 
 | Evidence item | Source access method | Commit verification command | Transcript path | Status |
 | --- | --- | --- | --- | --- |
-| macOS Terminal |  |  |  |  |
-| Windows Terminal |  |  |  |  |
-| Linux terminal |  |  |  |  |
+| macOS Terminal manual context, if cited |  |  |  |  |
 | Automated macOS |  |  | commands/automated-macos.* |  |
 | Automated Windows |  |  | commands/automated-windows.* |  |
 | Automated Linux |  |  | commands/automated-linux.* |  |
@@ -272,48 +290,47 @@ The media files are local proof artifacts. Do not commit them.
 | Windows |  |  |  | `uv sync --all-extras --frozen` | Ruff format, Ruff check, mypy, pytest | commands/automated-windows.* |  |  |
 | Linux |  |  |  | `uv sync --all-extras --frozen` | Ruff format, Ruff check, mypy, pytest | commands/automated-linux.* |  |  |
 
-## Manual Terminal Rows
+## Manual Terminal Context
 
 | Terminal | OS | Shell | Settings | Viewports | Evidence source | Media path | Status | Blockers |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | macOS Terminal |  |  | default |  | local | output/tui-qol-qa/<run-id>/macos-terminal/ |  |  |
-| Windows Terminal |  |  | default |  | local or observer-provided | output/tui-qol-qa/<run-id>/windows-terminal/ |  |  |
-| Linux terminal |  |  | default |  | local or observer-provided | output/tui-qol-qa/<run-id>/linux-terminal/ |  |  |
 
 ## Flow Matrix
 
-| Flow | macOS Terminal | Windows Terminal | Linux terminal | Notes |
-| --- | --- | --- | --- | --- |
-| QOL-01 |  |  |  |  |
-| QOL-02 |  |  |  |  |
-| QOL-03 |  |  |  |  |
-| QOL-04 |  |  |  |  |
-| QOL-05 |  |  |  |  |
-| QOL-06 |  |  |  |  |
-| QOL-07 |  |  |  |  |
-| QOL-08 |  |  |  |  |
-| QOL-09 |  |  |  |  |
-| QOL-10 |  |  |  |  |
-| QOL-11 |  |  |  |  |
-| QOL-12 |  |  |  |  |
-| QOL-13 |  |  |  |  |
-| QOL-14 |  |  |  |  |
-| QOL-15 |  |  |  |  |
-| QOL-16 |  |  |  |  |
-| QOL-17 |  |  |  |  |
-| QOL-18 |  |  |  |  |
-| QOL-19 |  |  |  |  |
-| QOL-20 |  |  |  |  |
-| QOL-21 |  |  |  |  |
+| Flow | macOS Terminal manual context | Notes |
+| --- | --- | --- |
+| QOL-01 |  |  |
+| QOL-02 |  |  |
+| QOL-03 |  |  |
+| QOL-04 |  |  |
+| QOL-05 |  |  |
+| QOL-06 |  |  |
+| QOL-07 |  |  |
+| QOL-08 |  |  |
+| QOL-09 |  |  |
+| QOL-10 |  |  |
+| QOL-11 |  |  |
+| QOL-12 |  |  |
+| QOL-13 |  |  |
+| QOL-14 |  |  |
+| QOL-15 |  |  |
+| QOL-16 |  |  |
+| QOL-17 |  |  |
+| QOL-18 |  |  |
+| QOL-19 |  |  |
+| QOL-20 |  |  |
+| QOL-21 |  |  |
 
 ## Out-of-Scope Rows
 
-VS Code integrated terminal, iTerm2, and tmux/SSH were out of scope for this release-proof lane.
+VS Code integrated terminal, iTerm2, tmux/SSH, and Windows/Linux manual
+terminal screenshots were out of scope for this rescoped release-proof lane.
 ```
 
 ## Automation Boundary
 
 Automated tests should cover deterministic TUI behavior in pytest/Textual.
-Manual QA remains required for OS-level terminal behavior such as function-key
-interception, Alt-key differences, tmux passthrough, SSH quirks, and native file
-picker behavior.
+Manual QA remains required before making OS-level terminal UX claims such as
+function-key interception, Alt-key differences, tmux passthrough, SSH quirks,
+visual rendering in a specific terminal, and native file picker behavior.

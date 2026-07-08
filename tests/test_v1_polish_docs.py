@@ -106,21 +106,19 @@ def test_tui_workbench_svg_matches_repaired_run_buffer_and_active_result_labels(
         assert stale_text not in workbench_svg
 
 
-def test_tui_qol_qa_gate_is_blocking_and_records_terminal_evidence() -> None:
+def test_tui_qol_qa_gate_is_blocking_and_records_rescoped_terminal_evidence() -> None:
     matrix = read_doc("docs/tui-qol-qa.md")
     normalized_matrix = normalized_markdown_text(matrix)
     required_scope = matrix.split("## Out-of-Scope Rows", 1)[0]
 
     assert "# TUI QoL QA Gate" in matrix
-    assert "Any failed item blocks `release-candidate eligible`." in matrix
-    for terminal_row in (
-        "| macOS Terminal | `output/tui-qol-qa/<run-id>/macos-terminal/` |",
-        "| Windows Terminal | `output/tui-qol-qa/<run-id>/windows-terminal/` |",
-        "| GNOME Terminal or equivalent normal Linux desktop terminal | "
-        "`output/tui-qol-qa/<run-id>/linux-terminal/` |",
-    ):
-        assert terminal_row in required_scope
+    assert "Any failed required item blocks `release-candidate eligible`." in matrix
+    assert "| macOS Terminal | `output/tui-qol-qa/<run-id>/macos-terminal/` |" in required_scope
+    assert "`output/tui-qol-qa/<run-id>/windows-terminal/`" in matrix
+    assert "`output/tui-qol-qa/<run-id>/linux-terminal/`" in matrix
     for stale_required_row in (
+        "| Windows Terminal |",
+        "| GNOME Terminal or equivalent normal Linux desktop terminal |",
         "| iTerm2 |",
         "| VS Code terminal |",
         "| VS Code integrated terminal |",
@@ -159,7 +157,12 @@ def test_tui_qol_qa_gate_is_blocking_and_records_terminal_evidence() -> None:
     ):
         assert flow in matrix
     assert "output/tui-qol-qa/<run-id>/<terminal-id>/" in matrix
-    assert "media evidence is required for every terminal run" in matrix
+    assert "media evidence is required for every terminal run" not in matrix
+    assert (
+        "Windows and Linux screenshots or manual terminal media are not required"
+        in normalized_matrix
+    )
+    assert "Windows and Linux manual runs are optional context" in normalized_matrix
     assert "Which pane is active?" in matrix
     assert (
         "Which source, query, History row, result, export, or derived-source target is affected?"
@@ -186,41 +189,49 @@ def test_tui_qol_docs_record_scope_closeout_without_release_eligibility() -> Non
     matrix = read_doc("docs/tui-qol-qa.md")
     normalized_matrix = normalized_markdown_text(matrix)
 
-    assert "## Approved Three-OS Release-Proof Scope" in matrix
+    assert "## Approved Cross-OS Automated Release-Proof Scope" in matrix
     assert "Historical local evidence remains useful context:" in matrix
     assert (
-        "The approved release-proof target covers macOS Terminal, Windows Terminal, and one"
+        "The approved release-proof target now uses same-`HEAD` automated support proof"
         in normalized_matrix
     )
-    assert "output/tui-qol-qa/20260706-c604a46/macos-terminal/" in matrix
+    assert "on macOS, native Windows, and Linux" in normalized_matrix
+    assert (
+        "Windows and Linux manual terminal screenshots are no longer required" in normalized_matrix
+    )
+    assert "output/tui-qol-qa/20260707-0a946cc-three-os-tui/macos-terminal/" in matrix
     assert "VS Code integrated terminal is out of scope for this release lane after the" in matrix
     assert "keybinding spike showed default macOS Option-key behavior did not" in matrix
     assert "iTerm2 and tmux/SSH are out of scope for this release lane." in matrix
-    assert "Linux terminal and Windows Terminal still require same-`HEAD` evidence" in matrix
+    assert "screenshots are not required for those OS rows" in matrix
     assert "This approved scope does not make the project `release-candidate eligible`." in matrix
     assert (
-        "This is a new release-proof lane, not a claim that the project is already"
+        "This is a rescoped release-proof lane, not a claim that the project is already"
         in normalized_matrix
     )
 
 
-def test_tui_qol_gate_uses_approved_three_os_release_scope() -> None:
+def test_tui_qol_gate_uses_approved_cross_os_automated_release_scope() -> None:
     matrix = read_doc("docs/tui-qol-qa.md")
     normalized_matrix = normalized_markdown_text(matrix)
 
-    assert "## Approved Three-OS Release-Proof Scope" in matrix
+    assert "## Approved Cross-OS Automated Release-Proof Scope" in matrix
     assert (
-        "macOS Terminal, Windows Terminal, and one normal Linux desktop terminal"
+        "same-`HEAD` automated support proof on macOS, native Windows, and Linux"
         in normalized_matrix
     )
     assert "## Out-of-Scope Rows" in matrix
     required_scope = matrix.split("## Out-of-Scope Rows", 1)[0]
     assert "| macOS Terminal | `output/tui-qol-qa/<run-id>/macos-terminal/` |" in required_scope
-    assert "| Windows Terminal | `output/tui-qol-qa/<run-id>/windows-terminal/` |" in required_scope
     assert (
-        "| GNOME Terminal or equivalent normal Linux desktop terminal | "
-        "`output/tui-qol-qa/<run-id>/linux-terminal/` |"
-    ) in required_scope
+        "| Windows Terminal | `output/tui-qol-qa/<run-id>/windows-terminal/` |"
+        not in required_scope
+    )
+    assert "| GNOME Terminal or equivalent normal Linux desktop terminal |" not in required_scope
+    assert "Optional Windows or Linux manual terminal evidence may be recorded" in normalized_matrix
+    assert (
+        "those media paths are not required for `release-candidate eligible`" in normalized_matrix
+    )
     for old_required_row in (
         "| iTerm2 |",
         "| VS Code terminal |",
@@ -233,9 +244,9 @@ def test_tui_qol_gate_uses_approved_three_os_release_scope() -> None:
         "tmux/SSH",
     ):
         assert out_of_scope in matrix
-    assert "native Windows environment and native Windows Python/`uv` setup" in matrix
-    assert "A Windows Terminal tab running WSL counts as Linux/WSL evidence" in matrix
-    assert "real desktop terminal emulator" in matrix
+    assert "native Windows environment and native Windows Python/`uv` setup" in normalized_matrix
+    assert "A Windows Terminal tab running WSL counts as Linux/WSL context" in normalized_matrix
+    assert "not native Windows proof" in matrix
     assert "default terminal settings" in matrix
 
 
@@ -261,15 +272,15 @@ def test_tui_qol_gate_defines_automated_support_and_result_packet() -> None:
         "commands/automated-linux.*",
         "source access method",
         "commit verification command",
-        "observer timestamp",
         "local or observer-provided",
         "A local `pass` result from this lane is evidence only",
         "## Classification Rules",
     ):
         assert required_text in matrix
+    assert "observer timestamp" in normalized_matrix
     for required_text in (
-        "`pass`: all three manual terminal rows pass, all three automated support rows pass",
-        "`fail`: a required manual flow runs and fails, or a required automated",
+        "`pass`: all three automated support rows pass",
+        "`fail`: a required automated command runs and fails, or a cited required",
         "`blocked`: required evidence is missing, stale, untrusted, lacks approved",
     ):
         assert required_text in normalized_matrix
@@ -282,9 +293,12 @@ def test_release_docs_keep_tui_qol_closeout_out_of_candidate_eligibility() -> No
     normalized_manual_qa = normalized_markdown_text(manual_qa)
 
     assert (
-        "The approved TUI release-proof target covers macOS Terminal, Windows Terminal, "
-        "and one normal Linux desktop terminal, plus same-`HEAD` three-OS automated "
-        "support proof." in normalized_manual_qa
+        "The approved TUI release-proof target now requires same-`HEAD` automated "
+        "support proof on macOS, native Windows, and Linux." in normalized_manual_qa
+    )
+    assert (
+        "Windows and Linux screenshots or manual terminal media are no longer required"
+        in normalized_manual_qa
     )
     assert "A local `pass` result from this lane is evidence only." in readiness
     assert "A local `pass` result from this lane is evidence only." in release_notes
@@ -292,14 +306,22 @@ def test_release_docs_keep_tui_qol_closeout_out_of_candidate_eligibility() -> No
     assert "Changing any release label" in release_notes
 
 
-def test_release_docs_require_approved_three_os_tui_proof_gate() -> None:
+def test_release_docs_require_approved_cross_os_automated_tui_proof_gate() -> None:
     manual_qa = read_doc("docs/v1-manual-qa.md")
     readiness = read_doc("docs/release-readiness.md")
     release_notes = read_doc("docs/release-notes/v1.md")
     combined = "\n".join([manual_qa, readiness, release_notes])
+    normalized_combined = normalized_markdown_text(combined)
 
-    assert "macOS Terminal, Windows Terminal, and one normal Linux desktop terminal" in combined
+    assert (
+        "same-`HEAD` automated support proof on macOS, native Windows, and Linux"
+        in normalized_combined
+    )
     assert "three-OS automated support proof" in combined
+    assert (
+        "Windows and Linux screenshots or manual terminal media are no longer required"
+        in normalized_combined
+    )
     assert "uv sync --all-extras --frozen" in combined
     assert "uv run --all-extras csvql --version" in combined
     assert "Plain `csvql --version` is not sufficient for source-checkout proof" in combined
@@ -308,11 +330,12 @@ def test_release_docs_require_approved_three_os_tui_proof_gate() -> None:
     assert "VS Code integrated terminal, iTerm2, and tmux/SSH are out of scope" in combined
     for stale_required_row in (
         "the older six-row matrix",
+        "macOS Terminal, Windows Terminal, and one normal Linux desktop terminal",
         "iTerm2 | `output/tui-qol-qa/<run-id>/iterm2/`",
         "VS Code terminal | `output/tui-qol-qa/<run-id>/vscode-terminal/`",
         "tmux/SSH | `output/tui-qol-qa/<run-id>/tmux-ssh/`",
     ):
-        assert stale_required_row not in combined
+        assert stale_required_row not in normalized_combined
 
 
 def test_ci_workflow_collects_three_os_automated_support_gate() -> None:
@@ -406,7 +429,7 @@ def test_release_readiness_links_manual_qa_matrix() -> None:
     assert "TUI QoL run id" in readiness
     assert "docs/v1-manual-qa.md" in readiness
     assert "docs/tui-qol-qa.md" in readiness
-    assert "approved three-OS TUI proof gate" in readiness
+    assert "approved cross-OS automated TUI proof gate" in normalized_readiness
     assert "three-OS automated support proof" in readiness
     assert "Plain `csvql --version` is not sufficient for source-checkout proof" in readiness
     assert "A local `pass` result from this lane is evidence only." in readiness
@@ -426,7 +449,7 @@ def test_release_readiness_links_manual_qa_matrix() -> None:
         "baseline transcripts",
         "source access method",
         "commit verification command",
-        "no failed, untested, or missing-media items",
+        "no failed or missing required checks",
         "same-`HEAD` three-OS automated support proof passes",
     ):
         assert required_text in normalized_readiness
@@ -434,24 +457,29 @@ def test_release_readiness_links_manual_qa_matrix() -> None:
 
 def test_release_notes_require_manual_qa_and_tui_qol_gates() -> None:
     release_notes = read_doc("docs/release-notes/v1.md")
+    normalized_release_notes = normalized_markdown_text(release_notes)
 
     assert "[Manual v1 QA matrix](../v1-manual-qa.md)" in release_notes
     assert "[TUI QoL QA gate](../tui-qol-qa.md)" in release_notes
     assert "docs/v1-manual-qa.md" in release_notes
     assert "docs/tui-qol-qa.md" in release_notes
     assert "TUI QoL run id" in release_notes
-    assert "media artifact paths" in release_notes
+    assert "required automated proof outputs" in release_notes
     assert "manual v1 QA matrix is recorded for the candidate state" in release_notes
     assert "three-OS automated support proof" in release_notes
+    assert (
+        "Windows and Linux screenshots or manual terminal media are no longer required"
+        in normalized_release_notes
+    )
     assert "A local `pass` result from this lane is evidence only." in release_notes
     assert "baseline transcripts" in release_notes
     assert "source access method" in release_notes
     assert "commit verification command" in release_notes
     assert (
-        "the TUI QoL QA gate passes on macOS Terminal, Windows Terminal, and one normal"
+        "the TUI QoL QA gate records the required automated proof outputs and any cited"
         in release_notes
     )
-    assert "no failed, untested, or missing-media items" in release_notes
+    assert "no failed or missing required checks" in normalized_release_notes
     assert "same candidate `HEAD`" in release_notes
 
 
