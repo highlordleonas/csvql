@@ -281,8 +281,8 @@ def test_release_docs_keep_tui_qol_closeout_out_of_candidate_eligibility() -> No
     )
     assert "A local `pass` result from this lane is evidence only." in readiness
     assert "A local `pass` result from this lane is evidence only." in release_notes
-    assert "changing any release label" in readiness
-    assert "changing any release label" in release_notes
+    assert "Changing any release label" in readiness
+    assert "Changing any release label" in release_notes
 
 
 def test_release_docs_require_approved_three_os_tui_proof_gate() -> None:
@@ -297,7 +297,7 @@ def test_release_docs_require_approved_three_os_tui_proof_gate() -> None:
     assert "uv run --all-extras csvql --version" in combined
     assert "Plain `csvql --version` is not sufficient for source-checkout proof" in combined
     assert "A local `pass` result from this lane is evidence only" in combined
-    assert "changing any release label" in combined
+    assert "Changing any release label" in combined
     assert "VS Code integrated terminal, iTerm2, and tmux/SSH are out of scope" in combined
     for stale_required_row in (
         "the older six-row matrix",

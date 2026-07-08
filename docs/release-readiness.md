@@ -89,7 +89,7 @@ Each source-checkout proof transcript must record `pwd -P`,
 `git tag --points-at HEAD`, `uv --version`, `uv run python --version`, and
 `uv run --all-extras csvql --version`. Plain `csvql --version` is not sufficient for source-checkout proof.
 
-A local `pass` result from this lane is evidence only. changing any release label, release status, public status, tag, or published artifact still requires
+A local `pass` result from this lane is evidence only. Changing any release label, release status, public status, tag, or published artifact still requires
 separate explicit approval.
 
 ## Benchmark Proof
