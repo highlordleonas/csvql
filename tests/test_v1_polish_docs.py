@@ -372,9 +372,7 @@ def test_ci_workflow_collects_three_os_automated_support_gate() -> None:
     workflow = yaml.safe_load(ci)
     test_job = workflow["jobs"]["test"]
     matrix_rows = test_job["strategy"]["matrix"]["include"]
-    matrix_pairs = {
-        (str(row["os"]), str(row["python-version"])) for row in matrix_rows
-    }
+    matrix_pairs = {(str(row["os"]), str(row["python-version"])) for row in matrix_rows}
 
     assert {
         ("ubuntu-latest", "3.11"),
@@ -385,9 +383,7 @@ def test_ci_workflow_collects_three_os_automated_support_gate() -> None:
 
     job_env = test_job.get("env", {}) or {}
     steps = test_job["steps"]
-    step_runs = "\n".join(
-        str(step.get("run", "")) for step in steps if isinstance(step, dict)
-    )
+    step_runs = "\n".join(str(step.get("run", "")) for step in steps if isinstance(step, dict))
     forced_by_env = job_env.get("UV_PYTHON") == "${{ matrix.python-version }}"
     forced_by_run_arg = "--python ${{ matrix.python-version }}" in step_runs
 
