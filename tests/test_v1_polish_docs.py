@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -367,24 +369,35 @@ def test_cross_os_proof_docs_record_prior_proof_without_current_head_claim() -> 
 
 def test_ci_workflow_collects_three_os_automated_support_gate() -> None:
     ci = read_doc(".github/workflows/ci.yml")
-    include_block = ci.split("        include:\n", 1)[1].split("    steps:\n", 1)[0]
-    expected_include_block = """          - os: ubuntu-latest
-            python-version: "3.11"
-          - os: ubuntu-latest
-            python-version: "3.12"
-          - os: macos-latest
-            python-version: "3.12"
-          - os: windows-latest
-            python-version: "3.12"
-"""
+    workflow = yaml.safe_load(ci)
+    test_job = workflow["jobs"]["test"]
+    matrix_rows = test_job["strategy"]["matrix"]["include"]
+    matrix_pairs = {
+        (str(row["os"]), str(row["python-version"])) for row in matrix_rows
+    }
 
-    assert include_block == expected_include_block
+    assert {
+        ("ubuntu-latest", "3.11"),
+        ("ubuntu-latest", "3.12"),
+        ("macos-latest", "3.12"),
+        ("windows-latest", "3.12"),
+    } <= matrix_pairs
+
+    job_env = test_job.get("env", {}) or {}
+    steps = test_job["steps"]
+    step_runs = "\n".join(
+        str(step.get("run", "")) for step in steps if isinstance(step, dict)
+    )
+    forced_by_env = job_env.get("UV_PYTHON") == "${{ matrix.python-version }}"
+    forced_by_run_arg = "--python ${{ matrix.python-version }}" in step_runs
+
+    assert forced_by_env or forced_by_run_arg
 
     for required_text in (
         "ubuntu-latest",
         "macos-latest",
         "windows-latest",
-        'python-version: "3.12"',
+        "uv python install ${{ matrix.python-version }}",
         "uv sync --all-extras --frozen",
         "pwd -P",
         "git status --short --branch",
