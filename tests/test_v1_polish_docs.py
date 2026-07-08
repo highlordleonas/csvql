@@ -338,6 +338,33 @@ def test_release_docs_require_approved_cross_os_automated_tui_proof_gate() -> No
         assert stale_required_row not in normalized_combined
 
 
+def test_cross_os_proof_docs_record_prior_proof_without_current_head_claim() -> None:
+    tui_qol = read_doc("docs/tui-qol-qa.md")
+    readiness = read_doc("docs/release-readiness.md")
+    release_notes = read_doc("docs/release-notes/v1.md")
+    combined = "\n".join([tui_qol, readiness, release_notes])
+    normalized_combined = normalized_markdown_text(combined)
+
+    for required_text in (
+        "b118a2c",
+        "blocked `b118a2c`",
+        "superseded",
+        "d8ec3df",
+        "28965686605",
+        "historical prior proof context",
+        "not final proof for later implementation commits",
+        "ignored proof packet `RESULT.md` and final execution response",
+        "must not require a self-referential run id",
+    ):
+        assert required_text in normalized_combined
+
+    assert "Windows and Linux screenshots or manual terminal media are not required" in (
+        normalized_combined
+    )
+    assert "automated proof does not prove manual terminal UX" in normalized_combined
+    assert "`v1-stable`" in combined
+
+
 def test_ci_workflow_collects_three_os_automated_support_gate() -> None:
     ci = read_doc(".github/workflows/ci.yml")
     include_block = ci.split("        include:\n", 1)[1].split("    steps:\n", 1)[0]

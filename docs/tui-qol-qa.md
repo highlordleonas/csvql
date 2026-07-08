@@ -36,8 +36,20 @@ Historical local evidence remains useful context:
   2026-07-07 keybinding spike showed default macOS Option-key behavior did not
   reliably reach the TUI.
 - iTerm2 and tmux/SSH are out of scope for this release lane.
-- Windows and Linux require same-`HEAD` automated support proof before the final
-  TUI proof result can pass; screenshots are not required for those OS rows.
+- The blocked `b118a2c` automated packet is superseded and must not be treated
+  as the passing Windows candidate.
+- Commit `d8ec3df` and GitHub Actions run `28965686605` are historical prior
+  proof context for an earlier candidate, not final proof for later
+  implementation commits.
+- Current automated proof for a new implementation commit must be recorded in
+  the ignored proof packet `RESULT.md` and final execution response before
+  claiming same-`HEAD` pass.
+- Tracked docs define the proof contract and must not require a
+  self-referential run id for their own commit unless a separate two-SHA proof
+  recording model is approved.
+- Windows and Linux require same-`HEAD` automated support proof before the
+  final TUI proof result can pass; screenshots are not required for those OS
+  rows.
 
 This approved scope does not make the project `release-candidate eligible`.
 
@@ -153,6 +165,12 @@ Release-readiness proof, package-content audit, benchmark proof, and
 unsupported-claim scans remain required same-`HEAD` release-readiness evidence,
 but they do not need to run on all three OS families for this lane unless a
 later approved plan explicitly broadens them.
+
+For implementation changes after a cited proof run, record the fresh GitHub
+Actions run id and implementation commit SHA in the ignored proof packet
+`RESULT.md` and final execution response. Tracked docs must not require a
+self-referential run id for their own commit; doing so creates proof churn
+unless a separate two-SHA proof recording model is approved.
 
 Automated support proof outputs should use a clearly mapped naming convention:
 

@@ -93,6 +93,17 @@ Each source-checkout proof transcript must record `pwd -P`,
 `git tag --points-at HEAD`, `uv --version`, `uv run python --version`, and
 `uv run --all-extras csvql --version`. Plain `csvql --version` is not sufficient for source-checkout proof.
 
+Historical proof records are context, not current same-`HEAD` proof. The prior
+passing automated run `28965686605` at `d8ec3df` superseded the blocked
+`b118a2c` packet, but it is historical prior proof context only and not final
+proof for later implementation commits. For a new implementation `HEAD`, record
+the fresh GitHub Actions run id and implementation commit SHA in the ignored
+proof packet `RESULT.md` and final execution response before claiming current
+same-`HEAD` automated proof. Tracked docs define this proof contract and must
+not require a self-referential run id for their own commit unless a separate
+two-SHA proof recording model is approved. The automated proof does not prove
+manual terminal UX.
+
 A local `pass` result from this lane is evidence only. Changing any release label, release status, public status, tag, or published artifact still requires
 separate explicit approval.
 
