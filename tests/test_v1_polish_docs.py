@@ -214,10 +214,7 @@ def test_tui_qol_gate_uses_approved_three_os_release_scope() -> None:
     assert "## Out-of-Scope Rows" in matrix
     required_scope = matrix.split("## Out-of-Scope Rows", 1)[0]
     assert "| macOS Terminal | `output/tui-qol-qa/<run-id>/macos-terminal/` |" in required_scope
-    assert (
-        "| Windows Terminal | `output/tui-qol-qa/<run-id>/windows-terminal/` |"
-        in required_scope
-    )
+    assert "| Windows Terminal | `output/tui-qol-qa/<run-id>/windows-terminal/` |" in required_scope
     assert (
         "| GNOME Terminal or equivalent normal Linux desktop terminal | "
         "`output/tui-qol-qa/<run-id>/linux-terminal/` |"
