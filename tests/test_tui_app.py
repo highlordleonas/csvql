@@ -19,7 +19,7 @@ from csvql.models import QueryResult
 from csvql.tui_app import CSVQLMenuApp
 from csvql.tui_result_store import TUIResultStore
 from csvql.tui_results import make_result_view_state
-from csvql.tui_state import TUIBufferResultTab, TUISessionState, TUISource
+from csvql.tui_state import TUIBufferResultTab, TUISessionState, TUISource, TUISourceColumn
 from csvql.tui_workflows import export_last_result as workflows_export_last_result
 
 
@@ -2391,9 +2391,9 @@ def test_inspect_sample_and_profile_selected_source_update_output(tmp_path: Path
         profile_message,
     ) = asyncio.run(_inner())
 
-    assert "customers: 2 columns." in inspect_status
-    assert inspect_columns == ("column", "type")
-    assert inspect_first_row == ("customer_id", "VARCHAR")
+    assert "customers: 2 columns inspected." in inspect_status
+    assert inspect_columns == ("field", "value")
+    assert inspect_first_row == ("source alias/table name", "customers")
     assert "customers: 2 sample row(s)." in sample_status
     assert sample_columns == ("customer_id", "email")
     assert sample_row_count == 2
@@ -2451,7 +2451,7 @@ def test_source_intelligence_action_uses_operation_worker(
     assert started.is_set()
     assert running is True
     assert "Inspecting customers" in status
-    assert "customers: 2 columns." in final_status
+    assert "customers: 2 columns inspected." in final_status
 
 
 def test_source_worker_failure_preserves_csv_error_message_and_suggestion(
@@ -3758,9 +3758,9 @@ def test_source_letter_actions_only_work_when_sources_focused(tmp_path: Path) ->
     editor_text, status, columns, first_row = asyncio.run(_inner())
 
     assert editor_text == "i"
-    assert "customers: 2 columns." in status
-    assert columns == ("column", "type")
-    assert first_row == ("customer_id", "VARCHAR")
+    assert "customers: 2 columns inspected." in status
+    assert columns == ("field", "value")
+    assert first_row == ("source alias/table name", "customers")
 
 
 def test_documented_keys_have_predictable_pane_behavior(tmp_path: Path) -> None:
@@ -4470,6 +4470,8 @@ def test_insert_starter_select_appends_rendered_select_and_preserves_result(
             app.query_one("#sources", DataTable).focus()
             await pilot.press("x")
             await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
             return (
                 app.query_one("#sql", TextArea).text,
                 app.state.last_result,
@@ -4480,7 +4482,240 @@ def test_insert_starter_select_appends_rendered_select_and_preserves_result(
 
     assert editor_text == 'SELECT *\nFROM "customers"\nLIMIT 10;'
     assert last_result == existing_result
-    assert status == "Inserted starter SELECT for customers."
+    assert status == "Inserted template: Preview rows."
+
+
+def test_inspect_source_is_distinct_from_columns_and_loads_completion_metadata(
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[tuple[str, ...], tuple[str, ...], tuple[TUISourceColumn, ...], str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("i")
+            await pilot.pause()
+
+            table = app.query_one("#results", DataTable)
+            headers = tuple(str(column.label) for column in table.columns.values())
+            values = tuple(
+                str(table.get_cell_at(Coordinate(row, 0))) for row in range(table.row_count)
+            )
+            return (
+                headers,
+                values,
+                app.state.source_columns("customers"),
+                app.query_one("#status", Static).content,
+            )
+
+    headers, values, cached_columns, status = asyncio.run(_inner())
+
+    assert headers == ("field", "value")
+    assert "source alias/table name" in values
+    assert "column count" in values
+    assert cached_columns == (
+        TUISourceColumn(name="customer_id", duckdb_type="VARCHAR"),
+        TUISourceColumn(name="email", duckdb_type="VARCHAR"),
+    )
+    assert "customers: 2 columns inspected." in status
+
+
+def test_starter_picker_offers_metadata_free_templates_without_loading_columns(
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("x")
+            await pilot.pause()
+            screen_name = type(app.screen).__name__
+            await pilot.press("enter")
+            await pilot.pause()
+            return screen_name, app.query_one("#sql", TextArea).text
+
+    screen_name, editor_text = asyncio.run(_inner())
+
+    assert screen_name == "_SQLAssistPickerScreen"
+    assert editor_text == 'SELECT *\nFROM "customers"\nLIMIT 10;'
+
+
+def test_starter_picker_adds_column_templates_after_columns_are_loaded(
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[tuple[str, ...], str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("c")
+            await pilot.pause()
+            await pilot.press("x")
+            await pilot.pause()
+            table = app.screen.query_one("#sql-assist-options", DataTable)
+            labels = tuple(
+                str(table.get_cell_at(Coordinate(row, 0))) for row in range(table.row_count)
+            )
+            return labels, app.query_one("#status", Static).content
+
+    labels, status = asyncio.run(_inner())
+
+    assert "Preview rows" in labels
+    assert "Row count" in labels
+    assert "Group by category" in labels
+    assert "Press c or i for column-aware templates" not in status
+
+
+def test_sql_completion_single_source_replaces_token_with_bare_column(
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+    state.set_source_columns(
+        "customers",
+        (
+            TUISourceColumn(name="customer_id", duckdb_type="VARCHAR"),
+            TUISourceColumn(name="email", duckdb_type="VARCHAR"),
+        ),
+    )
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT cust")
+            sql.move_cursor((0, len("SELECT cust")))
+            await pilot.press("ctrl+space")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            return sql.text
+
+    assert asyncio.run(_inner()) == "SELECT customer_id"
+
+
+def test_sql_completion_multi_source_uses_source_qualified_column(
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+    orders_csv = tmp_path / "orders.csv"
+    orders_csv.write_text("customer_id,total\nCUST-001,10\n", encoding="utf-8")
+    state.add_source(TUISource(name="orders", path=orders_csv, origin="argument"))
+    state.set_source_columns(
+        "customers", (TUISourceColumn(name="customer_id", duckdb_type="VARCHAR"),)
+    )
+    state.set_source_columns(
+        "orders", (TUISourceColumn(name="customer_id", duckdb_type="VARCHAR"),)
+    )
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT ")
+            sql.move_cursor((0, len("SELECT ")))
+            await pilot.press("ctrl+space")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            return sql.text
+
+    assert asyncio.run(_inner()).startswith('SELECT "customers"."customer_id"')
+
+
+def test_sql_completion_unknown_range_alias_prefix_has_no_column_items(
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+    state.set_source_columns(
+        "customers", (TUISourceColumn(name="customer_id", duckdb_type="VARCHAR"),)
+    )
+
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT rm.")
+            sql.move_cursor((0, len("SELECT rm.")))
+            await pilot.press("ctrl+space")
+            await pilot.pause()
+            return type(app.screen).__name__, app.query_one("#status", Static).content
+
+    screen_name, status = asyncio.run(_inner())
+
+    assert screen_name == "Screen"
+    assert "No completion items" in status
+
+
+def test_starter_picker_does_not_call_inspect_or_query_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+
+    def _unexpected(*args: object, **kwargs: object) -> object:
+        raise AssertionError("unexpected hidden work")
+
+    monkeypatch.setattr("csvql.tui_app.inspect_source", _unexpected)
+    monkeypatch.setattr("csvql.tui_app.inspect_source_columns", _unexpected)
+    monkeypatch.setattr("csvql.tui_app.sample_source", _unexpected)
+    monkeypatch.setattr("csvql.tui_app.profile_source", _unexpected)
+    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", _unexpected)
+    monkeypatch.setattr("csvql.tui_app.run_buffer_for_tui", _unexpected)
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("x")
+            await pilot.pause()
+            return type(app.screen).__name__
+
+    assert asyncio.run(_inner()) == "_SQLAssistPickerScreen"
+
+
+def test_sql_completion_does_not_call_inspect_or_query_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+    state.set_source_columns(
+        "customers",
+        (TUISourceColumn(name="customer_id", duckdb_type="VARCHAR"),),
+    )
+
+    def _unexpected(*args: object, **kwargs: object) -> object:
+        raise AssertionError("unexpected hidden work")
+
+    monkeypatch.setattr("csvql.tui_app.inspect_source", _unexpected)
+    monkeypatch.setattr("csvql.tui_app.inspect_source_columns", _unexpected)
+    monkeypatch.setattr("csvql.tui_app.sample_source", _unexpected)
+    monkeypatch.setattr("csvql.tui_app.profile_source", _unexpected)
+    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", _unexpected)
+    monkeypatch.setattr("csvql.tui_app.run_buffer_for_tui", _unexpected)
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT cust")
+            sql.move_cursor((0, len("SELECT cust")))
+            await pilot.press("ctrl+space")
+            await pilot.pause()
+            return type(app.screen).__name__
+
+    assert asyncio.run(_inner()) == "_SQLAssistPickerScreen"
 
 
 def test_source_insert_error_clears_exportable_result_when_no_source_selected(

@@ -20,7 +20,7 @@ from textual.worker import Worker, WorkerState
 from csvql.atomic_write import OperationCancelled, OperationToken
 from csvql.exceptions import CSVQLError
 from csvql.export import ExportFormat
-from csvql.models import ProfileResult, QueryResult, SampleResult
+from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
 from csvql.table_mapping import parse_table_mapping
 from csvql.tui_editor import all_sql_statements, selected_or_current_sql
 from csvql.tui_help import WORKBENCH_HELP
@@ -29,6 +29,15 @@ from csvql.tui_results import (
     make_result_view_state,
     populate_result_table,
     result_preview_message,
+)
+from csvql.tui_sql_assist import (
+    SQLAssistSource,
+    SQLCompletionItem,
+    SQLTemplateOption,
+    build_assist_sources,
+    build_completion_items,
+    build_template_options,
+    completion_edit,
 )
 from csvql.tui_state import (
     TUIBufferResultTab,
@@ -92,6 +101,7 @@ _MODAL_BLOCKED_APP_ACTIONS = {
     "inspect_source",
     "insert_source_alias",
     "insert_starter_select",
+    "open_sql_completion",
     "new_query",
     "profile_source",
     "quit",
@@ -190,6 +200,7 @@ class _HelpScreen(ModalScreen[None]):
 @dataclass(frozen=True, slots=True)
 class _SourceInspectOutcome:
     source_name: str
+    result: InspectResult
     columns: tuple[TUISourceColumn, ...]
 
 
@@ -219,6 +230,44 @@ class _ExportOutcome:
 @dataclass(frozen=True, slots=True)
 class _SaveResultSourceOutcome:
     source: TUISource
+
+
+class _SQLAssistPickerScreen(ModalScreen[str | None]):
+    """Picker screen for SQL templates and completion items."""
+
+    BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
+        Binding("enter", "choose", "Choose"),
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, choices: Sequence[tuple[str, str, str, str]]) -> None:
+        super().__init__()
+        self._choices = tuple(choices)
+
+    def compose(self) -> ComposeResult:
+        yield DataTable(id="sql-assist-options", cursor_type="row")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#sql-assist-options", DataTable)
+        table.add_columns("label", "kind", "detail")
+        for row_key, label, kind, detail in self._choices:
+            table.add_row(label, kind, detail, key=row_key)
+        if table.row_count:
+            table.focus()
+            table.move_cursor(row=0)
+
+    def action_choose(self) -> None:
+        table = self.query_one("#sql-assist-options", DataTable)
+        row_key, _column_key = table.coordinate_to_cell_key(table.cursor_coordinate)
+        self.dismiss(None if row_key is None else str(row_key.value))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if event.data_table.id != "sql-assist-options":
+            return
+        self.dismiss(None if event.row_key is None else str(event.row_key.value))
 
 
 class _OrderedFooter(Footer):
@@ -357,6 +406,7 @@ class CSVQLMenuApp(App[None]):
         Binding("c", "show_source_columns", "Columns", show=False),
         Binding("l", "insert_source_alias", "Insert alias", show=False),
         Binding("x", "insert_starter_select", "Starter select", show=False),
+        Binding("ctrl+space", "open_sql_completion", "Complete SQL", show=False),
         Binding("escape", "cancel_operation", "Cancel operation", show=False),
         Binding("r", "rerun_history", "Rerun", show=False),
         Binding("enter", "reopen_history", "Open query", show=False),
@@ -383,6 +433,7 @@ class CSVQLMenuApp(App[None]):
         self._active_operation_token: OperationToken | None = None
         self._active_operation_worker_name: str | None = None
         self._cancelled_operation_names: set[str] = set()
+        self._sql_assist_choices: dict[str, SQLTemplateOption | SQLCompletionItem] = {}
         if initial_state is not None:
             self.state = initial_state
         else:
@@ -568,13 +619,7 @@ class CSVQLMenuApp(App[None]):
         self._start_operation_worker(
             kind="inspect",
             label=f"Inspecting {source.name}",
-            work=lambda _token: _SourceInspectOutcome(
-                source_name=source.name,
-                columns=tuple(
-                    TUISourceColumn(name=column.name, duckdb_type=column.duckdb_type)
-                    for column in inspect_source(source).columns
-                ),
-            ),
+            work=lambda _token: _inspect_source_outcome(source),
         )
 
     def action_profile_source(self) -> None:
@@ -652,9 +697,40 @@ class CSVQLMenuApp(App[None]):
             self._show_error(CSVQLError("No source selected."))
             return
 
-        alias = render_duckdb_identifier(source.name)
-        self._append_sql_text(f"SELECT *\nFROM {alias}\nLIMIT 10;")
-        self._set_status(f"Inserted starter SELECT for {source.name}.")
+        options = build_template_options(self._assist_sources(), source.name)
+        self._sql_assist_choices = {option.key: option for option in options}
+        if len(options) <= 2:
+            self._set_status(
+                f"Press c or i for column-aware templates. {source.name} preview templates ready."
+            )
+        self.push_screen(
+            _SQLAssistPickerScreen(
+                tuple((option.key, option.label, "template", option.detail) for option in options)
+            ),
+            callback=self._handle_sql_template_selection,
+        )
+
+    def action_open_sql_completion(self) -> None:
+        if not isinstance(self.focused, TextArea):
+            return
+
+        sql = self.query_one("#sql", TextArea)
+        items = build_completion_items(
+            self._assist_sources(),
+            text=sql.text,
+            cursor_index=_text_index_from_location(sql.text, sql.selection.end),
+        )
+        if not items:
+            self._set_status("No completion items available.")
+            return
+
+        self._sql_assist_choices = {item.key: item for item in items}
+        self.push_screen(
+            _SQLAssistPickerScreen(
+                tuple((item.key, item.label, item.item_kind, item.detail) for item in items)
+            ),
+            callback=self._handle_sql_completion_selection,
+        )
 
     def action_run_query(self) -> None:
         self.action_run_buffer()
@@ -1000,11 +1076,9 @@ class CSVQLMenuApp(App[None]):
 
     def _apply_operation_outcome(self, outcome: object, *, operation_label: str) -> None:
         if isinstance(outcome, _SourceInspectOutcome):
-            self._show_source_columns_table(
-                outcome.columns,
-                message=f"Source inspect: {outcome.source_name}.",
-            )
-            self._set_status(f"{outcome.source_name}: {len(outcome.columns)} columns.")
+            self.state.set_source_columns(outcome.source_name, outcome.columns)
+            self._show_source_inspect_table(outcome.result, outcome.columns)
+            self._set_status(f"{outcome.source_name}: {len(outcome.columns)} columns inspected.")
             return
         if isinstance(outcome, _SourceProfileOutcome):
             self._show_source_profile_table(outcome.result)
@@ -1181,8 +1255,6 @@ class CSVQLMenuApp(App[None]):
                 "show_source_columns",
                 "insert_source_alias",
                 "insert_starter_select",
-                "rerun_history",
-                "reopen_history",
             }
             if action in text_entry_actions:
                 return False
@@ -1198,6 +1270,8 @@ class CSVQLMenuApp(App[None]):
             "insert_starter_select",
         }
         if action in source_actions and not self._is_focused("#sources"):
+            return False
+        if action == "open_sql_completion" and not isinstance(self.focused, TextArea):
             return False
         history_actions = {"rerun_history", "reopen_history"}
         if action in history_actions and not self._is_focused("#history"):
@@ -1414,6 +1488,37 @@ class CSVQLMenuApp(App[None]):
             message=message,
         )
 
+    def _show_source_inspect_table(
+        self,
+        result: InspectResult,
+        columns: tuple[TUISourceColumn, ...],
+    ) -> None:
+        source = self.state.get_source(result.source["display_path"])
+        if result.row_count.exact and result.row_count.value is not None:
+            row_count_status = str(result.row_count.value)
+        else:
+            row_count_status = result.row_count.mode.replace("_", " ")
+        warning_text = "; ".join(result.warnings) if result.warnings else "none"
+        rows: list[tuple[object, object]] = [
+            ("source alias/table name", source.name),
+            ("origin", source.origin),
+            ("display path", result.source.get("display_path", "")),
+            ("row-count status", row_count_status),
+            ("column count", len(columns)),
+            ("delimiter", result.dialect.delimiter or ""),
+            ("quote", result.dialect.quote or ""),
+            ("escape", result.dialect.escape or ""),
+            ("header", "" if result.dialect.header is None else str(result.dialect.header)),
+            ("encoding", result.dialect.encoding or ""),
+            ("warnings", warning_text),
+        ]
+        rows.extend((f"column: {column.name}", column.duckdb_type) for column in columns)
+        self._show_non_query_result_table(
+            ("field", "value"),
+            rows,
+            message=f"Source inspect: {source.name}.",
+        )
+
     def _show_source_profile_table(self, result: ProfileResult) -> None:
         self._show_non_query_result_table(
             ("column", "type", "non_null", "null", "null_%", "distinct", "min", "max"),
@@ -1471,6 +1576,45 @@ class CSVQLMenuApp(App[None]):
         else:
             sql.load_text(f"{current}\n{text}")
         sql.focus()
+
+    def _replace_sql_editor_text(self, start_index: int, end_index: int, replacement: str) -> None:
+        sql = self.query_one("#sql", TextArea)
+        before_text = sql.text
+        updated_text = f"{before_text[:start_index]}{replacement}{before_text[end_index:]}"
+        sql.load_text(updated_text)
+        sql.move_cursor(_text_location_from_index(updated_text, start_index + len(replacement)))
+        sql.focus()
+
+    def _assist_sources(self) -> tuple[SQLAssistSource, ...]:
+        columns_by_source = {
+            source.name: self.state.source_columns(source.name) for source in self.state.sources
+        }
+        return build_assist_sources(self.state.sources, columns_by_source)
+
+    def _handle_sql_template_selection(self, selection_key: str | None) -> None:
+        if selection_key is None:
+            return
+        option = self._sql_assist_choices.get(selection_key)
+        if not isinstance(option, SQLTemplateOption):
+            return
+        self._append_sql_text(option.sql)
+        self._set_status(f"Inserted template: {option.label}.")
+
+    def _handle_sql_completion_selection(self, selection_key: str | None) -> None:
+        if selection_key is None:
+            return
+        item = self._sql_assist_choices.get(selection_key)
+        if not isinstance(item, SQLCompletionItem):
+            return
+        sql = self.query_one("#sql", TextArea)
+        edit = completion_edit(
+            sql.text,
+            _text_index_from_location(sql.text, sql.selection.start),
+            _text_index_from_location(sql.text, sql.selection.end),
+            item,
+        )
+        self._replace_sql_editor_text(edit.start_index, edit.end_index, edit.replacement)
+        self._set_status(f"Inserted completion: {item.label}.")
 
     def _handle_add_source(self, raw_mapping: str | None) -> None:
         if raw_mapping is None:
@@ -2262,6 +2406,34 @@ def _text_index_from_location(text: str, location: tuple[int, int]) -> int:
     index = sum(len(line) for line in lines[:row])
     line_text = lines[row].removesuffix("\n").removesuffix("\r")
     return index + min(max(column, 0), len(line_text))
+
+
+def _text_location_from_index(text: str, index: int) -> tuple[int, int]:
+    bounded_index = min(max(index, 0), len(text))
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return (0, 0)
+
+    remaining = bounded_index
+    for row, line in enumerate(lines):
+        line_length = len(line)
+        if remaining <= line_length:
+            line_text = line.removesuffix("\n").removesuffix("\r")
+            return (row, min(remaining, len(line_text)))
+        remaining -= line_length
+    return (len(lines) - 1, len(lines[-1].removesuffix("\n").removesuffix("\r")))
+
+
+def _inspect_source_outcome(source: TUISource) -> _SourceInspectOutcome:
+    result = inspect_source(source)
+    return _SourceInspectOutcome(
+        source_name=source.name,
+        result=result,
+        columns=tuple(
+            TUISourceColumn(name=column.name, duckdb_type=column.duckdb_type)
+            for column in result.columns
+        ),
+    )
 
 
 def _choose_csv_paths_with_native_picker() -> tuple[str, ...]:

@@ -347,6 +347,16 @@ def build_completion_items(
         )
 
     items: list[SQLCompletionItem] = []
+    multiple_sources = len(sources) > 1
+    for source in sources:
+        items.extend(
+            _column_completion_items(
+                source.columns,
+                source_name=source.name,
+                force_qualified=multiple_sources,
+            )
+        )
+
     for source in sources:
         rendered_name = render_duckdb_identifier(source.name)
         items.append(
@@ -356,16 +366,6 @@ def build_completion_items(
                 detail="Source alias/table name",
                 insert_text=rendered_name,
                 item_kind="source",
-            )
-        )
-
-    multiple_sources = len(sources) > 1
-    for source in sources:
-        items.extend(
-            _column_completion_items(
-                source.columns,
-                source_name=source.name,
-                force_qualified=multiple_sources,
             )
         )
 
