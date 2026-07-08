@@ -1495,12 +1495,12 @@ def test_pane_context_updates_with_active_focus(tmp_path: Path) -> None:
             initial_sql_title = app.query_one("#sql-title", Static).content
             initial_context = app.query_one("#context", Static).content
 
-            app.query_one("#sources", DataTable).focus()
+            await pilot.press("f6")
             await pilot.pause()
             sources_title = app.query_one("#sources-title", Static).content
             sources_context = app.query_one("#context", Static).content
 
-            app.query_one("#history", DataTable).focus()
+            await pilot.press("f8")
             await pilot.pause()
             history_title = app.query_one("#history-title", Static).content
             history_context = app.query_one("#context", Static).content
