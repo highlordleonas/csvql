@@ -111,6 +111,22 @@ def test_multi_source_completion_uses_source_qualified_columns() -> None:
     assert not any(insert.startswith("c.") or insert.startswith("o.") for insert in inserts)
 
 
+def test_multi_source_completion_matches_typed_unquoted_column_prefix() -> None:
+    customers = _source("customers", SQLAssistColumn("customer_id", "VARCHAR", "text"))
+    orders = _source("orders", SQLAssistColumn("customer_id", "VARCHAR", "text"))
+
+    items = build_completion_items(
+        (customers, orders),
+        text="SELECT cust",
+        cursor_index=len("SELECT cust"),
+    )
+
+    inserts = {item.insert_text for item in items if item.item_kind == "column"}
+
+    assert '"customers"."customer_id"' in inserts
+    assert '"orders"."customer_id"' in inserts
+
+
 def test_unknown_qualifier_does_not_infer_range_alias() -> None:
     source = _source("revenue_movements", SQLAssistColumn("mrr_delta", "DOUBLE", "numeric"))
     items = build_completion_items((source,), text="SELECT rm.", cursor_index=len("SELECT rm."))
@@ -126,6 +142,27 @@ def test_source_qualified_prefix_returns_source_qualified_columns() -> None:
     assert [item.insert_text for item in items if item.item_kind == "column"] == [
         '"revenue_movements"."mrr_delta"'
     ]
+
+
+def test_source_qualified_member_prefix_matches_unquoted_column_text() -> None:
+    source = _source("revenue_movements", SQLAssistColumn("mrr_delta", "DOUBLE", "numeric"))
+    text = 'SELECT "revenue_movements".mr'
+    items = build_completion_items((source,), text=text, cursor_index=len(text))
+
+    assert [item.insert_text for item in items if item.item_kind == "column"] == [
+        '"revenue_movements"."mrr_delta"'
+    ]
+
+
+def test_join_template_keys_remain_unique_across_multiple_join_partners() -> None:
+    orders = _source("orders", SQLAssistColumn("customer_id", "VARCHAR", "text"))
+    customers = _source("customers", SQLAssistColumn("customer_id", "VARCHAR", "text"))
+    invoices = _source("invoices", SQLAssistColumn("customer_id", "VARCHAR", "text"))
+
+    options = build_template_options((orders, customers, invoices), "orders")
+    join_keys = [option.key for option in options if option.key.startswith("join_")]
+
+    assert join_keys == ["join_customer_id", "join_customer_id_invoices"]
 
 
 def test_completion_edit_replaces_selection_or_current_token_prefix() -> None:

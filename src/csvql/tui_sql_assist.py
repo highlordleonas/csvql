@@ -343,7 +343,7 @@ def build_completion_items(
                 source_name=qualified_source.name,
                 force_qualified=True,
             )
-            if _matches_prefix(item.insert_text, member_prefix)
+            if _matches_prefix(item, member_prefix)
         )
 
     items: list[SQLCompletionItem] = []
@@ -391,7 +391,7 @@ def build_completion_items(
             )
         )
 
-    return tuple(item for item in items if _matches_prefix(item.insert_text, token_prefix))
+    return tuple(item for item in items if _matches_prefix(item, token_prefix))
 
 
 def completion_edit(
@@ -468,6 +468,7 @@ def _join_template_options(
     left_alias = aliases[selected_source.name]
     left_name = render_duckdb_identifier(selected_source.name)
     options: list[SQLTemplateOption] = []
+    used_keys: set[str] = set()
     for other_source in sources:
         if other_source.name == selected_source.name or not other_source.columns:
             continue
@@ -485,9 +486,16 @@ def _join_template_options(
         right_alias = aliases[other_source.name]
         right_name = render_duckdb_identifier(other_source.name)
         rendered_column = render_duckdb_identifier(shared_column)
+        base_key = f"join_{safe_generated_identifier(shared_column, reserved_prefix='col_')}"
+        option_key = base_key
+        if option_key in used_keys:
+            option_key = (
+                f"{base_key}_{safe_generated_identifier(other_source.name, reserved_prefix='t_')}"
+            )
+        used_keys.add(option_key)
         options.append(
             SQLTemplateOption(
-                key=f"join_{safe_generated_identifier(shared_column, reserved_prefix='col_')}",
+                key=option_key,
                 label=f"Join on {shared_column}",
                 detail=f"Join {selected_source.name} to {other_source.name}.",
                 sql=(
@@ -543,10 +551,16 @@ def _column_completion_items(
     return items
 
 
-def _matches_prefix(insert_text: str, token_prefix: str) -> bool:
+def _matches_prefix(item: SQLCompletionItem, token_prefix: str) -> bool:
     if not token_prefix:
         return True
-    return insert_text.casefold().startswith(token_prefix.casefold())
+    normalized_prefix = token_prefix.casefold()
+    candidates = {
+        item.label.casefold(),
+        item.insert_text.casefold(),
+        item.insert_text.replace('"', "").casefold(),
+    }
+    return any(candidate.startswith(normalized_prefix) for candidate in candidates)
 
 
 def _token_prefix(text: str, cursor_index: int) -> tuple[int, str]:
