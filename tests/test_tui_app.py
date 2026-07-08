@@ -4003,7 +4003,7 @@ def test_sample_after_query_clears_exportable_result_and_export_refuses(tmp_path
 
             app.query_one("#sources", DataTable).focus()
             await pilot.press("s")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
 
             await pilot.press("f7")
             await pilot.pause()
