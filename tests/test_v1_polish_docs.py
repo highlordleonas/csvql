@@ -308,6 +308,32 @@ def test_release_docs_require_approved_three_os_tui_proof_gate() -> None:
         assert stale_required_row not in combined
 
 
+def test_ci_workflow_collects_three_os_automated_support_gate() -> None:
+    ci = read_doc(".github/workflows/ci.yml")
+
+    for required_text in (
+        "ubuntu-latest",
+        "macos-latest",
+        "windows-latest",
+        'python-version: "3.12"',
+        "uv sync --all-extras --frozen",
+        "pwd -P",
+        "git status --short --branch",
+        "git log -1 --oneline",
+        "git remote -v",
+        "git tag --points-at HEAD",
+        "uv --version",
+        "uv run python --version",
+        "uv run --all-extras csvql --version",
+        "uv run ruff format --check .",
+        "uv run ruff check .",
+        "uv run --all-extras mypy src",
+        "uv run --all-extras pytest",
+        "shell: bash",
+    ):
+        assert required_text in ci
+
+
 def test_public_docs_do_not_advertise_rejected_vscode_alt_fallbacks() -> None:
     public_docs = "\n".join(
         [
