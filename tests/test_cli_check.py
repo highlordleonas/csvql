@@ -312,7 +312,7 @@ def test_check_rejects_invalid_failure_limit_via_typer(
 ) -> None:
     monkeypatch.chdir(tmp_path)
 
-    result = runner.invoke(app, ["check", "--failure-limit", "0"])
+    result = runner.invoke(app, ["check", "--failure-limit", "0"], terminal_width=120)
 
     assert result.exit_code == 2
     assert "--failure-limit" in result.output

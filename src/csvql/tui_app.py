@@ -2164,7 +2164,7 @@ def _display_path(path: Path, base_dir: Path) -> str:
     try:
         resolved_path = path.resolve(strict=False)
         resolved_base = base_dir.resolve(strict=False)
-        return str(resolved_path.relative_to(resolved_base))
+        return resolved_path.relative_to(resolved_base).as_posix()
     except (OSError, ValueError):
         return str(path)
 

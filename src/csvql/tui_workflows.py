@@ -1,5 +1,6 @@
 """Startup workflows for the CSVQL menu TUI."""
 
+import os
 import shlex
 from collections.abc import Sequence
 from pathlib import Path
@@ -499,7 +500,9 @@ def _write_derived_result_file(
 def _csv_path_values_from_text(raw_text: str) -> tuple[str, ...]:
     raw_text = raw_text.strip()
     try:
-        tokens = tuple(shlex.split(raw_text))
+        tokens = tuple(
+            _strip_terminal_quotes(token) for token in shlex.split(raw_text, posix=False)
+        )
     except ValueError:
         tokens = ()
 
@@ -508,16 +511,33 @@ def _csv_path_values_from_text(raw_text: str) -> tuple[str, ...]:
         if all(Path(path_value).suffix.casefold() == ".csv" for path_value in path_values):
             return path_values
 
-    raw_path_value = _path_value_from_terminal_token(raw_text)
+    raw_path_value = _path_value_from_terminal_token(_strip_terminal_quotes(raw_text))
     if Path(raw_path_value).suffix.casefold() == ".csv":
         return (raw_path_value,)
     return ()
 
 
-def _path_value_from_terminal_token(token: str) -> str:
+def _path_value_from_terminal_token(token: str, *, os_name: str = os.name) -> str:
     parsed = urlparse(token)
     if parsed.scheme == "file":
-        return unquote(parsed.path)
+        path_value = unquote(parsed.path)
+        if os_name == "nt":
+            if parsed.netloc:
+                path_value = f"//{parsed.netloc}{path_value}"
+            if (
+                len(path_value) >= 3
+                and path_value[0] == "/"
+                and path_value[1].isalpha()
+                and path_value[2] == ":"
+            ):
+                path_value = path_value[1:]
+        return path_value
+    return token
+
+
+def _strip_terminal_quotes(token: str) -> str:
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}:
+        return token[1:-1]
     return token
 
 

@@ -3,6 +3,7 @@
 import json
 from enum import StrEnum
 from io import StringIO
+from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
@@ -71,13 +72,13 @@ def format_project_tables_json(result: ProjectTablesResult) -> str:
     """Format a project catalog table listing as deterministic JSON."""
 
     payload = {
-        "config_path": str(result.config_path),
-        "project_root": str(result.project_root),
+        "config_path": _format_path(result.config_path),
+        "project_root": _format_path(result.project_root),
         "tables": [
             {
                 "name": table.name,
                 "path": table.path,
-                "resolved_path": str(table.resolved_path),
+                "resolved_path": _format_path(table.resolved_path),
             }
             for table in result.tables
         ],
@@ -254,9 +255,13 @@ def format_project_tables_table(result: ProjectTablesResult) -> str:
     table.add_column("path")
     table.add_column("resolved_path")
     for listing in result.tables:
-        table.add_row(listing.name, listing.path, str(listing.resolved_path))
+        table.add_row(listing.name, listing.path, _format_path(listing.resolved_path))
     console.print(table)
     return console.export_text(clear=True)
+
+
+def _format_path(path: Path) -> str:
+    return path.as_posix()
 
 
 def _recording_console(*, width: int) -> Console:

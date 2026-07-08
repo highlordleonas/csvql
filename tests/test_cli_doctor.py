@@ -58,12 +58,16 @@ def test_doctor_unreadable_config_returns_failed_json_and_exit_12(
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / CONFIG_FILENAME
     config_path.write_text("version: 1\ntables: {}\n", encoding="utf-8")
+    original_read_text = Path.read_text
 
-    try:
-        config_path.chmod(0)
-        result = runner.invoke(app, ["doctor", "--output", "json"])
-    finally:
-        config_path.chmod(0o600)
+    def fake_read_text(path: Path, *args: object, **kwargs: object) -> str:
+        if path == config_path:
+            raise PermissionError("Permission denied")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+    result = runner.invoke(app, ["doctor", "--output", "json"])
 
     assert result.exit_code == 12, result.output
     payload = json.loads(result.output)
@@ -215,11 +219,16 @@ def test_doctor_unreadable_csv_returns_failed_probe_and_exit_12(
         """,
     )
 
-    try:
-        csv_path.chmod(0)
-        result = runner.invoke(app, ["doctor", "--output", "json"])
-    finally:
-        csv_path.chmod(0o600)
+    class FakeConnection:
+        def read_csv(self, *_args: object, **_kwargs: object) -> object:
+            raise PermissionError("Permission denied")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("csvql.doctor.duckdb.connect", lambda **_kwargs: FakeConnection())
+
+    result = runner.invoke(app, ["doctor", "--output", "json"])
 
     assert result.exit_code == 12, result.output
     payload = json.loads(result.output)

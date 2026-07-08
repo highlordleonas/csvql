@@ -72,7 +72,7 @@ def write_export_file(path: Path, content: str, *, token: OperationToken | None 
     """Write export content as UTF-8 text."""
 
     try:
-        write_text_atomic(path, content, token=token)
+        write_text_atomic(path, content, newline="", token=token)
     except OperationCancelled:
         raise
     except OSError as exc:

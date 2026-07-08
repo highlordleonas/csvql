@@ -57,10 +57,8 @@ def test_gallery_direct_missing_csv_path_returns_exit_4(
 
     assert result.exit_code == 4
     assert "Error: CSV file not found: missing.csv" in result.output
-    assert (
-        "Suggestion: Check the path or run from the directory that contains the CSV file."
-        in result.output
-    )
+    assert "Suggestion: Check the path" in result.output
+    assert "contains the CSV" in result.output
 
 
 def test_gallery_project_catalog_missing_csv_path_returns_exit_4(

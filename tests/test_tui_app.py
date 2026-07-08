@@ -694,7 +694,7 @@ def test_run_buffer_stops_after_middle_outcome_failure(
 
     async def _inner() -> tuple[list[str], list[str], list[int], str, str, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
             sql = app.query_one("#sql", TextArea)
             sql.focus()
@@ -1419,7 +1419,7 @@ def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
         tuple[tuple[str, str], ...],
     ]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(140, 40)) as pilot:
             sql_footer = await _settled_footer_entries(
                 pilot,
                 app,

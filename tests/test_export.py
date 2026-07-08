@@ -80,6 +80,31 @@ def test_write_export_file_writes_utf8_text(tmp_path: Path) -> None:
     assert output_path.read_text(encoding="utf-8") == "hello\n"
 
 
+def test_write_export_file_preserves_explicit_export_newlines(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_write_text_atomic(
+        path: Path,
+        content: str,
+        *,
+        newline: str | None = None,
+        token: object | None = None,
+    ) -> None:
+        captured["path"] = path
+        captured["content"] = content
+        captured["newline"] = newline
+        captured["token"] = token
+
+    monkeypatch.setattr("csvql.export.write_text_atomic", fake_write_text_atomic)
+
+    write_export_file(tmp_path / "result.csv", "a\r\n1\r\n")
+
+    assert captured["newline"] == ""
+
+
 def test_write_export_file_requires_existing_parent_directory(tmp_path: Path) -> None:
     output_path = tmp_path / "missing" / "result.csv"
 

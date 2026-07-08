@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from csvql import tui_workflows
 from csvql.exceptions import ExportError, ProjectConfigError, TableMappingError
 from csvql.export import ExportFormat
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
@@ -158,6 +159,18 @@ def test_sources_from_csv_path_text_suffixes_duplicate_aliases(tmp_path: Path) -
     assert sources == (TUISource(name="orders_2", path=pasted_csv.resolve(), origin="session"),)
 
 
+def test_sources_from_csv_path_text_preserves_backslash_path_text(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path / "pasted\\orders.csv")
+
+    sources = sources_from_csv_path_text(
+        str(csv_path),
+        existing_sources=(),
+        start_dir=tmp_path,
+    )
+
+    assert sources == (TUISource(name="pasted_orders", path=csv_path.resolve(), origin="session"),)
+
+
 def test_sources_from_csv_path_text_accepts_file_urls(tmp_path: Path) -> None:
     csv_path = _write_csv(tmp_path / "customers.csv")
 
@@ -168,6 +181,16 @@ def test_sources_from_csv_path_text_accepts_file_urls(tmp_path: Path) -> None:
     )
 
     assert sources == (TUISource(name="customers", path=csv_path.resolve(), origin="session"),)
+
+
+def test_path_value_from_terminal_token_accepts_windows_file_urls() -> None:
+    assert (
+        tui_workflows._path_value_from_terminal_token(
+            "file:///C:/Users/runneradmin/orders.csv",
+            os_name="nt",
+        )
+        == "C:/Users/runneradmin/orders.csv"
+    )
 
 
 def test_sources_from_csv_path_text_ignores_non_path_sql_paste(tmp_path: Path) -> None:

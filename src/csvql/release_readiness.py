@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import tomllib
@@ -159,8 +160,8 @@ def verify_release_readiness(
         cwd=repo_root,
         run_command=run_command,
     )
-    python_path = venv_dir / "bin" / "python"
-    csvql_path = venv_dir / "bin" / "csvql"
+    python_path = _venv_command_path(venv_dir, "python")
+    csvql_path = _venv_command_path(venv_dir, "csvql")
     run_release_command(
         ("uv", "pip", "install", "--python", python_path, wheel),
         cwd=repo_root,
@@ -211,3 +212,10 @@ def verify_release_readiness(
         tui_import_output=tui_import_output,
         menu_help_output=menu_help_output,
     )
+
+
+def _venv_command_path(venv_dir: Path, command_name: str, *, os_name: str = os.name) -> Path:
+    if os_name == "nt":
+        executable = command_name if command_name.endswith(".exe") else f"{command_name}.exe"
+        return venv_dir / "Scripts" / executable
+    return venv_dir / "bin" / command_name

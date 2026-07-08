@@ -6,6 +6,7 @@ import pytest
 from csvql.release_readiness import (
     ReleaseReadinessCommandError,
     ReleaseReadinessResult,
+    _venv_command_path,
     format_release_readiness_summary,
     read_pyproject_name,
     run_release_command,
@@ -71,6 +72,15 @@ def test_run_release_command_wraps_subprocess_failure(tmp_path: Path) -> None:
     assert "dns error" in str(excinfo.value)
 
 
+def test_venv_command_path_uses_native_layout() -> None:
+    assert _venv_command_path(Path("venv"), "python", os_name="posix") == (
+        Path("venv") / "bin" / "python"
+    )
+    assert _venv_command_path(Path("venv"), "python", os_name="nt") == (
+        Path("venv") / "Scripts" / "python.exe"
+    )
+
+
 def test_verify_release_readiness_returns_smoke_output(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     (repo_root / "src" / "csvql").mkdir(parents=True)
@@ -89,6 +99,8 @@ version = "0.1.0"
     )
 
     seen_commands: list[list[str]] = []
+    venv_dir = repo_root / "out" / "smoke-venv"
+    python_path = _venv_command_path(venv_dir, "python")
 
     def fake_run(args, *, cwd, capture_output, text, check):
         command = [str(part) for part in args]
@@ -105,7 +117,7 @@ version = "0.1.0"
         if command[:2] == ["uv", "pip"]:
             return CompletedProcess(args=args, returncode=0, stdout="", stderr="")
         if command[:3] == [
-            str(repo_root / "out" / "smoke-venv" / "bin" / "python"),
+            str(python_path),
             "-c",
             "import textual; import csvql.tui_app; print('tui-extra-ok')",
         ]:
@@ -146,7 +158,7 @@ version = "0.1.0"
         "pip",
         "install",
         "--python",
-        str(repo_root / "out" / "smoke-venv" / "bin" / "python"),
+        str(python_path),
         f"localql[tui] @ file://{repo_root / 'out' / 'dist' / 'localql-0.1.0-py3-none-any.whl'}",
     ] in seen_commands
 
