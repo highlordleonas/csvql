@@ -492,6 +492,12 @@ def _join_template_options(
             option_key = (
                 f"{base_key}_{safe_generated_identifier(other_source.name, reserved_prefix='t_')}"
             )
+        if option_key in used_keys:
+            dedupe_base = option_key
+            suffix = 2
+            while option_key in used_keys:
+                option_key = f"{dedupe_base}_{suffix}"
+                suffix += 1
         used_keys.add(option_key)
         options.append(
             SQLTemplateOption(

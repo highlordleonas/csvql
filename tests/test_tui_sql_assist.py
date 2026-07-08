@@ -165,6 +165,32 @@ def test_join_template_keys_remain_unique_across_multiple_join_partners() -> Non
     assert join_keys == ["join_customer_id", "join_customer_id_invoices"]
 
 
+def test_join_template_keys_handle_suffix_collision_deterministically() -> None:
+    orders = _source(
+        "orders",
+        SQLAssistColumn("customer_id_invoices", "VARCHAR", "text"),
+        SQLAssistColumn("customer_id", "VARCHAR", "text"),
+    )
+    remittance = _source(
+        "remittance",
+        SQLAssistColumn("customer_id_invoices", "VARCHAR", "text"),
+    )
+    customers = _source("customers", SQLAssistColumn("customer_id", "VARCHAR", "text"))
+    invoices = _source("invoices", SQLAssistColumn("customer_id", "VARCHAR", "text"))
+
+    options = build_template_options(
+        (orders, remittance, customers, invoices),
+        "orders",
+    )
+    join_keys = [option.key for option in options if option.key.startswith("join_")]
+
+    assert join_keys == [
+        "join_customer_id_invoices",
+        "join_customer_id",
+        "join_customer_id_invoices_2",
+    ]
+
+
 def test_completion_edit_replaces_selection_or_current_token_prefix() -> None:
     items = build_completion_items(
         (_source("customers", SQLAssistColumn("customer_id", "VARCHAR", "text")),),
