@@ -272,19 +272,40 @@ def test_release_docs_keep_tui_qol_closeout_out_of_candidate_eligibility() -> No
     manual_qa = read_doc("docs/v1-manual-qa.md")
     readiness = read_doc("docs/release-readiness.md")
     release_notes = read_doc("docs/release-notes/v1.md")
+    normalized_manual_qa = normalized_markdown_text(manual_qa)
 
     assert (
-        "The current TUI QoL scope closeout records macOS Terminal evidence and "
-        "terminal gaps only; it does not satisfy the full TUI QoL terminal matrix." in manual_qa
+        "The approved TUI release-proof target covers macOS Terminal, Windows Terminal, "
+        "and one normal Linux desktop terminal, plus same-`HEAD` three-OS automated "
+        "support proof." in normalized_manual_qa
     )
+    assert "A local `pass` result from this lane is evidence only." in readiness
+    assert "A local `pass` result from this lane is evidence only." in release_notes
+    assert "changing any release label" in readiness
+    assert "changing any release label" in release_notes
 
-    required_release_wording = (
-        "A local TUI QoL scope closeout that records only macOS Terminal evidence "
-        "and terminal gaps is not enough for `release-candidate eligible`; the "
-        "full required terminal matrix must pass with media evidence."
-    )
-    assert required_release_wording in readiness
-    assert required_release_wording in release_notes
+
+def test_release_docs_require_approved_three_os_tui_proof_gate() -> None:
+    manual_qa = read_doc("docs/v1-manual-qa.md")
+    readiness = read_doc("docs/release-readiness.md")
+    release_notes = read_doc("docs/release-notes/v1.md")
+    combined = "\n".join([manual_qa, readiness, release_notes])
+
+    assert "macOS Terminal, Windows Terminal, and one normal Linux desktop terminal" in combined
+    assert "three-OS automated support proof" in combined
+    assert "uv sync --all-extras --frozen" in combined
+    assert "uv run --all-extras csvql --version" in combined
+    assert "Plain `csvql --version` is not sufficient for source-checkout proof" in combined
+    assert "A local `pass` result from this lane is evidence only" in combined
+    assert "changing any release label" in combined
+    assert "VS Code integrated terminal, iTerm2, and tmux/SSH are out of scope" in combined
+    for stale_required_row in (
+        "the older six-row matrix",
+        "iTerm2 | `output/tui-qol-qa/<run-id>/iterm2/`",
+        "VS Code terminal | `output/tui-qol-qa/<run-id>/vscode-terminal/`",
+        "tmux/SSH | `output/tui-qol-qa/<run-id>/tmux-ssh/`",
+    ):
+        assert stale_required_row not in combined
 
 
 def test_public_docs_do_not_advertise_rejected_vscode_alt_fallbacks() -> None:
@@ -335,33 +356,29 @@ def test_release_readiness_links_manual_qa_matrix() -> None:
     assert "[TUI QoL QA gate](tui-qol-qa.md)" in readiness
     assert "Run the manual v1 QA matrix" in readiness
     assert "Run the TUI QoL QA gate" in readiness
-    assert "Any failed TUI QoL matrix item blocks `release-candidate eligible`." in readiness
     assert "TUI QoL run id" in readiness
     assert "docs/v1-manual-qa.md" in readiness
     assert "docs/tui-qol-qa.md" in readiness
+    assert "approved three-OS TUI proof gate" in readiness
+    assert "three-OS automated support proof" in readiness
+    assert "Plain `csvql --version` is not sufficient for source-checkout proof" in readiness
+    assert "A local `pass` result from this lane is evidence only." in readiness
 
 
 def test_release_notes_require_manual_qa_and_tui_qol_gates() -> None:
     release_notes = read_doc("docs/release-notes/v1.md")
-    normalized_release_notes = normalized_markdown_text(release_notes)
 
     assert "[Manual v1 QA matrix](../v1-manual-qa.md)" in release_notes
     assert "[TUI QoL QA gate](../tui-qol-qa.md)" in release_notes
-    assert (
-        "Any failed TUI QoL matrix item blocks `release-candidate eligible`."
-        in normalized_release_notes
-    )
-    assert (
-        "Any untested or missing-media TUI QoL item also blocks `release-candidate eligible`."
-        in normalized_release_notes
-    )
     assert "docs/v1-manual-qa.md" in release_notes
     assert "docs/tui-qol-qa.md" in release_notes
     assert "TUI QoL run id" in release_notes
     assert "media artifact paths" in release_notes
     assert "manual v1 QA matrix is recorded for the candidate state" in release_notes
+    assert "three-OS automated support proof" in release_notes
+    assert "A local `pass` result from this lane is evidence only." in release_notes
     assert (
-        "the TUI QoL QA gate passes on every required terminal with a recorded run id,"
+        "the TUI QoL QA gate passes on macOS Terminal, Windows Terminal, and one normal"
         in release_notes
     )
     assert "no failed, untested, or missing-media items" in release_notes

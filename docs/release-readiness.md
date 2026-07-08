@@ -76,9 +76,21 @@ query, bad SQL, TUI DDL metadata results, export overwrite behavior, missing
 files, quit behavior, and Mac keybinding paths.
 
 Run the TUI QoL QA gate for required terminal coverage, media evidence, and
-state-clarity checks. Any failed TUI QoL matrix item blocks `release-candidate eligible`.
+state-clarity checks. The approved TUI release-proof target covers macOS Terminal, Windows Terminal, and one normal Linux desktop terminal. VS Code integrated terminal, iTerm2, and tmux/SSH are out of scope for this release lane.
 
-A local TUI QoL scope closeout that records only macOS Terminal evidence and terminal gaps is not enough for `release-candidate eligible`; the full required terminal matrix must pass with media evidence.
+The final TUI proof result also requires same-`HEAD` three-OS automated support
+proof for macOS, native Windows, and Linux. Minimum automated support proof uses
+Python 3.12, `uv sync --all-extras --frozen`, `uv run ruff format --check .`,
+`uv run ruff check .`, `uv run --all-extras mypy src`, and
+`uv run --all-extras pytest` on each target OS family.
+
+Each source-checkout proof transcript must record `pwd -P`,
+`git status --short --branch`, `git log -1 --oneline`, `git remote -v`,
+`git tag --points-at HEAD`, `uv --version`, `uv run python --version`, and
+`uv run --all-extras csvql --version`. Plain `csvql --version` is not sufficient for source-checkout proof.
+
+A local `pass` result from this lane is evidence only. changing any release label, release status, public status, tag, or published artifact still requires
+separate explicit approval.
 
 ## Benchmark Proof
 
@@ -124,15 +136,20 @@ Run candidate evaluation from a clean worktree on `main`.
 4. Run release-readiness proof.
 5. Run the manual v1 QA matrix and record the date, commit SHA, terminal app,
    passed items, and blockers.
-6. Run the TUI QoL QA gate and record the TUI QoL run id, required terminal
-   coverage, media artifact paths, passed items, and blockers.
-7. Run benchmark proof or explicitly cite a current local benchmark artifact.
+6. Confirm `docs/tui-qol-qa.md` defines the approved three-OS TUI proof gate.
+   Run the TUI QoL QA gate and record the TUI QoL run id, required terminal
+   coverage, media artifact paths, passed items, blockers, source access
+   method, commit verification command, baseline transcripts, observer labels,
+   and deviations.
+7. Record three-OS automated support proof for macOS, native Windows, and
+   Linux on the same candidate `HEAD`.
+8. Run benchmark proof or explicitly cite a current local benchmark artifact.
    A current local benchmark artifact must come from the same candidate-state
    `HEAD`; record both `output/benchmarks/<run-id>/benchmark.json` and
    `output/benchmarks/<run-id>/benchmark-summary.md`. Rerunning
    `uv run python scripts/benchmark_csvql.py --output-root output/benchmarks`
    during final candidate evaluation is preferred.
-8. Scan for unsupported current claims:
+9. Scan for unsupported current claims:
 
    ```bash
    rg -n "v1-ready|v1 ready|production-safe|production ready|production-readiness|production readiness|sandbox-safe|sandbox safety|sandbox|large-file-proven|large file proven|large-file performance|large file performance" README.md CHANGELOG.md docs/development.md docs/PRODUCT_DIRECTION.md docs/ROADMAP.md docs/ARCHITECTURE.md docs/json-contracts.md docs/benchmarking.md docs/failure-gallery.md docs/v1-manual-qa.md docs/tui-qol-qa.md docs/release-readiness.md docs/release-notes/v1.md
@@ -143,7 +160,7 @@ Run candidate evaluation from a clean worktree on `main`.
    production-ready, sandbox-safe or sandboxed, or large-file-proven blocks
    candidate eligibility.
 
-9. Classify the result:
+10. Classify the result:
 
    - `v1-hardening`: release package exists but proof is stale, incomplete, not
      run, or blocked by remaining work.
@@ -155,7 +172,7 @@ Run candidate evaluation from a clean worktree on `main`.
    - `blocked`: a named proof, contract, docs, environment, dependency, or
      tooling blocker prevents honest candidate classification.
 
-10. Stop before publishing, tagging, uploading artifacts, creating a GitHub
+11. Stop before publishing, tagging, uploading artifacts, creating a GitHub
    release, or changing the package version.
 
 ## Label Rules
@@ -174,8 +191,12 @@ Use `release-candidate eligible` only as an assessment result after:
 - benchmark proof is refreshed or a same-HEAD local benchmark artifact is cited
   with benchmark JSON and Markdown summary paths
 - the full local gate passes
-- the TUI QoL QA gate passes on every required terminal with a recorded run id
-  and media artifact paths
+- the TUI QoL QA gate passes on macOS Terminal, Windows Terminal, and one normal
+  Linux desktop terminal with a recorded run id, media artifact paths, baseline
+  transcripts, source access method, commit verification command, and no
+  failed, untested, or missing-media items
+- three-OS automated support proof passes on macOS, native Windows, and Linux
+  for the same candidate `HEAD`
 - changelog and release-note material exists for the implemented surfaces
 - docs make no unsupported sandbox, security-isolation, production-readiness,
   or large-file performance claims

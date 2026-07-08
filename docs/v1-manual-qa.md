@@ -7,14 +7,15 @@ This matrix is local evidence only. It does not publish, tag, upload, or claim
 
 For terminal usability coverage, also run the [TUI QoL QA gate](tui-qol-qa.md).
 The TUI QoL QA gate is blocking for `release-candidate eligible`.
-The current TUI QoL scope closeout records macOS Terminal evidence and terminal gaps only; it does not satisfy the full TUI QoL terminal matrix.
+The approved TUI release-proof target covers macOS Terminal, Windows Terminal, and one normal Linux desktop terminal, plus same-`HEAD` three-OS automated
+support proof. VS Code integrated terminal, iTerm2, and tmux/SSH are out of scope for this release lane.
 
 Run from the repository root unless a step explicitly changes directories.
 
 ## Setup
 
 ```bash
-env UV_CACHE_DIR=/private/tmp/uv-cache uv run csvql --version
+env UV_CACHE_DIR=/private/tmp/uv-cache-csvql-localql uv run --all-extras csvql --version
 ```
 
 Expected: prints `1.0.0`.
