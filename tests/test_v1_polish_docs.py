@@ -312,6 +312,10 @@ def test_ci_workflow_collects_three_os_automated_support_gate() -> None:
     ci = read_doc(".github/workflows/ci.yml")
 
     for required_text in (
+        '- os: ubuntu-latest\n            python-version: "3.11"',
+        '- os: ubuntu-latest\n            python-version: "3.12"',
+        '- os: macos-latest\n            python-version: "3.12"',
+        '- os: windows-latest\n            python-version: "3.12"',
         "ubuntu-latest",
         "macos-latest",
         "windows-latest",
