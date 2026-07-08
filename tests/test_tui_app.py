@@ -3706,9 +3706,39 @@ def test_question_mark_types_in_sql_editor_and_f1_opens_help(tmp_path: Path) -> 
 def test_readme_documents_source_intelligence_keymap() -> None:
     readme = _normalized_markdown_text(_read_readme_text())
 
-    assert "Source Intelligence actions use `c` to load/show columns" in readme
+    assert (
+        "Source Intelligence actions use `i` to inspect the selected source and load columns"
+        in readme
+    )
+    assert "`c` to load/show columns directly" in readme
     assert "`l` to insert the selected source alias" in readme
-    assert "`x` to insert a `SELECT *` starter query" in readme
+    assert "`x` to open deterministic starter SQL templates" in readme
+
+
+def test_help_text_documents_sql_assistance_keymap() -> None:
+    from csvql.tui_help import WORKBENCH_HELP
+
+    assert "Ctrl+Space          Complete SQL from loaded source metadata" in WORKBENCH_HELP
+    assert "x                   Open starter SQL templates" in WORKBENCH_HELP
+    assert "i                   Inspect selected source and load columns" in WORKBENCH_HELP
+
+
+def test_readme_documents_deterministic_sql_assistance() -> None:
+    readme = _normalized_markdown_text(_read_readme_text())
+
+    assert "`Ctrl+Space` opens explicit SQL completion from loaded source metadata" in readme
+    assert "`x` to open deterministic starter SQL templates" in readme
+    assert "Generated SQL is inserted into the editor and does not run until you run it" in readme
+    assert "natural-language" not in readme.lower()
+
+
+def test_tui_guide_documents_completion_and_templates_without_ai_claims() -> None:
+    guide = _normalized_markdown_text(_read_doc_text("docs/tui-guide.md"))
+
+    assert "`Ctrl+Space` opens explicit SQL completion" in guide
+    assert "column-aware templates appear after `c` or `i` loads metadata" in guide
+    assert "Generated SQL is editable and does not execute automatically" in guide
+    assert "AI insight" not in guide
 
 
 def test_readme_documents_editor_quality_keymap() -> None:

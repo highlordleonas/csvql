@@ -81,7 +81,7 @@ When the Sources pane is focused:
 
 | Key | Action |
 | --- | --- |
-| `i` | Inspect selected source |
+| `i` | Inspect selected source and load columns |
 | `s` | Sample selected source |
 | `p` | Profile selected source |
 | `a` | Add source |
@@ -90,7 +90,8 @@ When the Sources pane is focused:
 | `w` | Save current sources to `.csvql.yml` |
 | `c` | Load or show source columns |
 | `l` | Insert selected source alias into SQL |
-| `x` | Insert `SELECT *` starter query |
+| `x` | Open starter SQL templates |
+| `Ctrl+Space` | Open explicit SQL completion in the editor |
 
 The Add source prompt accepts either `name=path` or one or more pasted `.csv`
 paths. Direct path paste derives aliases from file names, and duplicate aliases
@@ -103,6 +104,10 @@ start directory are allowed for local workflows but can reveal machine-specific
 locations if you share the catalog.
 
 Column metadata is session-local and is not written to `.csvql.yml`.
+`x` always offers preview rows and row count, and column-aware templates appear
+after `c` or `i` loads metadata. `Ctrl+Space` opens explicit SQL completion from
+loaded source metadata in the SQL editor. Generated SQL is editable and does not
+execute automatically.
 
 ## History
 

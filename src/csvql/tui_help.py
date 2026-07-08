@@ -6,6 +6,7 @@ Run SQL
   F4 / Ctrl+R         Run selected SQL, otherwise current statement
   F12 / Ctrl+B        Run Buffer
   Ctrl+N / F10        Clear editor for a new query
+  Ctrl+Space          Complete SQL from loaded source metadata
 
 Focus
   F2 / Ctrl+Down      SQL editor
@@ -14,12 +15,12 @@ Focus
   F8                  History
 
 Source pane
-  i                   Inspect selected source
+  i                   Inspect selected source and load columns
   s                   Sample selected source
   p                   Profile selected source
   c                   Load/show selected source columns
   l                   Insert selected source alias
-  x                   Insert SELECT * starter query
+  x                   Open starter SQL templates
   F3 / Ctrl+O         Choose CSV file(s) or prompt for paths
   a                   Add source
   paste .csv path     Add CSV path text as a session source
