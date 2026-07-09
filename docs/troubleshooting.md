@@ -130,6 +130,22 @@ Core fallbacks:
 After `F12` or `Ctrl+B`, move through History to recall each successful
 statement's result in the Results pane.
 
+## Native CSV Picker Is Unavailable Or Fails
+
+On macOS, `F3` opens the native CSV picker through `osascript`. If that tool is
+missing, unavailable, canceled, or blocked by local desktop permissions, CSVQL
+keeps the TUI running and falls back to the path prompt.
+
+Use either path-prompt route:
+
+```bash
+csvql menu
+```
+
+Then press `Ctrl+O`, or press `F3` and use the fallback prompt if the native
+picker cannot open. Paste one or more `.csv` paths, or enter mappings such as
+`orders=data/orders.csv`.
+
 ## Data-Quality Checks Fail
 
 `csvql check` exits `11` when configured checks run and find data-quality

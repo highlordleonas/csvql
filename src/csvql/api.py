@@ -39,27 +39,41 @@ class CSVQLSession:
 
     @classmethod
     def from_config(cls, start_dir: str | Path = ".") -> CSVQLSession:
+        """Create a session from the nearest project config at or above ``start_dir``."""
+
         return cls(load_project(Path(start_dir)))
 
     def tables(self) -> ProjectTablesResult:
+        """Return the configured project table aliases and resolved paths."""
+
         return build_project_tables_result(self._context)
 
     def query(self, sql: str) -> QueryResult:
+        """Run trusted local SQL against the configured project tables."""
+
         with CSVQLEngine() as engine:
             engine.register_tables(project_tables_to_sources(self._context))
             return engine.query(sql)
 
     def run_file(self, path: str | Path) -> QueryResult:
+        """Load and run a saved SQL file resolved from the project root."""
+
         sql_file = load_sql_file(str(path), base_dir=self._context.project_root)
         return self.query(sql_file.sql)
 
     def inspect(self, table: str, *, exact: bool = False) -> InspectResult:
+        """Inspect a configured table alias."""
+
         return inspect_csv_source(_catalog_source(self._context, table), exact=exact)
 
     def sample(self, table: str, *, limit: int = 10) -> SampleResult:
+        """Return a bounded sample from a configured table alias."""
+
         return sample_csv_source(_catalog_source(self._context, table), limit=limit)
 
     def profile(self, table: str) -> ProfileResult:
+        """Profile a configured table alias."""
+
         return profile_csv_source(_catalog_source(self._context, table))
 
     def check(
@@ -69,6 +83,8 @@ class CSVQLSession:
         show_failures: bool = False,
         failure_limit: int = 5,
     ) -> CheckRunResult:
+        """Run configured data-quality checks for the project or one table alias."""
+
         return run_configured_checks(
             self._context,
             table_name=table,
@@ -81,9 +97,11 @@ class CSVQLSession:
         sql_file: str | Path,
         out: str | Path,
         *,
-        format: ExportFormat | str,
+        format: ExportFormat | str = ExportFormat.json,
         force: bool = False,
     ) -> Path:
+        """Run a saved SQL file and export the result, defaulting to JSON output."""
+
         export_format = _export_format(format)
         output_path = resolve_export_path(
             str(out),

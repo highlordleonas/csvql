@@ -27,6 +27,7 @@ class ReleaseReadinessResult:
     package_version: str
     cli_version: str
     wheel_path: Path
+    query_output: str
     inspect_output: str
     tui_import_output: str
     menu_help_output: str
@@ -46,6 +47,8 @@ def format_release_readiness_summary(result: ReleaseReadinessResult) -> str:
                 f"cli={result.cli_version}"
             ),
             f"Wheel: {result.wheel_path}",
+            "Query smoke output:",
+            result.query_output,
             "Inspect smoke output:",
             result.inspect_output,
             f"TUI extra import: {result.tui_import_output}",
@@ -176,6 +179,18 @@ def verify_release_readiness(
         cwd=repo_root,
         run_command=run_command,
     )
+    query_output = run_release_command(
+        (
+            csvql_path,
+            "query",
+            smoke_csv,
+            "SELECT COUNT(*) AS order_count FROM orders",
+            "--output",
+            "json",
+        ),
+        cwd=repo_root,
+        run_command=run_command,
+    )
     run_release_command(
         (
             "uv",
@@ -208,6 +223,7 @@ def verify_release_readiness(
         package_version=package_version,
         cli_version=cli_version,
         wheel_path=wheel,
+        query_output=query_output,
         inspect_output=inspect_output,
         tui_import_output=tui_import_output,
         menu_help_output=menu_help_output,

@@ -3,15 +3,16 @@
 All notable CSVQL changes are summarized here.
 
 LocalQL package metadata is prepared for `v1.0.0`. The `v1.0.0` section records
-implemented `csvql` surfaces for the local release candidate; it is not a
-publication, tag, PyPI upload, GitHub release, artifact upload, or `v1-stable`
+implemented `csvql` surfaces for the local release candidate; it is not a PyPI
+upload, GitHub release, artifact upload, external publication, or `v1-stable`
 claim.
 
 ## v1.0.0 - 2026-07-01
 
-Status: LocalQL distribution alias accepted; public launch hygiene remains in
-`v1-hardening` until final proof is rerun on the current release-candidate
-state.
+Status: `v1-hardening`. Pre-release blocker fixes are changing the support and
+proof contract, including Python 3.13 and Python 3.14 support proof.
+Release-candidate eligibility must be refreshed on the final hardening `HEAD`
+before any release claim.
 
 ### Added
 
@@ -35,7 +36,7 @@ state.
 - TUI source manager, SQL editor, results grid, session-local query history,
   help view, source actions, explicit export action, and explicit project
   catalog save action.
-- TUI derived result sources: `Ctrl+S`, `Alt+S`, or `F11` saves the last successful tabular
+- TUI derived result sources: `Ctrl+S`, `Alt+S`, or `F11` saves the active tabular
   result to `.csvql/results/{alias}.csv` and adds it to the current Sources pane
   with kind `derived`; the alias is session-local unless sources are explicitly
   saved to `.csvql.yml`.

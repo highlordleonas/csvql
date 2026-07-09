@@ -191,6 +191,18 @@ def test_session_export_writes_json_with_query_result_shape(tmp_path: Path) -> N
     assert isinstance(payload["elapsed_ms"], float)
 
 
+def test_session_export_defaults_to_json(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_project(project_root)
+    session = CSVQLSession.from_config(project_root)
+
+    output_path = session.export("queries/count_orders.sql", "output/count-orders.json")
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["columns"] == ["order_count"]
+    assert payload["rows"] == [{"order_count": 2}]
+
+
 def test_session_export_writes_markdown(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_project(project_root)

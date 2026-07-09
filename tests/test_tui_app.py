@@ -3717,6 +3717,10 @@ def test_troubleshooting_documents_portable_fallbacks() -> None:
     assert (
         "After `F12` or `Ctrl+B`, move through History to recall each successful" in troubleshooting
     )
+    assert "## Native CSV Picker Is Unavailable Or Fails" in troubleshooting
+    assert "native CSV picker through `osascript`" in troubleshooting
+    assert "keeps the TUI running and falls back to the path prompt" in troubleshooting
+    assert "Then press `Ctrl+O`, or press `F3`" in troubleshooting
 
 
 def test_question_mark_types_in_sql_editor_and_f1_opens_help(tmp_path: Path) -> None:

@@ -130,18 +130,19 @@ Implemented:
 Current status before v1 publication:
 
 - LocalQL distribution alias is selected for the `csvql` CLI/import package
-- public launch hygiene remains in `v1-hardening` until final proof is rerun on
-  the current release-candidate state
+- current work is in `v1-hardening` while pre-release blockers and Python 3.13
+  and Python 3.14 support proof are refreshed
 
 Remaining before v1 publication:
 
+- refreshed release-candidate eligibility proof on the final hardening `HEAD`
 - explicit user approval for external release actions after the `1.0.0` local
   release state is proven
 
 ## v1.0.0 - Stable Release
 
-- current status: LocalQL distribution alias selected; final proof still must be
-  rerun on the current release-candidate state
+- current status: `v1-hardening`; publication and any `v1-stable` claim still
+  require refreshed proof and separate explicit approval
 - stable CLI contract
 - stable config schema
 - stable small Python API contract

@@ -138,6 +138,13 @@ version = "0.1.0"
                 stdout='{"row_count":{"mode":"not_counted"}}\n',
                 stderr="",
             )
+        if command[1:3] == ["query", str(repo_root / "out" / "smoke" / "orders.csv")]:
+            return CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout='{"columns":["order_count"],"rows":[{"order_count":1}],"row_count":1}\n',
+                stderr="",
+            )
         raise AssertionError(f"Unexpected command: {command}")
 
     result = verify_release_readiness(
@@ -148,6 +155,9 @@ version = "0.1.0"
     )
 
     assert result.inspect_output == '{"row_count":{"mode":"not_counted"}}'
+    assert result.query_output == (
+        '{"columns":["order_count"],"rows":[{"order_count":1}],"row_count":1}'
+    )
     assert result.tui_import_output == "tui-extra-ok"
     assert "interactive CSVQL terminal menu" in result.menu_help_output
     assert result.distribution_name == "localql"
@@ -173,6 +183,7 @@ def test_format_release_readiness_summary_includes_tui_proof(tmp_path: Path) -> 
         package_version="0.1.0",
         cli_version="0.1.0",
         wheel_path=tmp_path / "dist" / "localql-0.1.0-py3-none-any.whl",
+        query_output='{"columns":["order_count"],"rows":[{"order_count":1}],"row_count":1}',
         inspect_output='{"row_count":{"mode":"not_counted"}}',
         tui_import_output="tui-extra-ok",
         menu_help_output="Open the interactive CSVQL terminal menu.",
@@ -183,5 +194,6 @@ def test_format_release_readiness_summary_includes_tui_proof(tmp_path: Path) -> 
     assert "Release readiness proof passed." in summary
     assert "Distribution: localql" in summary
     assert "localql-0.1.0-py3-none-any.whl" in summary
+    assert '"order_count":1' in summary
     assert "tui-extra-ok" in summary
     assert "Open the interactive CSVQL terminal menu." in summary

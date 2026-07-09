@@ -64,6 +64,9 @@ class TUIResultStore:
         if handle.temp_path not in self._temp_paths:
             raise KeyError(f"Unknown temp path for result {handle.sequence}.")
 
+        # Pickle is used only for session-owned spill files created by this store.
+        # Unknown paths are rejected before this point so foreign files are never
+        # deserialized through a forged handle.
         with handle.temp_path.open("rb") as file:
             loaded = pickle.load(file)
         if not isinstance(loaded, QueryResult):

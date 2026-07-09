@@ -95,14 +95,20 @@ def test_manual_qa_matrix_covers_cli_and_tui_release_paths() -> None:
 def test_tui_workbench_svg_matches_repaired_run_buffer_and_active_result_labels() -> None:
     workbench_svg = read_doc("docs/assets/localql-tui-workbench.svg")
 
-    assert "F12/Ctrl+B&#160;buffer" in workbench_svg
-    assert "standalone&#160;CSV&#160;path&#160;adds&#160;source" in workbench_svg
+    assert "ACTIVE&#160;RESULT:&#160;query&#160;1" in workbench_svg
+    assert "Result&#160;target:&#160;active&#160;result" in workbench_svg
+    assert "Showing&#160;5&#160;returned&#160;row(s)." in workbench_svg
     assert "Export&#160;active" in workbench_svg
-    assert "&#160;F3&#160;" in workbench_svg
+    assert "Ctrl+S/Alt+S" in workbench_svg
+    assert "Save&#160;active" in workbench_svg
+    assert "examples/saas_rev" in workbench_svg
     for stale_text in (
         "F12&#160;all",
         "paste&#160;CSV&#160;path&#160;to&#160;add&#160;source",
         "Export&#160;result",
+        "/Users/",
+        "richard",
+        "Dropbox",
         "&#160;f3&#160;",
     ):
         assert stale_text not in workbench_svg
@@ -377,6 +383,8 @@ def test_ci_workflow_collects_three_os_automated_support_gate() -> None:
     assert {
         ("ubuntu-latest", "3.11"),
         ("ubuntu-latest", "3.12"),
+        ("ubuntu-latest", "3.13"),
+        ("ubuntu-latest", "3.14"),
         ("macos-latest", "3.12"),
         ("windows-latest", "3.12"),
     } <= matrix_pairs
@@ -503,6 +511,7 @@ def test_release_notes_require_manual_qa_and_tui_qol_gates() -> None:
     assert "required automated proof outputs" in release_notes
     assert "manual v1 QA matrix is recorded for the candidate state" in release_notes
     assert "three-OS automated support proof" in release_notes
+    assert "Python 3.11 through Python 3.14 support proof passes" in release_notes
     assert (
         "Windows and Linux screenshots or manual terminal media are no longer required"
         in normalized_release_notes
@@ -519,10 +528,35 @@ def test_release_notes_require_manual_qa_and_tui_qol_gates() -> None:
     assert "same candidate `HEAD`" in release_notes
 
 
+def test_public_docs_record_pre_release_hardening_without_stable_claim() -> None:
+    public_docs = "\n".join(
+        [
+            read_doc("README.md"),
+            read_doc("CHANGELOG.md"),
+            read_doc("docs/PRODUCT_DIRECTION.md"),
+            read_doc("docs/ROADMAP.md"),
+            read_doc("docs/release-notes/v1.md"),
+        ]
+    )
+
+    for required_text in (
+        "`v1-hardening`",
+        "final hardening `HEAD`",
+        "Python 3.13 and Python 3.14 support proof",
+        "PyPI upload",
+        "GitHub release",
+        "`v1-stable`",
+    ):
+        assert required_text in public_docs
+    assert "`v1.0.0-rc1` at `74b193e` is `release-candidate eligible`" not in public_docs
+    assert "`74b193e` classified as `release-candidate eligible`" not in public_docs
+
+
 def test_docs_describe_tui_active_result_not_last_successful_result() -> None:
     docs = "\n".join(
         [
             read_doc("README.md"),
+            read_doc("CHANGELOG.md"),
             read_doc("docs/tui-guide.md"),
             read_doc("docs/release-notes/v1.md"),
         ]

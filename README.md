@@ -68,10 +68,11 @@ project-backed Python API. It also includes an optional Textual-powered terminal
 menu for local interactive work. The release workflow and release-note material
 now exist. The package version is `1.0.0`.
 
-Public launch hygiene is still in `v1-hardening` until final proof is rerun on
-the current release-candidate state. This work does not create a tag, PyPI
-upload, GitHub release, artifact upload, external publication, or `v1-stable`
-claim.
+Current status: `v1-hardening`. Pre-release blocker fixes are changing the
+support and proof contract, including Python 3.13 and Python 3.14 support proof.
+Release-candidate eligibility must be refreshed on the final hardening `HEAD`
+before any release claim. This work does not create a PyPI upload, GitHub
+release, artifact upload, external publication, or `v1-stable` claim.
 
 Implemented now:
 
@@ -202,14 +203,15 @@ step through the buffer results. The History run column labels current-
 statement runs as `current`, buffer runs as `buffer`, and History reruns as
 `rerun`.
 
-Use `F2` or `Ctrl+Down` for the SQL editor, `F3` to choose CSV file(s), `F5`
-for results, `F6` or `Ctrl+Up` for sources, and `F8` for history. Printable keys
-type into SQL while the editor is focused. Source actions use letters only when
-the source pane is focused: `i` inspect, `s` sample, `p` profile, `a` add, `d`
-remove after confirmation, and `w` save sources. In History, use `Enter` to
-reopen a query and `r` to rerun a query against the current session sources.
-Highlighting a successful History row restores that row's result in the Results
-pane. `F1` opens help.
+Use `F2` or `Ctrl+Down` for the SQL editor, `F3` or `Ctrl+O` to choose CSV
+file(s) or fall back to the path prompt, `F5` for results, `F6` or `Ctrl+Up`
+for sources, and `F8` for history. Printable keys type into SQL while the
+editor is focused. Source actions use letters only when the source pane is
+focused: `i` inspect, `s` sample, `p` profile, `a` add, `d` remove after
+confirmation, and `w` save sources. In History, use `Enter` to reopen a query
+and `r` to rerun a query against the current session sources. Highlighting a
+successful History row restores that row's result in the Results pane. `F1`
+opens help.
 
 Press `F7` to export the active tabular result. The output suffix chooses the
 format: `.csv`, `.json`, `.md`, `.markdown`, or `.txt`. If the path has no

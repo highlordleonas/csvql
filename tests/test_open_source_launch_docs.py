@@ -114,6 +114,28 @@ def test_pyproject_public_metadata_is_consistent() -> None:
     assert "csv" in project["keywords"]
     assert "duckdb" in project["keywords"]
     assert "local-analytics" in project["keywords"]
+    assert project["requires-python"] == ">=3.11,<3.15"
+    for classifier in (
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+    ):
+        assert classifier in project["classifiers"]
+
+
+def test_support_docs_define_post_release_response_policy() -> None:
+    support = read_text("SUPPORT.md")
+
+    for expected in (
+        "Post-Release Response",
+        "triaged by reproducibility",
+        "patch releases",
+        "Published tags are immutable",
+        "PyPI release may be yanked",
+        "supported Python/runtime contract",
+    ):
+        assert expected in support
 
 
 def test_publish_workflow_is_manual_only() -> None:

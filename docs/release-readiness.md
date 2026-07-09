@@ -26,7 +26,8 @@ uv run python scripts/verify_release_readiness.py --work-dir output/release-read
 ```
 
 On success, the script prints a proof summary with version agreement, built
-wheel path, inspect smoke output, TUI extra import output, and menu help output.
+wheel path, query smoke output, inspect smoke output, TUI extra import output,
+and menu help output.
 
 ## Package Content Audit
 
@@ -49,6 +50,7 @@ This workflow verifies:
 - `uv build --sdist --wheel` succeeds
 - built wheel and sdist artifact names use the `localql` distribution
 - an isolated wheel install can run `csvql --version`
+- the installed wheel can run a tiny `query` command
 - the installed wheel can run a tiny `inspect` command
 - the installed wheel can install the optional `tui` extra, import the
   Textual-backed TUI app, and show `csvql menu --help`
@@ -82,11 +84,13 @@ screenshots or manual terminal media are no longer required for this release
 lane. VS Code integrated terminal, iTerm2, and tmux/SSH are out of scope for
 this release lane.
 
-The final TUI proof result also requires same-`HEAD` three-OS automated support
-proof for macOS, native Windows, and Linux. Minimum automated support proof uses
-Python 3.12, `uv sync --all-extras --frozen`, `uv run ruff format --check .`,
-`uv run ruff check .`, `uv run --all-extras mypy src`, and
-`uv run --all-extras pytest` on each target OS family.
+The final proof result also requires same-`HEAD` automated Python-version
+support proof for Python 3.11 through Python 3.14 on Ubuntu, plus same-`HEAD`
+three-OS automated support proof for macOS, native Windows, and Linux. The
+three-OS proof uses Python 3.12 on each target OS family. Required automated
+proof commands include `uv sync --all-extras --frozen`,
+`uv run ruff format --check .`, `uv run ruff check .`,
+`uv run --all-extras mypy src`, and `uv run --all-extras pytest`.
 
 Each source-checkout proof transcript must record `pwd -P`,
 `git status --short --branch`, `git log -1 --oneline`, `git remote -v`,
@@ -161,8 +165,9 @@ Run candidate evaluation from a clean worktree on `main`.
    automated proof outputs, any cited manual terminal context, passed items,
    blockers, source access method, commit verification command, baseline
    transcripts, observer labels, and deviations.
-7. Record three-OS automated support proof for macOS, native Windows, and
-   Linux on the same candidate `HEAD`.
+7. Record automated Python-version support proof for Python 3.11 through Python
+   3.14 on Ubuntu, plus three-OS automated support proof for macOS, native
+   Windows, and Linux on the same candidate `HEAD`.
 8. Run benchmark proof or explicitly cite a current local benchmark artifact.
    A current local benchmark artifact must come from the same candidate-state
    `HEAD`; record both `output/benchmarks/<run-id>/benchmark.json` and
@@ -189,9 +194,10 @@ Run candidate evaluation from a clean worktree on `main`.
      same-HEAD local benchmark artifact is cited with benchmark JSON and
      Markdown summary paths, authority docs agree, the TUI QoL QA gate records
      the required automated proof outputs and any cited manual terminal
-     context, same-`HEAD` three-OS automated support proof passes on macOS,
-     native Windows, and Linux with baseline transcripts, source access method,
-     commit verification command, and no failed or missing required checks, and
+     context, same-`HEAD` Python 3.11 through Python 3.14 support proof passes,
+     same-`HEAD` three-OS automated support proof passes on macOS, native
+     Windows, and Linux with baseline transcripts, source access method, commit
+     verification command, and no failed or missing required checks, and
      unsupported claims are absent.
    - `blocked`: a named proof, contract, docs, environment, dependency, or
      tooling blocker prevents honest candidate classification.
@@ -212,6 +218,8 @@ Use `release-candidate eligible` only as an assessment result after:
 - current JSON shapes, exit codes, config schema, DuckDB dependency floor, and
   Python API surface are documented and test-backed
 - the release-readiness script passes on the candidate state
+- Python 3.11 through Python 3.14 support proof passes for the same candidate
+  `HEAD`
 - benchmark proof is refreshed or a same-HEAD local benchmark artifact is cited
   with benchmark JSON and Markdown summary paths
 - the full local gate passes

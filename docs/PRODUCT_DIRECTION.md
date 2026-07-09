@@ -50,10 +50,10 @@ Textual-powered `csvql menu` terminal workbench with session-local history,
 explicit project catalog save, explicit result export, and explicit derived
 result sources under `.csvql/results/{alias}.csv`.
 
-Current work should not add broad new product surface. Public launch hygiene
-must rerun final proof on the current release-candidate state before any
-external release action, and every external release action still requires
-separate explicit approval:
+Current work should not add broad new product surface. Pre-release blocker fixes
+are in `v1-hardening` while the support and proof contract is refreshed,
+including Python 3.13 and Python 3.14 support proof. Every external release
+action still requires separate explicit approval:
 
 - keep README, development docs, roadmap, architecture, product direction,
   release readiness, and JSON-contract docs aligned with the runtime surface
