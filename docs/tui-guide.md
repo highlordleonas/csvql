@@ -91,8 +91,6 @@ When the Sources pane is focused:
 | `c` | Load or show source columns |
 | `l` | Insert selected source alias into SQL |
 | `x` | Open starter SQL templates |
-| `Tab` | Complete SQL if available, otherwise indent |
-| `Ctrl+Space` | Alternate SQL completion where terminal supports it |
 
 The Add source prompt accepts either `name=path` or one or more pasted `.csv`
 paths. Direct path paste derives aliases from file names, and duplicate aliases
@@ -106,11 +104,12 @@ locations if you share the catalog.
 
 Column metadata is session-local and is not written to `.csvql.yml`.
 `x` always offers preview rows and row count, and column-aware templates appear
-after `c` or `i` loads metadata. `Tab` is the primary SQL-editor completion key.
-When completion items are available, it opens explicit SQL completion; otherwise
-it inserts four spaces and keeps focus in the SQL editor. `Ctrl+Space` remains
-available where the terminal delivers it. Generated SQL is editable and does not
-execute automatically. Pane focus stays on `F2`, `F5`, `F6`, and `F8`.
+after `c` or `i` loads metadata. In the SQL editor, `Tab` is the primary
+SQL-editor completion key. When completion items are available, it opens
+explicit SQL completion; otherwise it inserts four spaces and keeps focus in
+the SQL editor. `Ctrl+Space` remains available where the terminal delivers it.
+Generated SQL is editable and does not execute automatically. Pane focus stays
+on `F2`, `F5`, `F6`, and `F8`.
 
 ## History
 

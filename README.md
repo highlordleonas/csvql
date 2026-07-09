@@ -229,13 +229,14 @@ When the source pane is focused, Source Intelligence actions use `i` to inspect
 the selected source and load columns, `c` to load/show columns directly, `l` to
 insert the selected source alias, and `x` to open deterministic starter SQL
 templates. Preview rows and row count are always available from `x`; column-aware
-templates appear after `c` or `i` loads metadata. `Tab` opens explicit SQL
-completion when items are available; otherwise it inserts four spaces and keeps
-focus in the SQL editor. `Ctrl+Space` remains available where the terminal
-delivers it. Generated SQL is inserted into the editor and does not run until
-you run it. Pane focus stays on `F2`, `F5`, `F6`, and `F8` plus the existing
-documented control-key paths. Column metadata is session-local and is not
-written to `.csvql.yml`.
+templates appear after `c` or `i` loads metadata.
+
+In the SQL editor, `Tab` opens explicit SQL completion when items are
+available; otherwise it inserts four spaces and keeps focus in the SQL editor.
+`Ctrl+Space` remains available where the terminal delivers it. Generated SQL is
+inserted into the editor and does not run until you run it. Pane focus stays on
+`F2`, `F5`, `F6`, and `F8` plus the existing documented control-key paths.
+Column metadata is session-local and is not written to `.csvql.yml`.
 
 `Ctrl+N` or `F10` clears the editor for a new query while keeping history and
 the last result view visible. Query history is in-memory session state only: it
