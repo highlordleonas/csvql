@@ -13,6 +13,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import DataTable, Footer, Input, Static, TextArea
 from textual.widgets._footer import FooterKey
 from textual.worker import Worker, WorkerState
@@ -124,6 +125,16 @@ _MODAL_BLOCKED_APP_ACTIONS = {
 _RESULTS_ONLY_ACTIONS = {
     "select_next_buffer_result",
     "select_previous_buffer_result",
+}
+
+_CLICK_FOCUS_TARGETS: dict[str, str] = {
+    "sources-title": "sources",
+    "history-title": "history",
+    "sql-title": "sql",
+    "run-status": "sql",
+    "results-title": "results",
+    "result-tabs": "results",
+    "results-message": "results",
 }
 
 _MIN_TERMINAL_WIDTH = 100
@@ -1235,6 +1246,13 @@ class CSVQLMenuApp(App[None]):
         self._refresh_pane_context()
         if getattr(event.control, "id", None) == "history":
             self._show_selected_history_result()
+
+    def on_click(self, event: events.Click) -> None:
+        target = _click_focus_target(event.widget)
+        if target is None:
+            return
+        self.query_one(f"#{target}", Widget).focus()
+        self._refresh_pane_context()
 
     def on_paste(self, event: events.Paste) -> None:
         if isinstance(self.focused, Input):
@@ -2402,6 +2420,12 @@ def _pane_title(label: str, is_active: bool) -> str:
     if is_active:
         return f"ACTIVE: {label}"
     return f"        {label}"
+
+
+def _click_focus_target(widget: Widget | None) -> str | None:
+    if widget is None or widget.id is None:
+        return None
+    return _CLICK_FOCUS_TARGETS.get(widget.id)
 
 
 def _results_title(active_result_label: str, is_active: bool) -> str:

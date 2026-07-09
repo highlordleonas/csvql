@@ -1317,6 +1317,44 @@ def test_workbench_focus_shortcuts_cover_all_panes(tmp_path: Path) -> None:
     assert isinstance(sql_focus, TextArea)
 
 
+def test_pane_title_and_chrome_clicks_focus_their_target_panes(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, str, str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("f6")
+            await pilot.pause()
+            initial_focus = _focused_widget_id(app)
+
+            await pilot.click("#results-title")
+            await pilot.pause()
+            results_focus = _focused_widget_id(app)
+
+            await pilot.click("#history-title")
+            await pilot.pause()
+            history_focus = _focused_widget_id(app)
+
+            await pilot.click("#sources-title")
+            await pilot.pause()
+            sources_focus = _focused_widget_id(app)
+
+            await pilot.click("#run-status")
+            await pilot.pause()
+            sql_focus = _focused_widget_id(app)
+
+            return initial_focus, results_focus, history_focus, sources_focus, sql_focus
+
+    initial_focus, results_focus, history_focus, sources_focus, sql_focus = asyncio.run(_inner())
+
+    assert initial_focus == "sources"
+    assert results_focus == "results"
+    assert history_focus == "history"
+    assert sources_focus == "sources"
+    assert sql_focus == "sql"
+
+
 @pytest.mark.parametrize("size", [(60, 18), (160, 45)])
 def test_core_panes_mount_and_remain_focusable_at_simulated_viewport_sizes(
     tmp_path: Path, size: tuple[int, int]
