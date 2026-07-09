@@ -710,19 +710,24 @@ class CSVQLMenuApp(App[None]):
             callback=self._handle_sql_template_selection,
         )
 
-    def action_open_sql_completion(self) -> None:
-        if not isinstance(self.focused, TextArea):
-            return
-
-        sql = self.query_one("#sql", TextArea)
-        items = build_completion_items(
+    def _sql_completion_items_for_editor(self, sql: TextArea) -> tuple[SQLCompletionItem, ...]:
+        return build_completion_items(
             self._assist_sources(),
             text=sql.text,
             cursor_index=_text_index_from_location(sql.text, sql.selection.end),
         )
+
+    def _open_sql_completion_for_editor(
+        self,
+        sql: TextArea,
+        *,
+        empty_status_message: str | None,
+    ) -> bool:
+        items = self._sql_completion_items_for_editor(sql)
         if not items:
-            self._set_status("No completion items available.")
-            return
+            if empty_status_message is not None:
+                self._set_status(empty_status_message)
+            return False
 
         self._sql_assist_choices = {item.key: item for item in items}
         self.push_screen(
@@ -730,6 +735,16 @@ class CSVQLMenuApp(App[None]):
                 tuple((item.key, item.label, item.item_kind, item.detail) for item in items)
             ),
             callback=self._handle_sql_completion_selection,
+        )
+        return True
+
+    def action_open_sql_completion(self) -> None:
+        if not isinstance(self.focused, TextArea):
+            return
+
+        self._open_sql_completion_for_editor(
+            self.query_one("#sql", TextArea),
+            empty_status_message="No completion items available.",
         )
 
     def action_run_query(self) -> None:
@@ -1586,6 +1601,14 @@ class CSVQLMenuApp(App[None]):
         sql.move_cursor(_text_location_from_index(updated_text, start_index + len(replacement)))
         sql.focus()
 
+    def _replace_sql_editor_selection(self, replacement: str) -> None:
+        sql = self.query_one("#sql", TextArea)
+        self._replace_sql_editor_text(
+            _text_index_from_location(sql.text, sql.selection.start),
+            _text_index_from_location(sql.text, sql.selection.end),
+            replacement,
+        )
+
     def _assist_sources(self) -> tuple[SQLAssistSource, ...]:
         columns_by_source = {
             source.name: self.state.source_columns(source.name) for source in self.state.sources
@@ -2168,8 +2191,19 @@ class CSVQLMenuApp(App[None]):
 class _SourcePathTextArea(TextArea):
     """SQL editor that turns pasted CSV path payloads into sources."""
 
+    BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
+        Binding("tab", "complete_or_indent", "Complete SQL", show=False),
+    ]
+
     _last_regular_paste_text: str | None = None
     _last_regular_paste_result_text: str | None = None
+
+    def action_complete_or_indent(self) -> None:
+        if not isinstance(self.app, CSVQLMenuApp):
+            return
+        if self.app._open_sql_completion_for_editor(self, empty_status_message=None):
+            return
+        self.app._replace_sql_editor_selection("    ")
 
     async def _on_paste(self, event: events.Paste) -> None:
         if not isinstance(self.app, CSVQLMenuApp):

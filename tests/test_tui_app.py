@@ -4714,6 +4714,111 @@ def test_sql_completion_unknown_range_alias_prefix_has_no_column_items(
     assert "No completion items" in status
 
 
+def test_sql_completion_tab_single_source_replaces_token_with_bare_column(
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+    state.set_source_columns(
+        "customers",
+        (
+            TUISourceColumn(name="customer_id", duckdb_type="VARCHAR"),
+            TUISourceColumn(name="email", duckdb_type="VARCHAR"),
+        ),
+    )
+
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT cust")
+            sql.move_cursor((0, len("SELECT cust")))
+            await pilot.press("tab")
+            await pilot.pause()
+            screen_name = type(app.screen).__name__
+            await pilot.press("enter")
+            await pilot.pause()
+            return screen_name, sql.text
+
+    screen_name, editor_text = asyncio.run(_inner())
+
+    assert screen_name == "_SQLAssistPickerScreen"
+    assert editor_text == "SELECT customer_id"
+
+
+def test_sql_completion_tab_inserts_spaces_and_keeps_focus_when_no_items(
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT rm.")
+            sql.move_cursor((0, len("SELECT rm.")))
+            await pilot.press("tab")
+            await pilot.pause()
+            return sql.text, _focused_widget_id(app), type(app.screen).__name__
+
+    editor_text, focused_widget, screen_name = asyncio.run(_inner())
+
+    assert editor_text == "SELECT rm.    "
+    assert focused_widget == "sql"
+    assert screen_name == "Screen"
+
+
+def test_sql_completion_tab_unknown_qualifier_indents_instead_of_guessing(
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+    state.set_source_columns(
+        "customers",
+        (TUISourceColumn(name="customer_id", duckdb_type="VARCHAR"),),
+    )
+
+    async def _inner() -> tuple[str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT rm.")
+            sql.move_cursor((0, len("SELECT rm.")))
+            await pilot.press("tab")
+            await pilot.pause()
+            return sql.text, app.query_one("#status", Static).content, type(app.screen).__name__
+
+    editor_text, status, screen_name = asyncio.run(_inner())
+
+    assert editor_text == "SELECT rm.    "
+    assert "No completion items" not in status
+    assert screen_name == "Screen"
+
+
+def test_sql_completion_ctrl_space_still_opens_picker_after_tab_follow_up(
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+    state.set_source_columns(
+        "customers",
+        (TUISourceColumn(name="customer_id", duckdb_type="VARCHAR"),),
+    )
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT cust")
+            sql.move_cursor((0, len("SELECT cust")))
+            await pilot.press("ctrl+space")
+            await pilot.pause()
+            return type(app.screen).__name__
+
+    assert asyncio.run(_inner()) == "_SQLAssistPickerScreen"
+
+
 def test_starter_picker_does_not_call_inspect_or_query_paths(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
