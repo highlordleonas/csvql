@@ -50,9 +50,11 @@ Textual-powered `csvql menu` terminal workbench with session-local history,
 explicit project catalog save, explicit result export, and explicit derived
 result sources under `.csvql/results/{alias}.csv`.
 
-Current work should not add broad new product surface. Pre-release blocker fixes
-are in `v1-hardening` while the support and proof contract is refreshed,
-including Python 3.13 and Python 3.14 support proof. Every external release
+Current work should not add broad new product surface. Candidate commit
+`a0f3146` is `release-candidate eligible` as an assessment result after
+same-`HEAD` local proof, GitHub Actions CI run `29029191091`, manual QA
+evidence, and the ignored local proof packet
+`output/release-proof-20260709-a0f3146/RESULT.md`. Every external release
 action still requires separate explicit approval:
 
 - keep README, development docs, roadmap, architecture, product direction,

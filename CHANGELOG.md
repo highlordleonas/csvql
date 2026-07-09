@@ -9,10 +9,12 @@ claim.
 
 ## v1.0.0 - 2026-07-01
 
-Status: `v1-hardening`. Pre-release blocker fixes are changing the support and
-proof contract, including Python 3.13 and Python 3.14 support proof.
-Release-candidate eligibility must be refreshed on the final hardening `HEAD`
-before any release claim.
+Status: `release-candidate eligible` as an assessment result for candidate
+commit `a0f3146`. Same-`HEAD` local proof, GitHub Actions CI run `29029191091`,
+manual QA evidence, and the ignored local proof packet
+`output/release-proof-20260709-a0f3146/RESULT.md` support the assessment. No
+PyPI upload, GitHub release, artifact upload, external publication, or
+`v1-stable` claim has been performed.
 
 ### Added
 

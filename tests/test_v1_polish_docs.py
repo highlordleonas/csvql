@@ -528,21 +528,23 @@ def test_release_notes_require_manual_qa_and_tui_qol_gates() -> None:
     assert "same candidate `HEAD`" in release_notes
 
 
-def test_public_docs_record_pre_release_hardening_without_stable_claim() -> None:
+def test_public_docs_record_release_candidate_eligibility_without_stable_claim() -> None:
     public_docs = "\n".join(
         [
             read_doc("README.md"),
             read_doc("CHANGELOG.md"),
             read_doc("docs/PRODUCT_DIRECTION.md"),
             read_doc("docs/ROADMAP.md"),
+            read_doc("docs/release-readiness.md"),
             read_doc("docs/release-notes/v1.md"),
         ]
     )
 
     for required_text in (
-        "`v1-hardening`",
-        "final hardening `HEAD`",
-        "Python 3.13 and Python 3.14 support proof",
+        "`release-candidate eligible`",
+        "`a0f3146`",
+        "`29029191091`",
+        "output/release-proof-20260709-a0f3146/RESULT.md",
         "PyPI upload",
         "GitHub release",
         "`v1-stable`",
@@ -550,6 +552,8 @@ def test_public_docs_record_pre_release_hardening_without_stable_claim() -> None
         assert required_text in public_docs
     assert "`v1.0.0-rc1` at `74b193e` is `release-candidate eligible`" not in public_docs
     assert "`74b193e` classified as `release-candidate eligible`" not in public_docs
+    assert "current work is in `v1-hardening`" not in public_docs
+    assert "Use `v1-hardening` for the current lane" not in public_docs
 
 
 def test_docs_describe_tui_active_result_not_last_successful_result() -> None:

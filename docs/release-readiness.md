@@ -17,6 +17,16 @@ For this lane, the release package means these tracked docs exist and agree:
 - this local candidate workflow in `docs/release-readiness.md`
 - README and roadmap discoverability updates
 
+## Current Candidate Assessment
+
+Candidate commit `a0f3146` is `release-candidate eligible` as an assessment
+result. The assessment is backed by same-`HEAD` local proof, GitHub Actions CI
+run `29029191091`, manual QA evidence, and the ignored local proof packet
+`output/release-proof-20260709-a0f3146/RESULT.md`.
+
+This assessment does not publish packages, create tags, upload artifacts, create
+a GitHub release, change the package version, or claim `v1-stable`.
+
 ## Release-Readiness Script
 
 Run:
@@ -207,8 +217,8 @@ Run candidate evaluation from a clean worktree on `main`.
 
 ## Label Rules
 
-Use `v1-hardening` for the current lane until final candidate proof is fresh,
-complete, and reviewed.
+Use `v1-hardening` only while final candidate proof is stale, incomplete,
+unreviewed, or blocked.
 
 Use `release-candidate eligible` only as an assessment result after:
 
