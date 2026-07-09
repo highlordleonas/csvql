@@ -3729,14 +3729,35 @@ def test_help_text_documents_sql_assistance_keymap() -> None:
 def test_completion_docs_describe_tab_primary_and_ctrl_space_secondary() -> None:
     from csvql.tui_help import WORKBENCH_HELP
 
-    readme = _normalized_markdown_text(_read_readme_text())
-    guide = _normalized_markdown_text(_read_doc_text("docs/tui-guide.md"))
+    readme_text = _read_readme_text()
+    guide_text = _read_doc_text("docs/tui-guide.md")
+    readme = _normalized_markdown_text(readme_text)
+    guide = _normalized_markdown_text(guide_text)
     release_notes = _normalized_markdown_text(_read_doc_text("docs/release-notes/v1.md"))
+    readme_source_scope = _normalized_markdown_text(
+        readme_text[
+            readme_text.index("When the source pane is focused") : readme_text.index(
+                "templates appear after `c` or `i` loads metadata."
+            )
+            + len("templates appear after `c` or `i` loads metadata.")
+        ]
+    )
+    guide_source_actions = _normalized_markdown_text(
+        guide_text[
+            guide_text.index("When the Sources pane is focused:") : guide_text.index(
+                "The Add source prompt accepts"
+            )
+        ]
+    )
 
     assert "Tab                 Complete SQL if available, otherwise indent" in WORKBENCH_HELP
     assert (
         "Ctrl+Space          Alternate SQL completion where terminal supports it" in WORKBENCH_HELP
     )
+    assert "`Tab`" not in readme_source_scope
+    assert "`Ctrl+Space`" not in readme_source_scope
+    assert "| `Tab` |" not in guide_source_actions
+    assert "| `Ctrl+Space` |" not in guide_source_actions
     assert (
         "`Tab` opens explicit SQL completion when items are available; otherwise it "
         "inserts four spaces and keeps focus in the SQL editor." in readme
