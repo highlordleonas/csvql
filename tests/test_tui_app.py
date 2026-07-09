@@ -3718,15 +3718,46 @@ def test_readme_documents_source_intelligence_keymap() -> None:
 def test_help_text_documents_sql_assistance_keymap() -> None:
     from csvql.tui_help import WORKBENCH_HELP
 
-    assert "Ctrl+Space          Complete SQL from loaded source metadata" in WORKBENCH_HELP
+    assert "Tab                 Complete SQL if available, otherwise indent" in WORKBENCH_HELP
+    assert (
+        "Ctrl+Space          Alternate SQL completion where terminal supports it" in WORKBENCH_HELP
+    )
     assert "x                   Open starter SQL templates" in WORKBENCH_HELP
     assert "i                   Inspect selected source and load columns" in WORKBENCH_HELP
+
+
+def test_completion_docs_describe_tab_primary_and_ctrl_space_secondary() -> None:
+    from csvql.tui_help import WORKBENCH_HELP
+
+    readme = _normalized_markdown_text(_read_readme_text())
+    guide = _normalized_markdown_text(_read_doc_text("docs/tui-guide.md"))
+    release_notes = _normalized_markdown_text(_read_doc_text("docs/release-notes/v1.md"))
+
+    assert "Tab                 Complete SQL if available, otherwise indent" in WORKBENCH_HELP
+    assert (
+        "Ctrl+Space          Alternate SQL completion where terminal supports it" in WORKBENCH_HELP
+    )
+    assert (
+        "`Tab` opens explicit SQL completion when items are available; otherwise it "
+        "inserts four spaces and keeps focus in the SQL editor." in readme
+    )
+    assert "`Ctrl+Space` remains available where the terminal delivers it." in readme
+    assert "`Tab` is the primary SQL-editor completion key." in guide
+    assert "Pane focus stays on `F2`, `F5`, `F6`, and `F8`." in guide
+    assert "`Tab` is the primary SQL-editor completion key." in release_notes
+    assert (
+        "`Ctrl+Space` remains a secondary trigger where the terminal delivers it." in release_notes
+    )
 
 
 def test_readme_documents_deterministic_sql_assistance() -> None:
     readme = _normalized_markdown_text(_read_readme_text())
 
-    assert "`Ctrl+Space` opens explicit SQL completion from loaded source metadata" in readme
+    assert (
+        "`Tab` opens explicit SQL completion when items are available; otherwise it "
+        "inserts four spaces and keeps focus in the SQL editor." in readme
+    )
+    assert "`Ctrl+Space` remains available where the terminal delivers it." in readme
     assert "`x` to open deterministic starter SQL templates" in readme
     assert "Generated SQL is inserted into the editor and does not run until you run it" in readme
     assert "natural-language" not in readme.lower()
@@ -3735,7 +3766,9 @@ def test_readme_documents_deterministic_sql_assistance() -> None:
 def test_tui_guide_documents_completion_and_templates_without_ai_claims() -> None:
     guide = _normalized_markdown_text(_read_doc_text("docs/tui-guide.md"))
 
-    assert "`Ctrl+Space` opens explicit SQL completion" in guide
+    assert "`Tab` is the primary SQL-editor completion key." in guide
+    assert "it opens explicit SQL completion; otherwise it inserts four spaces" in guide
+    assert "`Ctrl+Space` remains available where the terminal delivers it." in guide
     assert "column-aware templates appear after `c` or `i` loads metadata" in guide
     assert "Generated SQL is editable and does not execute automatically" in guide
     assert "AI insight" not in guide

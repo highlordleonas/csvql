@@ -6,7 +6,8 @@ Run SQL
   F4 / Ctrl+R         Run selected SQL, otherwise current statement
   F12 / Ctrl+B        Run Buffer
   Ctrl+N / F10        Clear editor for a new query
-  Ctrl+Space          Complete SQL from loaded source metadata
+  Tab                 Complete SQL if available, otherwise indent
+  Ctrl+Space          Alternate SQL completion where terminal supports it
 
 Focus
   F2 / Ctrl+Down      SQL editor
