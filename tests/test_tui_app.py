@@ -4810,8 +4810,10 @@ def test_sql_completion_ctrl_space_still_opens_picker_after_tab_follow_up(
         async with app.run_test() as pilot:
             await pilot.pause()
             sql = app.query_one("#sql", TextArea)
-            sql.load_text("SELECT cust")
-            sql.move_cursor((0, len("SELECT cust")))
+            sql.load_text("SELECT rm.")
+            sql.move_cursor((0, len("SELECT rm.")))
+            await pilot.press("tab")
+            await pilot.pause()
             await pilot.press("ctrl+space")
             await pilot.pause()
             return type(app.screen).__name__
