@@ -2,6 +2,7 @@
 
 import csv
 from enum import StrEnum
+from html import escape
 from io import StringIO
 from pathlib import Path
 
@@ -86,8 +87,18 @@ def _format_csv(result: QueryResult) -> str:
     buffer = StringIO()
     writer = csv.writer(buffer)
     writer.writerow(result.columns)
-    writer.writerows(result.rows)
+    writer.writerows(_format_csv_row(row) for row in result.rows)
     return buffer.getvalue()
+
+
+def _format_csv_row(row: tuple[object, ...]) -> tuple[object, ...]:
+    return tuple(_format_csv_cell(value) for value in row)
+
+
+def _format_csv_cell(value: object) -> object:
+    if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
+        return f"'{value}"
+    return value
 
 
 def _format_markdown(result: QueryResult) -> str:
@@ -103,5 +114,5 @@ def _format_markdown(result: QueryResult) -> str:
 def _format_markdown_cell(value: object) -> str:
     if value is None:
         return ""
-    text = str(value).replace("\r\n", "<br>").replace("\n", "<br>").replace("\r", "<br>")
+    text = escape(str(value)).replace("\r\n", "<br>").replace("\n", "<br>").replace("\r", "<br>")
     return text.replace("|", "\\|")

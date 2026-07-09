@@ -39,6 +39,19 @@ def test_result_view_truncates_wide_cells_for_display_only() -> None:
     assert result.rows == (("abcdef",),)
 
 
+def test_result_view_encodes_terminal_controls_before_applying_cell_cap() -> None:
+    result = QueryResult(
+        columns=("payload",),
+        rows=(("\x1b[2Jabcdef",),),
+        elapsed_ms=1.2,
+    )
+
+    view = make_result_view_state(result, source_result_sequence=1, cell_char_cap=10)
+
+    assert view.display_rows == ((r"\x1b[2J...",),)
+    assert result.rows == (("\x1b[2Jabcdef",),)
+
+
 def test_result_view_preserves_all_columns_for_horizontal_scroll() -> None:
     result = QueryResult(
         columns=("c1", "c2", "c3", "c4"),

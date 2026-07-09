@@ -181,6 +181,20 @@ def test_format_json_result_is_deterministic() -> None:
     }
 
 
+def test_format_table_result_encodes_terminal_control_characters() -> None:
+    result = QueryResult(
+        columns=("value",),
+        rows=(("\x1b]0;spoof\x07\x1b[2J",),),
+        elapsed_ms=1.234,
+    )
+
+    output = format_table_result(result)
+
+    assert "\x1b" not in output
+    assert "\x07" not in output
+    assert r"\x1b]0;spoof\x07\x1b[2J" in output
+
+
 def test_table_formatters_do_not_write_to_stdout(capsys: pytest.CaptureFixture[str]) -> None:
     outputs = [
         format_table_result(

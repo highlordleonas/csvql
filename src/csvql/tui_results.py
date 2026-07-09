@@ -3,6 +3,7 @@
 from typing import Protocol
 
 from csvql.models import QueryResult
+from csvql.terminal_text import sanitize_terminal_text
 from csvql.tui_state import TUIResultViewState
 
 
@@ -66,7 +67,7 @@ def result_preview_message(view: TUIResultViewState) -> str:
 
 
 def _display_cell(value: object, *, cell_char_cap: int) -> str:
-    text = "" if value is None else str(value)
+    text = "" if value is None else sanitize_terminal_text(str(value))
     if len(text) <= cell_char_cap:
         return text
     if cell_char_cap <= 3:

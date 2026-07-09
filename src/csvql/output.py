@@ -12,6 +12,7 @@ from csvql.doctor import DoctorProbeResult, DoctorRunResult
 from csvql.models import InspectResult, ProfileResult, QueryResult, RowCountInfo, SampleResult
 from csvql.project_config import ProjectTablesResult
 from csvql.quality import CheckRunResult
+from csvql.terminal_text import sanitize_terminal_text
 
 
 class OutputFormat(StrEnum):
@@ -275,7 +276,7 @@ def _recording_console(*, width: int) -> Console:
 def _format_cell(value: object) -> str:
     if value is None:
         return ""
-    return str(value)
+    return sanitize_terminal_text(str(value))
 
 
 def _format_row_count(row_count: RowCountInfo) -> str:

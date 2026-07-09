@@ -1,4 +1,6 @@
+import csv
 import json
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -27,6 +29,35 @@ def test_format_query_result_for_csv_export() -> None:
     assert output == ('name,note,amount\r\nAlex,pipe | value,20.5\r\nBlair,"line\nbreak",\r\n')
 
 
+def test_csv_export_neutralizes_spreadsheet_formula_cells() -> None:
+    result = QueryResult(
+        columns=("value",),
+        rows=(
+            ("=1+1",),
+            ("+SUM(A1:A2)",),
+            ("-10",),
+            ("@command",),
+            (" \t=cmd",),
+            ("plain text",),
+            (-10,),
+        ),
+        elapsed_ms=1.234,
+    )
+
+    output = format_query_result_for_export(result, ExportFormat.csv)
+
+    assert list(csv.reader(StringIO(output))) == [
+        ["value"],
+        ["'=1+1"],
+        ["'+SUM(A1:A2)"],
+        ["'-10"],
+        ["'@command"],
+        ["' \t=cmd"],
+        ["plain text"],
+        ["-10"],
+    ]
+
+
 def test_format_query_result_for_json_export_matches_query_json_shape() -> None:
     output = format_query_result_for_export(_result(), ExportFormat.json)
 
@@ -44,6 +75,22 @@ def test_format_query_result_for_markdown_export_escapes_cells() -> None:
         "| --- | --- | --- |\n"
         "| Alex | pipe \\| value | 20.5 |\n"
         "| Blair | line<br>break |  |\n"
+    )
+
+
+def test_markdown_export_escapes_raw_html_before_building_table_cells() -> None:
+    result = QueryResult(
+        columns=("<b>name</b>",),
+        rows=(("<img src=x onerror=alert(1)>|line\nbreak&more",),),
+        elapsed_ms=1.234,
+    )
+
+    output = format_query_result_for_export(result, ExportFormat.markdown)
+
+    assert output == (
+        "| &lt;b&gt;name&lt;/b&gt; |\n"
+        "| --- |\n"
+        "| &lt;img src=x onerror=alert(1)&gt;\\|line<br>break&amp;more |\n"
     )
 
 
