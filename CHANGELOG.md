@@ -3,18 +3,16 @@
 All notable CSVQL changes are summarized here.
 
 LocalQL package metadata is prepared for `v1.0.0`. The `v1.0.0` section records
-implemented `csvql` surfaces for the local release candidate; it is not a PyPI
-upload, GitHub release, artifact upload, external publication, or `v1-stable`
-claim.
+implemented `csvql` surfaces, release boundaries, and verification expectations.
+Publication status is determined by Git tags, GitHub release state, and the PyPI
+project state, not by this changelog alone.
 
 ## v1.0.0 - 2026-07-01
 
-Status: `release-candidate eligible` as an assessment result for candidate
-commit `a0f3146`. Same-`HEAD` local proof, GitHub Actions CI run `29029191091`,
-manual QA evidence, and the ignored local proof packet
-`output/release-proof-20260709-a0f3146/RESULT.md` support the assessment. No
-PyPI upload, GitHub release, artifact upload, external publication, or
-`v1-stable` claim has been performed.
+Status: `v1.0.0` package surface and release workflow hardening. Same-`HEAD`
+local proof, security proof, package proof, governance proof, and CI proof must
+be refreshed on the exact committed release target before tag, publish, GitHub
+release, or `v1-stable` claims.
 
 ### Added
 

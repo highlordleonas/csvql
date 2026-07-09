@@ -401,6 +401,7 @@ def test_ci_workflow_collects_three_os_automated_support_gate() -> None:
         "ubuntu-latest",
         "macos-latest",
         "windows-latest",
+        'tags: ["v*"]',
         "uv python install ${{ matrix.python-version }}",
         "uv sync --all-extras --frozen",
         "pwd -P",
@@ -528,7 +529,7 @@ def test_release_notes_require_manual_qa_and_tui_qol_gates() -> None:
     assert "same candidate `HEAD`" in release_notes
 
 
-def test_public_docs_record_release_candidate_eligibility_without_stable_claim() -> None:
+def test_public_docs_do_not_carry_stale_release_candidate_proof_identifiers() -> None:
     public_docs = "\n".join(
         [
             read_doc("README.md"),
@@ -539,14 +540,26 @@ def test_public_docs_record_release_candidate_eligibility_without_stable_claim()
             read_doc("docs/release-notes/v1.md"),
         ]
     )
+    readme = read_doc("README.md")
+
+    for stale_text in (
+        "`a0f3146`",
+        "a0f3146",
+        "`29029191091`",
+        "29029191091",
+        "output/release-proof-20260709-a0f3146/RESULT.md",
+        "This does not create a PyPI upload",
+        "No PyPI upload",
+    ):
+        assert stale_text not in public_docs
+        assert stale_text not in readme
 
     for required_text in (
-        "`release-candidate eligible`",
-        "`a0f3146`",
-        "`29029191091`",
-        "output/release-proof-20260709-a0f3146/RESULT.md",
-        "PyPI upload",
-        "GitHub release",
+        "same-`HEAD` local proof",
+        "security proof",
+        "package proof",
+        "governance proof",
+        "CI proof",
         "`v1-stable`",
     ):
         assert required_text in public_docs

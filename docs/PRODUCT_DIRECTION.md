@@ -50,12 +50,12 @@ Textual-powered `csvql menu` terminal workbench with session-local history,
 explicit project catalog save, explicit result export, and explicit derived
 result sources under `.csvql/results/{alias}.csv`.
 
-Current work should not add broad new product surface. Candidate commit
-`a0f3146` is `release-candidate eligible` as an assessment result after
-same-`HEAD` local proof, GitHub Actions CI run `29029191091`, manual QA
-evidence, and the ignored local proof packet
-`output/release-proof-20260709-a0f3146/RESULT.md`. Every external release
-action still requires separate explicit approval:
+Current work should not add broad new product surface. The active release lane
+is public release hardening for the `1.0.0` package surface. Same-`HEAD` local
+proof, security proof, package proof, governance proof, and CI proof must be
+refreshed on the final committed release target before tag, publish, GitHub
+release, or `v1-stable` claims. Every external release action still requires
+separate explicit approval:
 
 - keep README, development docs, roadmap, architecture, product direction,
   release readiness, and JSON-contract docs aligned with the runtime surface

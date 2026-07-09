@@ -130,21 +130,21 @@ Implemented:
 Current status before v1 publication:
 
 - LocalQL distribution alias is selected for the `csvql` CLI/import package
-- candidate commit `a0f3146` is `release-candidate eligible` as an assessment
-  result after same-`HEAD` local proof, GitHub Actions CI run `29029191091`,
-  manual QA evidence, and the ignored local proof packet
-  `output/release-proof-20260709-a0f3146/RESULT.md`
+- public release hardening is in progress for the `1.0.0` package surface
+- same-`HEAD` local proof, security proof, package proof, governance proof, and
+  CI proof must be refreshed on the final committed release target before tag,
+  publish, GitHub release, or `v1-stable` claims
 
 Remaining before v1 publication:
 
-- explicit user approval for external release actions after the `1.0.0` local
-  release state is proven
+- explicit user approval for external release actions after the final committed
+  release target is proven
 
 ## v1.0.0 - Stable Release
 
-- current status: `release-candidate eligible` as an assessment result;
-  publication and any `v1-stable` claim still require separate explicit
-  approval
+- current status: public release hardening for the `1.0.0` package surface;
+  publication and any `v1-stable` claim require fresh same-`HEAD` proof and
+  separate explicit approval
 - stable CLI contract
 - stable config schema
 - stable small Python API contract

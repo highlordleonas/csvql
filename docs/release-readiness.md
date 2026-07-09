@@ -19,13 +19,15 @@ For this lane, the release package means these tracked docs exist and agree:
 
 ## Current Candidate Assessment
 
-Candidate commit `a0f3146` is `release-candidate eligible` as an assessment
-result. The assessment is backed by same-`HEAD` local proof, GitHub Actions CI
-run `29029191091`, manual QA evidence, and the ignored local proof packet
-`output/release-proof-20260709-a0f3146/RESULT.md`.
+Current release work is public release hardening for the `1.0.0` package
+surface. Same-`HEAD` local proof, security proof, package proof, governance
+proof, and CI proof must be refreshed on the final committed release target
+before tag, publish, GitHub release, or `v1-stable` claims.
 
-This assessment does not publish packages, create tags, upload artifacts, create
-a GitHub release, change the package version, or claim `v1-stable`.
+Historical local assessments are context only. Any tracked change after local
+gates, package audit, release-readiness proof, security scans, governance proof,
+CI proof, or package proof invalidates same-`HEAD` release proof until the proof
+loop is rerun on the new clean committed `HEAD`.
 
 ## Release-Readiness Script
 

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PINNED_ACTION_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
 
 
 def read_text(path: str) -> str:
@@ -114,6 +118,14 @@ def test_pyproject_public_metadata_is_consistent() -> None:
     assert "csv" in project["keywords"]
     assert "duckdb" in project["keywords"]
     assert "local-analytics" in project["keywords"]
+    assert project["urls"] == {
+        "Repository": "https://github.com/highlordleonas/csvql",
+        "Issues": "https://github.com/highlordleonas/csvql/issues",
+        "Changelog": "https://github.com/highlordleonas/csvql/blob/main/CHANGELOG.md",
+        "Release notes": (
+            "https://github.com/highlordleonas/csvql/blob/main/docs/release-notes/v1.md"
+        ),
+    }
     assert project["requires-python"] == ">=3.11,<3.15"
     for classifier in (
         "Programming Language :: Python :: 3.11",
@@ -140,6 +152,7 @@ def test_support_docs_define_post_release_response_policy() -> None:
 
 def test_publish_workflow_is_manual_only() -> None:
     workflow = read_text(".github/workflows/publish.yml")
+    payload = yaml.safe_load(workflow)
     workflow_lines = workflow.splitlines()
     on_index = workflow_lines.index("on:")
     permissions_index = workflow_lines.index("permissions:")
@@ -150,6 +163,66 @@ def test_publish_workflow_is_manual_only() -> None:
     ]
 
     assert trigger_lines == ["  workflow_dispatch:"]
+    assert payload["permissions"] == {"contents": "read"}
+    assert "workflow_dispatch:" in workflow
+
+
+def test_github_actions_are_pinned_by_commit_sha() -> None:
+    for path in (".github/workflows/ci.yml", ".github/workflows/publish.yml"):
+        payload = yaml.safe_load(read_text(path))
+        for job in payload["jobs"].values():
+            for step in job["steps"]:
+                uses = step.get("uses")
+                if uses is None:
+                    continue
+                assert PINNED_ACTION_RE.fullmatch(uses), f"{path}: {uses}"
+
+
+def test_publish_workflow_splits_build_from_oidc_publish() -> None:
+    workflow = read_text(".github/workflows/publish.yml")
+    payload = yaml.safe_load(workflow)
+    jobs = payload["jobs"]
+    build_job = jobs["build-and-verify"]
+    publish_job = jobs["publish"]
+
+    assert "id-token" not in (build_job.get("permissions") or {})
+    assert publish_job["needs"] == "build-and-verify"
+    assert publish_job["environment"] == "pypi"
+    assert publish_job["permissions"] == {"contents": "read", "id-token": "write"}
+
+    build_runs = "\n".join(str(step.get("run", "")) for step in build_job["steps"])
+    publish_runs = "\n".join(str(step.get("run", "")) for step in publish_job["steps"])
+    publish_uses = "\n".join(str(step.get("uses", "")) for step in publish_job["steps"])
+
+    for required in (
+        "uv sync --all-extras --frozen",
+        "uv run ruff format --check .",
+        "uv run ruff check .",
+        "uv run --all-extras mypy src",
+        "uv run --all-extras pytest",
+        "uv build --sdist --wheel --out-dir dist",
+        "scripts/audit_package_contents.py dist",
+        "SHA256SUMS.txt",
+        'csvql" query',
+        "unset PYTHONPATH",
+    ):
+        assert required in build_runs
+
+    for forbidden in (
+        "uv sync",
+        "uv build",
+        "uv run",
+        "csvql query",
+        "scripts/audit_package_contents.py",
+    ):
+        assert forbidden not in publish_runs
+
+    assert "actions/upload-artifact@" in workflow
+    assert "actions/download-artifact@" in publish_uses
+    assert "pypa/gh-action-pypi-publish@" in publish_uses
+    assert "shasum -a 256 -c SHA256SUMS.txt" in publish_runs
+    assert "cp release-artifacts/*.whl release-artifacts/*.tar.gz dist/" in publish_runs
+    assert "packages-dir: dist/" in workflow
+    assert "print-hash: true" in workflow
+    assert "attestations: true" in workflow
     assert "id-token: write" in workflow
-    assert "pypa/gh-action-pypi-publish" in workflow
-    assert "environment: pypi" in workflow

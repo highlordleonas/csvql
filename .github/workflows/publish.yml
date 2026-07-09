@@ -5,16 +5,28 @@ on:
 
 permissions:
   contents: read
-  id-token: write
+
+env:
+  EXPECTED_TAG: v1.0.0
+  EXPECTED_VERSION: "1.0.0"
 
 jobs:
-  publish:
+  build-and-verify:
     runs-on: ubuntu-latest
-    environment: pypi
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - name: Guard release tag
+        run: |
+          test "${GITHUB_REF}" = "refs/tags/${EXPECTED_TAG}"
+          test "${GITHUB_REF_TYPE}" = "tag"
+          test "${GITHUB_REF_NAME}" = "${EXPECTED_TAG}"
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
         with:
           enable-cache: true
       - name: Set up Python
@@ -33,5 +45,168 @@ jobs:
         run: uv build --sdist --wheel --out-dir dist
       - name: Audit package contents
         run: uv run python scripts/audit_package_contents.py dist
+      - name: Verify artifact identity and hashes
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import email.parser
+          import hashlib
+          import os
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          dist = Path("dist")
+          expected_tag = os.environ["EXPECTED_TAG"]
+          expected_version = os.environ["EXPECTED_VERSION"]
+          if os.environ["GITHUB_REF"] != f"refs/tags/{expected_tag}":
+              raise SystemExit("publish workflow must run on the expected release tag")
+
+          wheels = sorted(dist.glob("localql-*.whl"))
+          sdists = sorted(dist.glob("localql-*.tar.gz"))
+          if len(wheels) != 1 or len(sdists) != 1:
+              raise SystemExit("expected exactly one localql wheel and one localql sdist")
+
+          def wheel_version(path: Path) -> str:
+              with zipfile.ZipFile(path) as archive:
+                  metadata_names = [
+                      name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+                  ]
+                  if len(metadata_names) != 1:
+                      raise SystemExit(f"{path}: expected exactly one wheel METADATA file")
+                  metadata = archive.read(metadata_names[0]).decode("utf-8")
+              return str(email.parser.Parser().parsestr(metadata)["Version"])
+
+          def sdist_version(path: Path) -> str:
+              with tarfile.open(path) as archive:
+                  members = [
+                      member for member in archive.getmembers() if member.name.endswith("/PKG-INFO")
+                  ]
+                  if len(members) != 1:
+                      raise SystemExit(f"{path}: expected exactly one sdist PKG-INFO file")
+                  extracted = archive.extractfile(members[0])
+                  if extracted is None:
+                      raise SystemExit(f"{path}: could not read sdist PKG-INFO")
+                  metadata = extracted.read().decode("utf-8")
+              return str(email.parser.Parser().parsestr(metadata)["Version"])
+
+          versions = {wheel_version(wheels[0]), sdist_version(sdists[0])}
+          if versions != {expected_version}:
+              raise SystemExit(f"artifact versions do not match {expected_version}: {versions}")
+
+          hash_lines = []
+          for path in [*wheels, *sdists]:
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              hash_lines.append(f"{digest}  {path.name}\n")
+          (dist / "SHA256SUMS.txt").write_text("".join(hash_lines), encoding="utf-8")
+          PY
+      - name: Installed wheel smoke
+        run: |
+          wheel="$(python - <<'PY'
+          from pathlib import Path
+
+          wheels = sorted(Path("dist").glob("localql-*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit("expected exactly one localql wheel")
+          print(wheels[0].resolve())
+          PY
+          )"
+          smoke_root="$(mktemp -d)"
+          uv venv --seed "${smoke_root}/venv"
+          uv pip install --python "${smoke_root}/venv/bin/python" "${wheel}"
+          printf 'order_id,status\nORD-1,paid\n' > "${smoke_root}/orders.csv"
+          (
+            cd "${smoke_root}"
+            unset PYTHONPATH
+            "${smoke_root}/venv/bin/csvql" --version
+            "${smoke_root}/venv/bin/csvql" query "${smoke_root}/orders.csv" \
+              "SELECT COUNT(*) AS order_count FROM orders" --output json
+          )
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: localql-1.0.0-dist
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+  publish:
+    needs: build-and-verify
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Guard release tag
+        run: |
+          test "${GITHUB_REF}" = "refs/tags/${EXPECTED_TAG}"
+          test "${GITHUB_REF_TYPE}" = "tag"
+          test "${GITHUB_REF_NAME}" = "${EXPECTED_TAG}"
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: localql-1.0.0-dist
+          path: release-artifacts
+      - name: Verify downloaded artifact hashes and metadata
+        run: |
+          cd release-artifacts
+          shasum -a 256 -c SHA256SUMS.txt
+          cd ..
+          python - <<'PY'
+          from __future__ import annotations
+
+          import email.parser
+          import os
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          dist = Path("release-artifacts")
+          expected_version = os.environ["EXPECTED_VERSION"]
+          wheels = sorted(dist.glob("localql-*.whl"))
+          sdists = sorted(dist.glob("localql-*.tar.gz"))
+          if len(wheels) != 1 or len(sdists) != 1:
+              raise SystemExit("expected exactly one localql wheel and one localql sdist")
+
+          def wheel_version(path: Path) -> str:
+              with zipfile.ZipFile(path) as archive:
+                  metadata_names = [
+                      name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+                  ]
+                  if len(metadata_names) != 1:
+                      raise SystemExit(f"{path}: expected exactly one wheel METADATA file")
+                  metadata = archive.read(metadata_names[0]).decode("utf-8")
+              return str(email.parser.Parser().parsestr(metadata)["Version"])
+
+          def sdist_version(path: Path) -> str:
+              with tarfile.open(path) as archive:
+                  members = [
+                      member for member in archive.getmembers() if member.name.endswith("/PKG-INFO")
+                  ]
+                  if len(members) != 1:
+                      raise SystemExit(f"{path}: expected exactly one sdist PKG-INFO file")
+                  extracted = archive.extractfile(members[0])
+                  if extracted is None:
+                      raise SystemExit(f"{path}: could not read sdist PKG-INFO")
+                  metadata = extracted.read().decode("utf-8")
+              return str(email.parser.Parser().parsestr(metadata)["Version"])
+
+          versions = {wheel_version(wheels[0]), sdist_version(sdists[0])}
+          if versions != {expected_version}:
+              raise SystemExit(f"artifact versions do not match {expected_version}: {versions}")
+          PY
+          mkdir -p dist
+          cp release-artifacts/*.whl release-artifacts/*.tar.gz dist/
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
+        with:
+          packages-dir: dist/
+          print-hash: true
+          attestations: true

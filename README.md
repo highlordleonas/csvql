@@ -65,15 +65,11 @@ query, inspect/sample, project catalogs, saved SQL, export, profile, configured
 checks, doctor, benchmark and release-readiness proof scripts, JSON contract
 documentation, the failure gallery, the polished example project, and the small
 project-backed Python API. It also includes an optional Textual-powered terminal
-menu for local interactive work. The release workflow and release-note material
-now exist. The package version is `1.0.0`.
+menu for local interactive work. The package version is `1.0.0`.
 
-Current status: `release-candidate eligible` as an assessment result for
-candidate commit `a0f3146`, backed by same-`HEAD` local proof, GitHub Actions
-CI run `29029191091`, manual QA evidence, and the ignored local proof packet
-`output/release-proof-20260709-a0f3146/RESULT.md`. This does not create a PyPI
-upload, GitHub release, artifact upload, external publication, or `v1-stable`
-claim.
+This README describes the LocalQL `1.0.0` package surface. Release provenance,
+support boundaries, and the local verification workflow are documented in the
+changelog, v1 release notes, and release-readiness guide.
 
 Implemented now:
 
@@ -595,7 +591,8 @@ Claims boundary:
 - No large-file proof beyond the recorded datasets
 - No production-readiness claim
 - No sandbox-safety claim
-- No publish, tag, or upload action without separate explicit approval
+- Release provenance is recorded in the changelog, release notes, and release
+  readiness workflow
 
 ## Development Checks
 
