@@ -1,9 +1,16 @@
 # LocalQL
 
+[![CI](https://github.com/highlordleonas/csvql/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/highlordleonas/csvql/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/localql.svg)](https://pypi.org/project/localql/)
+[![Python](https://img.shields.io/pypi/pyversions/localql.svg)](https://pypi.org/project/localql/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 LocalQL packages `csvql`, a lightweight DuckDB-powered CLI for querying local
 CSV files like SQL tables. It is built for local analytics work where a small
 project catalog, saved SQL, readable terminal output, and explicit exports are
 more useful than a notebook or database service.
+
+![LocalQL: Query local CSVs with SQL](docs/assets/localql-social-preview.png)
 
 ```bash
 csvql query \
