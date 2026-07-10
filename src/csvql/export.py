@@ -86,7 +86,7 @@ def write_export_file(path: Path, content: str, *, token: OperationToken | None 
 def _format_csv(result: QueryResult) -> str:
     buffer = StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(result.columns)
+    writer.writerow(_format_csv_row(result.columns))
     writer.writerows(_format_csv_row(row) for row in result.rows)
     return buffer.getvalue()
 

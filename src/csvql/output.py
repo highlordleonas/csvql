@@ -7,12 +7,13 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
 from csvql.doctor import DoctorProbeResult, DoctorRunResult
 from csvql.models import InspectResult, ProfileResult, QueryResult, RowCountInfo, SampleResult
 from csvql.project_config import ProjectTablesResult
 from csvql.quality import CheckRunResult
-from csvql.terminal_text import sanitize_terminal_text
+from csvql.terminal_text import literal_terminal_text, terminal_safe_text
 
 
 class OutputFormat(StrEnum):
@@ -93,7 +94,7 @@ def format_table_result(result: QueryResult) -> str:
     console = _recording_console(width=120)
     table = Table(show_header=True)
     for column in result.columns:
-        table.add_column(column)
+        table.add_column(_format_cell(column))
     for row in result.rows:
         table.add_row(*(_format_cell(value) for value in row))
     console.print(table)
@@ -106,20 +107,20 @@ def format_inspect_result_table(result: InspectResult) -> str:
 
     console = _recording_console(width=120)
     source = result.source
-    console.print(f"Source: {source.get('display_path', '')}")
+    console.print("Source: ", _format_cell(source.get("display_path", "")), sep="")
     console.print(f"Rows: {_format_row_count(result.row_count)}")
 
     table = Table(show_header=True)
     table.add_column("column")
     table.add_column("type")
     for column in result.columns:
-        table.add_row(column.name, column.duckdb_type)
+        table.add_row(_format_cell(column.name), _format_cell(column.duckdb_type))
     console.print(table)
 
     if result.warnings:
         console.print("Warnings:")
         for warning in result.warnings:
-            console.print(f"- {warning}")
+            console.print("- ", _format_cell(warning), sep="")
     return console.export_text(clear=True)
 
 
@@ -129,7 +130,7 @@ def format_sample_result_table(result: SampleResult) -> str:
     console = _recording_console(width=120)
     table = Table(show_header=True)
     for column in result.columns:
-        table.add_column(column)
+        table.add_column(_format_cell(column))
     for row in result.rows:
         table.add_row(*(_format_cell(value) for value in row))
     console.print(table)
@@ -138,7 +139,7 @@ def format_sample_result_table(result: SampleResult) -> str:
     if result.warnings:
         console.print("Warnings:")
         for warning in result.warnings:
-            console.print(f"- {warning}")
+            console.print("- ", _format_cell(warning), sep="")
     return console.export_text(clear=True)
 
 
@@ -147,7 +148,7 @@ def format_profile_result_table(result: ProfileResult) -> str:
 
     console = _recording_console(width=140)
     source = result.source
-    console.print(f"Source: {source.get('display_path', '')}")
+    console.print("Source: ", _format_cell(source.get("display_path", "")), sep="")
     console.print(f"Rows: {result.row_count}")
     console.print(f"Columns: {result.column_count}")
     console.print(f"Duplicate rows: {result.duplicate_row_count}")
@@ -163,8 +164,8 @@ def format_profile_result_table(result: ProfileResult) -> str:
     table.add_column("max")
     for column in result.columns:
         table.add_row(
-            column.name,
-            column.duckdb_type,
+            _format_cell(column.name),
+            _format_cell(column.duckdb_type),
             str(column.non_null_count),
             str(column.null_count),
             f"{column.null_percentage:.3f}",
@@ -177,7 +178,7 @@ def format_profile_result_table(result: ProfileResult) -> str:
     if result.warnings:
         console.print("Warnings:")
         for warning in result.warnings:
-            console.print(f"- {warning}")
+            console.print("- ", _format_cell(warning), sep="")
     return console.export_text(clear=True)
 
 
@@ -185,7 +186,7 @@ def format_check_result_table(result: CheckRunResult, *, include_failures: bool)
     """Format a data-quality check result as Rich table text."""
 
     console = _recording_console(width=140)
-    console.print(f"Status: {result.status}")
+    console.print("Status: ", _format_cell(result.status), sep="")
     console.print(
         "Checks: "
         f"{result.check_count} | Passed: {result.passed_count} | Failed: {result.failed_count}"
@@ -200,11 +201,11 @@ def format_check_result_table(result: CheckRunResult, *, include_failures: bool)
     table.add_column("failed")
     for check in result.checks:
         table.add_row(
-            check.table,
-            check.name,
-            check.type,
+            _format_cell(check.table),
+            _format_cell(check.name),
+            _format_cell(check.type),
             _format_cell(check.column),
-            check.status,
+            _format_cell(check.status),
             str(check.failed_count),
         )
     console.print(table)
@@ -214,7 +215,7 @@ def format_check_result_table(result: CheckRunResult, *, include_failures: bool)
     if result.warnings:
         console.print("Warnings:")
         for warning in result.warnings:
-            console.print(f"- {warning}")
+            console.print("- ", _format_cell(warning), sep="")
     return console.export_text(clear=True)
 
 
@@ -222,7 +223,7 @@ def format_doctor_result_table(result: DoctorRunResult) -> str:
     """Format a doctor result as Rich table text."""
 
     console = _recording_console(width=140)
-    console.print(f"Status: {result.status}")
+    console.print("Status: ", _format_cell(result.status), sep="")
     console.print(
         "Probes: "
         f"{result.probe_count} | Passed: {result.passed_count} | "
@@ -237,11 +238,11 @@ def format_doctor_result_table(result: DoctorRunResult) -> str:
     table.add_column("message")
     for probe in result.probes:
         table.add_row(
-            probe.scope,
-            probe.name,
-            probe.status,
-            _format_doctor_target(probe),
-            probe.message,
+            _format_cell(probe.scope),
+            _format_cell(probe.name),
+            _format_cell(probe.status),
+            _format_cell(_format_doctor_target(probe)),
+            _format_cell(probe.message),
         )
     console.print(table)
     return console.export_text(clear=True)
@@ -256,7 +257,11 @@ def format_project_tables_table(result: ProjectTablesResult) -> str:
     table.add_column("path")
     table.add_column("resolved_path")
     for listing in result.tables:
-        table.add_row(listing.name, listing.path, _format_path(listing.resolved_path))
+        table.add_row(
+            _format_cell(listing.name),
+            _format_cell(listing.path),
+            _format_cell(_format_path(listing.resolved_path)),
+        )
     console.print(table)
     return console.export_text(clear=True)
 
@@ -269,14 +274,17 @@ def _recording_console(*, width: int) -> Console:
     """Return a Rich console that records output without writing to stdout."""
 
     return Console(
-        color_system=None, force_terminal=False, record=True, width=width, file=StringIO()
+        color_system=None,
+        force_terminal=False,
+        markup=False,
+        record=True,
+        width=width,
+        file=StringIO(),
     )
 
 
-def _format_cell(value: object) -> str:
-    if value is None:
-        return ""
-    return sanitize_terminal_text(str(value))
+def _format_cell(value: object) -> Text:
+    return literal_terminal_text(value)
 
 
 def _format_row_count(row_count: RowCountInfo) -> str:
@@ -286,23 +294,23 @@ def _format_row_count(row_count: RowCountInfo) -> str:
 
 
 def _print_check_failures(console: Console, result: CheckRunResult) -> None:
-    failure_lines: list[str] = []
+    failure_lines: list[Text] = []
     for check in result.checks:
         for failure in check.failures:
             details = ", ".join(
                 f"{key}={_format_failure_value(value)}" for key, value in failure.as_dict().items()
             )
-            failure_lines.append(f"{check.table}.{check.name}: {details}")
+            failure_lines.append(_format_cell(f"{check.table}.{check.name}: {details}"))
     if failure_lines:
         console.print("Failures:")
         for line in failure_lines:
-            console.print(f"- {line}")
+            console.print("- ", line, sep="")
 
 
 def _format_failure_value(value: object) -> str:
     if isinstance(value, (dict, list, tuple)):
         return json.dumps(value, default=str, sort_keys=True, separators=(",", ":"))
-    return _format_cell(value)
+    return terminal_safe_text(value)
 
 
 def _format_doctor_target(probe: DoctorProbeResult) -> str:

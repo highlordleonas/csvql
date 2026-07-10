@@ -2,17 +2,19 @@
 
 from typing import Protocol
 
+from rich.text import Text
+
 from csvql.models import QueryResult
-from csvql.terminal_text import sanitize_terminal_text
+from csvql.terminal_text import literal_terminal_text, terminal_safe_text
 from csvql.tui_state import TUIResultViewState
 
 
 class _ResultTable(Protocol):
     def clear(self, *, columns: bool = False) -> object: ...
 
-    def add_columns(self, *labels: str) -> object: ...
+    def add_columns(self, *labels: Text) -> object: ...
 
-    def add_row(self, *cells: str) -> object: ...
+    def add_row(self, *cells: Text) -> object: ...
 
 
 DEFAULT_RESULT_PREVIEW_ROWS = 1000
@@ -50,9 +52,9 @@ def populate_result_table(table: _ResultTable, view: TUIResultViewState) -> None
     table.clear(columns=True)
     if not view.columns:
         return
-    table.add_columns(*view.columns)
+    table.add_columns(*(literal_terminal_text(column) for column in view.columns))
     for row in view.display_rows:
-        table.add_row(*row)
+        table.add_row(*(literal_terminal_text(cell) for cell in row))
 
 
 def result_preview_message(view: TUIResultViewState) -> str:
@@ -67,7 +69,7 @@ def result_preview_message(view: TUIResultViewState) -> str:
 
 
 def _display_cell(value: object, *, cell_char_cap: int) -> str:
-    text = "" if value is None else sanitize_terminal_text(str(value))
+    text = terminal_safe_text(value)
     if len(text) <= cell_char_cap:
         return text
     if cell_char_cap <= 3:

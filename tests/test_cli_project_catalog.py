@@ -5,7 +5,7 @@ import pytest
 from typer.testing import CliRunner
 
 from csvql.cli import app
-from csvql.project_config import CONFIG_FILENAME
+from csvql.project_config import CONFIG_FILENAME, ProjectConfig, ProjectContext
 
 runner = CliRunner()
 
@@ -22,6 +22,34 @@ def test_init_creates_catalog_in_current_working_directory(
     config_path = tmp_path / CONFIG_FILENAME
     assert config_path.exists()
     assert config_path.read_text(encoding="utf-8") == "version: 1\ntables: {}\n"
+    assert CONFIG_FILENAME in result.output
+
+
+def test_init_success_output_encodes_terminal_controls_in_catalog_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unsafe_directory = "project\x1b]0;spoof\x07\x7f\x85\x9b31m"
+    display_project_root = tmp_path / unsafe_directory
+    display_context = ProjectContext(
+        project_root=display_project_root,
+        config_path=display_project_root / CONFIG_FILENAME,
+        config=ProjectConfig(version=1, tables=()),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    def fake_initialize_project(project_root: Path, *, force: bool = False) -> ProjectContext:
+        assert project_root == tmp_path
+        assert force is False
+        return display_context
+
+    monkeypatch.setattr("csvql.cli.initialize_project", fake_initialize_project)
+
+    result = runner.invoke(app, ["init"])
+
+    assert result.exit_code == 0, result.output
+    assert all(control not in result.output for control in "\x1b\x07\x7f\x85\x9b")
+    assert r"project\x1b]0;spoof\x07\x7f\x85\x9b31m" in result.output
     assert CONFIG_FILENAME in result.output
 
 
@@ -77,6 +105,45 @@ def test_add_writes_nested_table_entry_from_subdirectory(
     assert (project_root / CONFIG_FILENAME).read_text(encoding="utf-8") == (
         "version: 1\ntables:\n  orders:\n    path: data/orders.csv\n"
     )
+
+
+def test_add_success_output_encodes_terminal_controls_in_catalog_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unsafe_directory = "project\x1b]0;spoof\x07\x7f\x85\x9b31m"
+    display_project_root = tmp_path / unsafe_directory
+    display_context = ProjectContext(
+        project_root=display_project_root,
+        config_path=display_project_root / CONFIG_FILENAME,
+        config=ProjectConfig(version=1, tables=()),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    def fake_add_project_table(
+        context: ProjectContext,
+        name: str,
+        path_value: str,
+        *,
+        replace: bool = False,
+        invocation_dir: Path | None = None,
+    ) -> ProjectContext:
+        assert context is display_context
+        assert name == "orders"
+        assert path_value == "orders.csv"
+        assert replace is False
+        assert invocation_dir == tmp_path
+        return display_context
+
+    monkeypatch.setattr("csvql.cli.load_project", lambda: display_context)
+    monkeypatch.setattr("csvql.cli.add_project_table", fake_add_project_table)
+
+    result = runner.invoke(app, ["add", "orders", "orders.csv"])
+
+    assert result.exit_code == 0, result.output
+    assert all(control not in result.output for control in "\x1b\x07\x7f\x85\x9b")
+    assert r"project\x1b]0;spoof\x07\x7f\x85\x9b31m" in result.output
+    assert CONFIG_FILENAME in result.output
 
 
 def test_add_rejects_duplicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

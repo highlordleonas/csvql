@@ -3,6 +3,7 @@ import importlib
 import sys
 
 import pytest
+from rich.text import Text
 
 from csvql.models import QueryResult
 from csvql.tui_results import make_result_view_state
@@ -93,18 +94,18 @@ def test_populate_result_table_writes_columns_and_rows() -> None:
     class _TableRecorder:
         def __init__(self) -> None:
             self.cleared_with_columns = False
-            self.columns: tuple[str, ...] = ()
-            self.rows: tuple[tuple[str, ...], ...] = ()
+            self.columns: tuple[object, ...] = ()
+            self.rows: tuple[tuple[object, ...], ...] = ()
 
         def clear(self, *, columns: bool = False) -> object:
             self.cleared_with_columns = columns
             return None
 
-        def add_columns(self, *labels: str) -> object:
+        def add_columns(self, *labels: object) -> object:
             self.columns = labels
             return None
 
-        def add_row(self, *cells: str) -> object:
+        def add_row(self, *cells: object) -> object:
             self.rows += (cells,)
             return None
 
@@ -117,8 +118,53 @@ def test_populate_result_table_writes_columns_and_rows() -> None:
     populate_result_table(table, view)
 
     assert table.cleared_with_columns is True
-    assert table.columns == ("id", "payload")
-    assert table.rows == (("1", "alpha"), ("2", "beta"))
+    assert tuple(str(column) for column in table.columns) == ("id", "payload")
+    assert tuple(tuple(str(cell) for cell in row) for row in table.rows) == (
+        ("1", "alpha"),
+        ("2", "beta"),
+    )
+
+
+def test_populate_result_table_uses_literal_control_safe_text() -> None:
+    pytest.importorskip("textual")
+
+    from csvql.tui_results import populate_result_table
+
+    class _TableRecorder:
+        def __init__(self) -> None:
+            self.columns: tuple[object, ...] = ()
+            self.rows: tuple[tuple[object, ...], ...] = ()
+
+        def clear(self, *, columns: bool = False) -> object:
+            del columns
+            return None
+
+        def add_columns(self, *labels: object) -> object:
+            self.columns = labels
+            return None
+
+        def add_row(self, *cells: object) -> object:
+            self.rows += (cells,)
+            return None
+
+    result = QueryResult(
+        columns=("\x1b]0;spoof\x07[red]header[/red]",),
+        rows=(("\x1b[31m[link=https://example.invalid]cell[/link]\x9b",),),
+        elapsed_ms=1.2,
+    )
+    view = make_result_view_state(result, source_result_sequence=1)
+    table = _TableRecorder()
+
+    populate_result_table(table, view)
+
+    column = table.columns[0]
+    cell = table.rows[0][0]
+    assert isinstance(column, Text)
+    assert column.plain == r"\x1b]0;spoof\x07[red]header[/red]"
+    assert column.spans == []
+    assert isinstance(cell, Text)
+    assert cell.plain == r"\x1b[31m[link=https://example.invalid]cell[/link]\x9b"
+    assert cell.spans == []
 
 
 def test_tui_results_imports_without_textual(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -195,6 +195,48 @@ def test_format_table_result_encodes_terminal_control_characters() -> None:
     assert r"\x1b]0;spoof\x07\x1b[2J" in output
 
 
+def test_format_table_result_renders_headers_and_cells_as_control_safe_literal_text() -> None:
+    result = QueryResult(
+        columns=("\x1b]0;spoof\x07[red]header[/red]",),
+        rows=(("\x1b[31m[link=https://example.invalid]cell[/link]\x1b[0m",),),
+        elapsed_ms=1.234,
+    )
+
+    output = format_table_result(result)
+
+    assert "\x1b" not in output
+    assert "\x07" not in output
+    assert r"\x1b]0;spoof\x07[red]header[/red]" in output
+    assert r"\x1b[31m[link=https://example.invalid]cell[/link]\x1b[0m" in output
+
+
+def test_format_inspect_result_renders_metadata_as_control_safe_literal_text() -> None:
+    result = InspectResult(
+        source={"display_path": "\x1b[31m[blue]orders.csv[/blue]"},
+        dialect=DialectInfo(
+            delimiter=",",
+            quote='"',
+            escape=None,
+            header=True,
+            encoding="utf-8",
+        ),
+        columns=(ColumnInfo(name="\x00[red]order_id[/red]", duckdb_type="\x85VARCHAR"),),
+        row_count=RowCountInfo.not_counted(),
+        warnings=("\x9b[red]warning[/red]",),
+    )
+
+    output = format_inspect_result_table(result)
+
+    assert "\x1b" not in output
+    assert "\x00" not in output
+    assert "\x85" not in output
+    assert "\x9b" not in output
+    assert r"\x1b[31m[blue]orders.csv[/blue]" in output
+    assert r"\x00[red]order_id[/red]" in output
+    assert r"\x85VARCHAR" in output
+    assert r"\x9b[red]warning[/red]" in output
+
+
 def test_table_formatters_do_not_write_to_stdout(capsys: pytest.CaptureFixture[str]) -> None:
     outputs = [
         format_table_result(

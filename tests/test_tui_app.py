@@ -3,6 +3,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 
 pytest.importorskip("textual")
 
@@ -161,6 +162,50 @@ def test_app_starts_empty() -> None:
 
     assert row_count == 0
     assert "No sources loaded." in status
+
+
+def test_tui_non_query_tables_statuses_and_errors_use_literal_control_safe_text() -> None:
+    table_payload = "\x1b]0;spoof\x07[red]table[/red]\x85"
+    message_payload = "\x1b]0;message\x07[red]message[/red]\x00"
+
+    async def _inner() -> tuple[object, object, object, object, object]:
+        app = CSVQLMenuApp(start_dir=Path.cwd())
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app._show_non_query_result_table(
+                (table_payload,),
+                ((table_payload,),),
+                message=message_payload,
+            )
+            table = app.query_one("#results", DataTable)
+            column = next(iter(table.columns.values())).label
+            cell = table.get_cell_at(Coordinate(0, 0))
+            message = app.query_one("#results-message", Static).render()
+
+            app._show_error(CSVQLError(message_payload, suggestion=table_payload))
+            status = app.query_one("#status", Static).render()
+            error = app.query_one("#results-message", Static).render()
+            return column, cell, message, status, error
+
+    column, cell, message, status, error = asyncio.run(_inner())
+
+    assert isinstance(column, Text)
+    assert column.plain == r"\x1b]0;spoof\x07[red]table[/red]\x85"
+    assert column.spans == []
+    assert isinstance(cell, Text)
+    assert cell.plain == r"\x1b]0;spoof\x07[red]table[/red]\x85"
+    assert cell.spans == []
+    assert message.plain == r"\x1b]0;message\x07[red]message[/red]\x00"
+    assert message.spans == []
+    assert (
+        status.plain == "Error: "
+        r"\x1b]0;message\x07[red]message[/red]\x00"
+        "\nSuggestion: "
+        r"\x1b]0;spoof\x07[red]table[/red]\x85"
+    )
+    assert status.spans == []
+    assert error.plain == status.plain
+    assert error.spans == []
 
 
 def test_app_runs_query_and_updates_status_and_results(tmp_path: Path) -> None:

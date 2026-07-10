@@ -103,6 +103,30 @@ def test_menu_uses_existing_cli_error_path() -> None:
     assert 'Install with pip install "localql[tui]".' in result.output
 
 
+def test_cli_errors_render_control_safe_literal_text() -> None:
+    def fake_run_menu_command(
+        *, csv_path: str | None, table_mappings: tuple[str, ...], start_dir: Path
+    ) -> None:
+        raise CSVQLError(
+            "\x1b]0;spoof\x07[red]message[/red]\x00",
+            suggestion="\x1b[31m[link=https://example.invalid]suggestion[/link]\x9b",
+        )
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("csvql.cli.run_menu_command", fake_run_menu_command)
+        result = runner.invoke(app, ["menu"], terminal_width=200)
+
+    assert result.exit_code == 1, result.output
+    assert "\x1b" not in result.output
+    assert "\x07" not in result.output
+    assert "\x00" not in result.output
+    assert "\x9b" not in result.output
+    assert r"Error: \x1b]0;spoof\x07[red]message[/red]\x00" in result.output
+    assert (
+        r"Suggestion: \x1b[31m[link=https://example.invalid]suggestion[/link]\x9b" in result.output
+    )
+
+
 def test_version_flag_reports_version() -> None:
     result = runner.invoke(app, ["--version"])
 

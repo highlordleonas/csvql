@@ -21,6 +21,7 @@ from csvql.exceptions import CSVQLError
 from csvql.export import ExportFormat
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
 from csvql.table_mapping import parse_table_mapping
+from csvql.terminal_text import literal_terminal_text, terminal_safe_text
 from csvql.tui_editor import all_sql_statements, selected_or_current_sql
 from csvql.tui_help import WORKBENCH_HELP
 from csvql.tui_native_picker import (
@@ -157,7 +158,7 @@ class _PromptInputScreen(ModalScreen[str | None]):
         self.input_id = input_id
 
     def compose(self) -> ComposeResult:
-        yield Static(self.prompt)
+        yield Static(terminal_safe_text(self.prompt), markup=False)
         yield Input(id=self.input_id)
 
     def on_mount(self) -> None:
@@ -183,7 +184,7 @@ class _ConfirmationScreen(ModalScreen[bool]):
         self.prompt = prompt
 
     def compose(self) -> ComposeResult:
-        yield Static(self.prompt, id="confirm-text")
+        yield Static(terminal_safe_text(self.prompt), id="confirm-text", markup=False)
 
     def action_confirm(self) -> None:
         self.dismiss(True)
@@ -263,7 +264,12 @@ class _SQLAssistPickerScreen(ModalScreen[str | None]):
         table = self.query_one("#sql-assist-options", DataTable)
         table.add_columns("label", "kind", "detail")
         for row_key, label, kind, detail in self._choices:
-            table.add_row(label, kind, detail, key=row_key)
+            table.add_row(
+                literal_terminal_text(label),
+                literal_terminal_text(kind),
+                literal_terminal_text(detail),
+                key=row_key,
+            )
         if table.row_count:
             table.focus()
             table.move_cursor(row=0)
@@ -457,22 +463,22 @@ class CSVQLMenuApp(App[None]):
         self._result_store = TUIResultStore()
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="status")
+        yield Static("", id="status", markup=False)
         with Horizontal(id="workbench"):
             with Vertical(id="left-pane"):
-                yield Static("", id="sources-title", classes="pane-title")
+                yield Static("", id="sources-title", classes="pane-title", markup=False)
                 yield DataTable(id="sources", cursor_type="row")
-                yield Static("", id="history-title", classes="pane-title")
+                yield Static("", id="history-title", classes="pane-title", markup=False)
                 yield DataTable(id="history", cursor_type="row")
             with Vertical(id="right-pane"):
-                yield Static("", id="sql-title", classes="pane-title")
+                yield Static("", id="sql-title", classes="pane-title", markup=False)
                 yield _SourcePathTextArea(id="sql")
-                yield Static("", id="run-status")
-                yield Static("", id="results-title", classes="pane-title")
-                yield Static("", id="result-tabs")
+                yield Static("", id="run-status", markup=False)
+                yield Static("", id="results-title", classes="pane-title", markup=False)
+                yield Static("", id="result-tabs", markup=False)
                 yield DataTable(id="results", cursor_type="cell")
-                yield Static("", id="results-message")
-        yield Static("", id="context")
+                yield Static("", id="results-message", markup=False)
+        yield Static("", id="context", markup=False)
         yield _OrderedFooter()
 
     async def on_mount(self) -> None:
@@ -499,7 +505,7 @@ class CSVQLMenuApp(App[None]):
         self._apply_terminal_size_warning(width=event.size.width, height=event.size.height)
 
     def _set_run_status_ready(self) -> None:
-        self.query_one("#run-status", Static).update("Ready.")
+        self._update_static_text("#run-status", "Ready.")
 
     def action_add_source(self) -> None:
         self._open_add_source_prompt("Enter name=path or paste CSV path(s).")
@@ -788,7 +794,7 @@ class CSVQLMenuApp(App[None]):
             return
 
         self._run_editor_pending = True
-        self.query_one("#run-status", Static).update(preparing_message)
+        self._update_static_text("#run-status", preparing_message)
         if not self.call_after_refresh(callback):
             self._run_editor_pending = False
             self._show_rejected_run(
@@ -843,7 +849,7 @@ class CSVQLMenuApp(App[None]):
             rerun_source_sequence=None,
         )
         self._set_status(message)
-        self.query_one("#run-status", Static).update(message)
+        self._update_static_text("#run-status", message)
         self._active_query_sql[sequences[0]] = "\n".join(statements)
         self._active_query_run_modes[sequences[0]] = "buffer"
         sources = self.state.sources
@@ -912,7 +918,7 @@ class CSVQLMenuApp(App[None]):
         )
 
         self._set_status(message)
-        self.query_one("#run-status", Static).update(message)
+        self._update_static_text("#run-status", message)
         self._active_query_sql[sequence] = sql
         self._active_query_run_modes[sequence] = run_mode
         sources = self.state.sources
@@ -1126,7 +1132,7 @@ class CSVQLMenuApp(App[None]):
             populate_result_table(self.query_one("#results", DataTable), view)
             self._refresh_results_title()
             self._refresh_result_tabs()
-            self.query_one("#results-message", Static).update(result_preview_message(view))
+            self._update_static_text("#results-message", result_preview_message(view))
             self._set_status(f"{outcome.source_name}: {len(outcome.result.rows)} sample row(s).")
             return
         if isinstance(outcome, _SourceColumnsOutcome):
@@ -1144,7 +1150,7 @@ class CSVQLMenuApp(App[None]):
             display_path = _display_path(outcome.path, self.start_dir)
             self._set_status(f"Exported to {display_path}.")
             if not self.state.result_view.is_truncated:
-                self.query_one("#results-message", Static).update(f"Exported to {display_path}.")
+                self._update_static_text("#results-message", f"Exported to {display_path}.")
             return
         if isinstance(outcome, _SaveResultSourceOutcome):
             source = outcome.source
@@ -1158,7 +1164,7 @@ class CSVQLMenuApp(App[None]):
             )
             self._set_status(message)
             if not self.state.result_view.is_truncated:
-                self.query_one("#results-message", Static).update(message)
+                self._update_static_text("#results-message", message)
             return
 
         self._show_error(
@@ -1322,10 +1328,10 @@ class CSVQLMenuApp(App[None]):
         sources_table.add_columns("alias", "kind", "origin", "path")
         for source in self.state.sources:
             sources_table.add_row(
-                source.name,
-                source.kind,
-                source.origin,
-                _display_path(source.path, self.start_dir),
+                literal_terminal_text(source.name),
+                literal_terminal_text(source.kind),
+                literal_terminal_text(source.origin),
+                literal_terminal_text(_display_path(source.path, self.start_dir)),
             )
 
         selected_row = self._selected_source_row_index()
@@ -1344,17 +1350,17 @@ class CSVQLMenuApp(App[None]):
         try:
             active_pane = self._active_focus_pane()
             self.state.active_pane = active_pane
-            self.query_one("#sources-title", Static).update(
-                _pane_title("Sources", active_pane == "sources")
+            self._update_static_text(
+                "#sources-title", _pane_title("Sources", active_pane == "sources")
             )
-            self.query_one("#history-title", Static).update(
-                _pane_title("History", active_pane == "history")
+            self._update_static_text(
+                "#history-title", _pane_title("History", active_pane == "history")
             )
-            self.query_one("#sql-title", Static).update(
-                _pane_title("SQL editor", active_pane == "editor")
+            self._update_static_text(
+                "#sql-title", _pane_title("SQL editor", active_pane == "editor")
             )
             self._refresh_results_title(is_active=active_pane == "results")
-            self.query_one("#context", Static).update(_pane_context(active_pane))
+            self._update_static_text("#context", _pane_context(active_pane))
             self.query_one(_OrderedFooter).refresh(recompose=True)
         except NoMatches:
             return
@@ -1379,11 +1385,11 @@ class CSVQLMenuApp(App[None]):
             row_index = history_table.row_count
             rows = "" if item.row_count is None else str(item.row_count)
             history_table.add_row(
-                str(item.sequence),
-                _run_mode_display(item.run_mode),
-                item.status,
-                rows,
-                _one_line_sql(item.sql),
+                literal_terminal_text(item.sequence),
+                literal_terminal_text(_run_mode_display(item.run_mode)),
+                literal_terminal_text(item.status),
+                literal_terminal_text(rows),
+                literal_terminal_text(_one_line_sql(item.sql)),
             )
             if selected_sequence == item.sequence:
                 target_row = row_index
@@ -1399,11 +1405,11 @@ class CSVQLMenuApp(App[None]):
             row_index = history_table.row_count
             rows = "" if item.row_count is None else str(item.row_count)
             history_table.add_row(
-                str(item.sequence),
-                _run_mode_display(item.run_mode),
-                item.status,
-                rows,
-                _one_line_sql(item.sql),
+                literal_terminal_text(item.sequence),
+                literal_terminal_text(_run_mode_display(item.run_mode)),
+                literal_terminal_text(item.status),
+                literal_terminal_text(rows),
+                literal_terminal_text(_one_line_sql(item.sql)),
             )
             if item.sequence == sequence:
                 target_row = row_index
@@ -1418,8 +1424,18 @@ class CSVQLMenuApp(App[None]):
             return "1 source loaded."
         return f"{source_count} sources loaded."
 
-    def _set_status(self, message: str) -> None:
-        self.query_one("#status", Static).update(message)
+    def _set_status(self, message: str, *, already_safe: bool = False) -> None:
+        self._update_static_text("#status", message, already_safe=already_safe)
+
+    def _update_static_text(
+        self,
+        selector: str,
+        message: str,
+        *,
+        already_safe: bool = False,
+    ) -> None:
+        content = message if already_safe else terminal_safe_text(message)
+        self.query_one(selector, Static).update(content)
 
     def _clear_result_grid(self) -> None:
         self.query_one("#results", DataTable).clear(columns=True)
@@ -1427,8 +1443,8 @@ class CSVQLMenuApp(App[None]):
     def _refresh_results_title(self, *, is_active: bool | None = None) -> None:
         if is_active is None:
             is_active = self._is_focused("#results")
-        self.query_one("#results-title", Static).update(
-            _results_title(self.state.active_result.label, is_active)
+        self._update_static_text(
+            "#results-title", _results_title(self.state.active_result.label, is_active)
         )
 
     def _result_tabs_text(self) -> str:
@@ -1477,7 +1493,7 @@ class CSVQLMenuApp(App[None]):
             self._set_status(self._status_message())
 
     def _refresh_result_tabs(self) -> None:
-        self.query_one("#result-tabs", Static).update(self._result_tabs_text())
+        self._update_static_text("#result-tabs", self._result_tabs_text())
 
     def _refresh_results_display(self) -> None:
         view = self.state.result_view
@@ -1488,11 +1504,11 @@ class CSVQLMenuApp(App[None]):
         self._refresh_results_title()
         self._refresh_result_tabs()
         if view.columns or view.total_row_count:
-            self.query_one("#results-message", Static).update(result_preview_message(view))
+            self._update_static_text("#results-message", result_preview_message(view))
 
-    def _show_output_text(self, message: str) -> None:
+    def _show_output_text(self, message: str, *, already_safe: bool = False) -> None:
         self._clear_result_grid()
-        self.query_one("#results-message", Static).update(message)
+        self._update_static_text("#results-message", message, already_safe=already_safe)
 
     def _show_non_query_result_table(
         self,
@@ -1504,12 +1520,12 @@ class CSVQLMenuApp(App[None]):
         self.state.clear_last_result()
         results_table = self.query_one("#results", DataTable)
         results_table.clear(columns=True)
-        results_table.add_columns(*columns)
+        results_table.add_columns(*(literal_terminal_text(column) for column in columns))
         for row in rows:
-            results_table.add_row(*(str(value) for value in row))
+            results_table.add_row(*(literal_terminal_text(value) for value in row))
         self._refresh_results_title()
         self._refresh_result_tabs()
-        self.query_one("#results-message", Static).update(message)
+        self._update_static_text("#results-message", message)
 
     def _show_source_columns_table(
         self,
@@ -1575,8 +1591,8 @@ class CSVQLMenuApp(App[None]):
 
     def _show_error(self, error: CSVQLError) -> None:
         message = _error_message(error)
-        self._set_status(message)
-        self._show_output_text(message)
+        self._set_status(message, already_safe=True)
+        self._show_output_text(message, already_safe=True)
 
     def _show_rejected_run(
         self,
@@ -1594,11 +1610,13 @@ class CSVQLMenuApp(App[None]):
 
         if simple_message_without_previous and self.state.last_result is None:
             message = rejected_error.message
+            already_safe = False
         else:
             message = _error_message(rejected_error)
+            already_safe = True
 
-        self._set_status(message)
-        self.query_one("#results-message", Static).update(message)
+        self._set_status(message, already_safe=already_safe)
+        self._update_static_text("#results-message", message, already_safe=already_safe)
         self.query_one("#sql", TextArea).focus()
 
     def _append_sql_text(self, text: str) -> None:
@@ -1745,7 +1763,7 @@ class CSVQLMenuApp(App[None]):
 
         display_path = _display_path(context.config_path, self.start_dir)
         self._set_status(f"Saved sources to {display_path}.")
-        self.query_one("#results-message", Static).update(f"Saved sources to {display_path}.")
+        self._update_static_text("#results-message", f"Saved sources to {display_path}.")
         self.query_one("#sources", DataTable).focus()
 
     def _handle_save_result_as_source(self, alias: str | None) -> None:
@@ -1850,8 +1868,8 @@ class CSVQLMenuApp(App[None]):
             populate_result_table(self.query_one("#results", DataTable), view)
             self._refresh_results_title()
             self._refresh_result_tabs()
-            self.query_one("#results-message", Static).update(
-                f"History query {item.sequence}. {result_preview_message(view)}"
+            self._update_static_text(
+                "#results-message", f"History query {item.sequence}. {result_preview_message(view)}"
             )
             self._set_status(f"Showing query {item.sequence} result from History.")
             return
@@ -1867,7 +1885,7 @@ class CSVQLMenuApp(App[None]):
             self.state.last_result_status = "error"
             detail = item.error_message or "Query failed."
             message = f"History query {item.sequence} failed. {detail}"
-        self.query_one("#results-message", Static).update(message)
+        self._update_static_text("#results-message", message)
         self._set_status(message)
 
     def _is_focused(self, selector: str) -> bool:
@@ -1909,8 +1927,9 @@ class CSVQLMenuApp(App[None]):
         populate_result_table(self.query_one("#results", DataTable), view)
         self._refresh_results_title()
         self._refresh_result_tabs()
-        self.query_one("#results-message", Static).update(
-            f"Buffer result {tab.sequence}.{tab.index}. {result_preview_message(view)}"
+        self._update_static_text(
+            "#results-message",
+            f"Buffer result {tab.sequence}.{tab.index}. {result_preview_message(view)}",
         )
         self._set_status(f"Showing buffer result {tab.sequence}.{tab.index}.")
 
@@ -1929,8 +1948,8 @@ class CSVQLMenuApp(App[None]):
         self._refresh_result_tabs()
         message = "Run Buffer returned no tabular result."
         self._set_status(message)
-        self.query_one("#results-message", Static).update(message)
-        self.query_one("#run-status", Static).update("Ready.")
+        self._update_static_text("#results-message", message)
+        self._update_static_text("#run-status", "Ready.")
         self.query_one("#sql", TextArea).focus()
 
     def _handle_buffer_outcomes(self, outcomes: tuple[TUIQueryOutcome, ...]) -> None:
@@ -2003,8 +2022,8 @@ class CSVQLMenuApp(App[None]):
             else:
                 message = "Statement completed; no tabular result to display."
             self._set_status(message)
-            self.query_one("#results-message", Static).update(message)
-            self.query_one("#run-status", Static).update("Ready.")
+            self._update_static_text("#results-message", message)
+            self._update_static_text("#run-status", "Ready.")
             self.query_one("#sql", TextArea).focus()
             return
 
@@ -2016,7 +2035,7 @@ class CSVQLMenuApp(App[None]):
         self._refresh_history_table_selecting(
             latest_outcome.sequence if latest_outcome is not None else latest_tabular_sequence
         )
-        self.query_one("#run-status", Static).update("Ready.")
+        self._update_static_text("#run-status", "Ready.")
         if (
             latest_outcome is not None
             and latest_outcome.status == "success"
@@ -2027,17 +2046,17 @@ class CSVQLMenuApp(App[None]):
                 f"in {latest_outcome.result.elapsed_ms:.1f} ms."
             )
             self._set_status(completion_message)
-            self.query_one("#results-message", Static).update(
-                result_preview_message(self.state.result_view)
+            self._update_static_text(
+                "#results-message", result_preview_message(self.state.result_view)
             )
         elif latest_outcome is not None and latest_outcome.status == "no_result":
             message = "Statement completed; no tabular result to display."
             self._set_status(message)
-            self.query_one("#results-message", Static).update(message)
+            self._update_static_text("#results-message", message)
         elif latest_outcome is not None and latest_outcome.status == "error":
             error_message = latest_outcome.error_message or "Query failed."
             self._set_status(error_message)
-            self.query_one("#results-message", Static).update(error_message)
+            self._update_static_text("#results-message", error_message)
         self.query_one("#sql", TextArea).focus()
 
     def _handle_query_outcome(self, outcome: TUIQueryOutcome) -> None:
@@ -2069,8 +2088,8 @@ class CSVQLMenuApp(App[None]):
             self._set_status(
                 f"{outcome.result.row_count} returned row(s) in {outcome.result.elapsed_ms:.1f} ms."
             )
-            self.query_one("#run-status", Static).update("Ready.")
-            self.query_one("#results-message", Static).update(result_preview_message(view))
+            self._update_static_text("#run-status", "Ready.")
+            self._update_static_text("#results-message", result_preview_message(view))
             self.query_one("#sql", TextArea).focus()
             return
         if outcome.status == "no_result":
@@ -2086,8 +2105,8 @@ class CSVQLMenuApp(App[None]):
             message = "Statement completed; no tabular result to display."
             self._refresh_history_table_selecting(outcome.sequence)
             self._set_status(message)
-            self.query_one("#run-status", Static).update("Ready.")
-            self.query_one("#results-message", Static).update(message)
+            self._update_static_text("#run-status", "Ready.")
+            self._update_static_text("#results-message", message)
             self.query_one("#sql", TextArea).focus()
             return
         self.state.record_query_error(
@@ -2101,7 +2120,7 @@ class CSVQLMenuApp(App[None]):
         self._refresh_result_tabs()
         error = CSVQLError(outcome.error_message or "Query failed.", suggestion=outcome.suggestion)
         self._refresh_history_table_selecting(outcome.sequence)
-        self.query_one("#run-status", Static).update("Ready.")
+        self._update_static_text("#run-status", "Ready.")
         self._show_error(error)
         self.query_one("#sql", TextArea).focus()
 
@@ -2122,7 +2141,7 @@ class CSVQLMenuApp(App[None]):
 
         self.state.record_query_error(sequence, sql, error_message, run_mode=run_mode)
         self._refresh_history_table_selecting(sequence)
-        self.query_one("#run-status", Static).update("Ready.")
+        self._update_static_text("#run-status", "Ready.")
         self._clear_result_grid()
         self._refresh_results_title()
         self._refresh_result_tabs()
@@ -2375,9 +2394,9 @@ _PREVIOUS_RESULT_AVAILABLE = "Previous result is still available."
 
 
 def _error_message(error: CSVQLError) -> str:
-    lines = [f"Error: {error.message}"]
+    lines = [f"Error: {terminal_safe_text(error.message)}"]
     if error.suggestion:
-        lines.append(f"Suggestion: {error.suggestion}")
+        lines.append(f"Suggestion: {terminal_safe_text(error.suggestion)}")
     return "\n".join(lines)
 
 

@@ -58,6 +58,37 @@ def test_csv_export_neutralizes_spreadsheet_formula_cells() -> None:
     ]
 
 
+def test_csv_export_neutralizes_spreadsheet_formula_headers() -> None:
+    result = QueryResult(
+        columns=(
+            "=1+1",
+            "+SUM(A1:A2)",
+            "-10",
+            "@command",
+            " \t=cmd",
+            "plain text",
+            'comma, and "quote"',
+        ),
+        rows=(("a", "b", "c", "d", "e", "f", "g"),),
+        elapsed_ms=1.234,
+    )
+
+    output = format_query_result_for_export(result, ExportFormat.csv)
+
+    assert list(csv.reader(StringIO(output))) == [
+        [
+            "'=1+1",
+            "'+SUM(A1:A2)",
+            "'-10",
+            "'@command",
+            "' \t=cmd",
+            "plain text",
+            'comma, and "quote"',
+        ],
+        ["a", "b", "c", "d", "e", "f", "g"],
+    ]
+
+
 def test_format_query_result_for_json_export_matches_query_json_shape() -> None:
     output = format_query_result_for_export(_result(), ExportFormat.json)
 
