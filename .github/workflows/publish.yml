@@ -210,3 +210,242 @@ jobs:
           packages-dir: dist/
           print-hash: true
           attestations: true
+
+  post-publish-verification:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: localql-1.0.0-dist
+          path: release-artifacts
+      - name: Verify published artifacts and capture provenance
+        id: verify_pypi_release
+        timeout-minutes: 7
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          import re
+          import time
+          from datetime import UTC, datetime
+          from pathlib import Path
+          from urllib.error import HTTPError, URLError
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          PROJECT = "localql"
+          VERSION = os.environ["EXPECTED_VERSION"]
+          ARTIFACT_DIR = Path("release-artifacts")
+          VERIFICATION_DIR = Path("pypi-verification")
+          MAX_ATTEMPTS = 8
+          POLL_SECONDS = 10
+          REQUEST_TIMEOUT_SECONDS = 10
+          INTEGRITY_ACCEPT = "application/vnd.pypi.integrity.v1+json"
+
+          VERIFICATION_DIR.mkdir(parents=True, exist_ok=True)
+          status_path = VERIFICATION_DIR / "verification-status.txt"
+          status_path.write_text("PyPI verification started.\n", encoding="utf-8")
+
+          def read_expected_digests() -> dict[str, str]:
+              manifest_path = ARTIFACT_DIR / "SHA256SUMS.txt"
+              digests: dict[str, str] = {}
+              for raw_line in manifest_path.read_text(encoding="utf-8").splitlines():
+                  if not raw_line.strip():
+                      continue
+                  parts = raw_line.split()
+                  if len(parts) != 2:
+                      raise SystemExit(f"invalid SHA256SUMS.txt line: {raw_line!r}")
+                  digest, filename = parts
+                  if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                      raise SystemExit(f"invalid SHA-256 digest for {filename}")
+                  if filename in digests:
+                      raise SystemExit(f"duplicate SHA256SUMS.txt entry: {filename}")
+                  if Path(filename).name != filename:
+                      raise SystemExit(f"invalid artifact filename: {filename}")
+                  artifact_path = ARTIFACT_DIR / filename
+                  if not artifact_path.is_file():
+                      raise SystemExit(f"downloaded artifact is missing: {filename}")
+                  local_digest = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+                  if local_digest != digest:
+                      raise SystemExit(f"downloaded artifact digest mismatch: {filename}")
+                  digests[filename] = digest
+
+              wheel_names = [
+                  name
+                  for name in digests
+                  if name.startswith(f"{PROJECT}-{VERSION}-") and name.endswith(".whl")
+              ]
+              sdist_names = [name for name in digests if name == f"{PROJECT}-{VERSION}.tar.gz"]
+              if len(wheel_names) != 1 or len(sdist_names) != 1:
+                  raise SystemExit(
+                      f"expected one {PROJECT} {VERSION} wheel and one sdist in SHA256SUMS.txt"
+                  )
+              expected_names = {wheel_names[0], sdist_names[0]}
+              if set(digests) != expected_names:
+                  raise SystemExit(f"unexpected artifacts in SHA256SUMS.txt: {sorted(digests)}")
+              return digests
+
+          def fetch_json(url: str, *, accept: str) -> dict[str, object] | None:
+              request = Request(
+                  url,
+                  headers={
+                      "Accept": accept,
+                      "User-Agent": "localql-post-publish-verification/1.0",
+                  },
+              )
+              try:
+                  with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+                      payload = json.load(response)
+              except HTTPError as exc:
+                  if exc.code == 404 or exc.code == 429 or 500 <= exc.code < 600:
+                      return None
+                  raise
+              except (TimeoutError, URLError):
+                  return None
+              if not isinstance(payload, dict):
+                  raise SystemExit(f"expected a JSON object from {url}")
+              return payload
+
+          def write_receipt(path: Path, payload: dict[str, object]) -> None:
+              path.write_text(
+                  json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                  encoding="utf-8",
+              )
+
+          def published_digests(entries: object) -> dict[str, str]:
+              if not isinstance(entries, list):
+                  return {}
+              digests: dict[str, str] = {}
+              for entry in entries:
+                  if not isinstance(entry, dict):
+                      continue
+                  filename = entry.get("filename")
+                  hashes = entry.get("digests")
+                  if not isinstance(filename, str) or not isinstance(hashes, dict):
+                      continue
+                  sha256 = hashes.get("sha256")
+                  if isinstance(sha256, str):
+                      digests[filename] = sha256
+              return digests
+
+          expected_digests = read_expected_digests()
+          project = PROJECT
+          version = VERSION
+          project_url = f"https://pypi.org/pypi/{project}/json"
+          release_url = f"https://pypi.org/pypi/{project}/{version}/json"
+          verified = False
+          last_issue = "PyPI metadata has not propagated"
+
+          for attempt in range(1, MAX_ATTEMPTS + 1):
+              project_metadata = fetch_json(project_url, accept="application/json")
+              release_metadata = fetch_json(release_url, accept="application/json")
+
+              if project_metadata is None or release_metadata is None:
+                  last_issue = "project or release JSON is not available"
+              else:
+                  write_receipt(VERIFICATION_DIR / "pypi-project.json", project_metadata)
+                  write_receipt(
+                      VERIFICATION_DIR / "pypi-release-1.0.0.json",
+                      release_metadata,
+                  )
+                  release_digests = published_digests(release_metadata.get("urls"))
+
+                  if release_digests != expected_digests:
+                      last_issue = "release JSON filenames or SHA-256 digests do not match"
+                  else:
+                      provenance_ready = True
+                      for filename in sorted(expected_digests):
+                          quoted_filename = quote(filename, safe="")
+                          integrity_base = f"https://pypi.org/integrity/{project}/{version}"
+                          provenance_url = f"{integrity_base}/{quoted_filename}/provenance"
+                          provenance = fetch_json(provenance_url, accept=INTEGRITY_ACCEPT)
+                          if provenance is None:
+                              provenance_ready = False
+                              last_issue = f"provenance is not available for {filename}"
+                              continue
+
+                          write_receipt(
+                              VERIFICATION_DIR / f"provenance-{filename}.json",
+                              provenance,
+                          )
+                          bundles = provenance.get("attestation_bundles")
+                          if not isinstance(bundles, list) or not bundles:
+                              provenance_ready = False
+                              last_issue = f"attestation bundles are missing for {filename}"
+                              continue
+                          if any(
+                              not isinstance(bundle, dict)
+                              or not isinstance(bundle.get("attestations"), list)
+                              or not bundle.get("attestations")
+                              for bundle in bundles
+                          ):
+                              provenance_ready = False
+                              last_issue = f"an attestation bundle is empty for {filename}"
+
+                      if provenance_ready:
+                          summary = {
+                              "project": PROJECT,
+                              "version": VERSION,
+                              "verified_at": datetime.now(UTC).isoformat(),
+                              "sha256": expected_digests,
+                              "release_metadata_and_digests_verified": True,
+                              "provenance_and_non_empty_attestation_receipts_captured": True,
+                              "cryptographic_attestation_verification_performed": False,
+                          }
+                          write_receipt(
+                              VERIFICATION_DIR / "verification-summary.json",
+                              summary,
+                          )
+                          status_path.write_text(
+                              "PyPI release metadata and digests verified; "
+                              "provenance and non-empty attestation receipts captured. "
+                              "No cryptographic attestation verification was performed.\n",
+                              encoding="utf-8",
+                          )
+                          verified = True
+                          break
+
+              if attempt < MAX_ATTEMPTS:
+                  print(
+                      f"PyPI verification attempt {attempt}/{MAX_ATTEMPTS} incomplete: "
+                      f"{last_issue}; retrying in {POLL_SECONDS}s"
+                  )
+                  time.sleep(POLL_SECONDS)
+
+          if not verified:
+              status_path.write_text(
+                  f"PyPI verification failed after {MAX_ATTEMPTS} attempts: {last_issue}.\n",
+                  encoding="utf-8",
+              )
+              raise SystemExit(status_path.read_text(encoding="utf-8").strip())
+          PY
+      - name: Record failed verification outcome
+        if: always() && steps.verify_pypi_release.outcome != 'success'
+        run: |
+          mkdir -p pypi-verification
+          printf '%s\n' \
+            'PyPI post-publish verification failed, timed out, or skipped before completion. Release metadata and digest verification did not complete; inspect workflow logs and captured partial receipts. No cryptographic attestation verification was performed.' \
+            > pypi-verification/verification-outcome.txt
+          if test ! -s pypi-verification/verification-status.txt || \
+            grep -Fqx 'PyPI verification started.' pypi-verification/verification-status.txt; then
+            cp pypi-verification/verification-outcome.txt \
+              pypi-verification/verification-status.txt
+          fi
+      - name: Upload PyPI verification receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: localql-1.0.0-pypi-verification
+          path: pypi-verification
+          if-no-files-found: error

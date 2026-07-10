@@ -185,14 +185,32 @@ def test_publish_workflow_splits_build_from_oidc_publish() -> None:
     build_job = jobs["build-and-verify"]
     publish_job = jobs["publish"]
 
+    assert "post-publish-verification" in jobs
+    verification_job = jobs["post-publish-verification"]
+
     assert "id-token" not in (build_job.get("permissions") or {})
     assert publish_job["needs"] == "build-and-verify"
     assert publish_job["environment"] == "pypi"
     assert publish_job["permissions"] == {"contents": "read", "id-token": "write"}
+    assert verification_job["needs"] == "publish"
+    assert verification_job["permissions"] == {"contents": "read"}
+    assert "id-token" not in verification_job["permissions"]
+    assert "environment" not in verification_job
+    assert verification_job["timeout-minutes"] == 10
+
+    verification_step_ids = [step.get("id") for step in verification_job["steps"]]
+    assert "verify_pypi_release" in verification_step_ids
+    verification_step = next(
+        step for step in verification_job["steps"] if step.get("id") == "verify_pypi_release"
+    )
+    assert verification_step["timeout-minutes"] == 7
+    assert verification_step["timeout-minutes"] < verification_job["timeout-minutes"]
 
     build_runs = "\n".join(str(step.get("run", "")) for step in build_job["steps"])
     publish_runs = "\n".join(str(step.get("run", "")) for step in publish_job["steps"])
     publish_uses = "\n".join(str(step.get("uses", "")) for step in publish_job["steps"])
+    verification_runs = "\n".join(str(step.get("run", "")) for step in verification_job["steps"])
+    verification_uses = "\n".join(str(step.get("uses", "")) for step in verification_job["steps"])
 
     for required in (
         "uv sync --all-extras --frozen",
@@ -226,3 +244,93 @@ def test_publish_workflow_splits_build_from_oidc_publish() -> None:
     assert "print-hash: true" in workflow
     assert "attestations: true" in workflow
     assert "id-token: write" in workflow
+
+    download_step = next(
+        step
+        for step in verification_job["steps"]
+        if str(step.get("uses", "")).startswith("actions/download-artifact@")
+    )
+    upload_step = next(
+        step
+        for step in verification_job["steps"]
+        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    )
+    step_names = [step.get("name") for step in verification_job["steps"]]
+    assert "Record failed verification outcome" in step_names
+    failure_step = next(
+        step
+        for step in verification_job["steps"]
+        if step.get("name") == "Record failed verification outcome"
+    )
+    assert download_step["with"] == {
+        "name": "localql-1.0.0-dist",
+        "path": "release-artifacts",
+    }
+    assert upload_step["uses"] == (
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+    )
+    assert upload_step["with"] == {
+        "name": "localql-1.0.0-pypi-verification",
+        "path": "pypi-verification",
+        "if-no-files-found": "error",
+    }
+    assert upload_step["if"] == "always()"
+    assert verification_job["steps"].index(verification_step) < verification_job["steps"].index(
+        failure_step
+    )
+    assert verification_job["steps"].index(failure_step) < verification_job["steps"].index(
+        upload_step
+    )
+    assert failure_step["if"] == "always() && steps.verify_pypi_release.outcome != 'success'"
+    failure_run = str(failure_step["run"])
+    assert "verification-outcome.txt" in failure_run
+    assert "verification-status.txt" in failure_run
+    assert "failed, timed out, or skipped" in failure_run
+    assert "actions/download-artifact@" in verification_uses
+    assert "actions/upload-artifact@" in verification_uses
+
+    for required in (
+        "SHA256SUMS.txt",
+        "MAX_ATTEMPTS = 8",
+        "REQUEST_TIMEOUT_SECONDS = 10",
+        "POLL_SECONDS = 10",
+        "for attempt in range(1, MAX_ATTEMPTS + 1)",
+        "urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS)",
+        "time.sleep(POLL_SECONDS)",
+        "https://pypi.org/pypi/{project}/json",
+        "https://pypi.org/pypi/{project}/{version}/json",
+        "https://pypi.org/integrity/{project}/{version}",
+        "{quoted_filename}/provenance",
+        "application/vnd.pypi.integrity.v1+json",
+        'release_metadata.get("urls")',
+        "release_digests != expected_digests",
+        'provenance.get("attestation_bundles")',
+        'bundle.get("attestations")',
+        "pypi-project.json",
+        "pypi-release-1.0.0.json",
+        "pypi-verification",
+        "release metadata and digests verified",
+        "provenance and non-empty attestation receipts captured",
+        "No cryptographic attestation verification was performed",
+    ):
+        assert required in verification_runs
+
+    max_attempts = int(re.search(r"MAX_ATTEMPTS = (\d+)", verification_runs).group(1))
+    request_timeout = int(re.search(r"REQUEST_TIMEOUT_SECONDS = (\d+)", verification_runs).group(1))
+    poll_seconds = int(re.search(r"POLL_SECONDS = (\d+)", verification_runs).group(1))
+    worst_case_seconds = max_attempts * 4 * request_timeout + (max_attempts - 1) * poll_seconds
+    assert worst_case_seconds < verification_step["timeout-minutes"] * 60
+
+    for forbidden in (
+        "uv sync",
+        "uv build",
+        "uv run",
+        "import csvql",
+        "python -m csvql",
+        "scripts/",
+        "gh-action-pypi-publish",
+    ):
+        assert forbidden not in verification_runs
+
+    assert "gh-action-pypi-publish@" not in verification_uses
+    assert "attestations verified" not in workflow.lower()

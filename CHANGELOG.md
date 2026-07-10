@@ -25,6 +25,10 @@ release, or `v1-stable` claims.
   workflows.
 - Saved SQL execution through `csvql run`.
 - Explicit exports through `csvql export` with CSV, JSON, and Markdown formats.
+- Export output-safety transformations: formula-like CSV string cells and
+  headers receive the existing conservative apostrophe neutralizer, and
+  Markdown table cells escape raw HTML. These transformations do not sandbox
+  DuckDB or make untrusted SQL safe.
 - CSV inspection through `csvql inspect`.
 - Bounded data samples through `csvql sample`.
 - CSV profiling through `csvql profile`.
