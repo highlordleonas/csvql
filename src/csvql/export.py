@@ -69,13 +69,24 @@ def format_query_result_for_export(result: QueryResult, export_format: ExportFor
     )
 
 
-def write_export_file(path: Path, content: str, *, token: OperationToken | None = None) -> None:
-    """Write export content as UTF-8 text."""
+def write_export_file(
+    path: Path,
+    content: str,
+    *,
+    overwrite: bool,
+    token: OperationToken | None = None,
+) -> None:
+    """Write export content as UTF-8 text using the approved overwrite policy."""
 
     try:
-        write_text_atomic(path, content, newline="", token=token)
+        write_text_atomic(path, content, newline="", overwrite=overwrite, token=token)
     except OperationCancelled:
         raise
+    except FileExistsError as exc:
+        raise ExportError(
+            f"Export output already exists: {path}",
+            suggestion="Pass --force to overwrite it or choose a different output path.",
+        ) from exc
     except OSError as exc:
         raise ExportError(
             f"Failed to write export output: {path}",

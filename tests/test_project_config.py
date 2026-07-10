@@ -5,6 +5,7 @@ from textwrap import indent
 import pytest
 import yaml
 
+from csvql.atomic_write import write_text_atomic
 from csvql.exceptions import FileMissingError, ProjectConfigError
 from csvql.models import TableSource
 from csvql.project_config import (
@@ -50,6 +51,33 @@ def test_initialize_project_refuses_overwrite(tmp_path: Path) -> None:
         initialize_project(tmp_path)
 
     assert config_path.read_text(encoding="utf-8") == "version: 1\ntables: {}\n"
+
+
+def test_initialize_project_no_force_preserves_catalog_created_before_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+
+    def create_concurrent_catalog_then_write(
+        path: Path,
+        content: str,
+        *,
+        overwrite: bool = True,
+    ) -> None:
+        assert overwrite is False
+        path.write_text("concurrent-config\n", encoding="utf-8")
+        write_text_atomic(path, content, overwrite=overwrite)
+
+    monkeypatch.setattr(
+        "csvql.project_config.write_text_atomic",
+        create_concurrent_catalog_then_write,
+    )
+
+    with pytest.raises(ProjectConfigError, match="Project catalog already exists"):
+        initialize_project(tmp_path, force=False)
+
+    assert config_path.read_text(encoding="utf-8") == "concurrent-config\n"
 
 
 def test_initialize_project_force_rewrites_existing_config(tmp_path: Path) -> None:
@@ -163,6 +191,22 @@ def test_load_project_accepts_nested_table_entries(tmp_path: Path) -> None:
         version=SUPPORTED_VERSION,
         tables=(ProjectTable(name="orders", path="data/orders.csv"),),
     )
+
+
+def test_load_project_rejects_case_colliding_table_aliases(tmp_path: Path) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\n"
+        "tables:\n"
+        "  Orders:\n"
+        "    path: data/first.csv\n"
+        "  orders:\n"
+        "    path: data/second.csv\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProjectConfigError, match="differ only by case"):
+        load_project(tmp_path)
 
 
 def test_load_project_treats_null_table_checks_as_empty_tuple(tmp_path: Path) -> None:
@@ -671,6 +715,60 @@ def test_add_project_table_rejects_duplicate_without_replace(
         )
 
     assert context.config.tables == (ProjectTable(name="orders", path="data/orders.csv"),)
+
+
+def test_add_project_table_rejects_case_variant_duplicate_without_replace(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    first_path = project_root / "data" / "first.csv"
+    second_path = project_root / "data" / "second.csv"
+    first_path.parent.mkdir(parents=True)
+    first_path.write_text("id\n1\n", encoding="utf-8")
+    second_path.write_text("id\n2\n", encoding="utf-8")
+    context = initialize_project(project_root)
+    context = add_project_table(
+        context,
+        "Orders",
+        "data/first.csv",
+        invocation_dir=project_root,
+    )
+
+    with pytest.raises(ProjectConfigError, match="already exists"):
+        add_project_table(
+            context,
+            "orders",
+            "data/second.csv",
+            invocation_dir=project_root,
+        )
+
+    assert context.config.tables == (ProjectTable(name="Orders", path="data/first.csv"),)
+
+
+def test_add_project_table_replace_matches_alias_case_insensitively(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    first_path = project_root / "data" / "first.csv"
+    second_path = project_root / "data" / "second.csv"
+    first_path.parent.mkdir(parents=True)
+    first_path.write_text("id\n1\n", encoding="utf-8")
+    second_path.write_text("id\n2\n", encoding="utf-8")
+    context = initialize_project(project_root)
+    context = add_project_table(
+        context,
+        "Orders",
+        "data/first.csv",
+        invocation_dir=project_root,
+    )
+
+    updated_context = add_project_table(
+        context,
+        "orders",
+        "data/second.csv",
+        replace=True,
+        invocation_dir=project_root,
+    )
+
+    assert updated_context.config.tables == (ProjectTable(name="orders", path="data/second.csv"),)
 
 
 def test_add_project_table_replace_updates_only_matching_table(

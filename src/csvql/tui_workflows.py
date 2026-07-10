@@ -248,7 +248,7 @@ def export_last_result(
 
     output_path = resolve_export_path(path_value, base_dir=base_dir, force=force)
     content = format_query_result_for_export(result, export_format)
-    write_export_file(output_path, content, token=token)
+    write_export_file(output_path, content, overwrite=force, token=token)
     return output_path
 
 

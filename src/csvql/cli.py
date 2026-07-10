@@ -429,7 +429,7 @@ def export(
         with CSVQLEngine() as engine:
             result = execute_query_request(engine, request)
         content = format_query_result_for_export(result, export_format)
-        write_export_file(output_path, content)
+        write_export_file(output_path, content, overwrite=force)
         _echo_human_message(f"Wrote export to {output_path}.")
     except CSVQLError as exc:
         _exit_with_error(exc)

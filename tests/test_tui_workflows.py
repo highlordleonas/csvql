@@ -452,6 +452,39 @@ def test_export_last_result_writes_json_and_returns_resolved_path(tmp_path: Path
     }
 
 
+@pytest.mark.parametrize("force", [False, True])
+def test_export_last_result_forwards_force_to_atomic_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    force: bool,
+) -> None:
+    result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
+    writes: list[tuple[Path, bool]] = []
+
+    def fake_write_export_file(
+        path: Path,
+        content: str,
+        *,
+        overwrite: bool,
+        token: object | None = None,
+    ) -> None:
+        assert content.endswith("\n")
+        assert token is None
+        writes.append((path, overwrite))
+
+    monkeypatch.setattr("csvql.tui_workflows.write_export_file", fake_write_export_file)
+
+    output_path = export_last_result(
+        result,
+        "result.csv",
+        export_format=ExportFormat.csv,
+        base_dir=tmp_path,
+        force=force,
+    )
+
+    assert writes == [(output_path, force)]
+
+
 def test_save_sources_to_project_catalog_creates_catalog_and_uses_relative_paths(
     tmp_path: Path,
 ) -> None:

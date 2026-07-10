@@ -231,6 +231,33 @@ def test_session_export_refuses_overwrite_without_force(tmp_path: Path) -> None:
     assert output_path.read_text(encoding="utf-8") == "existing"
 
 
+@pytest.mark.parametrize("force", [False, True])
+def test_session_export_forwards_force_to_atomic_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    force: bool,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_project(project_root)
+    session = CSVQLSession.from_config(project_root)
+    writes: list[tuple[Path, bool]] = []
+
+    def fake_write_export_file(path: Path, content: str, *, overwrite: bool) -> None:
+        assert content == "order_count\r\n2\r\n"
+        writes.append((path, overwrite))
+
+    monkeypatch.setattr("csvql.api.write_export_file", fake_write_export_file)
+
+    output_path = session.export(
+        "queries/count_orders.sql",
+        "output/count-orders.csv",
+        format="csv",
+        force=force,
+    )
+
+    assert writes == [(output_path, force)]
+
+
 def test_session_export_force_overwrites_existing_file(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_project(project_root)

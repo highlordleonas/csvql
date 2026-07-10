@@ -153,9 +153,21 @@ def test_resolve_export_path_requires_existing_parent_directory(tmp_path: Path) 
 def test_write_export_file_writes_utf8_text(tmp_path: Path) -> None:
     output_path = tmp_path / "result.md"
 
-    write_export_file(output_path, "hello\n")
+    write_export_file(output_path, "hello\n", overwrite=False)
 
     assert output_path.read_text(encoding="utf-8") == "hello\n"
+
+
+def test_write_export_file_no_overwrite_preserves_file_created_before_commit(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "result.csv"
+    output_path.write_text("concurrent\n", encoding="utf-8")
+
+    with pytest.raises(ExportError, match="Export output already exists"):
+        write_export_file(output_path, "replacement\n", overwrite=False)
+
+    assert output_path.read_text(encoding="utf-8") == "concurrent\n"
 
 
 def test_write_export_file_preserves_explicit_export_newlines(
@@ -169,25 +181,28 @@ def test_write_export_file_preserves_explicit_export_newlines(
         content: str,
         *,
         newline: str | None = None,
+        overwrite: bool,
         token: object | None = None,
     ) -> None:
         captured["path"] = path
         captured["content"] = content
         captured["newline"] = newline
+        captured["overwrite"] = overwrite
         captured["token"] = token
 
     monkeypatch.setattr("csvql.export.write_text_atomic", fake_write_text_atomic)
 
-    write_export_file(tmp_path / "result.csv", "a\r\n1\r\n")
+    write_export_file(tmp_path / "result.csv", "a\r\n1\r\n", overwrite=False)
 
     assert captured["newline"] == ""
+    assert captured["overwrite"] is False
 
 
 def test_write_export_file_requires_existing_parent_directory(tmp_path: Path) -> None:
     output_path = tmp_path / "missing" / "result.csv"
 
     with pytest.raises(ExportError) as exc_info:
-        write_export_file(output_path, "hello\n")
+        write_export_file(output_path, "hello\n", overwrite=False)
 
     assert "Failed to write export output" in exc_info.value.message
     assert not output_path.parent.exists()

@@ -78,7 +78,13 @@ def initialize_project(project_root: Path, *, force: bool = False) -> ProjectCon
         config_path=config_path,
         config=ProjectConfig(version=SUPPORTED_VERSION, tables=()),
     )
-    return save_project(context)
+    try:
+        return save_project(context, overwrite=force)
+    except FileExistsError as exc:
+        raise ProjectConfigError(
+            f"Project catalog already exists at {config_path}.",
+            suggestion="Pass --force to reinitialize the project catalog.",
+        ) from exc
 
 
 def discover_project(start_dir: Path | None = None) -> tuple[Path, Path]:
@@ -121,13 +127,17 @@ def load_project(start_dir: Path | None = None) -> ProjectContext:
     return ProjectContext(project_root=project_root, config_path=config_path, config=config)
 
 
-def save_project(context: ProjectContext) -> ProjectContext:
-    """Persist a project catalog configuration deterministically."""
+def save_project(context: ProjectContext, *, overwrite: bool = True) -> ProjectContext:
+    """Persist a project catalog using the requested overwrite policy."""
 
     config_path = context.config_path
     config_path.parent.mkdir(parents=True, exist_ok=True)
     payload = _project_config_payload(context.config)
-    write_text_atomic(config_path, yaml.safe_dump(payload, sort_keys=False))
+    write_text_atomic(
+        config_path,
+        yaml.safe_dump(payload, sort_keys=False),
+        overwrite=overwrite,
+    )
     return context
 
 
@@ -169,8 +179,9 @@ def add_project_table(
     resolved_path = resolve_csv_path(path_value, base_dir=base_dir)
     stored_path = _project_catalog_path_value(context.project_root, resolved_path)
     tables = list(context.config.tables)
+    table_key = table_name.casefold()
     existing_index = next(
-        (index for index, table in enumerate(tables) if table.name == table_name),
+        (index for index, table in enumerate(tables) if table.name.casefold() == table_key),
         None,
     )
     if existing_index is not None and not replace:
@@ -300,8 +311,34 @@ def _parse_project_config(raw_config: object, *, config_path: Path) -> ProjectCo
         _parse_project_table_entry(name, table_value, config_path=config_path)
         for name, table_value in tables.items()
     )
+    _validate_case_insensitive_table_aliases(project_tables, config_path=config_path)
     _validate_project_table_references(project_tables, config_path=config_path)
     return ProjectConfig(version=SUPPORTED_VERSION, tables=project_tables)
+
+
+def _validate_case_insensitive_table_aliases(
+    tables: tuple[ProjectTable, ...],
+    *,
+    config_path: Path,
+) -> None:
+    seen: dict[str, str] = {}
+    collisions: list[tuple[str, str]] = []
+    for table in tables:
+        table_key = table.name.casefold()
+        existing_name = seen.get(table_key)
+        if existing_name is None:
+            seen[table_key] = table.name
+        elif existing_name != table.name:
+            collisions.append((existing_name, table.name))
+
+    if collisions:
+        collision_display = ", ".join(
+            f"'{first}' and '{second}'" for first, second in sorted(collisions)
+        )
+        raise ProjectConfigError(
+            f"Project catalog table aliases differ only by case: {collision_display}.",
+            suggestion="Rename one of the colliding aliases before using the project catalog.",
+        )
 
 
 def _parse_project_table_entry(

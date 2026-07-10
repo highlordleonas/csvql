@@ -110,7 +110,7 @@ class CSVQLSession:
         )
         result = self.run_file(sql_file)
         content = format_query_result_for_export(result, export_format)
-        write_export_file(output_path, content)
+        write_export_file(output_path, content, overwrite=force)
         return output_path
 
 
