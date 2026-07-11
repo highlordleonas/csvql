@@ -7,8 +7,8 @@ permissions:
   contents: read
 
 env:
-  EXPECTED_TAG: v1.0.0
-  EXPECTED_VERSION: "1.0.0"
+  EXPECTED_TAG: v1.0.1
+  EXPECTED_VERSION: "1.0.1"
 
 jobs:
   build-and-verify:
@@ -126,7 +126,7 @@ jobs:
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: localql-1.0.0-dist
+          name: localql-1.0.1-dist
           path: |
             dist/*.whl
             dist/*.tar.gz
@@ -152,7 +152,7 @@ jobs:
       - name: Download distribution artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: localql-1.0.0-dist
+          name: localql-1.0.1-dist
           path: release-artifacts
       - name: Verify downloaded artifact hashes and metadata
         run: |
@@ -224,7 +224,7 @@ jobs:
       - name: Download distribution artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: localql-1.0.0-dist
+          name: localql-1.0.1-dist
           path: release-artifacts
       - name: Verify published artifacts and capture provenance
         id: verify_pypi_release
@@ -356,7 +356,7 @@ jobs:
               else:
                   write_receipt(VERIFICATION_DIR / "pypi-project.json", project_metadata)
                   write_receipt(
-                      VERIFICATION_DIR / "pypi-release-1.0.0.json",
+                      VERIFICATION_DIR / "pypi-release-1.0.1.json",
                       release_metadata,
                   )
                   release_digests = published_digests(release_metadata.get("urls"))
@@ -446,6 +446,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: localql-1.0.0-pypi-verification
+          name: localql-1.0.1-pypi-verification
           path: pypi-verification
           if-no-files-found: error

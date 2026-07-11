@@ -2,6 +2,18 @@
 
 This changelog lists the changes in each LocalQL release.
 
+## [1.0.1] - 2026-07-10
+
+### Fixed
+
+- README links and images now open correctly when the package description is
+  displayed on PyPI.
+
+### Changed
+
+- Reorganized the public documentation around installation, common workflows,
+  command and JSON references, troubleshooting, and contributor guidance.
+
 ## [1.0.0] - 2026-07-01
 
 ### Added
