@@ -13,9 +13,8 @@ questions.
 
 ## Supported Versions
 
-Before the first public release, only the current `main` branch is reviewed for
-security reports. After the first public release, the current published release
-line is the supported line unless release notes say otherwise.
+The latest published 1.x release and the current `main` branch are reviewed for
+security reports unless the release notes say otherwise.
 
 ## Security Boundary
 

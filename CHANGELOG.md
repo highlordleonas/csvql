@@ -1,6 +1,6 @@
 # Changelog
 
-All notable user-visible changes are recorded here.
+This changelog lists the changes in each LocalQL release.
 
 ## [1.0.0] - 2026-07-01
 
@@ -22,5 +22,5 @@ All notable user-visible changes are recorded here.
   project configuration remain `csvql` and `.csvql.yml`.
 - LocalQL runs trusted local DuckDB SQL. It does not sandbox DuckDB or restrict
   filesystem access.
-- The v1 scope is local CSV work. It does not include cloud connectors, web
+- LocalQL 1.0.0 focuses on local CSV work. It does not include cloud connectors, web
   dashboards, notebooks, natural-language SQL, or a plugin platform.

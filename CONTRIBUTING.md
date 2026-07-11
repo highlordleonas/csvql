@@ -1,7 +1,7 @@
 # Contributing
 
-LocalQL is a solo-maintained local-first CLI project. Issues are welcome.
-Pull requests are reviewed selectively, and the roadmap remains maintainer-owned.
+LocalQL is maintained by one person. Issues are welcome, and focused pull
+requests are useful when they fit the project described below.
 
 ## Good First Contributions
 
@@ -9,21 +9,21 @@ Pull requests are reviewed selectively, and the roadmap remains maintainer-owned
 - documentation fixes
 - examples that use local CSV files
 - focused tests for existing behavior
-- small CLI/TUI usability fixes that preserve current contracts
+- small CLI/TUI usability fixes that preserve documented behavior
 
-## Project Boundaries
+## What Fits The Project
 
 LocalQL packages the `csvql` command for local CSV analysis with DuckDB.
 The installable distribution is `localql`; the CLI command, Python import
 package, and config file remain `csvql`, `csvql`, and `.csvql.yml`.
 
-In-scope contributions stay within local CSV files, DuckDB SQL, CLI/TUI
-workflow, explicit exports, project catalogs, tests, and public documentation.
+Contributions should focus on local CSV files, DuckDB SQL, the CLI or terminal
+menu, exports, project catalogs, tests, and public documentation.
 
-Out-of-scope contributions include web apps, hosted dashboards, cloud
-connectors, notebook frameworks, NLP execution, dataframe-first APIs, plugin
-systems, hidden caches, automatic materialization, safe-mode claims, sandbox
-claims, production-readiness claims, and broad large-file claims without proof.
+LocalQL is not intended to become a web app, hosted dashboard, cloud connector,
+notebook framework, natural-language query tool, dataframe-first API, or plugin
+system. Changes should not describe LocalQL as a sandbox, as safe for untrusted
+SQL, or as suitable for workloads that have not been tested.
 
 ## Local Setup
 
@@ -34,7 +34,7 @@ uv run csvql --help
 
 ## Checks
 
-Run the standard local gate before opening a pull request:
+Run these checks before opening a pull request:
 
 ```bash
 uv run ruff format --check .
@@ -48,16 +48,8 @@ checks in [Development](docs/development.md).
 
 ## Git Workflow
 
-Use branch names that describe the work type and scope:
-
-- `feat/<short-scope>` for user-visible capability
-- `fix/<short-scope>` for bug fixes
-- `docs/<short-scope>` for documentation-only changes
-- `test/<short-scope>` for test-only coverage changes
-- `chore/<short-scope>` for maintenance
-- `refactor/<short-scope>` for behavior-preserving code structure changes
-- `release/<short-scope>` for packaging or release work
-- `hotfix/<short-scope>` for urgent narrow fixes
+Use a short branch name that describes the change, such as
+`docs/improve-quickstart` or `fix/export-message`.
 
 Use conventional commit-style subjects, such as `docs: update terminal menu
 guide` or `fix: restore recalled TUI result export`. Keep each commit focused

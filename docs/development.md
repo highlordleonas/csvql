@@ -24,14 +24,14 @@ uv run --all-extras pytest
 ## Package changes
 
 When changing package metadata or distribution contents, build and inspect the
-artifacts locally:
+packages locally:
 
 ```bash
 uv build --sdist --wheel --out-dir output/package-audit/dist
 uv run python scripts/audit_package_contents.py output/package-audit/dist
 ```
 
-## SQL boundary
+## SQL safety
 
-LocalQL executes trusted local DuckDB SQL. Do not describe it as sandboxed or
-safe for untrusted SQL without a corresponding implementation and tests.
+LocalQL executes trusted local DuckDB SQL. It is not a sandbox and is not safe
+for untrusted SQL.

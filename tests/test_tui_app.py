@@ -3745,7 +3745,7 @@ def test_tui_guide_documents_portable_fallbacks_and_run_labels() -> None:
     assert "| `F12` or `Ctrl+B` | Run the buffer as separate History rows |" in guide
     assert "| `F3` or `Ctrl+O` | Choose CSV file(s) or prompt for paths |" in guide
     assert "| `F9` or `q` | Quit outside text entry |" in guide
-    assert "The History run column uses semantic labels: `current` for F4/Ctrl+R runs," in guide
+    assert "The History run column labels entries as `current` for F4/Ctrl+R runs," in guide
     assert "`buffer` for F12/Ctrl+B runs" in guide
     assert "`rerun` for History reruns." in guide
 
@@ -3834,7 +3834,7 @@ def test_tui_guide_documents_deterministic_sql_assistance() -> None:
     guide = _normalized_markdown_text(_read_doc_text("docs/tui-guide.md"))
 
     assert (
-        "When completion items are available, it opens explicit SQL completion; "
+        "When completion items are available, it opens the completion list; "
         "otherwise it inserts four spaces and keeps focus in the SQL editor." in guide
     )
     assert "`Ctrl+Space` remains available where the terminal delivers it." in guide
@@ -3847,7 +3847,7 @@ def test_tui_guide_documents_completion_and_templates_without_ai_claims() -> Non
     guide = _normalized_markdown_text(_read_doc_text("docs/tui-guide.md"))
 
     assert "`Tab` is the primary SQL-editor completion key." in guide
-    assert "it opens explicit SQL completion; otherwise it inserts four spaces" in guide
+    assert "it opens the completion list; otherwise it inserts four spaces" in guide
     assert "`Ctrl+Space` remains available where the terminal delivers it." in guide
     assert "column-aware templates appear after `c` or `i` loads metadata" in guide
     assert "Generated SQL is editable and does not execute automatically" in guide
@@ -3859,7 +3859,7 @@ def test_tui_guide_documents_editor_quality_keymap() -> None:
 
     assert "| `F4` or `Ctrl+R` | Run selected SQL or the current statement |" in guide
     assert "| `F12` or `Ctrl+B` | Run the buffer as separate History rows |" in guide
-    assert "runs the selected/current statement in a fresh DuckDB session" in guide
+    assert "runs the selected or current statement in a fresh DuckDB session" in guide
     assert "`current` for F4/Ctrl+R runs" in guide
     assert "`buffer` for F12/Ctrl+B runs, and `rerun` for History reruns." in guide
 

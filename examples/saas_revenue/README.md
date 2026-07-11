@@ -6,9 +6,8 @@ This example models a small local B2B SaaS revenue project with three CSVs:
 - `subscriptions.csv`
 - `revenue_movements.csv`
 
-It is the primary copy/paste example for LocalQL v1. The goal is to show that
-the `csvql` CLI can inspect a project, validate it, run a saved analysis, and
-export results for both automation and human review.
+The example shows how to inspect a project, run its configured checks, execute a
+saved analysis, and export results for scripts or for people to read.
 
 ## Quickstart
 
@@ -24,7 +23,7 @@ csvql export queries/revenue_health.sql --format json --out output/revenue-healt
 csvql export queries/revenue_health.sql --format markdown --out output/revenue-health.md --force
 ```
 
-Expected shape:
+What to expect:
 
 - `inspect` prints the detected columns, dialect, file metadata, and row-count
   mode.
@@ -36,13 +35,13 @@ Expected shape:
 
 ![Terminal screenshot of the SaaS project query and configured checks](../../docs/assets/localql-terminal-project.svg)
 
-## What The Outputs Prove
+## What The Commands Show
 
 - `inspect` shows the raw shape of a core project table
 - `profile` shows row counts, duplicate counts, and column-level completeness
-- `check` validates project health from `.csvql.yml`
-- `run` returns the canonical revenue-health readout as JSON
-- `export` writes the same analysis to machine-readable JSON and a Markdown sidecar
+- `check` runs the data-quality rules in `.csvql.yml`
+- `run` returns the main revenue-health analysis as JSON
+- `export` writes the same analysis as JSON and Markdown
 
 ## Main Analysis
 

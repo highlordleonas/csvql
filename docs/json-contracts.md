@@ -7,25 +7,26 @@ table output when you are working interactively.
 
 ## Contents
 
-- [Stability and machine-local values](#stability-and-machine-local-values)
+- [Stable fields and changing values](#stable-fields-and-changing-values)
 - [Query, run, and JSON export](#query-run-and-json-export)
 - [Inspect and sample](#inspect-and-sample)
 - [Profile](#profile)
 - [Checks and project health](#checks-and-project-health)
 - [Tables](#tables)
-- [Cross-command rules](#cross-command-rules)
+- [Shared behavior](#shared-behavior)
 
-## Stability and machine-local values
+## Stable fields and changing values
 
-Field names, nesting, and omission behavior are part of the v1 contract.
-Values that depend on an input file or a specific run are not stable:
+Field names, nesting, and when fields are omitted are documented behavior in
+1.0.0. Some values change with the input file, computer, or run:
 
 - `elapsed_ms` varies by run.
 - Source paths, modification timestamps, and file sizes depend on the machine
   and file being inspected.
 - Query rows and profile values depend on the source data.
+- Values that are not native JSON types are serialized as strings.
 
-Examples use placeholders for machine-local values.
+Examples use placeholders for values that differ between computers.
 
 ## Query, run, and JSON export
 
@@ -88,7 +89,17 @@ contains that many rows.
 
 ```json
 {
-  "source": {"display_path": "data/orders.csv"},
+  "source": {
+    "display_path": "data/orders.csv",
+    "resolved_path": "<absolute-path>",
+    "modified_at": "<modified-at>",
+    "size_bytes": 64,
+    "fingerprint": {
+      "version": 1,
+      "size_bytes": 64,
+      "modified_at": "<modified-at>"
+    }
+  },
   "limit": 1,
   "columns": ["order_id", "status"],
   "rows": [{"order_id": "ORD-1", "status": "paid"}],
@@ -112,7 +123,17 @@ percentage, and observed minimum and maximum values when applicable.
 
 ```json
 {
-  "source": {"display_path": "data/orders.csv"},
+  "source": {
+    "display_path": "data/orders.csv",
+    "resolved_path": "<absolute-path>",
+    "modified_at": "<modified-at>",
+    "size_bytes": 64,
+    "fingerprint": {
+      "version": 1,
+      "size_bytes": 64,
+      "modified_at": "<modified-at>"
+    }
+  },
   "row_count": 2,
   "column_count": 3,
   "duplicate_row_count": 0,
@@ -185,9 +206,10 @@ defined tables:
 }
 ```
 
-The catalog and resolved-path fields are machine-local absolute paths.
+The catalog and resolved-path fields are absolute paths on the computer running
+the command.
 
-## Cross-command rules
+## Shared behavior
 
 - Query, saved-SQL runs, and JSON exports use the same tabular-result shape.
 - `inspect`, `sample`, `profile`, and `check` include `warnings`, even when it

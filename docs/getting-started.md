@@ -2,10 +2,18 @@
 
 This walkthrough uses the local SaaS revenue example to show the core CSVQL
 workflow: query one CSV, use a project catalog, run saved SQL, and export a
-result. DuckDB executes SQL; CSVQL owns table aliases, project configuration,
+result. DuckDB executes SQL; CSVQL handles table aliases, project configuration,
 output formatting, and predictable local error handling.
 
 ## Install
+
+This walkthrough uses files from the LocalQL repository. If you do not already
+have a checkout, clone it and enter the project directory first:
+
+```bash
+git clone https://github.com/highlordleonas/csvql.git
+cd csvql
+```
 
 Install the package with the optional terminal menu:
 
@@ -27,7 +35,7 @@ prefix the same commands with `uv run`.
 
 ## Query One CSV
 
-Run this from the repository root:
+Run this from the repository root you entered above:
 
 ```bash
 csvql query examples/saas_revenue/data/revenue_movements.csv \
@@ -91,8 +99,8 @@ csvql export queries/revenue_health.sql \
   --force
 ```
 
-Exports are explicit. CSVQL does not write hidden cache or automatic
-materialized state.
+LocalQL writes an export only when you run `csvql export` or choose an export
+action in the terminal menu. It does not create a hidden result cache.
 
 ## Reuse A Result As A CSV Source
 
@@ -110,8 +118,8 @@ csvql query \
   "SELECT COUNT(*) AS result_rows FROM revenue_health_result"
 ```
 
-This is normal CSV reuse. The project catalog stores table paths; it does not
-store typed derived-source metadata.
+This is normal CSV reuse. The project catalog stores table names and file paths;
+it does not label generated CSVs differently from other CSV files.
 
 ## Open The Terminal Menu
 
@@ -130,7 +138,7 @@ Use `F4` or `Ctrl+R` to run selected SQL or the current statement, `F12` or
 `q` outside text entry to quit. See [Terminal menu guide](tui-guide.md) for the
 full workflow.
 
-## Safety Boundary
+## SQL Safety
 
 CSVQL is for trusted local SQL. DuckDB executes the SQL and can access local
 files according to DuckDB behavior. Do not run untrusted SQL files or pasted SQL

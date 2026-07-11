@@ -74,7 +74,7 @@ The saved SQL uses the aliases defined by the project catalog.
 
 ## Save and reuse results
 
-Export saved SQL to a deliberate destination:
+Export saved SQL to a file you choose:
 
 ```bash
 csvql export queries/revenue_health.sql \
@@ -85,7 +85,7 @@ csvql export queries/revenue_health.sql \
 LocalQL refuses to overwrite an existing output unless you add `--force`.
 
 An exported result is an ordinary CSV file. Add it to the catalog or pass it
-as a one-command table mapping when you want to query it again:
+with `--table` when you want to query it again:
 
 ```bash
 csvql add revenue_health_result exports/revenue_health.csv
@@ -97,14 +97,15 @@ The terminal menu can also save its active result to
 
 ## Inspect, sample, and profile
 
-Inspect a file’s columns and detected dialect:
+Inspect a file or catalog alias to see its columns and detected dialect. Add
+`--exact` only when you want a full scan for an exact row count:
 
 ```bash
 csvql inspect data/orders.csv
-csvql inspect data/orders.csv --output json
+csvql inspect orders --exact --output json
 ```
 
-Sample rows without writing a query:
+Sample a file or catalog alias without writing a query:
 
 ```bash
 csvql sample data/orders.csv --limit 10
@@ -153,11 +154,11 @@ LocalQL also provides a small project-backed Python API:
 ```python
 from csvql import CSVQLSession
 
-session = CSVQLSession.from_project(".")
+session = CSVQLSession.from_config(".")
 result = session.query("SELECT COUNT(*) AS order_count FROM orders")
 
 print(result.rows)
 ```
 
-The API uses the same project catalog model as the CLI. It is intentionally
-small; use DuckDB directly when you need a broader application-level API.
+The API uses the same project catalog as the CLI. It is intentionally small;
+use DuckDB directly when you need a broader Python API.

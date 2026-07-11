@@ -13,17 +13,17 @@ export.
 - Use JSON output for automation-oriented commands.
 - Work interactively through the optional terminal menu.
 
-## Next areas of exploration
+## Possible improvements
 
-Future work is driven by real local-analytics workflows rather than a fixed
-feature promise. Possible areas include:
+Future changes will be guided by real local-analysis needs. Possible
+improvements include:
 
 - additional export formats where they solve a demonstrated workflow;
 - optional, user-controlled result materialization;
 - broader local file formats after CSV workflows remain simple and reliable;
-- carefully scoped improvements to the small Python API.
+- small improvements to the Python API.
 
-## Deliberate boundaries
+## What LocalQL is not
 
 LocalQL is not a hosted analytics platform, cloud connector suite, web
 dashboard, notebook replacement, natural-language SQL tool, or plugin system.

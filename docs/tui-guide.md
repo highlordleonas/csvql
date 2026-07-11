@@ -13,7 +13,7 @@ pip install "localql[tui]"
 csvql menu
 ```
 
-Then open a CSV or repeated table mappings:
+Launch with one CSV, or repeat `--table` to load several named CSVs:
 
 ```bash
 csvql menu examples/saas_revenue/data/revenue_movements.csv
@@ -27,13 +27,10 @@ uv sync --all-extras
 uv run --all-extras csvql menu
 ```
 
-You can also add sources after launch with `F3`. On macOS it opens a local CSV
-picker, and `Ctrl+O` is a portable fallback. Elsewhere it opens a CSV path
-prompt. Pasted standalone `.csv` path text into the SQL editor adds session
-sources. Typing a path as ordinary editor text leaves it as SQL editor text.
-If a terminal delivers a file drop as pasted path text, the same pasted-path
-behavior applies there too. CSV-looking paths inside SQL strings, comments, or
-expressions stay as normal SQL text.
+You can add sources after launch with `F3`. On macOS it opens a CSV picker;
+`Ctrl+O` opens the path prompt on every platform. You can also paste a standalone
+`.csv` path into the SQL editor to add it as a source. CSV paths inside SQL
+strings, comments, or expressions remain ordinary SQL text.
 
 ![Terminal screenshot of the LocalQL TUI workbench with project sources loaded and a query result visible](assets/localql-tui-workbench.svg)
 
@@ -64,12 +61,12 @@ The menu opens with the SQL editor focused.
 | `F1` | Help |
 | `Ctrl+N` or `F10` | Clear editor for a new query |
 
-`F4` or `Ctrl+R` runs the selected/current statement in a fresh DuckDB session.
-`F12` or `Ctrl+B` Run Buffer runs the editor's semicolon-delimited statements in
-one shared DuckDB session, so earlier temporary tables can feed later statements
-in that buffer.
+`F4` or `Ctrl+R` runs the selected or current statement in a fresh DuckDB
+session. `F12` or `Ctrl+B` runs the editor's semicolon-delimited statements in
+one shared session, so earlier temporary tables can feed later statements in
+that buffer.
 
-The History run column uses semantic labels: `current` for F4/Ctrl+R runs,
+The History run column labels entries as `current` for F4/Ctrl+R runs,
 `buffer` for F12/Ctrl+B runs, and `rerun` for History reruns.
 
 The full workbench needs at least 100 columns by 30 rows. A 120x36 terminal is
@@ -102,11 +99,11 @@ paths are portable; external absolute paths and symlink-resolved paths outside t
 start directory are allowed for local workflows but can reveal machine-specific
 locations if you share the catalog.
 
-Column metadata is session-local and is not written to `.csvql.yml`.
+Column details stay in the current session and are not written to `.csvql.yml`.
 `x` always offers preview rows and row count, and column-aware templates appear
 after `c` or `i` loads metadata. In the SQL editor, `Tab` is the primary
 SQL-editor completion key. When completion items are available, it opens
-explicit SQL completion; otherwise it inserts four spaces and keeps focus in
+the completion list; otherwise it inserts four spaces and keeps focus in
 the SQL editor. `Ctrl+Space` remains available where the terminal delivers it.
 Generated SQL is editable and does not execute automatically. Pane focus stays
 on `F2`, `F5`, `F6`, and `F8`.
@@ -146,9 +143,11 @@ alias to the current Sources pane with kind `derived`.
 The CSV file remains on disk. The alias becomes durable across TUI sessions only
 if you explicitly save sources to `.csvql.yml`.
 
-## Boundaries
+## Important Behavior
 
-- The TUI uses the same trusted local DuckDB SQL posture as the CLI.
-- Derived result sources are explicit CSV files, not hidden cache or automatic
-  materialization.
-- The TUI is optional; the CLI remains the complete core workflow.
+- The terminal menu follows the same SQL safety rules as the CLI: run only SQL
+  you trust.
+- Saving a result as a source creates a normal CSV file. LocalQL does not create
+  a hidden result cache.
+- The terminal menu is optional; all core commands are also available from the
+  CLI.

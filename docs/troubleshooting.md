@@ -1,15 +1,16 @@
 # Troubleshooting
 
-This guide is organized by symptom. Command output is the most useful source
-when the wording or a suggested fix differs from this page.
+Start with the error shown in your terminal, then use the matching section below
+for common causes and fixes.
 
 ## Common exit codes
 
 | Exit code | What it usually means | What to try |
 | --- | --- | --- |
-| `1` | DuckDB could not run the SQL. | Check SQL syntax, aliases, and column names. |
+| `1` | A query or another runtime command failed. | Read the error, then check SQL or the command-specific requirement. |
 | `4` | A CSV file is missing. | Correct the path or update `.csvql.yml`. |
 | `6` | A `--table name=path` mapping is invalid. | Use a non-empty path and valid table alias. |
+| `7` | A CSV could not be inspected, sampled, or profiled. | Check that it is a readable CSV with a header row. |
 | `8` | The project catalog cannot be found or validated. | Run `csvql init`, `csvql add`, or repair `.csvql.yml`. |
 | `9` | A saved SQL file is missing, unreadable, or empty. | Create or correct the SQL file. |
 | `10` | An export destination already exists. | Choose a new path or use `--force`. |
@@ -84,6 +85,13 @@ csvql tables
 csvql inspect revenue_movements --output json
 csvql sample revenue_movements --limit 5
 ```
+
+## `Failed to inspect CSV file`
+
+`inspect`, `sample`, and `profile` exit with status `7` when the file exists but
+cannot be read as a CSV. Check that the file is readable, has a header row, and
+uses a consistent CSV structure. `csvql inspect <path>` is the narrowest command
+to retry after correcting the file.
 
 ## Export Output Already Exists
 

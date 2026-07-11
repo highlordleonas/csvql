@@ -5,10 +5,9 @@
 [![Python](https://img.shields.io/pypi/pyversions/localql.svg)](https://pypi.org/project/localql/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-LocalQL packages `csvql`, a lightweight DuckDB-powered CLI for querying local
-CSV files with SQL. Use it when you want a repeatable local workflow: named
-tables, saved SQL, readable output, explicit exports, and an optional terminal
-menu.
+LocalQL is a lightweight DuckDB-powered tool for querying local CSV files with
+SQL. It installs the `csvql` command and provides named tables, saved SQL,
+readable output, exports, and an optional terminal menu.
 
 ![LocalQL: Query local CSVs with SQL](docs/assets/localql-social-preview.jpg)
 
@@ -25,10 +24,13 @@ menu.
 Install LocalQL:
 
 ```bash
-pip install "localql[tui]"
+pip install localql
 ```
 
-Query one CSV:
+The query below uses the example data in this repository. From another
+directory, replace the path with one of your own CSV files.
+
+Query the example CSV:
 
 ```bash
 csvql query examples/saas_revenue/data/revenue_movements.csv \
@@ -48,8 +50,8 @@ For a complete copy-and-paste walkthrough, see [Getting started](docs/getting-st
 | --- | --- |
 | Query a CSV or join named tables | [CLI reference](docs/cli-reference.md#query-csv-files) |
 | Reuse a project catalog and saved SQL | [Project catalogs](docs/cli-reference.md#project-catalogs) |
-| Inspect, sample, or profile a source | [Inspect-and-profile](docs/cli-reference.md#inspect-sample-and-profile) |
-| Export a result or reuse it as a CSV source | [Save-and-reuse-results](docs/cli-reference.md#save-and-reuse-results) |
+| Inspect, sample, or profile a source | [Inspect, sample, and profile](docs/cli-reference.md#inspect-sample-and-profile) |
+| Export a result or reuse it as a CSV source | [Save and reuse results](docs/cli-reference.md#save-and-reuse-results) |
 | Check configured data-quality rules | [Data-quality checks](docs/cli-reference.md#data-quality-checks) |
 
 CSVQL does not implement a SQL engine. DuckDB executes SQL; CSVQL manages the
@@ -61,14 +63,16 @@ The optional `csvql menu` workbench provides sources, a SQL editor, results,
 history, and explicit export actions in the terminal:
 
 ```bash
+pip install "localql[tui]"
 csvql menu
 csvql menu /path/to/orders.csv
 ```
 
 ![Terminal screenshot of the LocalQL TUI workbench with sources, SQL, history, and results](docs/assets/localql-tui-workbench.svg)
 
-The CLI is the complete core workflow. See the [Terminal menu guide](docs/tui-guide.md)
-for keys, source actions, history, and result handling.
+The terminal menu is optional; all core commands also work without it. See the
+[Terminal menu guide](docs/tui-guide.md) for keys, source actions, history, and
+result handling.
 
 ## Safety
 
@@ -95,6 +99,7 @@ sandbox DuckDB or restrict filesystem access. Run only SQL you trust.
 
 ### Project and support
 
+- [Roadmap](docs/ROADMAP.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security](SECURITY.md)
 - [Support](SUPPORT.md)
