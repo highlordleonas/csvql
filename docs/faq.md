@@ -38,7 +38,6 @@ explicitly save sources to `.csvql.yml`.
 
 ## What is stable in v1.0.0?
 
-The v1.0.0 target covers the documented CLI commands, project catalog workflow,
-saved SQL execution, explicit exports, JSON/table output contracts where
-documented, local release-readiness proof, and the optional TUI entrypoint.
-External publication requires a separate release approval.
+The documented CLI commands, project catalog workflow, saved SQL execution,
+explicit exports, JSON/table output contracts, and optional terminal menu are
+part of v1.0.0. See the [CLI reference](cli-reference.md) for command details.

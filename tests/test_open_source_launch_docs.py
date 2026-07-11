@@ -31,19 +31,29 @@ def test_removed_internal_operator_material_is_not_on_public_branch() -> None:
     for path in (
         "AGENTS.md",
         "docs/CODEX_CAPABILITY_REVIEW.md",
+        "docs/PRODUCT_DIRECTION.md",
+        "docs/benchmarking.md",
+        "docs/failure-gallery.md",
+        "docs/release-readiness.md",
+        "docs/tui-qol-qa.md",
+        "docs/v1-manual-qa.md",
     ):
         assert not (REPO_ROOT / path).exists(), path
     assert not list((REPO_ROOT / "docs").glob("release-candidate-proof-*.md"))
+    assert not (REPO_ROOT / "docs" / "superpowers").exists()
 
 
 def test_readme_links_public_launch_docs() -> None:
     readme = read_text("README.md")
 
     for expected in (
+        "[Getting started](docs/getting-started.md)",
+        "[CLI reference](docs/cli-reference.md)",
         "[FAQ](docs/faq.md)",
+        "[Troubleshooting](docs/troubleshooting.md)",
+        "[Terminal menu guide](docs/tui-guide.md)",
         "[Contributing](CONTRIBUTING.md)",
         "[Security](SECURITY.md)",
-        "[Development](docs/development.md)",
         "[Support](SUPPORT.md)",
     ):
         assert expected in readme
@@ -55,17 +65,14 @@ def test_public_docs_do_not_reference_removed_internal_material() -> None:
             read_text("README.md"),
             read_text("CHANGELOG.md"),
             read_text("docs/development.md"),
-            read_text("docs/PRODUCT_DIRECTION.md"),
             read_text("docs/ROADMAP.md"),
             read_text("docs/ARCHITECTURE.md"),
+            read_text("docs/cli-reference.md"),
             read_text("docs/json-contracts.md"),
-            read_text("docs/benchmarking.md"),
-            read_text("docs/failure-gallery.md"),
-            read_text("docs/v1-manual-qa.md"),
-            read_text("docs/tui-qol-qa.md"),
-            read_text("docs/release-readiness.md"),
             read_text("docs/release-notes/v1.md"),
             read_text("docs/faq.md"),
+            read_text("docs/troubleshooting.md"),
+            read_text("docs/tui-guide.md"),
         ]
     )
 
@@ -74,6 +81,9 @@ def test_public_docs_do_not_reference_removed_internal_material() -> None:
         "docs/superpowers",
         "CODEX_CAPABILITY_REVIEW",
         "release-candidate-proof-",
+        "same-`HEAD`",
+        "release-candidate eligible",
+        "Codex Steering",
     ):
         assert removed_reference not in public_docs
 

@@ -1,7 +1,20 @@
 # Troubleshooting
 
-This guide is organized by symptom. For exact exit codes, message shapes, and
-test-backed contracts, see the [Failure gallery](failure-gallery.md).
+This guide is organized by symptom. Command output is the most useful source
+when the wording or a suggested fix differs from this page.
+
+## Common exit codes
+
+| Exit code | What it usually means | What to try |
+| --- | --- | --- |
+| `1` | DuckDB could not run the SQL. | Check SQL syntax, aliases, and column names. |
+| `4` | A CSV file is missing. | Correct the path or update `.csvql.yml`. |
+| `6` | A `--table name=path` mapping is invalid. | Use a non-empty path and valid table alias. |
+| `8` | The project catalog cannot be found or validated. | Run `csvql init`, `csvql add`, or repair `.csvql.yml`. |
+| `9` | A saved SQL file is missing, unreadable, or empty. | Create or correct the SQL file. |
+| `10` | An export destination already exists. | Choose a new path or use `--force`. |
+| `11` | A configured data-quality check failed. | Inspect the failed checks and repair the data or rule. |
+| `12` | `csvql doctor` found a project-health problem. | Correct the catalog, sources, or check configuration. |
 
 ## `CSV file not found`
 
