@@ -26,7 +26,7 @@ exports, data-quality checks, troubleshooting commands, and the optional TUI.
 
 ## Does LocalQL support Parquet, cloud sources, NLP, or web dashboards?
 
-Not in 1.0.0. This release focuses on local CSV files, DuckDB SQL, project
+Not in v1. LocalQL v1 focuses on local CSV files, DuckDB SQL, project
 catalogs, exports, and the optional terminal menu.
 
 ## Where do TUI result sources go?
@@ -36,8 +36,8 @@ When you explicitly save a successful tabular result in the TUI, LocalQL writes
 The file remains on disk. The alias becomes durable across sessions only if you
 explicitly save sources to `.csvql.yml`.
 
-## What is stable in v1.0.0?
+## What is stable in v1?
 
 The documented CLI commands, project catalogs, saved SQL, exports, JSON and
-table output, and optional terminal menu are part of 1.0.0. See the
+table output, and optional terminal menu are part of LocalQL v1. See the
 [CLI reference](cli-reference.md) for command details.

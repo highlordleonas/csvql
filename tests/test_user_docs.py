@@ -5,6 +5,8 @@ from pathlib import Path
 from csvql import CSVQLSession
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_BLOB_PREFIX = "https://github.com/highlordleonas/csvql/blob/main/"
+REPO_RAW_PREFIX = "https://raw.githubusercontent.com/highlordleonas/csvql/main/"
 LINK_RE = re.compile(r"!?\[[^]]*\]\(([^)]+)\)")
 HEADING_RE = re.compile(r"^#{1,6} +(.+?) *#* *$", flags=re.MULTILINE)
 JSON_FENCE_RE = re.compile(r"```json\n(.*?)\n```", flags=re.DOTALL)
@@ -27,16 +29,21 @@ def test_readme_is_a_curated_user_starting_point() -> None:
 
     assert "## Contents" in readme
     for expected_link in (
-        "[Getting started](docs/getting-started.md)",
-        "[CLI reference](docs/cli-reference.md)",
-        "[Troubleshooting](docs/troubleshooting.md)",
-        "[Terminal menu guide](docs/tui-guide.md)",
-        "[Roadmap](docs/ROADMAP.md)",
-        "[Contributing](CONTRIBUTING.md)",
-        "[Security](SECURITY.md)",
-        "[Support](SUPPORT.md)",
+        f"[Getting started]({REPO_BLOB_PREFIX}docs/getting-started.md)",
+        f"[CLI reference]({REPO_BLOB_PREFIX}docs/cli-reference.md)",
+        f"[Troubleshooting]({REPO_BLOB_PREFIX}docs/troubleshooting.md)",
+        f"[Terminal menu guide]({REPO_BLOB_PREFIX}docs/tui-guide.md)",
+        f"[Roadmap]({REPO_BLOB_PREFIX}docs/ROADMAP.md)",
+        f"[Contributing]({REPO_BLOB_PREFIX}CONTRIBUTING.md)",
+        f"[Security]({REPO_BLOB_PREFIX}SECURITY.md)",
+        f"[Support]({REPO_BLOB_PREFIX}SUPPORT.md)",
     ):
         assert expected_link in readme
+
+
+def test_readme_links_are_safe_for_pypi_rendering() -> None:
+    for target in LINK_RE.findall(read_doc("README.md")):
+        assert target.startswith(("https://", "mailto:", "#")), target
 
 
 def test_long_reference_docs_include_curated_navigation() -> None:
@@ -48,10 +55,21 @@ def test_user_documentation_links_resolve() -> None:
     for path in USER_DOC_PATHS:
         document_path = REPO_ROOT / path
         for target in LINK_RE.findall(read_doc(path)):
+            repository_target = False
+            for prefix in (REPO_BLOB_PREFIX, REPO_RAW_PREFIX):
+                if target.startswith(prefix):
+                    target = target.removeprefix(prefix)
+                    repository_target = True
+                    break
             if "://" in target or target.startswith("mailto:"):
                 continue
             target_path, separator, fragment = target.partition("#")
-            target_document = document_path.parent / target_path if target_path else document_path
+            if repository_target:
+                target_document = REPO_ROOT / target_path
+            else:
+                target_document = (
+                    document_path.parent / target_path if target_path else document_path
+                )
             assert target_document.is_file(), f"{path}: {target}"
             if separator and target_document.suffix.lower() == ".md":
                 anchors = _markdown_anchors(target_document.read_text(encoding="utf-8"))

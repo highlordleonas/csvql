@@ -61,6 +61,8 @@ def test_pyproject_public_metadata_is_consistent() -> None:
     project = payload["project"]
 
     assert project["name"] == "localql"
+    assert project["version"] == "1.0.1"
+    assert project["readme"] == "README.md"
     assert project["license"] == "MIT"
     assert "LICENSE" in payload["project"]["license-files"]
     assert "License :: OSI Approved :: MIT License" in project["classifiers"]
@@ -199,14 +201,14 @@ def test_publish_workflow_splits_build_from_oidc_publish() -> None:
         if step.get("name") == "Record failed verification outcome"
     )
     assert download_step["with"] == {
-        "name": "localql-1.0.0-dist",
+        "name": "localql-1.0.1-dist",
         "path": "release-artifacts",
     }
     assert upload_step["uses"] == (
         "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
     )
     assert upload_step["with"] == {
-        "name": "localql-1.0.0-pypi-verification",
+        "name": "localql-1.0.1-pypi-verification",
         "path": "pypi-verification",
         "if-no-files-found": "error",
     }
@@ -243,7 +245,7 @@ def test_publish_workflow_splits_build_from_oidc_publish() -> None:
         'provenance.get("attestation_bundles")',
         'bundle.get("attestations")',
         "pypi-project.json",
-        "pypi-release-1.0.0.json",
+        "pypi-release-1.0.1.json",
         "pypi-verification",
         "release metadata and digests verified",
         "provenance and non-empty attestation receipts captured",

@@ -18,7 +18,7 @@ table output when you are working interactively.
 ## Stable fields and changing values
 
 Field names, nesting, and when fields are omitted are documented behavior in
-1.0.0. Some values change with the input file, computer, or run:
+LocalQL v1. Some values change with the input file, computer, or run:
 
 - `elapsed_ms` varies by run.
 - Source paths, modification timestamps, and file sizes depend on the machine

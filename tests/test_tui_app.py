@@ -3885,7 +3885,7 @@ def test_source_letter_actions_only_work_when_sources_focused(tmp_path: Path) ->
 
             app.query_one("#sources", DataTable).focus()
             await pilot.press("i")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
 
             status = app.query_one("#status", Static).content
             results = app.query_one("#results", DataTable)
@@ -4637,7 +4637,7 @@ def test_inspect_source_is_distinct_from_columns_and_loads_completion_metadata(
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("i")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
 
             table = app.query_one("#results", DataTable)
             headers = tuple(str(column.label) for column in table.columns.values())
@@ -4675,7 +4675,7 @@ def test_inspect_source_shows_display_path_distinct_from_alias(tmp_path: Path) -
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("i")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
 
             table = app.query_one("#results", DataTable)
             return {
