@@ -105,9 +105,9 @@ def test_render_benchmark_summary_includes_dataset_table_and_notes() -> None:
     assert "Local benchmark evidence only." in summary
 
 
-def test_readme_mentions_repo_local_benchmark_workflow() -> None:
+def test_readme_keeps_maintainer_benchmark_workflows_out_of_user_navigation() -> None:
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
 
-    assert "uv run python scripts/benchmark_csvql.py" in readme
-    assert "uv run python scripts/verify_release_readiness.py" in readme
-    assert "Local benchmark evidence only" in readme
+    assert "scripts/benchmark_csvql.py" not in readme
+    assert "scripts/verify_release_readiness.py" not in readme
+    assert "Local benchmark evidence only" not in readme

@@ -1,164 +1,31 @@
 # Roadmap
 
-## v0.1.0 - Query MVP
+LocalQL is focused on a dependable local CSV workflow: use DuckDB SQL, keep
+repeatable work in a small project catalog, and make outputs easy to inspect or
+export.
 
-Goal: prove the core promise with a small working CLI.
+## Current capabilities
 
-- `csvql --help`
-- `csvql query --table orders=data/orders.csv "SELECT * FROM orders LIMIT 10"`
-- single-file shortcut: `csvql query data/orders.csv "SELECT * FROM orders LIMIT 10"`
-- multiple table mappings for joins
-- table output
-- JSON output
-- clear missing-file, bad-mapping, and query errors
-- package layout, tests, Ruff, mypy, and CI
+- Query one CSV or join named CSV tables.
+- Save project catalogs in `.csvql.yml`.
+- Run saved SQL and export results.
+- Inspect, sample, profile, and validate local sources.
+- Use JSON output for automation-oriented commands.
+- Work interactively through the optional terminal menu.
 
-Stable gate:
+## Possible improvements
 
-- CLI behavior documented in `README.md`
-- missing-file, bad-mapping, invalid-alias, and query-failure tests
-- JSON and table output tests
-- Ruff format, Ruff lint, mypy, and pytest passing through `uv run`
-- no unsupported sandbox, security-isolation, production-readiness, or large-file performance claims
+Future changes will be guided by real local-analysis needs. Possible
+improvements include:
 
-## v0.2.0 - Inspect And Sample
+- additional export formats where they solve a demonstrated workflow;
+- optional, user-controlled result materialization;
+- broader local file formats after CSV workflows remain simple and reliable;
+- small improvements to the Python API.
 
-Implemented:
+## What LocalQL is not
 
-- source model for resolved local CSV files
-- `csvql inspect <path>`
-- bounded/default row-count status; exact row count only with `--exact`
-- `csvql sample <path>`
-- table and JSON output for `inspect` and `sample`
-- messy CSV fixtures and error-path tests
-- README and architecture updates
-
-## v0.3.0 - Project Catalog
-
-Implemented:
-
-- `.csvql.yml` models and loader
-- `csvql init`
-- `csvql add`
-- `csvql tables`
-- project root discovery
-- relative path resolution for catalog-backed tables
-- catalog-backed `csvql query "SELECT ... FROM alias"`
-- explicit `--table` mappings override catalog aliases for one invocation
-
-## v0.4.0 - Saved Workflows
-
-Implemented:
-
-- `csvql run queries/file.sql`
-- registered-table support for `csvql inspect`
-- registered-table support for `csvql sample`
-- `csvql export queries/file.sql --format csv|json|markdown|text --out path`
-- overwrite protection for export outputs with explicit `--force`
-
-## v0.5.0 - Profiling
-
-Implemented:
-
-- row and column counts
-- null counts and percentages
-- distinct counts excluding nulls
-- numeric, date, and string min and max
-- duplicate row count using excess-row semantics
-- direct path and catalog alias support for `csvql profile`
-- table and JSON profile output
-
-## v0.6.0 - Data Quality Checks
-
-Implemented:
-
-- configured checks in `.csvql.yml`
-- `csvql check [table]`
-- `not_null`, `unique`, `accepted_values`, `min`, `max`, `row_count_between`, `foreign_key`
-- non-zero exit code `11` on data-quality failures
-- table and JSON output for check results
-- sampled failing rows or values with `--show-failures`
-
-## v0.7.0 - Benchmark And Release Hardening
-
-Implemented:
-
-- benchmark harness and JSON artifact
-- Markdown benchmark summary
-- reproducible synthetic and fixture-sized benchmark inputs
-- benchmark documentation that avoids large-file claims beyond the recorded artifact
-- version consistency verification
-- build smoke for sdist and wheel
-- installed-wheel smoke verification
-- release-readiness documentation
-
-## v0.8.0 - Portfolio Polish And Python API
-
-Implemented:
-
-- polished example project with reproducible data and commands
-- walkthrough documentation for the example project
-- stable JSON contract documentation for automation-oriented command outputs
-- common failure gallery covering missing files, invalid aliases, invalid config, failed checks, overwrite protection, missing SQL files, and doctor failures
-- focused `csvql doctor` command for local project health checks
-- `CSVQLSession.from_config(".csvql.yml")`
-- `session.tables()`
-- `session.query(sql)`
-- `session.run_file(path)`
-- `session.inspect(table, exact=False)`
-- `session.sample(table, limit=10)`
-- `session.profile(table)`
-- `session.check(table=None)`
-- `session.export(sql_file, out, format="json", force=False)`
-- small typed result objects that wrap existing CLI-tested internals
-- no direct-path session mode, dataframe framework, notebook integration, async API, plugin API, config mutation helpers, or second execution engine
-
-## v0.9.0 - Optional Terminal Menu
-
-Implemented:
-
-- optional Textual-powered `csvql menu` TUI
-- session-backed source management
-- startup from `.csvql.yml`, one CSV path, or repeated `--table` mappings
-- inspect, sample, profile, and trusted local SQL querying from the menu
-- session-local query history with reopen and rerun actions
-- explicit derived result source save under `.csvql/results/{alias}.csv`
-- explicit project catalog save action
-- explicit export action
-- optional `tui` package extra so the core CLI install does not require Textual
-
-Current status before v1 publication:
-
-- LocalQL distribution alias is selected for the `csvql` CLI/import package
-- public release hardening is in progress for the `1.0.0` package surface
-- same-`HEAD` local proof, security proof, package proof, governance proof, and
-  CI proof must be refreshed on the final committed release target before tag,
-  publish, GitHub release, or `v1-stable` claims
-
-Remaining before v1 publication:
-
-- explicit user approval for external release actions after the final committed
-  release target is proven
-
-## v1.0.0 - Stable Release
-
-- current status: public release hardening for the `1.0.0` package surface;
-  publication and any `v1-stable` claim require fresh same-`HEAD` proof and
-  separate explicit approval
-- stable CLI contract
-- stable config schema
-- stable small Python API contract
-- full documentation
-- refreshed benchmark report or documented local benchmark artifact
-- release workflow
-- changelog or release notes
-- polished examples with reproducible data and commands
-- full local gate passing through `uv run`
-
-## Post-v1 - Future Expansion Candidates
-
-- optional explicit cache or materialization with user-controlled state
-- additional export formats if real workflows need them
-- safe mode only after a separate ADR, threat model, implementation plan, and tests
-- broader local file formats only after CSV-first v1 is stable
-- richer Python API only after the small v1 API has real usage feedback
+LocalQL is not a hosted analytics platform, cloud connector suite, web
+dashboard, notebook replacement, natural-language SQL tool, or plugin system.
+It runs trusted local DuckDB SQL; a safety mode for untrusted SQL would require
+a separate product and security design.

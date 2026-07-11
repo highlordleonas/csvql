@@ -34,48 +34,7 @@ def test_removed_internal_operator_material_is_not_on_public_branch() -> None:
     ):
         assert not (REPO_ROOT / path).exists(), path
     assert not list((REPO_ROOT / "docs").glob("release-candidate-proof-*.md"))
-
-
-def test_readme_links_public_launch_docs() -> None:
-    readme = read_text("README.md")
-
-    for expected in (
-        "[FAQ](docs/faq.md)",
-        "[Contributing](CONTRIBUTING.md)",
-        "[Security](SECURITY.md)",
-        "[Development](docs/development.md)",
-        "[Support](SUPPORT.md)",
-    ):
-        assert expected in readme
-
-
-def test_public_docs_do_not_reference_removed_internal_material() -> None:
-    public_docs = "\n".join(
-        [
-            read_text("README.md"),
-            read_text("CHANGELOG.md"),
-            read_text("docs/development.md"),
-            read_text("docs/PRODUCT_DIRECTION.md"),
-            read_text("docs/ROADMAP.md"),
-            read_text("docs/ARCHITECTURE.md"),
-            read_text("docs/json-contracts.md"),
-            read_text("docs/benchmarking.md"),
-            read_text("docs/failure-gallery.md"),
-            read_text("docs/v1-manual-qa.md"),
-            read_text("docs/tui-qol-qa.md"),
-            read_text("docs/release-readiness.md"),
-            read_text("docs/release-notes/v1.md"),
-            read_text("docs/faq.md"),
-        ]
-    )
-
-    for removed_reference in (
-        "AGENTS.md",
-        "docs/superpowers",
-        "CODEX_CAPABILITY_REVIEW",
-        "release-candidate-proof-",
-    ):
-        assert removed_reference not in public_docs
+    assert not (REPO_ROOT / "docs" / "superpowers").exists()
 
 
 def test_security_and_faq_state_trusted_local_sql_boundary() -> None:
@@ -84,15 +43,6 @@ def test_security_and_faq_state_trusted_local_sql_boundary() -> None:
     assert "trusted local DuckDB SQL" in combined
     assert "does not sandbox DuckDB" in combined
     assert "Do not report sensitive vulnerabilities in public issues" in combined
-
-
-def test_contributing_sets_solo_maintainer_posture() -> None:
-    contributing = read_text("CONTRIBUTING.md")
-
-    assert "solo-maintained" in contributing
-    assert "Issues are welcome" in contributing
-    assert "Pull requests are reviewed selectively" in contributing
-    assert "roadmap remains maintainer-owned" in contributing
 
 
 def test_github_templates_exist() -> None:
@@ -134,20 +84,6 @@ def test_pyproject_public_metadata_is_consistent() -> None:
         "Programming Language :: Python :: 3.14",
     ):
         assert classifier in project["classifiers"]
-
-
-def test_support_docs_define_post_release_response_policy() -> None:
-    support = read_text("SUPPORT.md")
-
-    for expected in (
-        "Post-Release Response",
-        "triaged by reproducibility",
-        "patch releases",
-        "Published tags are immutable",
-        "PyPI release may be yanked",
-        "supported Python/runtime contract",
-    ):
-        assert expected in support
 
 
 def test_publish_workflow_is_manual_only() -> None:

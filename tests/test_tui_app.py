@@ -24,10 +24,6 @@ from csvql.tui_state import TUIBufferResultTab, TUISessionState, TUISource, TUIS
 from csvql.tui_workflows import export_last_result as workflows_export_last_result
 
 
-def _read_readme_text() -> str:
-    return (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
-
-
 def _read_doc_text(relative_path: str) -> str:
     return (Path(__file__).resolve().parents[1] / relative_path).read_text(encoding="utf-8")
 
@@ -3749,7 +3745,7 @@ def test_tui_guide_documents_portable_fallbacks_and_run_labels() -> None:
     assert "| `F12` or `Ctrl+B` | Run the buffer as separate History rows |" in guide
     assert "| `F3` or `Ctrl+O` | Choose CSV file(s) or prompt for paths |" in guide
     assert "| `F9` or `q` | Quit outside text entry |" in guide
-    assert "The History run column uses semantic labels: `current` for F4/Ctrl+R runs," in guide
+    assert "The History run column labels entries as `current` for F4/Ctrl+R runs," in guide
     assert "`buffer` for F12/Ctrl+B runs" in guide
     assert "`rerun` for History reruns." in guide
 
@@ -3790,16 +3786,13 @@ def test_question_mark_types_in_sql_editor_and_f1_opens_help(tmp_path: Path) -> 
     assert help_text.startswith("CSVQL Workbench Lite")
 
 
-def test_readme_documents_source_intelligence_keymap() -> None:
-    readme = _normalized_markdown_text(_read_readme_text())
+def test_tui_guide_documents_source_intelligence_keymap() -> None:
+    guide = _read_doc_text("docs/tui-guide.md")
 
-    assert (
-        "Source Intelligence actions use `i` to inspect the selected source and load columns"
-        in readme
-    )
-    assert "`c` to load/show columns directly" in readme
-    assert "`l` to insert the selected source alias" in readme
-    assert "`x` to open deterministic starter SQL templates" in readme
+    assert "| `i` | Inspect selected source and load columns |" in guide
+    assert "| `c` | Load or show source columns |" in guide
+    assert "| `l` | Insert selected source alias into SQL |" in guide
+    assert "| `x` | Open starter SQL templates |" in guide
 
 
 def test_help_text_documents_sql_assistance_keymap() -> None:
@@ -3816,19 +3809,8 @@ def test_help_text_documents_sql_assistance_keymap() -> None:
 def test_completion_docs_describe_tab_primary_and_ctrl_space_secondary() -> None:
     from csvql.tui_help import WORKBENCH_HELP
 
-    readme_text = _read_readme_text()
     guide_text = _read_doc_text("docs/tui-guide.md")
-    readme = _normalized_markdown_text(readme_text)
     guide = _normalized_markdown_text(guide_text)
-    release_notes = _normalized_markdown_text(_read_doc_text("docs/release-notes/v1.md"))
-    readme_source_scope = _normalized_markdown_text(
-        readme_text[
-            readme_text.index("When the source pane is focused") : readme_text.index(
-                "templates appear after `c` or `i` loads metadata."
-            )
-            + len("templates appear after `c` or `i` loads metadata.")
-        ]
-    )
     guide_source_actions = _normalized_markdown_text(
         guide_text[
             guide_text.index("When the Sources pane is focused:") : guide_text.index(
@@ -3841,65 +3823,53 @@ def test_completion_docs_describe_tab_primary_and_ctrl_space_secondary() -> None
     assert (
         "Ctrl+Space          Alternate SQL completion where terminal supports it" in WORKBENCH_HELP
     )
-    assert "`Tab`" not in readme_source_scope
-    assert "`Ctrl+Space`" not in readme_source_scope
     assert "| `Tab` |" not in guide_source_actions
     assert "| `Ctrl+Space` |" not in guide_source_actions
-    assert (
-        "`Tab` opens explicit SQL completion when items are available; otherwise it "
-        "inserts four spaces and keeps focus in the SQL editor." in readme
-    )
-    assert "`Ctrl+Space` remains available where the terminal delivers it." in readme
     assert "`Tab` is the primary SQL-editor completion key." in guide
     assert "Pane focus stays on `F2`, `F5`, `F6`, and `F8`." in guide
-    assert "`Tab` is the primary SQL-editor completion key." in release_notes
-    assert (
-        "`Ctrl+Space` remains a secondary trigger where the terminal delivers it." in release_notes
-    )
+    assert "`Ctrl+Space` remains available where the terminal delivers it." in guide
 
 
-def test_readme_documents_deterministic_sql_assistance() -> None:
-    readme = _normalized_markdown_text(_read_readme_text())
+def test_tui_guide_documents_deterministic_sql_assistance() -> None:
+    guide = _normalized_markdown_text(_read_doc_text("docs/tui-guide.md"))
 
     assert (
-        "`Tab` opens explicit SQL completion when items are available; otherwise it "
-        "inserts four spaces and keeps focus in the SQL editor." in readme
+        "When completion items are available, it opens the completion list; "
+        "otherwise it inserts four spaces and keeps focus in the SQL editor." in guide
     )
-    assert "`Ctrl+Space` remains available where the terminal delivers it." in readme
-    assert "`x` to open deterministic starter SQL templates" in readme
-    assert "Generated SQL is inserted into the editor and does not run until you run it" in readme
-    assert "natural-language" not in readme.lower()
+    assert "`Ctrl+Space` remains available where the terminal delivers it." in guide
+    assert "| `x` | Open starter SQL templates |" in guide
+    assert "Generated SQL is editable and does not execute automatically" in guide
+    assert "natural-language" not in guide.lower()
 
 
 def test_tui_guide_documents_completion_and_templates_without_ai_claims() -> None:
     guide = _normalized_markdown_text(_read_doc_text("docs/tui-guide.md"))
 
     assert "`Tab` is the primary SQL-editor completion key." in guide
-    assert "it opens explicit SQL completion; otherwise it inserts four spaces" in guide
+    assert "it opens the completion list; otherwise it inserts four spaces" in guide
     assert "`Ctrl+Space` remains available where the terminal delivers it." in guide
     assert "column-aware templates appear after `c` or `i` loads metadata" in guide
     assert "Generated SQL is editable and does not execute automatically" in guide
     assert "AI insight" not in guide
 
 
-def test_readme_documents_editor_quality_keymap() -> None:
-    readme = _normalized_markdown_text(_read_readme_text())
+def test_tui_guide_documents_editor_quality_keymap() -> None:
+    guide = _normalized_markdown_text(_read_doc_text("docs/tui-guide.md"))
 
-    assert "`F4` or `Ctrl+R` to run selected SQL" in readme
-    assert "`F12` or `Ctrl+B` runs the buffer of semicolon-delimited statements" in readme
-    assert "current statement around the cursor" in readme
-    assert "statement runs as `current`, buffer runs as `buffer`" in readme
-    assert "History reruns as `rerun`" in readme
+    assert "| `F4` or `Ctrl+R` | Run selected SQL or the current statement |" in guide
+    assert "| `F12` or `Ctrl+B` | Run the buffer as separate History rows |" in guide
+    assert "runs the selected or current statement in a fresh DuckDB session" in guide
+    assert "`current` for F4/Ctrl+R runs" in guide
+    assert "`buffer` for F12/Ctrl+B runs, and `rerun` for History reruns." in guide
 
 
-def test_readme_documents_history_rerun_keymap() -> None:
-    readme = _normalized_markdown_text(_read_readme_text())
+def test_tui_guide_documents_history_rerun_keymap() -> None:
+    guide = _normalized_markdown_text(_read_doc_text("docs/tui-guide.md"))
 
-    assert "History" in readme
-    assert (
-        "In History, use `Enter` to reopen a query and `r` to rerun a query "
-        "against the current session sources." in readme
-    )
+    assert "History" in guide
+    assert "`Enter` reopens a query in the editor" in guide
+    assert "`r` reruns a query against the current session sources" in guide
 
 
 def test_source_letter_actions_only_work_when_sources_focused(tmp_path: Path) -> None:
