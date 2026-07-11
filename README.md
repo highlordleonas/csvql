@@ -10,7 +10,7 @@ CSV files like SQL tables. It is built for local analytics work where a small
 project catalog, saved SQL, readable terminal output, and explicit exports are
 more useful than a notebook or database service.
 
-![LocalQL: Query local CSVs with SQL](docs/assets/localql-social-preview.png)
+![LocalQL: Query local CSVs with SQL](docs/assets/localql-social-preview.jpg)
 
 ```bash
 csvql query \
