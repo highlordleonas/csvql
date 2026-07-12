@@ -110,8 +110,11 @@ on `F2`, `F5`, `F6`, and `F8`.
 
 ## History
 
-History is in-memory session state. It is not written to disk, logged, or sent
-anywhere by CSVQL.
+History metadata is in-memory session state and is not logged or sent anywhere
+by CSVQL. Small query results remain in memory. Large query results are written
+automatically to session-owned temporary files so they can be recalled or
+exported. CSVQL removes those spill files on a normal TUI exit; an interrupted
+process can leave temporary files for operating-system cleanup.
 
 When the History pane is focused:
 
@@ -149,5 +152,7 @@ if you explicitly save sources to `.csvql.yml`.
   you trust.
 - Saving a result as a source creates a normal CSV file. LocalQL does not create
   a hidden result cache.
+- Large active results may use disclosed session temporary files. Those files
+  are not durable result sources and are not a persistent cache.
 - The terminal menu is optional; all core commands are also available from the
   CLI.

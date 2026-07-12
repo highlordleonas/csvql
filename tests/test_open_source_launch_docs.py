@@ -14,8 +14,25 @@ def read_text(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
+def markdown_section(document: str, heading: str) -> str:
+    lines = document.splitlines()
+    marker = f"## {heading}"
+    assert marker in lines, heading
+    start = lines.index(marker) + 1
+    end = next(
+        (index for index in range(start, len(lines)) if lines[index].startswith("## ")),
+        len(lines),
+    )
+    return "\n".join(lines[start:end])
+
+
+def normalized_markdown(document: str) -> str:
+    return " ".join(document.split())
+
+
 def test_open_source_trust_files_exist() -> None:
     for path in (
+        "AGENTS.md",
         "LICENSE",
         "CONTRIBUTING.md",
         "CODE_OF_CONDUCT.md",
@@ -23,18 +40,31 @@ def test_open_source_trust_files_exist() -> None:
         "SUPPORT.md",
         "docs/development.md",
         "docs/faq.md",
+        "docs/v2-point-and-query-design.md",
     ):
         assert (REPO_ROOT / path).is_file(), path
 
 
 def test_removed_internal_operator_material_is_not_on_public_branch() -> None:
-    for path in (
-        "AGENTS.md",
-        "docs/CODEX_CAPABILITY_REVIEW.md",
-    ):
+    for path in ("docs/CODEX_CAPABILITY_REVIEW.md",):
         assert not (REPO_ROOT / path).exists(), path
     assert not list((REPO_ROOT / "docs").glob("release-candidate-proof-*.md"))
     assert not (REPO_ROOT / "docs" / "superpowers").exists()
+
+
+def test_public_agents_file_does_not_restore_internal_launch_material() -> None:
+    agents = read_text("AGENTS.md")
+
+    assert len(agents.splitlines()) <= 100
+    assert "make ci" in agents
+    assert "make ci-fresh" in agents
+    assert "trusted local input" in agents
+    for internal_reference in (
+        "docs/CODEX_CAPABILITY_REVIEW.md",
+        "docs/superpowers",
+        "release-candidate-proof-",
+    ):
+        assert internal_reference not in agents
 
 
 def test_security_and_faq_state_trusted_local_sql_boundary() -> None:
@@ -54,6 +84,115 @@ def test_github_templates_exist() -> None:
         ".github/workflows/publish.yml",
     ):
         assert (REPO_ROOT / path).is_file(), path
+
+
+def test_contribution_surfaces_preserve_v1_scope_and_allow_approved_roadmap_work() -> None:
+    contributing = read_text("CONTRIBUTING.md")
+    feature_request = read_text(".github/ISSUE_TEMPLATE/feature_request.yml")
+    pull_request = read_text(".github/pull_request_template.md")
+
+    assert "Current v1 contributions should focus on local CSV files" in contributing
+    assert "maintainer-approved direction" in contributing
+    assert "repository-adopted roadmap milestone" in feature_request
+    assert "repository-adopted roadmap implementation lane" in pull_request
+    assert "make ci" in contributing
+    assert "make ci-fresh" in contributing
+    assert "make ci-fresh" in pull_request
+
+
+def test_make_targets_separate_sync_from_current_environment_checks() -> None:
+    makefile = read_text("Makefile")
+
+    assert "sync:\n\tuv sync --all-extras --frozen" in makefile
+    assert "ci: format-check lint typecheck test" in makefile
+    assert "ci-fresh: sync\n\t$(MAKE) ci" in makefile
+    assert "ci-fresh: sync ci" not in makefile
+    assert "ci: sync" not in makefile
+    for command in (
+        "uv run --frozen --no-sync ruff format --check .",
+        "uv run --frozen --no-sync ruff check .",
+        "uv run --frozen --no-sync --all-extras mypy src",
+        "uv run --frozen --no-sync --all-extras pytest",
+    ):
+        assert command in makefile
+
+
+def test_canonical_authority_metadata_avoids_transient_working_tree_status() -> None:
+    agents = read_text("AGENTS.md")
+    roadmap = read_text("docs/ROADMAP.md")
+    design = read_text("docs/v2-point-and-query-design.md")
+    authority_metadata = {
+        "AGENTS.md": "\n".join(
+            (
+                markdown_section(agents, "Project Contract"),
+                markdown_section(agents, "Authority And Structure"),
+            )
+        ),
+        "docs/ROADMAP.md": "\n".join(
+            (
+                roadmap.split("\n## ", maxsplit=1)[0],
+                markdown_section(roadmap, "Maintainer Disposition"),
+            )
+        ),
+        "docs/v2-point-and-query-design.md": design.split("\n## ", maxsplit=1)[0],
+    }
+
+    for path, metadata in authority_metadata.items():
+        for transient_phrase in (
+            "Revised candidate",
+            "working-tree",
+            "uncommitted",
+            "repository adoption",
+            "awaiting hostile review",
+        ):
+            assert transient_phrase not in metadata, f"{path}: {transient_phrase}"
+
+
+def test_v2_scope_carries_v1_formats_without_double_booking_them() -> None:
+    roadmap = read_text("docs/ROADMAP.md")
+    design = read_text("docs/v2-point-and-query-design.md")
+    roadmap_v2x = markdown_section(roadmap, "v2.x Evolution")
+    design_v2x = markdown_section(design, "Target v2.x Ecosystem")
+    initial_coverage = normalized_markdown(markdown_section(design, "Initial Source Coverage"))
+    experience = normalized_markdown(markdown_section(design, "Experience"))
+
+    for required_concept in ("v1.x", "local-format baseline", "Parquet", "reuse"):
+        assert required_concept in initial_coverage
+    for required_concept in ("S3", "target v2.x", "not part", "v2.0"):
+        assert required_concept in experience
+    for v1_format in ("JSON", "NDJSON", "Excel"):
+        assert v1_format not in roadmap_v2x
+        assert v1_format not in design_v2x
+
+
+def test_v2_release_gate_applies_only_to_v2_supported_sources() -> None:
+    design = read_text("docs/v2-point-and-query-design.md")
+    release_gates = normalized_markdown(markdown_section(design, "v2.0 Release Gates"))
+
+    assert "v2.0 release" in release_gates
+    assert "shared connector contract" in release_gates
+    assert "Every advertised source" not in release_gates
+
+
+def test_v2_planning_implementation_and_release_gates_are_separate() -> None:
+    design = read_text("docs/v2-point-and-query-design.md")
+    planning = normalized_markdown(markdown_section(design, "Planning Authorization"))
+    plan_approval = normalized_markdown(markdown_section(design, "Plan Approval"))
+    implementation = normalized_markdown(
+        markdown_section(design, "Slice Implementation Authorization")
+    )
+    release = normalized_markdown(markdown_section(design, "v2.0 Release Approval"))
+
+    assert "explicitly authorizes preparation of a plan" in planning
+    assert "does not authorize" in planning
+    assert "Plan approval does not authorize implementation" in plan_approval
+    for required_concept in ("plan is approved", "separately authorizes", "verified v1.1"):
+        assert required_concept in implementation
+    assert "Verified v1.2 is not required before every v2 connector implementation" in (
+        implementation
+    )
+    for required_concept in ("v1.2 local-format baseline", "exact release artifacts"):
+        assert required_concept in release
 
 
 def test_pyproject_public_metadata_is_consistent() -> None:

@@ -48,6 +48,7 @@ def test_forbidden_entries_detects_internal_and_ignored_paths() -> None:
     names = [
         "localql-1.0.0/README.md",
         "localql-1.0.0/docs/superpowers/specs/design.md",
+        "localql-1.0.0/docs/governance/audits/stewardship.md",
         "localql-1.0.0/docs/release-candidate-proof-2026-07-03.md",
         "localql-1.0.0/.DS_Store",
         "localql-1.0.0/output/proof.json",
@@ -56,6 +57,7 @@ def test_forbidden_entries_detects_internal_and_ignored_paths() -> None:
 
     assert forbidden_entries(names) == [
         "localql-1.0.0/docs/superpowers/specs/design.md",
+        "localql-1.0.0/docs/governance/audits/stewardship.md",
         "localql-1.0.0/docs/release-candidate-proof-2026-07-03.md",
         "localql-1.0.0/.DS_Store",
         "localql-1.0.0/output/proof.json",
@@ -63,7 +65,7 @@ def test_forbidden_entries_detects_internal_and_ignored_paths() -> None:
     ]
 
 
-def test_sdist_build_config_excludes_internal_superpowers_docs() -> None:
+def test_sdist_build_config_excludes_non_distribution_governance() -> None:
     payload = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     sdist_target = (
         payload.get("tool", {})
@@ -73,7 +75,14 @@ def test_sdist_build_config_excludes_internal_superpowers_docs() -> None:
         .get("sdist", {})
     )
 
-    assert "/docs/superpowers" in sdist_target.get("exclude", [])
+    exclusions = set(sdist_target.get("exclude", []))
+
+    assert exclusions >= {
+        "/AGENTS.md",
+        "/docs/governance/audits",
+        "/docs/superpowers",
+    }
+    assert "/docs/v2-point-and-query-design.md" not in exclusions
 
 
 def test_find_archives_requires_wheel_and_sdist(tmp_path: Path) -> None:

@@ -92,6 +92,16 @@ def test_documented_session_factories_exist() -> None:
         assert hasattr(CSVQLSession, factory), factory
 
 
+def test_tui_docs_disclose_large_result_temporary_storage() -> None:
+    guide = read_doc("docs/tui-guide.md")
+    architecture = read_doc("docs/ARCHITECTURE.md")
+
+    assert "Large query results are written" in guide
+    assert "session-owned temporary files" in guide
+    assert "tui_result_store.py" in architecture
+    assert "spill automatically" in architecture
+
+
 def _markdown_anchors(document: str) -> set[str]:
     anchors: set[str] = set()
     occurrences: dict[str, int] = {}

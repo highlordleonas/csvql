@@ -17,19 +17,25 @@ LocalQL packages the `csvql` command for local CSV analysis with DuckDB.
 The installable distribution is `localql`; the CLI command, Python import
 package, and config file remain `csvql`, `csvql`, and `.csvql.yml`.
 
-Contributions should focus on local CSV files, DuckDB SQL, the CLI or terminal
-menu, exports, project catalogs, tests, and public documentation.
+Current v1 contributions should focus on local CSV files, DuckDB SQL, the CLI or
+terminal menu, exports, project catalogs, tests, and public documentation.
+Future structured-source work must name a maintainer-approved direction in
+[the roadmap](docs/ROADMAP.md), confirm that the direction has been adopted in
+the repository, and still requires a separately approved implementation lane.
 
-LocalQL is not intended to become a web app, hosted dashboard, cloud connector,
-notebook framework, natural-language query tool, dataframe-first API, or plugin
-system. Changes should not describe LocalQL as a sandbox, as safe for untrusted
-SQL, or as suitable for workloads that have not been tested.
+LocalQL is not intended to become a web app, hosted dashboard, notebook
+framework, natural-language query tool, dataframe-first API, or ungoverned
+plugin system. The maintainer-approved future connector direction does not
+authorize unsupported sources, remote writes, embedded credentials, or
+implementation outside a named roadmap lane. Changes should not describe
+LocalQL as a sandbox, as safe for untrusted SQL, or as suitable for workloads
+that have not been tested.
 
 ## Local Setup
 
 ```bash
-uv sync --all-extras
-uv run csvql --help
+uv sync --all-extras --frozen
+uv run --frozen csvql --help
 ```
 
 ## Checks
@@ -37,11 +43,13 @@ uv run csvql --help
 Run these checks before opening a pull request:
 
 ```bash
-uv run ruff format --check .
-uv run ruff check .
-uv run --all-extras mypy src
-uv run --all-extras pytest
+make ci
+make ci-fresh
 ```
+
+Use `make ci` while iterating in the existing project environment without
+dependency reconciliation. Use `make ci-fresh` before handoff or opening a
+pull request.
 
 For package metadata or distribution-content changes, also follow the package
 checks in [Development](docs/development.md).

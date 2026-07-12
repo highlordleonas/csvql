@@ -105,6 +105,12 @@ csvql menu startup arguments
   profile/export behavior, saves sources to `.csvql.yml`, and writes explicit
   derived result CSVs under `.csvql/results/`.
 
+`tui_result_store.py`
+: Session-local query-result storage. Small results remain in memory; results
+  above row or cell thresholds spill to process-owned temporary files so the
+  TUI can recall and explicitly export the full result. Normal TUI shutdown
+  removes the temporary directory.
+
 `tui_app.py`, `tui_results.py`, `tui_help.py`
 : Textual UI composition, keybindings, result display helpers, and in-app help.
   These modules own terminal interaction only; DuckDB execution stays in the
@@ -146,8 +152,10 @@ csvql menu startup arguments
 - `csvql menu` is optional and requires the `tui` package extra; the core CLI
   install does not require Textual.
 - The TUI keeps query history in memory for the current terminal session only.
-- The TUI writes files only on explicit user actions: result export, project
-  catalog save, or derived result source save.
+- The TUI writes durable files only on explicit user actions: result export,
+  project catalog save, or derived result source save. Large query results can
+  also spill automatically to session-owned temporary files that are removed on
+  normal shutdown.
 - TUI derived result sources are CSV files under project-root or start-directory
   `.csvql/results/{alias}.csv`. They are loaded back into the current TUI
   Sources pane with kind `derived` and can be queried like other local CSV

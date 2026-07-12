@@ -22,6 +22,7 @@ FORBIDDEN_NAMES = {
 }
 
 FORBIDDEN_PATH_PARTS = {
+    "docs/governance/audits",
     "docs/superpowers",
     "docs/CODEX_CAPABILITY_REVIEW.md",
 }

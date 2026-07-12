@@ -5,12 +5,12 @@ labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
-      value: "LocalQL is local-first: CSV files, DuckDB SQL, CLI/TUI workflow, explicit exports, and project catalogs."
+      value: "Released LocalQL v1 is local-first and CSV-focused. Future structured-source work must name a maintainer-approved, repository-adopted roadmap milestone and still requires separate implementation approval."
   - type: textarea
     id: problem
     attributes:
       label: Problem
-      description: What local CSV workflow problem would this solve?
+      description: What current workflow or approved roadmap problem would this solve?
     validations:
       required: true
   - type: textarea
@@ -24,7 +24,7 @@ body:
     attributes:
       label: Scope check
       options:
-        - label: This stays within local CSV, DuckDB SQL, CLI/TUI workflow, explicit exports, or project catalogs.
+        - label: This stays within released v1 scope or names a maintainer-approved, repository-adopted future roadmap milestone.
           required: true
-        - label: This does not require a web app, cloud connector, NLP execution, hidden cache, or sandbox-safe SQL claim.
+        - label: This does not require a web app, NLP execution, hidden cache, sandbox-safe SQL claim, or unapproved connector behavior.
           required: true
