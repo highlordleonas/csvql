@@ -1,4 +1,4 @@
-.PHONY: install sync format format-check lint typecheck test ci ci-fresh
+.PHONY: install sync format format-check lint typecheck test ci ci-fresh git-safety-check install-git-safety
 
 install:
 	uv sync --all-extras
@@ -25,3 +25,10 @@ ci: format-check lint typecheck test
 
 ci-fresh: sync
 	$(MAKE) ci
+
+git-safety-check:
+	uv run --frozen --no-sync python -m scripts.install_git_safety check --repo .
+
+install-git-safety:
+	test "$(CONFIRM)" = "highlordleonas/csvql"
+	uv run --frozen --no-sync python -m scripts.install_git_safety apply --repo . --confirm "$(CONFIRM)"
