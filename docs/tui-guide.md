@@ -112,9 +112,30 @@ on `F2`, `F5`, `F6`, and `F8`.
 
 History metadata is in-memory session state and is not logged or sent anywhere
 by CSVQL. Small query results remain in memory. Large query results are written
-automatically to session-owned temporary files so they can be recalled or
-exported. CSVQL removes those spill files on a normal TUI exit; an interrupted
-process can leave temporary files for operating-system cleanup.
+automatically to session-owned temporary files in secure operating-system
+temporary storage so they can be recalled or exported. LocalQL uses
+same-directory atomic completion so a partial spill does not become a usable
+result. A normal exit removes expected temporary files directly.
+
+On a later launch, LocalQL considers only LocalQL temporary workspaces that are
+at least 24 hours old, exactly match the expected structure, validate fully,
+and are unlocked. Recovery is bounded and conservative; it skips anything
+uncertain. Hard kills can leave temporary files until a later launch or
+operating-system cleanup.
+
+After the menu returns normally, a cleanup failure produces at most one
+sanitized warning without temporary paths or result data. The warning does not
+change the otherwise successful exit code.
+
+Small in-memory results still work when spill storage is unavailable. A large
+result that requires spill storage fails with a sanitized storage error;
+LocalQL does not retain it as an unbounded memory fallback. If the backing
+workspace for an older spilled result is lost, History and its bounded preview
+remain available. Full-result load, export, and save-result are unavailable.
+
+LocalQL still fully materializes each Python `QueryResult` before deciding
+whether to spill it; spill storage does not bound DuckDB query execution memory
+or stream query execution.
 
 When the History pane is focused:
 

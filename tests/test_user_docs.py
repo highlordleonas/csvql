@@ -24,6 +24,14 @@ def read_doc(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
+def normalized_markdown_section(path: str, heading: str) -> str:
+    marker = f"## {heading}\n"
+    _, separator, remainder = read_doc(path).partition(marker)
+    assert separator, f"{path}: missing {heading!r} section"
+    section, _, _ = remainder.partition("\n## ")
+    return " ".join(section.split())
+
+
 def test_readme_is_a_curated_user_starting_point() -> None:
     readme = read_doc("README.md")
 
@@ -93,13 +101,81 @@ def test_documented_session_factories_exist() -> None:
 
 
 def test_tui_docs_disclose_large_result_temporary_storage() -> None:
-    guide = read_doc("docs/tui-guide.md")
-    architecture = read_doc("docs/ARCHITECTURE.md")
+    history = normalized_markdown_section("docs/tui-guide.md", "History")
+    components = normalized_markdown_section("docs/ARCHITECTURE.md", "Components")
+    design_choices = normalized_markdown_section("docs/ARCHITECTURE.md", "Design Choices")
 
-    assert "Large query results are written" in guide
-    assert "session-owned temporary files" in guide
-    assert "tui_result_store.py" in architecture
-    assert "spill automatically" in architecture
+    for expected in (
+        "Large query results are written",
+        "session-owned temporary files",
+        "secure operating-system temporary storage",
+        "same-directory atomic completion",
+        "normal exit removes expected temporary files directly",
+    ):
+        assert expected in history
+    for expected in (
+        "at least 24 hours old",
+        "exactly match the expected structure",
+        "validate fully",
+        "are unlocked",
+        "Recovery is bounded and conservative",
+        "skips anything uncertain",
+        "Hard kills can leave temporary files",
+        "later launch or operating-system cleanup",
+    ):
+        assert expected in history
+    assert "tui_result_store.py" in components
+    assert "spill automatically" in design_choices
+
+
+def test_tui_docs_explain_unavailable_spill_storage() -> None:
+    history = normalized_markdown_section("docs/tui-guide.md", "History")
+
+    for expected in (
+        "spill storage is unavailable",
+        "Small in-memory results still work",
+        "A large result that requires spill storage fails",
+        "sanitized storage error",
+        "does not retain it",
+        "unbounded memory fallback",
+    ):
+        assert expected in history
+
+
+def test_tui_docs_explain_cleanup_warning_contract() -> None:
+    history = normalized_markdown_section("docs/tui-guide.md", "History")
+    components = normalized_markdown_section("docs/ARCHITECTURE.md", "Components")
+
+    for expected in (
+        "After the menu returns normally",
+        "cleanup failure",
+        "at most one",
+        "sanitized warning",
+        "does not change",
+        "otherwise successful exit code",
+    ):
+        assert expected in history
+    assert "at most one sanitized warning" in components
+    assert "does not change an otherwise successful exit code" in components
+
+
+def test_tui_docs_explain_lost_spilled_result_contract() -> None:
+    history = normalized_markdown_section("docs/tui-guide.md", "History")
+
+    assert "older spilled result" in history
+    assert "History and its bounded preview remain available" in history
+    assert "Full-result load, export" in history
+    assert "export, and save-result are unavailable" in history
+
+
+def test_tui_docs_distinguish_spill_retention_from_query_execution() -> None:
+    history = normalized_markdown_section("docs/tui-guide.md", "History")
+    design_choices = normalized_markdown_section("docs/ARCHITECTURE.md", "Design Choices")
+
+    assert "fully materializes each Python `QueryResult`" in history
+    assert "before deciding whether to spill" in history
+    assert "does not bound DuckDB query execution memory" in design_choices
+    assert "does not stream query execution" in design_choices
 
 
 def _markdown_anchors(document: str) -> set[str]:

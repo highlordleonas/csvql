@@ -92,12 +92,16 @@ csvql menu startup arguments
 
 `tui_launcher.py`
 : Lazy optional dependency boundary for `csvql menu`. It converts missing
-  Textual dependency errors into normal CSVQL CLI errors.
+  Textual dependency errors into normal CSVQL CLI errors, runs bounded cleanup
+  of eligible abandoned result workspaces before launch, and emits at most one
+  sanitized warning after the TUI returns when cleanup failures occurred. The
+  warning does not change an otherwise successful exit code.
 
 `tui_state.py`
 : In-memory state for the current terminal menu session: loaded sources,
-  selected source, query history, last result status, result preview state, and
-  active worker state.
+  selected source, query history, result handles, bounded preview and
+  availability state, and active worker state. It does not retain full query
+  results after the result handler stores them.
 
 `tui_workflows.py`
 : TUI workflow adapter around existing CSVQL services. It loads startup
@@ -107,9 +111,11 @@ csvql menu startup arguments
 
 `tui_result_store.py`
 : Session-local query-result storage. Small results remain in memory; results
-  above row or cell thresholds spill to process-owned temporary files so the
-  TUI can recall and explicitly export the full result. Normal TUI shutdown
-  removes the temporary directory.
+  above row or cell thresholds spill to secure operating-system temporary
+  storage so the TUI can recall and explicitly export the full result. Spill
+  completion is atomic within one directory. Normal shutdown removes only the
+  expected direct entries, while a later launch conservatively considers old,
+  validated, unlocked LocalQL workspaces for bounded cleanup.
 
 `tui_app.py`, `tui_results.py`, `tui_help.py`
 : Textual UI composition, keybindings, result display helpers, and in-app help.
@@ -154,8 +160,13 @@ csvql menu startup arguments
 - The TUI keeps query history in memory for the current terminal session only.
 - The TUI writes durable files only on explicit user actions: result export,
   project catalog save, or derived result source save. Large query results can
-  also spill automatically to session-owned temporary files that are removed on
-  normal shutdown.
+  also spill automatically to session-owned temporary files. Normal shutdown
+  removes expected files directly; hard kills can leave them until bounded
+  recovery on a later launch or operating-system cleanup.
+- The TUI fully materializes the Python `QueryResult` before deciding whether
+  to spill it. The result store avoids retaining another full result in session
+  state after handling, but it does not bound DuckDB query execution memory and
+  does not stream query execution.
 - TUI derived result sources are CSV files under project-root or start-directory
   `.csvql/results/{alias}.csv`. They are loaded back into the current TUI
   Sources pane with kind `derived` and can be queried like other local CSV
