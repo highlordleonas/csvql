@@ -10,7 +10,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Protocol, TextIO
+from typing import Protocol, TextIO, cast
 from urllib.parse import urlsplit
 
 CANONICAL_REPOSITORY = "highlordleonas/csvql"
@@ -218,13 +218,13 @@ def _validate_approval_invariants(approval: Approval) -> None:
         )
 
     if approval.operation == "create_annotated_tag":
-        for key, value in (
+        for tag_key, tag_value in (
             ("tag_object_oid", approval.tag_object_oid),
             ("peeled_commit_oid", approval.peeled_commit_oid),
         ):
             require(
-                isinstance(value, str) and OID_RE.fullmatch(value) is not None,
-                f"approval {key} must be a lowercase 40-character object ID",
+                isinstance(tag_value, str) and OID_RE.fullmatch(tag_value) is not None,
+                f"approval {tag_key} must be a lowercase 40-character object ID",
             )
     else:
         require(
@@ -249,14 +249,14 @@ def parse_approval(raw: str | None) -> Approval:
     tag_object_oid = payload.get("tag_object_oid")
     peeled_commit_oid = payload.get("peeled_commit_oid")
     approval = Approval(
-        schema=payload["schema"],
-        repository=payload["repository"],
-        operation=operation,
-        destination_ref=payload["destination_ref"],
-        new_oid=payload["new_oid"],
-        expected_remote_oid=payload["expected_remote_oid"],
-        tag_object_oid=tag_object_oid,
-        peeled_commit_oid=peeled_commit_oid,
+        schema=cast(int, payload["schema"]),
+        repository=cast(str, payload["repository"]),
+        operation=cast(str, operation),
+        destination_ref=cast(str, payload["destination_ref"]),
+        new_oid=cast(str, payload["new_oid"]),
+        expected_remote_oid=cast(str, payload["expected_remote_oid"]),
+        tag_object_oid=cast(str | None, tag_object_oid),
+        peeled_commit_oid=cast(str | None, peeled_commit_oid),
     )
     _validate_approval_invariants(approval)
     return approval
@@ -287,7 +287,8 @@ def validate_public_push(
         "direct pushes to public main are prohibited",
     )
     require(update.source_oid != ZERO_OID, "public ref deletions are prohibited")
-    require(approval is not None, "public push requires inline LOCALQL_PUBLIC_PUSH_APPROVAL JSON")
+    if approval is None:
+        raise GuardError("public push requires inline LOCALQL_PUBLIC_PUSH_APPROVAL JSON")
     _validate_approval_invariants(approval)
 
     require(
