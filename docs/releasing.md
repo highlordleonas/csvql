@@ -250,6 +250,21 @@ stale evidence is invalid.
 
 ## Failure And Recovery
 
+- Infrastructure-only CI recovery calls the exact `rerun-failed-jobs` endpoint
+  and records its `201` response and incremented run attempt; a whole-run rerun
+  is not authorized.
+- A visible upload-capable PyPI token is not revoked until safe consumer impact,
+  affected projects, scope, replacement, and mitigation are established.
+  Unknown blast radius stops the release.
+- LocalQL treats a partially or fully published version as immutable: never top
+  up or replace it, add another file, or redispatch publication.
+- The public release branch, merged candidate, and immutable tag can each create
+  a public-but-unreleased state. Report that state and resume the exact next safe
+  transition or fix forward; never reset, delete, retarget, or hide it.
+- After PyPI verification, separately approve updating the exact draft Release
+  with verified PyPI filenames, hashes, links, publisher identity, receipt
+  status, and the bounded cryptographic-verification statement. Read back its
+  body SHA-256 before a later separate publication approval.
 - Treat version tags as immutable: never retarget or reuse a version tag. If a
   tagged candidate is wrong, fix forward and issue a new patch version.
 - Treat package versions as immutable: never replace a PyPI version. If an

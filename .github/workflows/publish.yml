@@ -2,6 +2,35 @@ name: publish
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Exact package version approved for publication
+        required: true
+        type: string
+      tag_object_oid:
+        description: Exact annotated tag object ID approved for publication
+        required: true
+        type: string
+      peeled_commit_oid:
+        description: Exact commit ID peeled from the annotated tag
+        required: true
+        type: string
+      tag_ci_workflow_id:
+        description: Exact successful tag-CI workflow ID
+        required: true
+        type: string
+      tag_ci_run_id:
+        description: Exact successful tag-CI run ID
+        required: true
+        type: string
+      tag_ci_run_attempt:
+        description: Exact successful tag-CI run attempt
+        required: true
+        type: string
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -13,6 +42,9 @@ env:
 jobs:
   build-and-verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     defaults:
       run:
         shell: bash
@@ -25,6 +57,102 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
+      - name: Verify release and tag-CI identity
+        env:
+          APPROVED_VERSION: ${{ inputs.version }}
+          APPROVED_TAG_OBJECT_OID: ${{ inputs.tag_object_oid }}
+          APPROVED_PEELED_COMMIT_OID: ${{ inputs.peeled_commit_oid }}
+          APPROVED_TAG_CI_WORKFLOW_ID: ${{ inputs.tag_ci_workflow_id }}
+          APPROVED_TAG_CI_RUN_ID: ${{ inputs.tag_ci_run_id }}
+          APPROVED_TAG_CI_RUN_ATTEMPT: ${{ inputs.tag_ci_run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "${APPROVED_VERSION}" = "${EXPECTED_VERSION}"
+          [[ "${APPROVED_TAG_OBJECT_OID}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${APPROVED_PEELED_COMMIT_OID}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${APPROVED_TAG_CI_WORKFLOW_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${APPROVED_TAG_CI_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${APPROVED_TAG_CI_RUN_ATTEMPT}" =~ ^[1-9][0-9]*$ ]]
+          test "$(git cat-file -t "${GITHUB_REF}")" = "tag"
+          test "$(git rev-parse "${GITHUB_REF}^{tag}")" = "${APPROVED_TAG_OBJECT_OID}"
+          test "$(git rev-parse "${GITHUB_REF}^{commit}")" = "${APPROVED_PEELED_COMMIT_OID}"
+          test "${GITHUB_SHA}" = "${APPROVED_PEELED_COMMIT_OID}"
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "${APPROVED_PEELED_COMMIT_OID}" refs/remotes/origin/main
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${APPROVED_TAG_CI_RUN_ID}" \
+            > tag-ci-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${APPROVED_TAG_CI_WORKFLOW_ID}" \
+            > tag-ci-workflow.json
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${APPROVED_TAG_CI_RUN_ID}/attempts/${APPROVED_TAG_CI_RUN_ATTEMPT}/jobs?per_page=100" \
+            > tag-ci-jobs.json
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+
+          expected_jobs = {
+              "test (ubuntu-latest, 3.11)",
+              "test (ubuntu-latest, 3.12)",
+              "test (ubuntu-latest, 3.13)",
+              "test (ubuntu-latest, 3.14)",
+              "test (macos-latest, 3.12)",
+              "test (windows-latest, 3.12)",
+          }
+          run = json.loads(Path("tag-ci-run.json").read_text(encoding="utf-8"))
+          workflow = json.loads(Path("tag-ci-workflow.json").read_text(encoding="utf-8"))
+          jobs_payload = json.loads(Path("tag-ci-jobs.json").read_text(encoding="utf-8"))
+          if not isinstance(run, dict):
+              raise SystemExit("tag-CI run response is invalid")
+          if not isinstance(workflow, dict):
+              raise SystemExit("tag-CI workflow response is invalid")
+          if not isinstance(jobs_payload, dict):
+              raise SystemExit("tag-CI jobs response is invalid")
+
+          expected = {
+              "workflow_id": int(os.environ["APPROVED_TAG_CI_WORKFLOW_ID"]),
+              "run_id": int(os.environ["APPROVED_TAG_CI_RUN_ID"]),
+              "run_attempt": int(os.environ["APPROVED_TAG_CI_RUN_ATTEMPT"]),
+              "head_sha": os.environ["APPROVED_PEELED_COMMIT_OID"],
+          }
+          observed = {
+              "workflow_id": run.get("workflow_id"),
+              "run_id": run.get("id"),
+              "run_attempt": run.get("run_attempt"),
+              "head_sha": run.get("head_sha"),
+          }
+          if observed != expected:
+              raise SystemExit(f"tag-CI identity mismatch: {observed!r}")
+          if workflow.get("id") != expected["workflow_id"]:
+              raise SystemExit("approved tag-CI workflow ID does not match")
+          if workflow.get("path") != ".github/workflows/ci.yml":
+              raise SystemExit("approved tag-CI workflow path is not ci.yml")
+          if run.get("event") != "push" or run.get("head_branch") != os.environ["EXPECTED_TAG"]:
+              raise SystemExit("tag-CI event or tag ref mismatch")
+          if run.get("status") != "completed" or run.get("conclusion") != "success":
+              raise SystemExit("approved tag-CI run did not succeed")
+          jobs = jobs_payload.get("jobs")
+          if not isinstance(jobs, list):
+              raise SystemExit("tag-CI jobs response is invalid")
+          if len(jobs) != len(expected_jobs):
+              raise SystemExit(f"tag-CI job count mismatch: {len(jobs)}")
+          if any(not isinstance(job, dict) for job in jobs):
+              raise SystemExit("tag-CI jobs response contains an invalid job")
+          job_names = [job.get("name") for job in jobs]
+          if any(not isinstance(name, str) for name in job_names):
+              raise SystemExit("tag-CI jobs response contains an invalid job name")
+          observed_jobs = set(job_names)
+          if observed_jobs != expected_jobs:
+              raise SystemExit(f"tag-CI matrix mismatch: {observed_jobs!r}")
+          if any(
+              job.get("status") != "completed" or job.get("conclusion") != "success"
+              for job in jobs
+          ):
+              raise SystemExit("one or more tag-CI jobs did not succeed")
+          PY
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
         with:
@@ -204,6 +332,36 @@ jobs:
           PY
           mkdir -p dist
           cp release-artifacts/*.whl release-artifacts/*.tar.gz dist/
+      - name: Require version to be absent from PyPI
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import os
+          from urllib.error import HTTPError, URLError
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          version = os.environ["EXPECTED_VERSION"]
+          url = f"https://pypi.org/pypi/localql/{quote(version, safe='')}/json"
+          request = Request(
+              url,
+              headers={
+                  "Accept": "application/json",
+                  "User-Agent": "localql-release-check/1.0",
+              },
+          )
+          try:
+              with urlopen(request, timeout=15):
+                  pass
+          except HTTPError as exc:
+              if exc.code == 404:
+                  raise SystemExit(0) from None
+              raise SystemExit(f"PyPI version check failed with HTTP {exc.code}") from exc
+          except URLError as exc:
+              raise SystemExit(f"PyPI version check failed: {exc.reason}") from exc
+          raise SystemExit(f"localql {version} already exists; refusing publication")
+          PY
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
         with:
@@ -226,6 +384,10 @@ jobs:
         with:
           name: localql-1.0.1-dist
           path: release-artifacts
+      - name: Install uv without caching
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+        with:
+          enable-cache: false
       - name: Verify published artifacts and capture provenance
         id: verify_pypi_release
         timeout-minutes: 7
@@ -323,23 +485,37 @@ jobs:
                   encoding="utf-8",
               )
 
-          def published_digests(entries: object) -> dict[str, str]:
+          def published_file_records(entries: object) -> dict[str, dict[str, str]]:
               if not isinstance(entries, list):
-                  return {}
-              digests: dict[str, str] = {}
+                  raise SystemExit("release JSON urls field is not a list")
+              records: dict[str, dict[str, str]] = {}
               for entry in entries:
                   if not isinstance(entry, dict):
-                      continue
+                      raise SystemExit("release JSON contains a non-object file entry")
                   filename = entry.get("filename")
-                  hashes = entry.get("digests")
-                  if not isinstance(filename, str) or not isinstance(hashes, dict):
-                      continue
-                  sha256 = hashes.get("sha256")
-                  if isinstance(sha256, str):
-                      digests[filename] = sha256
-              return digests
+                  url = entry.get("url")
+                  digests = entry.get("digests")
+                  sha256 = digests.get("sha256") if isinstance(digests, dict) else None
+                  if not isinstance(filename, str) or Path(filename).name != filename:
+                      raise SystemExit("release JSON contains an invalid filename")
+                  if not isinstance(url, str) or not url.startswith(
+                      "https://files.pythonhosted.org/"
+                  ):
+                      raise SystemExit(f"release JSON contains an invalid file URL for {filename}")
+                  if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+                      raise SystemExit(f"release JSON contains an invalid SHA-256 for {filename}")
+                  if filename in records:
+                      raise SystemExit(f"release JSON repeats filename {filename}")
+                  records[filename] = {"sha256": sha256, "url": url}
+              return records
 
           expected_digests = read_expected_digests()
+          expected_publisher = {
+              "kind": "GitHub",
+              "repository": "highlordleonas/csvql",
+              "workflow": "publish.yml",
+              "environment": "pypi",
+          }
           project = PROJECT
           version = VERSION
           project_url = f"https://pypi.org/pypi/{project}/json"
@@ -359,9 +535,12 @@ jobs:
                       VERIFICATION_DIR / "pypi-release-1.0.1.json",
                       release_metadata,
                   )
-                  release_digests = published_digests(release_metadata.get("urls"))
+                  published_files = published_file_records(release_metadata.get("urls"))
 
-                  if release_digests != expected_digests:
+                  if (
+                      {name: record["sha256"] for name, record in published_files.items()}
+                      != expected_digests
+                  ):
                       last_issue = "release JSON filenames or SHA-256 digests do not match"
                   else:
                       provenance_ready = True
@@ -384,21 +563,38 @@ jobs:
                               provenance_ready = False
                               last_issue = f"attestation bundles are missing for {filename}"
                               continue
-                          if any(
-                              not isinstance(bundle, dict)
-                              or not isinstance(bundle.get("attestations"), list)
-                              or not bundle.get("attestations")
-                              for bundle in bundles
-                          ):
-                              provenance_ready = False
-                              last_issue = f"an attestation bundle is empty for {filename}"
+                          for bundle in bundles:
+                              if not isinstance(bundle, dict):
+                                  provenance_ready = False
+                                  last_issue = f"an attestation bundle is invalid for {filename}"
+                                  continue
+                              attestations = bundle.get("attestations")
+                              if not isinstance(attestations, list) or not attestations:
+                                  provenance_ready = False
+                                  last_issue = f"an attestation bundle is empty for {filename}"
+                                  continue
+                              publisher = bundle.get("publisher")
+                              if not isinstance(publisher, dict):
+                                  provenance_ready = False
+                                  last_issue = f"publisher identity is missing for {filename}"
+                                  continue
+                              observed_publisher = {
+                                  key: publisher.get(key) for key in expected_publisher
+                              }
+                              if observed_publisher != expected_publisher:
+                                  provenance_ready = False
+                                  last_issue = f"publisher identity does not match for {filename}"
+                                  continue
 
                       if provenance_ready:
                           summary = {
                               "project": PROJECT,
                               "version": VERSION,
                               "verified_at": datetime.now(UTC).isoformat(),
-                              "sha256": expected_digests,
+                              "published_files": published_files,
+                              "publisher_identity": expected_publisher,
+                              "publication_run_id": os.environ["GITHUB_RUN_ID"],
+                              "publication_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
                               "release_metadata_and_digests_verified": True,
                               "provenance_and_non_empty_attestation_receipts_captured": True,
                               "cryptographic_attestation_verification_performed": False,
@@ -430,6 +626,46 @@ jobs:
               )
               raise SystemExit(status_path.read_text(encoding="utf-8").strip())
           PY
+      - name: Install exact public release and run core and TUI smoke
+        run: |
+          set -euo pipefail
+          smoke_root="$(mktemp -d)"
+          printf 'order_id,status\nORD-1,paid\n' > "${smoke_root}/orders.csv"
+          uv python install 3.12
+          uv venv --python 3.12 --seed "${smoke_root}/core"
+          UV_NO_CACHE=1 uv pip install \
+            --python "${smoke_root}/core/bin/python" \
+            --index-url https://pypi.org/simple \
+            "localql==${EXPECTED_VERSION}"
+          test "$("${smoke_root}/core/bin/csvql" --version)" = "${EXPECTED_VERSION}"
+          "${smoke_root}/core/bin/csvql" query "${smoke_root}/orders.csv" \
+            "SELECT COUNT(*) AS order_count FROM orders" --output json \
+            > "${smoke_root}/query.json"
+          python - "${smoke_root}/query.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if not isinstance(payload, dict):
+              raise SystemExit("public-index query smoke returned invalid JSON")
+          expected = {
+              "columns": ["order_count"],
+              "rows": [{"order_count": 1}],
+              "row_count": 1,
+          }
+          observed = {key: payload.get(key) for key in expected}
+          if observed != expected:
+              raise SystemExit(f"public-index query smoke mismatch: {observed!r}")
+          PY
+          uv venv --python 3.12 --seed "${smoke_root}/tui"
+          UV_NO_CACHE=1 uv pip install \
+            --python "${smoke_root}/tui/bin/python" \
+            --index-url https://pypi.org/simple \
+            "localql[tui]==${EXPECTED_VERSION}"
+          "${smoke_root}/tui/bin/python" -c \
+            "import textual; import csvql.tui_app; print('tui-extra-ok')"
+          "${smoke_root}/tui/bin/csvql" menu --help
       - name: Record failed verification outcome
         if: always() && steps.verify_pypi_release.outcome != 'success'
         run: |

@@ -618,18 +618,140 @@ def test_pyproject_public_metadata_is_consistent() -> None:
 def test_publish_workflow_is_manual_only() -> None:
     workflow = read_text(".github/workflows/publish.yml")
     payload = yaml.safe_load(workflow)
-    workflow_lines = workflow.splitlines()
-    on_index = workflow_lines.index("on:")
-    permissions_index = workflow_lines.index("permissions:")
-    trigger_lines = [
-        line
-        for line in workflow_lines[on_index + 1 : permissions_index]
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
 
-    assert trigger_lines == ["  workflow_dispatch:"]
+    assert set(payload[True]) == {"workflow_dispatch"}
     assert payload["permissions"] == {"contents": "read"}
     assert "workflow_dispatch:" in workflow
+
+
+def test_publish_dispatch_binds_exact_release_identity() -> None:
+    payload = yaml.safe_load(read_text(".github/workflows/publish.yml"))
+    dispatch = payload[True]["workflow_dispatch"]
+
+    assert dispatch["inputs"] == {
+        "version": {
+            "description": "Exact package version approved for publication",
+            "required": True,
+            "type": "string",
+        },
+        "tag_object_oid": {
+            "description": "Exact annotated tag object ID approved for publication",
+            "required": True,
+            "type": "string",
+        },
+        "peeled_commit_oid": {
+            "description": "Exact commit ID peeled from the annotated tag",
+            "required": True,
+            "type": "string",
+        },
+        "tag_ci_workflow_id": {
+            "description": "Exact successful tag-CI workflow ID",
+            "required": True,
+            "type": "string",
+        },
+        "tag_ci_run_id": {
+            "description": "Exact successful tag-CI run ID",
+            "required": True,
+            "type": "string",
+        },
+        "tag_ci_run_attempt": {
+            "description": "Exact successful tag-CI run attempt",
+            "required": True,
+            "type": "string",
+        },
+    }
+    assert payload["concurrency"] == {
+        "group": "publish-${{ github.ref }}",
+        "cancel-in-progress": False,
+    }
+
+
+def test_publish_build_gate_reads_one_exact_tag_ci_attempt() -> None:
+    payload = yaml.safe_load(read_text(".github/workflows/publish.yml"))
+    build = payload["jobs"]["build-and-verify"]
+    runs = "\n".join(str(step.get("run", "")) for step in build["steps"])
+
+    assert build["permissions"] == {"contents": "read", "actions": "read"}
+    for required in (
+        "APPROVED_TAG_OBJECT_OID",
+        "APPROVED_PEELED_COMMIT_OID",
+        "APPROVED_TAG_CI_WORKFLOW_ID",
+        "APPROVED_TAG_CI_RUN_ID",
+        "APPROVED_TAG_CI_RUN_ATTEMPT",
+        "git cat-file -t",
+        "git merge-base --is-ancestor",
+        "/actions/runs/${APPROVED_TAG_CI_RUN_ID}",
+        "/actions/workflows/${APPROVED_TAG_CI_WORKFLOW_ID}",
+        "/attempts/${APPROVED_TAG_CI_RUN_ATTEMPT}/jobs?per_page=100",
+        '".github/workflows/ci.yml"',
+        '"test (ubuntu-latest, 3.11)"',
+        '"test (windows-latest, 3.12)"',
+    ):
+        assert required in runs
+    assert "gh run list" not in runs
+
+
+def test_publish_high_risk_proof_shells_fail_closed() -> None:
+    payload = yaml.safe_load(read_text(".github/workflows/publish.yml"))
+    proof_steps = {
+        "Verify release and tag-CI identity": payload["jobs"]["build-and-verify"]["steps"],
+        "Install exact public release and run core and TUI smoke": payload["jobs"][
+            "post-publish-verification"
+        ]["steps"],
+    }
+    observed_first_lines = {
+        step_name: str(
+            next(step for step in steps if step.get("name") == step_name).get("run", "")
+        ).splitlines()[0]
+        for step_name, steps in proof_steps.items()
+    }
+
+    assert observed_first_lines == dict.fromkeys(proof_steps, "set -euo pipefail")
+
+
+def test_publish_verifies_exact_publisher_and_public_index_install() -> None:
+    payload = yaml.safe_load(read_text(".github/workflows/publish.yml"))
+    publish_steps = payload["jobs"]["publish"]["steps"]
+    verification = payload["jobs"]["post-publish-verification"]
+    verification_runs = "\n".join(str(step.get("run", "")) for step in verification["steps"])
+    publish_index = next(
+        index
+        for index, step in enumerate(publish_steps)
+        if str(step.get("uses", "")).startswith("pypa/gh-action-pypi-publish@")
+    )
+
+    assert publish_steps[publish_index - 1]["name"] == "Require version to be absent from PyPI"
+    for required in (
+        '"kind": "GitHub"',
+        '"repository": "highlordleonas/csvql"',
+        '"workflow": "publish.yml"',
+        '"environment": "pypi"',
+        'bundle.get("publisher")',
+        '"published_files"',
+        '"publication_run_id"',
+        "UV_NO_CACHE=1",
+        "https://pypi.org/simple",
+        "localql==${EXPECTED_VERSION}",
+        "localql[tui]==${EXPECTED_VERSION}",
+        'csvql" query',
+        'csvql" menu --help',
+    ):
+        assert required in verification_runs
+
+
+def test_release_runbook_names_strict_publication_recovery() -> None:
+    releasing = normalized_markdown(read_text("docs/releasing.md"))
+    for required in (
+        "rerun-failed-jobs",
+        "whole-run rerun is not authorized",
+        "public-but-unreleased",
+        "never top up",
+        "consumer impact",
+        "verified PyPI filenames",
+        "draft Release",
+        "body SHA-256",
+    ):
+        assert required in releasing
 
 
 def test_github_actions_are_pinned_by_commit_sha() -> None:
@@ -768,7 +890,7 @@ def test_publish_workflow_splits_build_from_oidc_publish() -> None:
         "{quoted_filename}/provenance",
         "application/vnd.pypi.integrity.v1+json",
         'release_metadata.get("urls")',
-        "release_digests != expected_digests",
+        "published_file_records",
         'provenance.get("attestation_bundles")',
         'bundle.get("attestations")',
         "pypi-project.json",
@@ -790,7 +912,6 @@ def test_publish_workflow_splits_build_from_oidc_publish() -> None:
         "uv sync",
         "uv build",
         "uv run",
-        "import csvql",
         "python -m csvql",
         "scripts/",
         "gh-action-pypi-publish",
