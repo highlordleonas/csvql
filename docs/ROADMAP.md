@@ -21,8 +21,7 @@ LocalQL v1.0.1 provides:
 - an optional terminal workbench.
 
 The repository is in post-1.0 maintenance and product-foundation work. v1.0.2
-is the active stewardship and reliability milestone; its product-code items
-remain unstarted.
+is the active stewardship and reliability milestone.
 
 ## Maintainer Disposition
 
@@ -35,7 +34,18 @@ separate decisions.
 
 ## v1.0.2 — Stewardship And Reliability
 
-Status: In Progress
+Status: Implemented locally; release preparation in progress
+
+TUI spill reliability and portable navigation fallbacks are implemented and
+verified locally on the release branch. The frozen local quality gate and
+maintainer release guardrails are also implemented. None of this is released
+until the public pull request, immutable tag, protected PyPI publication, and
+GitHub Release gates complete.
+
+The v1.0.2 release keeps explicit, machine-checked version values. A
+release-version source refactor remains deferred. The TUI still fully
+materializes Python query results before spill decisions; bounded query
+execution remains deferred to v1.1.
 
 Objectives:
 
@@ -53,8 +63,9 @@ Acceptance criteria:
 2. TUI spill lifecycle, permissions, cleanup, and abnormal-exit behavior have
    tests and public documentation.
 3. Results, History, and Help have verified portable navigation paths.
-4. Release identity has one validated source without weakening manual release
-   approval, OIDC isolation, or post-publish verification.
+4. Release identity keeps explicit, machine-checked version consistency without
+   a release-version source refactor or weakening manual release approval, OIDC
+   isolation, or post-publish verification.
 5. No CLI, Python, catalog, JSON, or export compatibility regression exists.
 
 ## v1.1 — Bounded Results And Source Foundations

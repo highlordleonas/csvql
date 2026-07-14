@@ -754,6 +754,19 @@ def test_release_runbook_names_strict_publication_recovery() -> None:
         assert required in releasing
 
 
+def test_v102_documents_match_implemented_but_unreleased_truth() -> None:
+    roadmap = normalized_markdown(read_text("docs/ROADMAP.md"))
+    spill_design = normalized_markdown(read_text("docs/v1.0.2-tui-spill-reliability-design.md"))
+
+    assert "Status: Implemented locally; release preparation in progress" in roadmap
+    assert "TUI spill reliability and portable navigation fallbacks are implemented" in roadmap
+    assert "bounded query execution remains deferred to v1.1" in roadmap
+    assert "release-version source refactor remains deferred" in roadmap
+    assert "Implemented and locally verified; unreleased" in spill_design
+    assert "implementation not approved" not in spill_design
+    assert "fully materializes" in roadmap
+
+
 def test_github_actions_are_pinned_by_commit_sha() -> None:
     for path in (".github/workflows/ci.yml", ".github/workflows/publish.yml"):
         payload = yaml.safe_load(read_text(path))
