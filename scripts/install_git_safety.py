@@ -50,6 +50,12 @@ class Inspection:
     canonical_write_remotes: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class HookPayloadSnapshot:
+    directory_existed: bool
+    files: tuple[tuple[str, bytes, int], ...]
+
+
 def run_git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -126,6 +132,60 @@ def restore_file(path: Path, existed: bool, content: bytes) -> None:
         atomic_write_bytes(path, content)
     else:
         path.unlink(missing_ok=True)
+
+
+def snapshot_hook_payload(installed_hook_dir: Path) -> HookPayloadSnapshot:
+    if installed_hook_dir.is_symlink() or (
+        installed_hook_dir.exists() and not installed_hook_dir.is_dir()
+    ):
+        raise InstallError("could not snapshot installed hook payload")
+
+    files: list[tuple[str, bytes, int]] = []
+    for name in INSTALLED_PAYLOAD_MODES:
+        payload = installed_hook_dir / name
+        if not _path_occupied(payload):
+            continue
+        try:
+            metadata = payload.lstat()
+            if not stat.S_ISREG(metadata.st_mode):
+                raise InstallError("could not snapshot installed hook payload")
+            files.append((name, payload.read_bytes(), stat.S_IMODE(metadata.st_mode)))
+        except InstallError:
+            raise
+        except OSError as error:
+            raise InstallError("could not snapshot installed hook payload") from error
+    return HookPayloadSnapshot(installed_hook_dir.exists(), tuple(files))
+
+
+def restore_hook_payload(installed_hook_dir: Path, snapshot: HookPayloadSnapshot) -> None:
+    if installed_hook_dir.is_symlink() or (
+        installed_hook_dir.exists() and not installed_hook_dir.is_dir()
+    ):
+        raise InstallError("could not restore installed hook payload")
+    if not installed_hook_dir.exists():
+        if not snapshot.directory_existed:
+            return
+        installed_hook_dir.mkdir(parents=True)
+
+    original_files = {name: (content, mode) for name, content, mode in snapshot.files}
+    for name in INSTALLED_PAYLOAD_MODES:
+        payload = installed_hook_dir / name
+        if name in original_files:
+            content, mode = original_files[name]
+            atomic_write_bytes(payload, content)
+            payload.chmod(mode)
+        elif _path_occupied(payload):
+            if payload.is_dir() and not payload.is_symlink():
+                raise InstallError("could not remove installed hook payload")
+            payload.unlink()
+
+    if not snapshot.directory_existed:
+        try:
+            installed_hook_dir.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            raise InstallError("could not remove installed hook payload") from error
 
 
 def local_values(repo: Path, key: str) -> tuple[str, ...]:
@@ -530,6 +590,7 @@ def apply_repository(repo: Path, confirmation: str) -> Inspection:
         exclude_content = exclude_path.read_bytes() if exclude_existed else b""
     except OSError as error:
         raise InstallError("could not snapshot local Git exclusion file") from error
+    payload_snapshot = snapshot_hook_payload(installed_hook_dir)
 
     source_hook = SOURCE_ROOT / ".githooks/pre-push"
     source_guard = SOURCE_ROOT / "scripts/git_public_push_guard.py"
@@ -568,6 +629,7 @@ def apply_repository(repo: Path, confirmation: str) -> Inspection:
         return installed
     except (InstallError, OSError, subprocess.SubprocessError):
         rollback_failed = False
+        payload_rollback_failed = False
         for key in managed_keys:
             try:
                 restore_local_values(inspection.repository_root, key, snapshots[key])
@@ -577,11 +639,19 @@ def apply_repository(repo: Path, confirmation: str) -> Inspection:
             restore_file(exclude_path, exclude_existed, exclude_content)
         except OSError:
             rollback_failed = True
+        try:
+            restore_hook_payload(installed_hook_dir, payload_snapshot)
+        except (InstallError, OSError):
+            rollback_failed = True
+            payload_rollback_failed = True
         if rollback_failed:
-            affected = ", ".join(managed_keys)
+            affected_categories = [*managed_keys]
+            if payload_rollback_failed:
+                affected_categories.append("managed hook payload")
+            affected = ", ".join(affected_categories)
             raise InstallError(
                 "installation failed and rollback was incomplete; inspect local Git config "
-                f"before continuing; affected keys: {affected}"
+                f"before continuing; affected keys or categories: {affected}"
             ) from None
         raise InstallError("installation failed; local configuration was restored") from None
 

@@ -738,6 +738,50 @@ def test_apply_rolls_back_local_config_and_exclusion_after_mid_apply_failure(
     assert exclude_path.read_bytes() == original_exclude
 
 
+@pytest.mark.parametrize("preexisting_payloads", [False, True])
+def test_apply_rolls_back_managed_hook_payloads_after_mid_apply_failure(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch, preexisting_payloads: bool
+) -> None:
+    use_isolated_git_environment(monkeypatch, git_repo)
+    installed = resolved_git_common_dir(git_repo) / "localql-hooks"
+    original_files: dict[str, tuple[bytes, int]] = {}
+    if preexisting_payloads:
+        installed.mkdir()
+        (installed / "keep-me").write_bytes(b"unrelated\n")
+        for name, mode in install_git_safety.INSTALLED_PAYLOAD_MODES.items():
+            path = installed / name
+            path.write_bytes(f"preexisting {name}\n".encode())
+            path.chmod(mode)
+            original_files[name] = (path.read_bytes(), mode)
+
+    real_run_git = install_git_safety.run_git
+
+    def failing_run_git(
+        repo: Path, *args: str, check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        if args == ("config", "--local", "push.default", "nothing"):
+            raise subprocess.CalledProcessError(1, ["git", *args])
+        return real_run_git(repo, *args, check=check)
+
+    monkeypatch.setattr(install_git_safety, "run_git", failing_run_git)
+
+    with pytest.raises(
+        install_git_safety.InstallError,
+        match="installation failed; local configuration was restored",
+    ):
+        install_git_safety.apply_repository(git_repo, install_git_safety.CANONICAL_REPOSITORY)
+
+    if preexisting_payloads:
+        assert installed.is_dir()
+        assert (installed / "keep-me").read_bytes() == b"unrelated\n"
+        for name, (content, mode) in original_files.items():
+            path = installed / name
+            assert path.read_bytes() == content
+            assert stat.S_IMODE(path.lstat().st_mode) == mode
+    else:
+        assert not installed.exists()
+
+
 def test_apply_reports_incomplete_rollback_without_configuration_values(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
