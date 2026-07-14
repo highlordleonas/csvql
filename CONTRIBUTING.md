@@ -56,8 +56,15 @@ checks in [Development](docs/development.md).
 
 ## Git Workflow
 
-Use a short branch name that describes the change, such as
-`docs/improve-quickstart` or `fix/export-message`.
+Maintainer development branches remain local by default. Maintainers use a
+short `feature/*`, `fix/*`, `docs/*`, or `release/*` branch, keep commits
+focused, and follow the approval boundaries in [Releasing](docs/releasing.md)
+before any public repository or package transition.
+
+External contributors push branches to their own forks and intentionally open
+public pull requests against LocalQL. Contributors do not need to install the
+maintainer clone's remote settings or local release guardrails; use a short-lived
+branch and include the checks and evidence relevant to the change.
 
 Use conventional commit-style subjects, such as `docs: update terminal menu
 guide` or `fix: restore recalled TUI result export`. Keep each commit focused

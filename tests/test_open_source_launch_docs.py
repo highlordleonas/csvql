@@ -1,13 +1,26 @@
 from __future__ import annotations
 
+import io
+import json
 import re
+import shlex
+import subprocess
+import sys
+import tarfile
 import tomllib
+import zipfile
+from importlib.metadata import version as installed_distribution_version
 from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.git_public_push_guard import parse_approval
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PINNED_ACTION_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
+OID_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def read_text(path: str) -> str:
@@ -30,6 +43,29 @@ def normalized_markdown(document: str) -> str:
     return " ".join(document.split())
 
 
+def fenced_blocks(document: str, language: str) -> tuple[str, ...]:
+    return tuple(
+        re.findall(
+            rf"^```{re.escape(language)}\n(.*?)\n```$",
+            document,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+    )
+
+
+def assert_ordered(document: str, phrases: tuple[str, ...]) -> None:
+    cursor = -1
+    for phrase in phrases:
+        cursor = document.find(phrase, cursor + 1)
+        assert cursor >= 0, phrase
+
+
+def heredoc_block(script: str, marker: str) -> str:
+    matches = re.findall(rf"<<'{re.escape(marker)}'\n(.*?)\n{re.escape(marker)}", script, re.DOTALL)
+    assert len(matches) == 1, marker
+    return matches[0]
+
+
 def test_open_source_trust_files_exist() -> None:
     for path in (
         "AGENTS.md",
@@ -40,16 +76,364 @@ def test_open_source_trust_files_exist() -> None:
         "SUPPORT.md",
         "docs/development.md",
         "docs/faq.md",
+        "docs/releasing.md",
         "docs/v2-point-and-query-design.md",
     ):
         assert (REPO_ROOT / path).is_file(), path
 
 
-def test_removed_internal_operator_material_is_not_on_public_branch() -> None:
-    for path in ("docs/CODEX_CAPABILITY_REVIEW.md",):
-        assert not (REPO_ROOT / path).exists(), path
+def git_tracked_paths(path: str) -> tuple[str, ...]:
+    result = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "--", path],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return tuple(line for line in result.stdout.splitlines() if line)
+
+
+def test_internal_operator_material_is_not_tracked_for_publication() -> None:
+    assert not (REPO_ROOT / "docs" / "CODEX_CAPABILITY_REVIEW.md").exists()
     assert not list((REPO_ROOT / "docs").glob("release-candidate-proof-*.md"))
-    assert not (REPO_ROOT / "docs" / "superpowers").exists()
+    assert git_tracked_paths("docs/superpowers") == ()
+
+
+def test_public_git_and_release_authority_is_explicit() -> None:
+    agents = normalized_markdown(read_text("AGENTS.md"))
+    releasing = normalized_markdown(read_text("docs/releasing.md"))
+    contributing = normalized_markdown(read_text("CONTRIBUTING.md"))
+    pull_request = normalized_markdown(read_text(".github/pull_request_template.md"))
+
+    for phrase in (
+        "Local `main` mirrors live public `main`",
+        "remain local by default",
+        "public push",
+        "pull-request merge",
+        "version tag",
+        "GitHub Release",
+        "PyPI publication",
+        "separate explicit approval",
+    ):
+        assert phrase in agents
+    for phrase in (
+        "LOCALQL_PUBLIC_PUSH_APPROVAL",
+        "create_branch",
+        "update_branch",
+        "create_annotated_tag",
+        "--no-verify",
+        "hosted rules are authoritative",
+        "make ci-fresh",
+        "never retarget or reuse a version tag",
+        "never replace a PyPI version",
+    ):
+        assert phrase in releasing
+    assert "External contributors push branches to their own forks" in contributing
+    assert "Maintainer development branches remain local by default" in contributing
+    assert "Public release boundary" in pull_request
+
+
+def test_release_runbook_examples_are_machine_valid_without_pushing() -> None:
+    releasing = read_text("docs/releasing.md")
+    json_blocks = fenced_blocks(releasing, "json")
+    bash_blocks = fenced_blocks(releasing, "bash")
+
+    assert len(json_blocks) == 3
+    approvals = tuple(parse_approval(block) for block in json_blocks)
+    assert tuple(approval.operation for approval in approvals) == (
+        "create_branch",
+        "update_branch",
+        "create_annotated_tag",
+    )
+
+    push_block = next(block for block in bash_blocks if "LOCALQL_PUBLIC_PUSH_APPROVAL=" in block)
+    continued_push_block = re.sub(r"\\\n[ \t]*", " ", push_block)
+    assignment, *push_argv = shlex.split(continued_push_block)
+    variable, separator, inline_manifest = assignment.partition("=")
+    assert (variable, separator) == ("LOCALQL_PUBLIC_PUSH_APPROVAL", "=")
+    assert inline_manifest == json_blocks[0]
+    expected_refspec = "1111111111111111111111111111111111111111:refs/heads/release/v1.0.2"
+    assert push_argv == [
+        "git",
+        "push",
+        "https://github.com/highlordleonas/csvql.git",
+        expected_refspec,
+    ]
+    assert len(push_argv[3:]) == 1
+    source_oid, destination_ref = push_argv[3].split(":", maxsplit=1)
+    assert OID_RE.fullmatch(source_oid)
+    assert source_oid == approvals[0].new_oid
+    assert destination_ref == approvals[0].destination_ref
+
+    for block in bash_blocks:
+        subprocess.run(
+            ["bash", "-n"],
+            input=block,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+
+
+def test_release_runbook_candidate_evidence_fails_closed(tmp_path: Path) -> None:
+    releasing = read_text("docs/releasing.md")
+    candidate_section = normalized_markdown(markdown_section(releasing, "Candidate Evidence"))
+    candidate = next(
+        block for block in fenced_blocks(releasing, "bash") if "evidence_dir=" in block
+    )
+
+    assert "Any failure stops the evidence run" in candidate_section
+    assert (
+        "Only failures after the evidence directory is claimed leave that directory for diagnosis"
+        in candidate_section
+    )
+    candidate_lines = candidate.splitlines()
+    assert candidate_lines[0] == "set -euo pipefail"
+    assert "||" not in candidate
+    assert '[[ "${release_version}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]' in candidate
+    assert 'expected_version="${release_version#v}"' in candidate
+    assert 'mkdir -- "${evidence_dir}"' in candidate
+    assert 'test ! -e "${evidence_dir}"' not in candidate
+    assert 'git cat-file -t "${candidate_oid}"' in candidate
+    assert candidate_lines.count("git diff --quiet --exit-code --") == 2
+    assert candidate_lines.count("git diff --cached --quiet --exit-code --") == 2
+    assert [line for line in candidate_lines if line.startswith("git diff --quiet")] == [
+        "git diff --quiet --exit-code --",
+        "git diff --quiet --exit-code --",
+    ]
+    assert [line for line in candidate_lines if line.startswith("git diff --cached")] == [
+        "git diff --cached --quiet --exit-code --",
+        "git diff --cached --quiet --exit-code --",
+    ]
+    assert (
+        candidate_lines.count('initial_status="$(git status --porcelain=v1 --untracked-files=all)"')
+        == 1
+    )
+    assert (
+        candidate_lines.count('final_status="$(git status --porcelain=v1 --untracked-files=all)"')
+        == 1
+    )
+    assert 'test -z "${initial_status}"' in candidate_lines
+    assert 'test -z "${final_status}"' in candidate_lines
+    assert "localql-untracked" not in candidate
+    assert "git ls-files --others --exclude-standard" not in candidate
+    assert "shopt -s nullglob" in candidate
+    assert 'wheels=("${evidence_dir}"/dist/*.whl)' in candidate_lines
+    assert 'sdists=("${evidence_dir}"/dist/*.tar.gz)' in candidate_lines
+    assert "if (( ${#wheels[@]} != 1 )); then" in candidate
+    assert "if (( ${#sdists[@]} != 1 )); then" in candidate
+    assert candidate_lines.count("  exit 1") == 2
+
+    metadata_validation = heredoc_block(candidate, "PY_METADATA")
+    assert "zipfile.ZipFile(wheel_path)" in metadata_validation
+    assert 'tarfile.open(sdist_path, "r:*")' in metadata_validation
+    assert 'metadata["Name"]' in metadata_validation
+    assert 'metadata["Version"]' in metadata_validation
+    assert '("localql", expected_version)' in metadata_validation
+
+    smoke_validation = heredoc_block(candidate, "PY_SMOKE")
+    assert "from importlib.metadata import version" in smoke_validation
+    assert 'version("localql")' in smoke_validation
+    assert '"columns": ["order_count"]' in smoke_validation
+    assert '"rows": [{"order_count": 1}]' in smoke_validation
+    assert '"row_count": 1' in smoke_validation
+    assert "observed_result != expected_result" in smoke_validation
+    assert 'cli_version="$(' in candidate
+    assert 'test "${cli_version}" = "${expected_version}"' in candidate_lines
+    assert 'query_json="$(' in candidate
+    assert "query-smoke.json" in candidate
+    assert_ordered(
+        candidate,
+        (
+            '[[ "${release_version}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]',
+            'expected_version="${release_version#v}"',
+            'candidate_oid="$(git rev-parse --verify HEAD^{commit})"',
+            'git cat-file -t "${candidate_oid}"',
+            "git diff --quiet --exit-code --",
+            "git diff --cached --quiet --exit-code --",
+            'initial_status="$(git status --porcelain=v1 --untracked-files=all)"',
+            'test -z "${initial_status}"',
+            'mkdir -- "${evidence_dir}"',
+            "make ci-fresh",
+            "uv build --sdist --wheel",
+            "shopt -s nullglob",
+            'wheels=("${evidence_dir}"/dist/*.whl)',
+            'sdists=("${evidence_dir}"/dist/*.tar.gz)',
+            "if (( ${#wheels[@]} != 1 )); then",
+            "if (( ${#sdists[@]} != 1 )); then",
+            "scripts/audit_package_contents.py",
+            "PY_METADATA",
+            'test "${cli_version}" = "${expected_version}"',
+            '"${smoke_root}/venv/bin/csvql" query',
+            "PY_SMOKE",
+            'test "$(git rev-parse --verify HEAD^{commit})" = "${candidate_oid}"',
+            'final_status="$(git status --porcelain=v1 --untracked-files=all)"',
+            'test -z "${final_status}"',
+        ),
+    )
+    final_head_check = candidate.index(
+        'test "$(git rev-parse --verify HEAD^{commit})" = "${candidate_oid}"'
+    )
+    assert candidate.rfind("git diff --quiet --exit-code --") > final_head_check
+    assert candidate.rfind("git diff --cached --quiet --exit-code --") > final_head_check
+    final_diff = candidate.rfind("git diff --quiet --exit-code --")
+    final_cached_diff = candidate.rfind("git diff --cached --quiet --exit-code --")
+    final_status = candidate.index(
+        'final_status="$(git status --porcelain=v1 --untracked-files=all)"'
+    )
+    final_empty_check = candidate.index('test -z "${final_status}"')
+    assert final_head_check < final_diff < final_cached_diff < final_status < final_empty_check
+
+    def write_wheel(path: Path, version: str) -> None:
+        metadata = f"Metadata-Version: 2.4\nName: localql\nVersion: {version}\n\n"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr(f"localql-{version}.dist-info/METADATA", metadata)
+
+    def write_sdist(path: Path, version: str) -> None:
+        metadata = f"Metadata-Version: 2.4\nName: localql\nVersion: {version}\n\n".encode()
+        member = tarfile.TarInfo(f"localql-{version}/PKG-INFO")
+        member.size = len(metadata)
+        with tarfile.open(path, "w:gz") as archive:
+            archive.addfile(member, io.BytesIO(metadata))
+
+    wheel = tmp_path / "localql.whl"
+    sdist = tmp_path / "localql.tar.gz"
+    write_wheel(wheel, "1.2.3")
+    write_sdist(sdist, "1.2.3")
+    matching_metadata = subprocess.run(
+        [sys.executable, "-c", metadata_validation, "1.2.3", str(wheel), str(sdist)],
+        text=True,
+        capture_output=True,
+    )
+    assert matching_metadata.returncode == 0, matching_metadata.stderr
+
+    write_wheel(wheel, "9.9.9")
+    wheel_mismatch = subprocess.run(
+        [sys.executable, "-c", metadata_validation, "1.2.3", str(wheel), str(sdist)],
+        text=True,
+        capture_output=True,
+    )
+    assert wheel_mismatch.returncode != 0
+
+    write_wheel(wheel, "1.2.3")
+    write_sdist(sdist, "9.9.9")
+    sdist_mismatch = subprocess.run(
+        [sys.executable, "-c", metadata_validation, "1.2.3", str(wheel), str(sdist)],
+        text=True,
+        capture_output=True,
+    )
+    assert sdist_mismatch.returncode != 0
+
+    query_path = tmp_path / "query.json"
+    query_path.write_text(
+        json.dumps(
+            {
+                "columns": ["order_count"],
+                "elapsed_ms": 0.1,
+                "row_count": 1,
+                "rows": [{"order_count": 1}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    current_version = installed_distribution_version("localql")
+    matching_smoke = subprocess.run(
+        [sys.executable, "-c", smoke_validation, current_version, str(query_path)],
+        text=True,
+        capture_output=True,
+    )
+    assert matching_smoke.returncode == 0, matching_smoke.stderr
+
+    version_mismatch = subprocess.run(
+        [sys.executable, "-c", smoke_validation, "0.0.0", str(query_path)],
+        text=True,
+        capture_output=True,
+    )
+    assert version_mismatch.returncode != 0
+
+    query_path.write_text(
+        json.dumps(
+            {
+                "columns": ["wrong_column"],
+                "row_count": 2,
+                "rows": [{"order_count": 2}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    query_mismatch = subprocess.run(
+        [sys.executable, "-c", smoke_validation, current_version, str(query_path)],
+        text=True,
+        capture_output=True,
+    )
+    assert query_mismatch.returncode != 0
+
+
+def test_release_runbook_reconciliation_validates_before_cas() -> None:
+    releasing = read_text("docs/releasing.md")
+    reconciliation = next(
+        block for block in fenced_blocks(releasing, "bash") if "git update-ref" in block
+    )
+
+    reconciliation_lines = reconciliation.splitlines()
+    assert reconciliation_lines[0] == "set -euo pipefail"
+    assert "||" not in reconciliation
+    assert '[[ "${current_local_main_oid}" =~ ${oid_re} ]]' in reconciliation
+    assert '[[ "${verified_public_main_oid}" =~ ${oid_re} ]]' in reconciliation
+    assert 'git cat-file -t "${current_local_main_oid}"' in reconciliation
+    assert 'git cat-file -t "${verified_public_main_oid}"' in reconciliation
+    assert 'git merge-base --is-ancestor "${current_local_main_oid}"' in reconciliation
+    assert "git for-each-ref --format='%(worktreepath)' refs/heads/main" in reconciliation
+    for critical_line in (
+        '[[ "${current_local_main_oid}" =~ ${oid_re} ]]',
+        '[[ "${verified_public_main_oid}" =~ ${oid_re} ]]',
+        'test "$(git cat-file -t "${current_local_main_oid}")" = "commit"',
+        'test "$(git cat-file -t "${verified_public_main_oid}")" = "commit"',
+        'test "$(git rev-parse --verify refs/heads/main)" = "${current_local_main_oid}"',
+        'test -z "${main_worktree_path}"',
+    ):
+        assert reconciliation_lines.count(critical_line) == 1
+    origin_index = reconciliation_lines.index(
+        'test "$(git rev-parse --verify refs/remotes/origin/main)" = \\'
+    )
+    assert reconciliation_lines[origin_index : origin_index + 2] == [
+        'test "$(git rev-parse --verify refs/remotes/origin/main)" = \\',
+        '  "${verified_public_main_oid}"',
+    ]
+    ancestry_index = reconciliation_lines.index(
+        'git merge-base --is-ancestor "${current_local_main_oid}" \\'
+    )
+    assert reconciliation_lines[ancestry_index : ancestry_index + 2] == [
+        'git merge-base --is-ancestor "${current_local_main_oid}" \\',
+        '  "${verified_public_main_oid}"',
+    ]
+    worktree_index = reconciliation_lines.index('main_worktree_path="$(')
+    assert reconciliation_lines[worktree_index : worktree_index + 3] == [
+        'main_worktree_path="$(',
+        "  git for-each-ref --format='%(worktreepath)' refs/heads/main",
+        ')"',
+    ]
+    assert_ordered(
+        reconciliation,
+        (
+            'current_local_main_oid="CURRENT_LOCAL_MAIN_OID"',
+            'verified_public_main_oid="VERIFIED_PUBLIC_MAIN_OID"',
+            '[[ "${current_local_main_oid}" =~ ${oid_re} ]]',
+            '[[ "${verified_public_main_oid}" =~ ${oid_re} ]]',
+            'git cat-file -t "${current_local_main_oid}"',
+            'git cat-file -t "${verified_public_main_oid}"',
+            "git rev-parse --verify refs/heads/main",
+            "git rev-parse --verify refs/remotes/origin/main",
+            'git merge-base --is-ancestor "${current_local_main_oid}"',
+            "git for-each-ref --format='%(worktreepath)' refs/heads/main",
+            "git update-ref refs/heads/main",
+        ),
+    )
+    update_index = reconciliation_lines.index("git update-ref refs/heads/main \\")
+    assert reconciliation_lines[update_index : update_index + 3] == [
+        "git update-ref refs/heads/main \\",
+        '  "${verified_public_main_oid}" \\',
+        '  "${current_local_main_oid}"',
+    ]
 
 
 def test_public_agents_file_does_not_restore_internal_launch_material() -> None:
@@ -88,6 +472,7 @@ def test_github_templates_exist() -> None:
 
 def test_contribution_surfaces_preserve_v1_scope_and_allow_approved_roadmap_work() -> None:
     contributing = read_text("CONTRIBUTING.md")
+    normalized_contributing = normalized_markdown(contributing)
     feature_request = read_text(".github/ISSUE_TEMPLATE/feature_request.yml")
     pull_request = read_text(".github/pull_request_template.md")
 
@@ -98,6 +483,9 @@ def test_contribution_surfaces_preserve_v1_scope_and_allow_approved_roadmap_work
     assert "make ci" in contributing
     assert "make ci-fresh" in contributing
     assert "make ci-fresh" in pull_request
+    assert "conventional commit-style subjects" in contributing
+    assert "docs: update terminal menu guide" in normalized_contributing
+    assert "fix: restore recalled TUI result export" in normalized_contributing
 
 
 def test_make_targets_separate_sync_from_current_environment_checks() -> None:

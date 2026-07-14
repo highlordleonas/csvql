@@ -69,6 +69,23 @@ iteration, then run the appropriate complete gate.
 Do not commit, tag, publish, deploy, change release controls, or write to remote
 systems unless the user explicitly authorizes that action for the current task.
 
+## Public Git And Release Safety
+
+Local `main` mirrors live public `main`; do not develop on it. Maintainer
+feature, fix, docs, and release branches remain local by default. The canonical
+public remote is fetch-only during ordinary work.
+
+A public push, pull-request merge, version tag, GitHub Release, and PyPI
+publication each require separate explicit approval for that exact transition.
+Use the installed exact-operation push guard; direct public `main` pushes,
+force-pushes, tag updates, and ref deletions are prohibited. Public `main`
+changes only through a pull request with required CI.
+
+Follow `docs/releasing.md`. Passing checks makes a change eligible for the next
+approval; it never authorizes that transition. Keep every release state local,
+public-on-GitHub, tagged, published-to-PyPI, and announced as a GitHub Release
+distinct in reports.
+
 ## Documentation And Handoff
 
 Public installed-user examples use `csvql ...`. Source-checkout development

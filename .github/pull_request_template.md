@@ -10,4 +10,9 @@
 
 - [ ] `make ci-fresh`
 
+## Public release boundary
+
+- [ ] I understand that merging publishes code to public `main` but does not authorize a version tag, GitHub Release, or PyPI publication.
+- [ ] Any release-bound change names the exact version and has its own approval and verification record.
+
 ## Notes
