@@ -96,14 +96,15 @@ def bash_executable(
     if resolved_git is None:
         raise FileNotFoundError("Git for Windows is required to validate Bash examples")
     git_path = Path(resolved_git)
-    for candidate in (git_path.with_name("bash.exe"), git_path.parent.parent / "bin" / "bash.exe"):
+    for parent in git_path.parents[:3]:
+        candidate = parent / "bin" / "bash.exe"
         if candidate.is_file():
             return str(candidate)
     raise FileNotFoundError("Git for Windows bash.exe was not found")
 
 
-def test_windows_bash_syntax_uses_git_for_windows_installation(tmp_path: Path) -> None:
-    git_executable = tmp_path / "Git" / "cmd" / "git.exe"
+def test_windows_bash_syntax_finds_bash_from_nested_git_executable(tmp_path: Path) -> None:
+    git_executable = tmp_path / "Git" / "mingw64" / "bin" / "git.exe"
     expected_bash = tmp_path / "Git" / "bin" / "bash.exe"
     git_executable.parent.mkdir(parents=True)
     expected_bash.parent.mkdir(parents=True)

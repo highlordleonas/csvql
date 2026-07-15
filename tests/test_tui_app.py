@@ -2291,6 +2291,12 @@ def test_workbench_layout_prioritizes_sources_and_editor(tmp_path: Path) -> None
     assert sql_height == "10"
 
 
+def test_focus_check_returns_false_after_screen_stack_teardown(tmp_path: Path) -> None:
+    app = CSVQLMenuApp(start_dir=tmp_path)
+
+    assert app._is_focused("#history") is False
+
+
 def test_pane_context_updates_with_active_focus(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
     sequence = state.begin_query_run("SELECT 1 AS value")

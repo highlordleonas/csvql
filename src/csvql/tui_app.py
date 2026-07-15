@@ -1959,7 +1959,7 @@ class CSVQLMenuApp(App[None]):
     def _is_focused(self, selector: str) -> bool:
         try:
             return self.focused is self.query_one(selector)
-        except NoMatches:
+        except (NoMatches, ScreenStackError):
             return False
 
     def _select_relative_buffer_result(self, offset: int) -> None:
