@@ -217,6 +217,14 @@ def _sanitized_environment(
     return environment
 
 
+def _identity_change_time_ns(metadata: os.stat_result) -> int:
+    if os.name == "nt":
+        birthtime_ns = getattr(metadata, "st_birthtime_ns", None)
+        if isinstance(birthtime_ns, int):
+            return birthtime_ns
+    return metadata.st_ctime_ns
+
+
 def _metadata_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
     return (
         metadata.st_dev,
@@ -225,7 +233,7 @@ def _metadata_identity(metadata: os.stat_result) -> tuple[int, int, int, int, in
         metadata.st_nlink,
         metadata.st_size,
         metadata.st_mtime_ns,
-        metadata.st_ctime_ns,
+        _identity_change_time_ns(metadata),
     )
 
 

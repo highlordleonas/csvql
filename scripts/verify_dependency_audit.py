@@ -189,6 +189,14 @@ def _directory_identity(metadata: os.stat_result) -> DirectoryIdentity:
     return metadata.st_dev, metadata.st_ino, stat.S_IFMT(metadata.st_mode)
 
 
+def _identity_change_time_ns(metadata: os.stat_result) -> int:
+    if os.name == "nt":
+        birthtime_ns = getattr(metadata, "st_birthtime_ns", None)
+        if isinstance(birthtime_ns, int):
+            return birthtime_ns
+    return metadata.st_ctime_ns
+
+
 def _file_identity(metadata: os.stat_result) -> PathIdentity:
     return (
         metadata.st_dev,
@@ -197,7 +205,7 @@ def _file_identity(metadata: os.stat_result) -> PathIdentity:
         metadata.st_nlink,
         metadata.st_size,
         metadata.st_mtime_ns,
-        metadata.st_ctime_ns,
+        _identity_change_time_ns(metadata),
     )
 
 

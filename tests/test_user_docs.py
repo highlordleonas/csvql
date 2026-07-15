@@ -83,6 +83,14 @@ EXCLUDED_INTERNAL_DOCS = {
 }
 
 
+def bash_executable(*, platform_name: str = os.name) -> str:
+    return "gitbash.exe" if platform_name == "nt" else "bash"
+
+
+def test_windows_bash_syntax_uses_git_bash_alias() -> None:
+    assert bash_executable(platform_name="nt") == "gitbash.exe"
+
+
 def tracked_markdown_paths() -> tuple[str, ...]:
     completed = subprocess.run(
         ["git", "-C", str(REPO_ROOT), "ls-files", "--", "*.md"],
@@ -310,7 +318,7 @@ def test_fenced_blocks_support_tilde_fences() -> None:
 
     assert fenced_blocks(document, "bash") == ("echo ready",)
     subprocess.run(
-        ["bash", "-n", "-c", fenced_blocks(document, "bash")[0]],
+        [bash_executable(), "-n", "-c", fenced_blocks(document, "bash")[0]],
         check=True,
         capture_output=True,
     )
@@ -385,7 +393,7 @@ def test_public_bash_fences_are_syntactically_valid() -> None:
     for path in PUBLIC_RENDERED_DOCS:
         for block in fenced_blocks(read_doc(path), "bash"):
             subprocess.run(
-                ["bash", "-n", "-c", block],
+                [bash_executable(), "-n", "-c", block],
                 check=True,
                 capture_output=True,
             )

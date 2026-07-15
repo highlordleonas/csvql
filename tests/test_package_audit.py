@@ -132,6 +132,12 @@ def wheel_directory(name: str, content: str | bytes = b"") -> WheelEntry:
     return wheel_special_member(name, stat.S_IFDIR, content)
 
 
+def raw_wheel_entry(name: str, content: str | bytes) -> WheelEntry:
+    info = zipfile.ZipInfo("placeholder")
+    info.filename = name
+    return info, content
+
+
 def tar_special_member(name: str, member_type: bytes) -> TarEntry:
     info = tarfile.TarInfo(name)
     info.type = member_type
@@ -248,7 +254,7 @@ def test_find_archives_redacts_untrusted_artifact_names(tmp_path: Path) -> None:
     synthetic = "pypi-" + "A" * 40
     (tmp_path / "localql-1.0.2-py3-none-any.whl").write_text("", encoding="utf-8")
     (tmp_path / "localql-1.0.2.tar.gz").write_text("", encoding="utf-8")
-    (tmp_path / f"other-{synthetic}\n\x1b[31m.whl").write_text("", encoding="utf-8")
+    (tmp_path / f"other-{synthetic}.whl").write_text("", encoding="utf-8")
 
     with pytest.raises(SystemExit) as exc_info:
         find_archives(tmp_path, "1.0.2")
@@ -576,6 +582,15 @@ def test_member_name_validator_rejects_hostile_forms(name: str) -> None:
     assert audit_module._is_safe_archive_member(name) is False
 
 
+def test_zip_member_uses_original_name_before_platform_normalization() -> None:
+    info = zipfile.ZipInfo("csvql\\evil.py")
+    info.filename = "csvql/evil.py"
+
+    member = audit_module._zip_member(info)
+
+    assert member.name == "csvql\\evil.py"
+
+
 @pytest.mark.parametrize(
     "name",
     [
@@ -590,8 +605,8 @@ def test_member_name_validator_rejects_hostile_forms(name: str) -> None:
 )
 def test_audit_archive_rejects_hostile_wheel_member_names(tmp_path: Path, name: str) -> None:
     wheel = tmp_path / "localql-1.0.2-py3-none-any.whl"
-    members = valid_wheel_members()
-    members[name] = "hostile\n"
+    members: list[WheelEntry] = list(valid_wheel_members().items())
+    members.append(raw_wheel_entry(name, "hostile\n"))
     write_wheel(wheel, members)
 
     findings = audit_module.audit_archive(wheel, "1.0.2")

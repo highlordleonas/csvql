@@ -239,7 +239,7 @@ def _zip_member(info: zipfile.ZipInfo) -> ArchiveMember:
         metadata_agrees = filename_is_directory == unix_is_directory
         is_directory = metadata_agrees and unix_is_directory
         is_regular = metadata_agrees and file_type == stat.S_IFREG
-    return ArchiveMember(info.filename, info.file_size, is_regular, is_directory)
+    return ArchiveMember(info.orig_filename, info.file_size, is_regular, is_directory)
 
 
 def _tar_member(info: tarfile.TarInfo) -> ArchiveMember:

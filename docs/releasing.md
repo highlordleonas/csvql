@@ -237,6 +237,8 @@ test_merge_oid: <40-character lowercase commit OID>
 ci_workflow_id: <positive integer>
 ci_run_id: <positive integer>
 ci_run_attempt: <positive integer>
+ci_check_suite_id: <positive integer>
+ci_actions_integration_id: <positive integer>
 expected_job_names:
   - test (ubuntu-latest, 3.11)
   - test (ubuntu-latest, 3.12)
@@ -247,11 +249,18 @@ expected_job_names:
 ```
 
 Accept the run only when the workflow identity is `.github/workflows/ci.yml`,
-all six exact jobs completed successfully on the recorded attempt, and the
-recorded `test_merge_oid` is GitHub's pull-request test-merge commit derived
-from the recorded public_main_base_oid and candidate_head_oid. The pull
-request base and head, both ordered test-merge parents, the pull-request merge
-ref, and the CI run head must all agree with those recorded objects.
+the event is `pull_request`, and all six exact jobs completed successfully on
+the recorded attempt. The CI run and check-suite head SHA must equal
+candidate_head_oid; the recorded check suite must own all six exact check
+runs through the recorded GitHub Actions integration ID.
+
+Separately require `test_merge_oid` to be GitHub's current pull-request
+test-merge commit derived from the recorded public_main_base_oid and
+candidate_head_oid. The pull-request base and head, both ordered test-merge
+parents, and the pull-request merge ref must agree with those recorded objects.
+Every job's `Verify pull request test merge` step must succeed; that step binds
+the checked-out commit and its ordered parents to the pull-request event even
+though GitHub attaches the run and check suite to the candidate head SHA.
 
 This is read-only evidence and does not authorize a branch update, pull request
 update, merge, tag, publication, or any other hosted write. Any mismatch stops

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
@@ -53,6 +54,14 @@ def assert_ordered(document: str, phrases: tuple[str, ...]) -> None:
     for phrase in phrases:
         cursor = document.find(phrase, cursor + 1)
         assert cursor >= 0, phrase
+
+
+def bash_executable(*, platform_name: str = os.name) -> str:
+    return "gitbash.exe" if platform_name == "nt" else "bash"
+
+
+def test_windows_bash_syntax_uses_git_bash_alias() -> None:
+    assert bash_executable(platform_name="nt") == "gitbash.exe"
 
 
 def test_open_source_trust_files_exist() -> None:
@@ -155,7 +164,7 @@ def test_release_runbook_examples_are_machine_valid_without_pushing() -> None:
 
     for block in bash_blocks:
         subprocess.run(
-            ["bash", "-n", "-c", block],
+            [bash_executable(), "-n", "-c", block],
             check=True,
             capture_output=True,
         )
@@ -386,6 +395,8 @@ def test_release_runbook_binds_hosted_readiness_to_exact_pr_test_merge() -> None
             "ci_workflow_id",
             "ci_run_id",
             "ci_run_attempt",
+            "ci_check_suite_id",
+            "ci_actions_integration_id",
             "expected_job_names",
         ),
     )
@@ -409,6 +420,32 @@ def test_release_runbook_binds_hosted_readiness_to_exact_pr_test_merge() -> None
         "publication",
     ):
         assert phrase in normalized
+    normalized_lower = normalized.lower()
+    assert "ci run and check-suite head sha must equal candidate_head_oid" in normalized_lower
+    assert "verify pull request test merge" in normalized_lower
+
+
+def test_ci_asserts_every_pull_request_job_uses_the_exact_test_merge() -> None:
+    payload = yaml.safe_load(read_text(".github/workflows/ci.yml"))
+    steps = payload["jobs"]["test"]["steps"]
+    step_names = [step.get("name") for step in steps]
+    assertion_index = step_names.index("Verify pull request test merge")
+    baseline_index = step_names.index("Baseline truth")
+    assertion = steps[assertion_index]
+
+    assert assertion_index < baseline_index
+    assert assertion["if"] == "github.event_name == 'pull_request'"
+    assert assertion["env"] == {
+        "PR_BASE_OID": "${{ github.event.pull_request.base.sha }}",
+        "PR_HEAD_OID": "${{ github.event.pull_request.head.sha }}",
+        "PR_TEST_MERGE_OID": "${{ github.sha }}",
+    }
+    assert assertion["run"] == (
+        "set -euo pipefail\n"
+        'test "$(git rev-parse --verify HEAD^{commit})" = "${PR_TEST_MERGE_OID}"\n'
+        'test "$(git rev-parse --verify HEAD^1)" = "${PR_BASE_OID}"\n'
+        'test "$(git rev-parse --verify HEAD^2)" = "${PR_HEAD_OID}"\n'
+    )
 
 
 def test_release_runbook_reconciliation_validates_before_cas() -> None:

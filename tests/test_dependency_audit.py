@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
 from subprocess import CalledProcessError, CompletedProcess, TimeoutExpired
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -40,6 +41,25 @@ TUI_AUDIT = {
     "fixes": [],
 }
 FIXED_TIME = datetime(2026, 7, 15, 12, 34, 56, 123456, tzinfo=timezone.utc)  # noqa: UP017
+
+
+def test_windows_file_identity_uses_birthtime_instead_of_deprecated_ctime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared = {
+        "st_dev": 1,
+        "st_ino": 2,
+        "st_mode": stat.S_IFREG | 0o600,
+        "st_nlink": 1,
+        "st_size": 3,
+        "st_mtime_ns": 4,
+        "st_birthtime_ns": 5,
+    }
+    path_metadata = SimpleNamespace(**shared, st_ctime_ns=6)
+    descriptor_metadata = SimpleNamespace(**shared, st_ctime_ns=7)
+    monkeypatch.setattr(verifier.os, "name", "nt")
+
+    assert verifier._file_identity(path_metadata) == verifier._file_identity(descriptor_metadata)
 
 
 def _hashed_requirement(requirement: str, hash_character: str = "c") -> str:

@@ -12,6 +12,7 @@ import traceback
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from subprocess import CalledProcessError, CompletedProcess, TimeoutExpired
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -79,6 +80,29 @@ EXPECTED_INHERITED_ENVIRONMENT_NAMES = {
     "USERPROFILE",
     "WINDIR",
 }
+
+
+def test_windows_metadata_identity_uses_birthtime_instead_of_deprecated_ctime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared = {
+        "st_dev": 1,
+        "st_ino": 2,
+        "st_mode": 0o100600,
+        "st_nlink": 1,
+        "st_size": 3,
+        "st_mtime_ns": 4,
+        "st_birthtime_ns": 5,
+    }
+    path_metadata = SimpleNamespace(**shared, st_ctime_ns=6)
+    descriptor_metadata = SimpleNamespace(**shared, st_ctime_ns=7)
+    monkeypatch.setattr(verifier.os, "name", "nt")
+
+    assert verifier._metadata_identity(path_metadata) == verifier._metadata_identity(
+        descriptor_metadata
+    )
+
+
 EXPECTED_EXPLICIT_ENVIRONMENT = {
     "PIP_CONFIG_FILE": os.devnull,
     "PIP_DISABLE_PIP_VERSION_CHECK": "1",

@@ -49,6 +49,17 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
         run: uv sync --all-extras --frozen
+      - name: Verify pull request test merge
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BASE_OID: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_OID: ${{ github.event.pull_request.head.sha }}
+          PR_TEST_MERGE_OID: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD^{commit})" = "${PR_TEST_MERGE_OID}"
+          test "$(git rev-parse --verify HEAD^1)" = "${PR_BASE_OID}"
+          test "$(git rev-parse --verify HEAD^2)" = "${PR_HEAD_OID}"
       - name: Baseline truth
         run: |
           pwd -P
