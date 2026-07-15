@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -36,6 +37,10 @@ TUI_AUDIT = {
     "fixes": [],
 }
 FIXED_TIME = datetime(2026, 7, 15, 12, 34, 56, 123456, tzinfo=timezone.utc)  # noqa: UP017
+
+
+def _hashed_requirement(requirement: str, hash_character: str = "c") -> str:
+    return f"{requirement} \\\n    --hash=sha256:{hash_character * 64}\n"
 
 
 class RecordingRunner:
@@ -121,6 +126,10 @@ class RecordingRunner:
 
 def _fixed_now() -> datetime:
     return FIXED_TIME
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _verify(tmp_path: Path, runner: RecordingRunner) -> tuple[tuple[Path, Path], Path]:
@@ -209,7 +218,8 @@ def test_success_writes_validated_manifest_and_combined_raw_log(tmp_path: Path) 
         evidence_dir / "core-pip-audit.json",
         evidence_dir / "tui-pip-audit.json",
     )
-    assert json.loads((evidence_dir / "manifest.json").read_text(encoding="utf-8")) == {
+    manifest = json.loads((evidence_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest == {
         "audit_tool": "pip-audit==2.10.1",
         "observed_at": "2026-07-15T12:34:56.123456+00:00",
         "paths": {
@@ -221,6 +231,14 @@ def test_success_writes_validated_manifest_and_combined_raw_log(tmp_path: Path) 
                 "requirements": "tui-requirements.txt",
                 "result": "tui-pip-audit.json",
             },
+        },
+        "sha256": {
+            "core-pip-audit.json": _sha256(evidence_dir / "core-pip-audit.json"),
+            "core-requirements.txt": _sha256(evidence_dir / "core-requirements.txt"),
+            "pip-audit.log": _sha256(evidence_dir / "pip-audit.log"),
+            "tui-pip-audit.json": _sha256(evidence_dir / "tui-pip-audit.json"),
+            "tui-requirements.txt": _sha256(evidence_dir / "tui-requirements.txt"),
+            "uv.lock": _sha256(REPO_ROOT / "uv.lock"),
         },
     }
     combined_log = (evidence_dir / "pip-audit.log").read_text(encoding="utf-8")
@@ -567,3 +585,545 @@ def test_missing_frozen_lock_is_rejected_before_any_command(
         )
 
     assert runner.calls == []
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (
+            [{"name": "alpha", "version": "1.0", "vulns": []}],
+            "JSON object",
+        ),
+        (
+            {"dependencies": [{"name": "alpha", "version": "1.0", "vulns": []}]},
+            "dependencies and fixes",
+        ),
+        (
+            {
+                "dependencies": [{"name": "alpha", "version": "1.0", "vulns": []}],
+                "fixes": [],
+                "unexpected": [],
+            },
+            "dependencies and fixes",
+        ),
+        (
+            {
+                "dependencies": [
+                    {
+                        "name": "alpha",
+                        "version": "1.0",
+                        "vulns": [],
+                        "skip_reason": "package could not be audited",
+                    }
+                ],
+                "fixes": [],
+            },
+            "skip reason",
+        ),
+        (
+            {
+                "dependencies": [
+                    {"name": "alpha", "version": "1.0", "vulns": []},
+                    {"name": "alpha", "version": "1.0", "vulns": []},
+                ],
+                "fixes": [],
+            },
+            "duplicate",
+        ),
+        (
+            {"dependencies": [{"name": "alpha", "vulns": []}], "fixes": []},
+            "version",
+        ),
+        (
+            {
+                "dependencies": [
+                    {"name": "alpha", "version": "1.0", "vulns": [{"id": "CVE-test"}]}
+                ],
+                "fixes": [],
+            },
+            "vulnerabilities",
+        ),
+        (
+            {
+                "dependencies": [{"name": "alpha", "version": "1.0", "vulns": []}],
+                "fixes": [{"name": "alpha", "version": "1.1"}],
+            },
+            "fixes",
+        ),
+    ],
+)
+def test_core_audit_requires_exact_pip_audit_json_object(
+    tmp_path: Path,
+    payload: object,
+    message: str,
+) -> None:
+    def replace_core_audit(call_index: int, output_path: Path) -> None:
+        if call_index == 2:
+            output_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    runner = RecordingRunner(mutate_output=replace_core_audit)
+    evidence_dir = tmp_path / "dependency-audit"
+
+    with pytest.raises(verifier.DependencyAuditError, match=message):
+        verifier.verify_dependency_audit(evidence_dir, run_command=runner, now=_fixed_now)
+
+    assert not (evidence_dir / "manifest.json").exists()
+
+
+def test_empty_skip_reason_remains_valid_pip_audit_evidence(tmp_path: Path) -> None:
+    def add_empty_skip_reason(call_index: int, output_path: Path) -> None:
+        if call_index == 2:
+            payload = json.loads(json.dumps(CORE_AUDIT))
+            payload["dependencies"][0]["skip_reason"] = ""
+            output_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result_paths, evidence_dir = _verify(
+        tmp_path,
+        RecordingRunner(mutate_output=add_empty_skip_reason),
+    )
+
+    assert result_paths[0] == evidence_dir / "core-pip-audit.json"
+    assert (evidence_dir / "manifest.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "requirements_text",
+    [
+        "--index-url https://example.invalid/simple \\\n" + f"    --hash=sha256:{'d' * 64}\n",
+        "alpha==1.0\n",
+        _hashed_requirement("alpha>=1.0"),
+        _hashed_requirement("alpha @ https://example.invalid/alpha-1.0.whl"),
+        ("alpha==1.0 \\\n" + f"    --hash=sha256:{'e' * 64} \\\n" + f"    --hash=md5:{'f' * 32}\n"),
+        _hashed_requirement("alpha==1.0") + _hashed_requirement("alpha==1.0"),
+    ],
+)
+def test_requirements_reject_options_unlocked_urls_and_duplicates(
+    tmp_path: Path,
+    requirements_text: str,
+) -> None:
+    def replace_core_requirements(call_index: int, output_path: Path) -> None:
+        if call_index == 0:
+            output_path.write_text(requirements_text, encoding="utf-8")
+
+    evidence_dir = tmp_path / "dependency-audit"
+
+    with pytest.raises(verifier.DependencyAuditError, match="requirements"):
+        verifier.verify_dependency_audit(
+            evidence_dir,
+            run_command=RecordingRunner(mutate_output=replace_core_requirements),
+            now=_fixed_now,
+        )
+
+    assert not (evidence_dir / "manifest.json").exists()
+
+
+def test_active_marker_map_is_evaluated_for_current_platform_and_python_31211(
+    tmp_path: Path,
+) -> None:
+    marker_requirements = _hashed_requirement(
+        f'alpha==1.0 ; python_full_version == "3.12.11" and sys_platform == "{sys.platform}"',
+        "1",
+    ) + _hashed_requirement(
+        'gamma==3.0 ; python_full_version < "3.12"',
+        "3",
+    )
+
+    def replace_marker_evidence(call_index: int, output_path: Path) -> None:
+        if call_index == 0:
+            output_path.write_text(marker_requirements, encoding="utf-8")
+        elif call_index == 2:
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "dependencies": [{"name": "gamma", "version": "3.0", "vulns": []}],
+                        "fixes": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+    evidence_dir = tmp_path / "dependency-audit"
+
+    with pytest.raises(verifier.DependencyAuditError, match="active dependency map"):
+        verifier.verify_dependency_audit(
+            evidence_dir,
+            run_command=RecordingRunner(mutate_output=replace_marker_evidence),
+            now=_fixed_now,
+        )
+
+    assert not (evidence_dir / "manifest.json").exists()
+
+
+def test_audit_version_must_exactly_match_active_pinned_requirement(tmp_path: Path) -> None:
+    def replace_core_version(call_index: int, output_path: Path) -> None:
+        if call_index == 2:
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "dependencies": [{"name": "alpha", "version": "9.9", "vulns": []}],
+                        "fixes": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+    evidence_dir = tmp_path / "dependency-audit"
+
+    with pytest.raises(verifier.DependencyAuditError, match="active dependency map"):
+        verifier.verify_dependency_audit(
+            evidence_dir,
+            run_command=RecordingRunner(mutate_output=replace_core_version),
+            now=_fixed_now,
+        )
+
+    assert not (evidence_dir / "manifest.json").exists()
+
+
+def test_multiple_active_versions_for_one_package_are_rejected(tmp_path: Path) -> None:
+    ambiguous_requirements = _hashed_requirement(
+        'alpha==1.0 ; python_version == "3.12"',
+        "1",
+    ) + _hashed_requirement(
+        f'alpha==2.0 ; sys_platform == "{sys.platform}"',
+        "2",
+    )
+
+    def replace_core_requirements(call_index: int, output_path: Path) -> None:
+        if call_index == 0:
+            output_path.write_text(ambiguous_requirements, encoding="utf-8")
+
+    evidence_dir = tmp_path / "dependency-audit"
+
+    with pytest.raises(verifier.DependencyAuditError, match="multiple active versions"):
+        verifier.verify_dependency_audit(
+            evidence_dir,
+            run_command=RecordingRunner(mutate_output=replace_core_requirements),
+            now=_fixed_now,
+        )
+
+    assert not (evidence_dir / "manifest.json").exists()
+
+
+def _write_fake_repo_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    lockfile = repo_root / "uv.lock"
+    lockfile.write_text("version = 1\nrevision = 1\n", encoding="utf-8")
+    monkeypatch.setattr(verifier, "REPO_ROOT", repo_root)
+    return repo_root, lockfile
+
+
+def test_frozen_lock_must_not_be_a_hardlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    original = tmp_path / "original.lock"
+    original.write_text("version = 1\n", encoding="utf-8")
+    os.link(original, repo_root / "uv.lock")
+    monkeypatch.setattr(verifier, "REPO_ROOT", repo_root)
+    runner = RecordingRunner()
+
+    with pytest.raises(verifier.DependencyAuditError, match="single-link"):
+        verifier.verify_dependency_audit(
+            tmp_path / "dependency-audit",
+            run_command=runner,
+            now=_fixed_now,
+        )
+
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize("mutate_after", range(4))
+def test_lock_mutation_after_each_command_stops_collection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutate_after: int,
+) -> None:
+    _, lockfile = _write_fake_repo_lock(tmp_path, monkeypatch)
+
+    def mutate_lock(call_index: int) -> None:
+        if call_index == mutate_after:
+            lockfile.write_text(
+                f"version = 1\nrevision = {call_index + 2}\n",
+                encoding="utf-8",
+            )
+
+    runner = RecordingRunner(after_call=mutate_lock)
+    evidence_dir = tmp_path / "dependency-audit"
+
+    with pytest.raises(verifier.DependencyAuditError, match=r"uv\.lock changed"):
+        verifier.verify_dependency_audit(evidence_dir, run_command=runner, now=_fixed_now)
+
+    assert len(runner.calls) == mutate_after + 1
+    assert not (evidence_dir / "manifest.json").exists()
+
+
+def test_clock_callback_mutation_precedes_final_digest_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_fake_repo_lock(tmp_path, monkeypatch)
+    evidence_dir = tmp_path / "dependency-audit"
+
+    def mutating_now() -> datetime:
+        (evidence_dir / "core-requirements.txt").write_text(
+            CORE_REQUIREMENTS + "# mutated by clock\n",
+            encoding="utf-8",
+        )
+        return FIXED_TIME
+
+    with pytest.raises(verifier.DependencyAuditError, match="changed before publication"):
+        verifier.verify_dependency_audit(
+            evidence_dir,
+            run_command=RecordingRunner(),
+            now=mutating_now,
+        )
+
+    assert not (evidence_dir / "manifest.json").exists()
+
+
+@pytest.mark.parametrize(
+    "target_name",
+    [
+        "core-requirements.txt",
+        "tui-requirements.txt",
+        "core-pip-audit.json",
+        "tui-pip-audit.json",
+        "pip-audit.log",
+        "uv.lock",
+    ],
+)
+def test_direct_prepublication_mutation_cannot_publish_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_name: str,
+) -> None:
+    repo_root, lockfile = _write_fake_repo_lock(tmp_path, monkeypatch)
+    evidence_dir = tmp_path / "dependency-audit"
+    original_write_manifest = verifier._write_manifest
+
+    def mutating_write_manifest(*args: object, **kwargs: object) -> None:
+        target = lockfile if target_name == "uv.lock" else evidence_dir / target_name
+        target.write_bytes(target.read_bytes() + b"\n")
+        original_write_manifest(*args, **kwargs)
+
+    monkeypatch.setattr(verifier, "_write_manifest", mutating_write_manifest)
+
+    with pytest.raises(verifier.DependencyAuditError, match="changed before publication"):
+        verifier.verify_dependency_audit(
+            evidence_dir,
+            run_command=RecordingRunner(),
+            now=_fixed_now,
+        )
+
+    assert repo_root == verifier.REPO_ROOT
+    assert not (evidence_dir / "manifest.json").exists()
+    assert not tuple(evidence_dir.glob(".manifest.json.*.tmp"))
+
+
+def test_each_run_uses_private_temporary_uv_cache_and_tool_directories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared_cache = tmp_path / "shared-cache"
+    shared_tools = tmp_path / "shared-tools"
+    monkeypatch.setenv("UV_CACHE_DIR", str(shared_cache))
+    monkeypatch.setenv("UV_TOOL_DIR", str(shared_tools))
+    runner = RecordingRunner()
+
+    _verify(tmp_path, runner)
+
+    cache_values = {call["env"].get("UV_CACHE_DIR") for call in runner.calls}
+    tool_values = {call["env"].get("UV_TOOL_DIR") for call in runner.calls}
+    assert None not in cache_values
+    assert None not in tool_values
+    assert len(cache_values) == 1
+    assert len(tool_values) == 1
+    cache_dir = Path(cache_values.pop())
+    tool_dir = Path(tool_values.pop())
+    assert cache_dir != shared_cache
+    assert tool_dir != shared_tools
+    assert cache_dir.parent == tool_dir.parent
+    assert not cache_dir.exists()
+    assert not tool_dir.exists()
+
+
+def test_evidence_leaf_creation_is_relative_to_a_held_parent_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if os.name != "posix":
+        pytest.skip("descriptor-relative mkdir is POSIX-only")
+    real_mkdir = verifier.os.mkdir
+    mkdir_calls: list[tuple[str, int | None]] = []
+
+    def recording_mkdir(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        mkdir_calls.append((os.fsdecode(path), dir_fd))
+        if dir_fd is None:
+            real_mkdir(path, mode)
+        else:
+            real_mkdir(path, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(verifier.os, "mkdir", recording_mkdir)
+    evidence_dir = tmp_path / "dependency-audit"
+
+    verifier.verify_dependency_audit(
+        evidence_dir,
+        run_command=RecordingRunner(),
+        now=_fixed_now,
+    )
+
+    assert any(path == evidence_dir.name and dir_fd is not None for path, dir_fd in mkdir_calls)
+
+
+def test_generated_outputs_are_opened_relative_to_held_evidence_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if os.name != "posix":
+        pytest.skip("descriptor-relative open is POSIX-only")
+    real_open = verifier.os.open
+    open_calls: list[tuple[str, int | None]] = []
+
+    def recording_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        open_calls.append((os.fsdecode(path), dir_fd))
+        if dir_fd is None:
+            return real_open(path, flags, mode)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(verifier.os, "open", recording_open)
+    evidence_dir = tmp_path / "dependency-audit"
+
+    verifier.verify_dependency_audit(
+        evidence_dir,
+        run_command=RecordingRunner(),
+        now=_fixed_now,
+    )
+
+    for filename in (
+        "core-requirements.txt",
+        "tui-requirements.txt",
+        "core-pip-audit.json",
+        "tui-pip-audit.json",
+    ):
+        assert any(path == filename and dir_fd is not None for path, dir_fd in open_calls)
+
+
+def test_log_publication_renames_within_held_evidence_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if os.name != "posix":
+        pytest.skip("descriptor-relative rename is POSIX-only")
+    real_replace = verifier.os.replace
+    replace_calls: list[tuple[str, str, int | None, int | None]] = []
+
+    def recording_replace(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        replace_calls.append(
+            (os.fsdecode(source), os.fsdecode(destination), src_dir_fd, dst_dir_fd)
+        )
+        if src_dir_fd is None and dst_dir_fd is None:
+            real_replace(source, destination)
+        else:
+            real_replace(
+                source,
+                destination,
+                src_dir_fd=src_dir_fd,
+                dst_dir_fd=dst_dir_fd,
+            )
+
+    monkeypatch.setattr(verifier.os, "replace", recording_replace)
+
+    _verify(tmp_path, RecordingRunner())
+
+    assert any(
+        destination == "pip-audit.log" and src_dir_fd is not None and src_dir_fd == dst_dir_fd
+        for _, destination, src_dir_fd, dst_dir_fd in replace_calls
+    )
+
+
+def test_parent_swap_during_exclusive_leaf_creation_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if os.name != "posix":
+        pytest.skip("descriptor-relative creation race is POSIX-only")
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    moved_parent = tmp_path / "moved-parent"
+    evidence_dir = parent / "dependency-audit"
+    real_mkdir = verifier.os.mkdir
+    did_swap = False
+
+    def racing_mkdir(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        nonlocal did_swap
+        path_text = os.fsdecode(path)
+        is_target = (dir_fd is None and Path(path_text) == evidence_dir) or (
+            dir_fd is not None and path_text == evidence_dir.name
+        )
+        if is_target and not did_swap:
+            parent.rename(moved_parent)
+            real_mkdir(parent)
+            did_swap = True
+        if dir_fd is None:
+            real_mkdir(path, mode)
+        else:
+            real_mkdir(path, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(verifier.os, "mkdir", racing_mkdir)
+    runner = RecordingRunner()
+
+    with pytest.raises(verifier.DependencyAuditError, match="changed during creation"):
+        verifier.verify_dependency_audit(evidence_dir, run_command=runner, now=_fixed_now)
+
+    assert did_swap is True
+    assert runner.calls == []
+    assert not (parent / "dependency-audit" / "manifest.json").exists()
+    assert not (moved_parent / "dependency-audit" / "manifest.json").exists()
+
+
+def test_evidence_leaf_swap_during_command_fails_without_external_success_evidence(
+    tmp_path: Path,
+) -> None:
+    evidence_dir = tmp_path / "dependency-audit"
+    moved_evidence = tmp_path / "moved-evidence"
+    external = tmp_path / "external"
+    external.mkdir()
+
+    def swap_evidence_leaf(call_index: int) -> None:
+        if call_index == 0:
+            evidence_dir.rename(moved_evidence)
+            evidence_dir.symlink_to(external, target_is_directory=True)
+
+    runner = RecordingRunner(after_call=swap_evidence_leaf)
+
+    with pytest.raises(verifier.DependencyAuditError, match="changed during collection"):
+        verifier.verify_dependency_audit(evidence_dir, run_command=runner, now=_fixed_now)
+
+    assert len(runner.calls) == 1
+    assert not (external / "manifest.json").exists()
+    assert not (moved_evidence / "manifest.json").exists()

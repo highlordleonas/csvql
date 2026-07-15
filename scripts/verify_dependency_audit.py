@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 import subprocess
 import tempfile
@@ -16,9 +17,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from subprocess import CalledProcessError, CompletedProcess, TimeoutExpired
 
+from packaging.markers import UndefinedComparison, UndefinedEnvironmentName, default_environment
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
+
 AUDIT_TOOL = "pip-audit==2.10.1"
 COMMAND_TIMEOUT_SECONDS = 300.0
+REQUIRED_PYTHON_VERSION = "3.12.11"
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DESCRIPTOR_RELATIVE_IO = os.name == "posix"
 INHERITED_ENVIRONMENT_ALLOWLIST = frozenset(
     {
         "COMSPEC",
@@ -50,8 +57,14 @@ COMMAND_ROLES = (
     "audit locked core requirements",
     "audit locked TUI requirements",
 )
-HASH_PATTERN = re.compile(r"(?:^|\s)--hash=sha256:[0-9a-fA-F]{64}(?=$|\s)")
-PACKAGE_NAME_PATTERN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)")
+GENERATED_FILENAMES = (
+    "core-requirements.txt",
+    "tui-requirements.txt",
+    "core-pip-audit.json",
+    "tui-pip-audit.json",
+)
+HASH_OPTION_PATTERN = re.compile(r"(?<!\S)--hash=([^\s]+)")
+SHA256_HASH_PATTERN = re.compile(r"sha256:[0-9a-fA-F]{64}")
 
 RunCommand = Callable[..., CompletedProcess[str]]
 Clock = Callable[[], datetime]
@@ -65,18 +78,31 @@ class DependencyAuditError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class PreparedEvidenceDirectory:
-    """Exclusive evidence directory and its non-symlink path-chain identities."""
+    """Exclusive evidence directory held through parent and leaf descriptors."""
 
     path: Path
-    identities: tuple[tuple[Path, DirectoryIdentity], ...]
+    parent_descriptor: int
+    evidence_descriptor: int
+    parent_identity: DirectoryIdentity
+    evidence_identity: DirectoryIdentity
+    path_identities: tuple[tuple[Path, DirectoryIdentity], ...]
 
 
 @dataclass(frozen=True, slots=True)
-class RequirementNames:
-    """Package names encoded by a hash-locked requirement export."""
+class FrozenLockSnapshot:
+    """Identity and digest of the exact frozen lock used by every command."""
 
-    all_names: frozenset[str]
-    unconditional_names: frozenset[str]
+    path: Path
+    identity: PathIdentity
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceSnapshot:
+    """Digests that must still match immediately before manifest publication."""
+
+    digests: tuple[tuple[str, str], ...]
+    lock: FrozenLockSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,16 +197,52 @@ def _file_identity(metadata: os.stat_result) -> PathIdentity:
     )
 
 
-def _validate_frozen_lock() -> None:
-    lockfile = REPO_ROOT / "uv.lock"
+def _directory_open_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+
+def _regular_file_open_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+
+def _validate_parent_chain(candidate: Path) -> None:
+    for parent in candidate.parents:
+        try:
+            parent_metadata = parent.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise DependencyAuditError("evidence directory parent could not be inspected") from None
+        if stat.S_ISLNK(parent_metadata.st_mode):
+            raise DependencyAuditError("evidence directory parent must not be a symlink")
+        if not stat.S_ISDIR(parent_metadata.st_mode):
+            raise DependencyAuditError("evidence directory parent must be a directory")
+
+
+def _open_parent_directory(path: Path) -> int:
     try:
-        metadata = lockfile.lstat()
+        return os.open(path, _directory_open_flags())
     except OSError:
-        raise DependencyAuditError("repo uv.lock must be a nonempty regular file") from None
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise DependencyAuditError("repo uv.lock must be a nonempty regular file")
-    if metadata.st_size == 0:
-        raise DependencyAuditError("repo uv.lock must be a nonempty regular file")
+        raise DependencyAuditError("evidence directory parent could not be opened safely") from None
+
+
+def _open_evidence_directory(candidate: Path, parent_descriptor: int) -> int:
+    try:
+        if DESCRIPTOR_RELATIVE_IO:
+            return os.open(candidate.name, _directory_open_flags(), dir_fd=parent_descriptor)
+        return os.open(candidate, _directory_open_flags())
+    except OSError:
+        raise DependencyAuditError("evidence directory changed during creation") from None
 
 
 def _prepare_evidence_directory(evidence_dir: Path) -> PreparedEvidenceDirectory:
@@ -196,52 +258,165 @@ def _prepare_evidence_directory(evidence_dir: Path) -> PreparedEvidenceDirectory
     if existing_metadata is not None:
         raise DependencyAuditError("evidence directory must not already exist")
 
-    for parent in candidate.parents:
-        try:
-            parent_metadata = parent.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError:
-            raise DependencyAuditError("evidence directory parent could not be inspected") from None
-        if stat.S_ISLNK(parent_metadata.st_mode):
-            raise DependencyAuditError("evidence directory parent must not be a symlink")
-        if not stat.S_ISDIR(parent_metadata.st_mode):
-            raise DependencyAuditError("evidence directory parent must be a directory")
-
+    _validate_parent_chain(candidate)
     try:
-        candidate.mkdir(mode=0o700, parents=True, exist_ok=False)
-    except FileExistsError:
-        raise DependencyAuditError("evidence directory must not already exist") from None
+        candidate.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     except OSError:
-        raise DependencyAuditError("evidence directory could not be created") from None
+        raise DependencyAuditError("evidence directory parent could not be created") from None
+    _validate_parent_chain(candidate)
 
-    identities: list[tuple[Path, DirectoryIdentity]] = []
-    for component in (candidate, *candidate.parents):
+    parent_descriptor = _open_parent_directory(candidate.parent)
+    evidence_descriptor: int | None = None
+    try:
+        parent_metadata = os.fstat(parent_descriptor)
+        try:
+            parent_path_metadata = candidate.parent.lstat()
+        except OSError:
+            raise DependencyAuditError("evidence directory changed during creation") from None
+        if _directory_identity(parent_metadata) != _directory_identity(parent_path_metadata):
+            raise DependencyAuditError("evidence directory changed during creation")
+
+        try:
+            if DESCRIPTOR_RELATIVE_IO:
+                os.mkdir(candidate.name, mode=0o700, dir_fd=parent_descriptor)
+            else:
+                candidate.mkdir(mode=0o700, parents=False, exist_ok=False)
+        except FileExistsError:
+            raise DependencyAuditError("evidence directory must not already exist") from None
+        except OSError:
+            raise DependencyAuditError("evidence directory could not be created") from None
+
+        evidence_descriptor = _open_evidence_directory(candidate, parent_descriptor)
+        evidence_metadata = os.fstat(evidence_descriptor)
+        path_identities: list[tuple[Path, DirectoryIdentity]] = []
+        for component in (candidate, *candidate.parents):
+            try:
+                metadata = component.lstat()
+            except OSError:
+                raise DependencyAuditError("evidence directory changed during creation") from None
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise DependencyAuditError("evidence directory changed during creation")
+            path_identities.append((component, _directory_identity(metadata)))
+        if _directory_identity(parent_metadata) != path_identities[1][1]:
+            raise DependencyAuditError("evidence directory changed during creation")
+        if _directory_identity(evidence_metadata) != path_identities[0][1]:
+            raise DependencyAuditError("evidence directory changed during creation")
+        return PreparedEvidenceDirectory(
+            path=candidate,
+            parent_descriptor=parent_descriptor,
+            evidence_descriptor=evidence_descriptor,
+            parent_identity=_directory_identity(parent_metadata),
+            evidence_identity=_directory_identity(evidence_metadata),
+            path_identities=tuple(path_identities),
+        )
+    except BaseException:
+        if evidence_descriptor is not None:
+            os.close(evidence_descriptor)
+        os.close(parent_descriptor)
+        raise
+
+
+def _close_evidence_directory(prepared: PreparedEvidenceDirectory) -> None:
+    os.close(prepared.evidence_descriptor)
+    os.close(prepared.parent_descriptor)
+
+
+def _require_prepared_directory(
+    prepared: PreparedEvidenceDirectory,
+    *,
+    phase: str = "collection",
+) -> None:
+    try:
+        parent_metadata = os.fstat(prepared.parent_descriptor)
+        evidence_metadata = os.fstat(prepared.evidence_descriptor)
+    except OSError:
+        raise DependencyAuditError(f"evidence directory path changed during {phase}") from None
+    if _directory_identity(parent_metadata) != prepared.parent_identity:
+        raise DependencyAuditError(f"evidence directory path changed during {phase}")
+    if _directory_identity(evidence_metadata) != prepared.evidence_identity:
+        raise DependencyAuditError(f"evidence directory path changed during {phase}")
+    for component, expected_identity in prepared.path_identities:
         try:
             metadata = component.lstat()
         except OSError:
-            raise DependencyAuditError("evidence directory path changed during creation") from None
+            raise DependencyAuditError(f"evidence directory path changed during {phase}") from None
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            raise DependencyAuditError("evidence directory path changed during creation")
-        identities.append((component, _directory_identity(metadata)))
-    return PreparedEvidenceDirectory(candidate, tuple(identities))
-
-
-def _require_prepared_directory(prepared: PreparedEvidenceDirectory) -> None:
-    for component, expected_identity in prepared.identities:
-        try:
-            metadata = component.lstat()
-        except OSError:
-            raise DependencyAuditError(
-                "evidence directory path changed during collection"
-            ) from None
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            raise DependencyAuditError("evidence directory path changed during collection")
+            raise DependencyAuditError(f"evidence directory path changed during {phase}")
         if _directory_identity(metadata) != expected_identity:
-            raise DependencyAuditError("evidence directory path changed during collection")
+            raise DependencyAuditError(f"evidence directory path changed during {phase}")
 
 
-def _sanitized_environment() -> dict[str, str]:
+def _read_descriptor(file_descriptor: int, *, role: str) -> bytes:
+    chunks: list[bytes] = []
+    try:
+        while chunk := os.read(file_descriptor, 1024 * 1024):
+            chunks.append(chunk)
+    except OSError:
+        raise DependencyAuditError(f"{role} could not be read safely") from None
+    return b"".join(chunks)
+
+
+def _snapshot_frozen_lock() -> FrozenLockSnapshot:
+    lockfile = REPO_ROOT / "uv.lock"
+    try:
+        metadata_before = lockfile.lstat()
+    except OSError:
+        raise DependencyAuditError("repo uv.lock must be a nonempty regular file") from None
+    if stat.S_ISLNK(metadata_before.st_mode) or not stat.S_ISREG(metadata_before.st_mode):
+        raise DependencyAuditError("repo uv.lock must be a nonempty regular file")
+    if metadata_before.st_nlink != 1:
+        raise DependencyAuditError("repo uv.lock must be a single-link regular file")
+    if metadata_before.st_size == 0:
+        raise DependencyAuditError("repo uv.lock must be a nonempty regular file")
+    try:
+        file_descriptor = os.open(lockfile, _regular_file_open_flags())
+    except OSError:
+        raise DependencyAuditError("repo uv.lock could not be opened safely") from None
+    try:
+        opened_metadata = os.fstat(file_descriptor)
+        if _file_identity(opened_metadata) != _file_identity(metadata_before):
+            raise DependencyAuditError("repo uv.lock changed while opening")
+        payload = _read_descriptor(file_descriptor, role="repo uv.lock")
+        opened_metadata_after = os.fstat(file_descriptor)
+    finally:
+        os.close(file_descriptor)
+    try:
+        metadata_after = lockfile.lstat()
+    except OSError:
+        raise DependencyAuditError("repo uv.lock changed while reading") from None
+    if _file_identity(metadata_after) != _file_identity(opened_metadata_after):
+        raise DependencyAuditError("repo uv.lock changed while reading")
+    if _file_identity(opened_metadata_after) != _file_identity(opened_metadata):
+        raise DependencyAuditError("repo uv.lock changed while reading")
+    if not payload:
+        raise DependencyAuditError("repo uv.lock must be a nonempty regular file")
+    return FrozenLockSnapshot(
+        path=lockfile,
+        identity=_file_identity(metadata_after),
+        sha256=hashlib.sha256(payload).hexdigest(),
+    )
+
+
+def _revalidate_frozen_lock(
+    expected: FrozenLockSnapshot,
+    *,
+    before_publication: bool = False,
+) -> None:
+    try:
+        current = _snapshot_frozen_lock()
+    except DependencyAuditError:
+        suffix = " before publication" if before_publication else " during dependency audit"
+        raise DependencyAuditError(f"uv.lock changed{suffix}") from None
+    if current != expected:
+        suffix = " before publication" if before_publication else " during dependency audit"
+        raise DependencyAuditError(f"uv.lock changed{suffix}")
+
+
+def _sanitized_environment(
+    *,
+    uv_cache_dir: Path,
+    uv_tool_dir: Path,
+) -> dict[str, str]:
     environment = {
         name: os.environ[name] for name in INHERITED_ENVIRONMENT_ALLOWLIST if name in os.environ
     }
@@ -250,7 +425,9 @@ def _sanitized_environment() -> dict[str, str]:
             "PIP_CONFIG_FILE": os.devnull,
             "PIP_NO_INPUT": "1",
             "PYTHONNOUSERSITE": "1",
+            "UV_CACHE_DIR": str(uv_cache_dir),
             "UV_NO_CONFIG": "1",
+            "UV_TOOL_DIR": str(uv_tool_dir),
         }
     )
     return environment
@@ -281,11 +458,119 @@ def _format_combined_log(captures: Sequence[CommandCapture]) -> str:
     return "".join(sections)
 
 
-def _remove_temporary_file(path: Path) -> None:
+def _relative_stat(prepared: PreparedEvidenceDirectory, filename: str) -> os.stat_result:
+    if DESCRIPTOR_RELATIVE_IO:
+        return os.stat(filename, dir_fd=prepared.evidence_descriptor, follow_symlinks=False)
+    return (prepared.path / filename).lstat()
+
+
+def _relative_open(
+    prepared: PreparedEvidenceDirectory,
+    filename: str,
+    flags: int,
+    mode: int = 0o777,
+) -> int:
+    if DESCRIPTOR_RELATIVE_IO:
+        return os.open(filename, flags, mode, dir_fd=prepared.evidence_descriptor)
+    return os.open(prepared.path / filename, flags, mode)
+
+
+def _relative_unlink(prepared: PreparedEvidenceDirectory, filename: str) -> None:
+    if DESCRIPTOR_RELATIVE_IO:
+        os.unlink(filename, dir_fd=prepared.evidence_descriptor)
+    else:
+        (prepared.path / filename).unlink()
+
+
+def _relative_replace(
+    prepared: PreparedEvidenceDirectory,
+    source_name: str,
+    destination_name: str,
+) -> None:
+    if DESCRIPTOR_RELATIVE_IO:
+        os.replace(
+            source_name,
+            destination_name,
+            src_dir_fd=prepared.evidence_descriptor,
+            dst_dir_fd=prepared.evidence_descriptor,
+        )
+    else:
+        os.replace(prepared.path / source_name, prepared.path / destination_name)
+
+
+def _relative_link(
+    prepared: PreparedEvidenceDirectory,
+    source_name: str,
+    destination_name: str,
+) -> None:
+    if DESCRIPTOR_RELATIVE_IO:
+        os.link(
+            source_name,
+            destination_name,
+            src_dir_fd=prepared.evidence_descriptor,
+            dst_dir_fd=prepared.evidence_descriptor,
+            follow_symlinks=False,
+        )
+    else:
+        os.link(
+            prepared.path / source_name,
+            prepared.path / destination_name,
+            follow_symlinks=False,
+        )
+
+
+def _remove_relative_temporary(prepared: PreparedEvidenceDirectory, filename: str) -> None:
     try:
-        path.unlink(missing_ok=True)
+        _relative_unlink(prepared, filename)
+    except FileNotFoundError:
+        return
     except OSError:
         raise DependencyAuditError("temporary evidence file could not be cleaned up") from None
+
+
+def _create_relative_temporary(
+    prepared: PreparedEvidenceDirectory,
+    destination_name: str,
+) -> tuple[str, int]:
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    for _ in range(16):
+        temporary_name = f".{destination_name}.{secrets.token_hex(8)}.tmp"
+        try:
+            return temporary_name, _relative_open(prepared, temporary_name, flags, 0o600)
+        except FileExistsError:
+            continue
+        except OSError:
+            raise DependencyAuditError("temporary evidence file could not be created") from None
+    raise DependencyAuditError("temporary evidence filename allocation was exhausted")
+
+
+def _write_relative_temporary(
+    prepared: PreparedEvidenceDirectory,
+    destination_name: str,
+    content: str,
+) -> str:
+    temporary_name, file_descriptor = _create_relative_temporary(prepared, destination_name)
+    try:
+        payload = content.encode("utf-8")
+        offset = 0
+        while offset < len(payload):
+            written = os.write(file_descriptor, payload[offset:])
+            if written <= 0:
+                raise OSError("atomic evidence write made no progress")
+            offset += written
+        os.fsync(file_descriptor)
+    except OSError:
+        os.close(file_descriptor)
+        _remove_relative_temporary(prepared, temporary_name)
+        raise DependencyAuditError("evidence output could not be written atomically") from None
+    os.close(file_descriptor)
+    return temporary_name
 
 
 def _write_text_atomically(
@@ -298,44 +583,22 @@ def _write_text_atomically(
     if destination.parent != prepared.path:
         raise DependencyAuditError("evidence output escaped the evidence directory")
     _require_prepared_directory(prepared)
-    file_descriptor: int | None = None
-    temporary_path: Path | None = None
+    temporary_name = _write_relative_temporary(prepared, destination.name, content)
     try:
-        file_descriptor, temporary_text = tempfile.mkstemp(
-            dir=prepared.path,
-            prefix=f".{destination.name}.",
-            suffix=".tmp",
-        )
-        temporary_path = Path(temporary_text)
-        os.fchmod(file_descriptor, 0o600)
-        payload = content.encode("utf-8")
-        offset = 0
-        while offset < len(payload):
-            written = os.write(file_descriptor, payload[offset:])
-            if written <= 0:
-                raise OSError("atomic evidence write made no progress")
-            offset += written
-        os.fsync(file_descriptor)
-        os.close(file_descriptor)
-        file_descriptor = None
         _require_prepared_directory(prepared)
         if exclusive:
             try:
-                os.link(temporary_path, destination, follow_symlinks=False)
+                _relative_link(prepared, temporary_name, destination.name)
             except FileExistsError:
                 raise DependencyAuditError("dependency audit manifest already exists") from None
         else:
-            os.replace(temporary_path, destination)
-            temporary_path = None
-    except DependencyAuditError:
-        raise
+            _relative_replace(prepared, temporary_name, destination.name)
+            temporary_name = ""
     except OSError:
         raise DependencyAuditError("evidence output could not be written atomically") from None
     finally:
-        if file_descriptor is not None:
-            os.close(file_descriptor)
-        if temporary_path is not None:
-            _remove_temporary_file(temporary_path)
+        if temporary_name:
+            _remove_relative_temporary(prepared, temporary_name)
 
 
 def _write_combined_log(
@@ -411,11 +674,11 @@ def _read_generated_file(
     *,
     role: str,
 ) -> tuple[str, str]:
-    if path.parent != prepared.path:
+    if path.parent != prepared.path or path.name not in {*GENERATED_FILENAMES, "pip-audit.log"}:
         raise DependencyAuditError(f"{role} escaped the evidence directory")
     _require_prepared_directory(prepared)
     try:
-        metadata_before = path.lstat()
+        metadata_before = _relative_stat(prepared, path.name)
     except OSError:
         raise DependencyAuditError(f"{role} must be a regular non-symlink file") from None
     if stat.S_ISLNK(metadata_before.st_mode) or not stat.S_ISREG(metadata_before.st_mode):
@@ -424,27 +687,20 @@ def _read_generated_file(
         raise DependencyAuditError(f"{role} must be a single-link regular file")
     if metadata_before.st_size == 0:
         raise DependencyAuditError(f"{role} must not be empty")
-
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
-        file_descriptor = os.open(path, flags)
+        file_descriptor = _relative_open(prepared, path.name, _regular_file_open_flags())
     except OSError:
         raise DependencyAuditError(f"{role} changed before validation") from None
     try:
         opened_metadata = os.fstat(file_descriptor)
         if _file_identity(opened_metadata) != _file_identity(metadata_before):
             raise DependencyAuditError(f"{role} changed before validation")
-        chunks: list[bytes] = []
-        while chunk := os.read(file_descriptor, 1024 * 1024):
-            chunks.append(chunk)
+        payload = _read_descriptor(file_descriptor, role=role)
         opened_metadata_after = os.fstat(file_descriptor)
-    except OSError:
-        raise DependencyAuditError(f"{role} could not be read safely") from None
     finally:
         os.close(file_descriptor)
     try:
-        metadata_after = path.lstat()
+        metadata_after = _relative_stat(prepared, path.name)
     except OSError:
         raise DependencyAuditError(f"{role} changed during validation") from None
     if _file_identity(metadata_after) != _file_identity(opened_metadata_after):
@@ -452,8 +708,6 @@ def _read_generated_file(
     if _file_identity(opened_metadata_after) != _file_identity(opened_metadata):
         raise DependencyAuditError(f"{role} changed during validation")
     _require_prepared_directory(prepared)
-
-    payload = b"".join(chunks)
     if not payload:
         raise DependencyAuditError(f"{role} must not be empty")
     try:
@@ -461,10 +715,6 @@ def _read_generated_file(
     except UnicodeDecodeError:
         raise DependencyAuditError(f"{role} must be valid UTF-8") from None
     return text, hashlib.sha256(payload).hexdigest()
-
-
-def _normalize_package_name(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def _requirement_entries(text: str, *, role: str) -> tuple[str, ...]:
@@ -486,37 +736,87 @@ def _requirement_entries(text: str, *, role: str) -> tuple[str, ...]:
     return tuple(entries)
 
 
+def _marker_environment() -> dict[str, str]:
+    environment = default_environment()
+    environment.update(
+        {
+            "implementation_version": REQUIRED_PYTHON_VERSION,
+            "python_full_version": REQUIRED_PYTHON_VERSION,
+            "python_version": "3.12",
+        }
+    )
+    return environment
+
+
+def _parse_requirement_entry(entry: str, *, role: str) -> tuple[str, str, bool, str]:
+    hash_matches = tuple(HASH_OPTION_PATTERN.finditer(entry))
+    if not hash_matches:
+        raise DependencyAuditError(f"{role} must contain only hash-locked requirements")
+    if any(SHA256_HASH_PATTERN.fullmatch(match.group(1)) is None for match in hash_matches):
+        raise DependencyAuditError(f"{role} contains a non-SHA256 requirements hash")
+    requirement_text = HASH_OPTION_PATTERN.sub("", entry).strip()
+    if not requirement_text or requirement_text.startswith("-") or "--hash" in requirement_text:
+        raise DependencyAuditError(f"{role} contains an unsupported requirements option")
+    try:
+        requirement = Requirement(requirement_text)
+    except InvalidRequirement:
+        raise DependencyAuditError(f"{role} contains an invalid requirements entry") from None
+    specifiers = tuple(requirement.specifier)
+    if (
+        requirement.url is not None
+        or len(specifiers) != 1
+        or specifiers[0].operator != "=="
+        or "*" in specifiers[0].version
+    ):
+        raise DependencyAuditError(f"{role} contains an unpinned or URL requirements entry")
+    try:
+        is_active = requirement.marker is None or requirement.marker.evaluate(_marker_environment())
+    except (UndefinedComparison, UndefinedEnvironmentName):
+        raise DependencyAuditError(f"{role} contains an unsupported requirements marker") from None
+    return (
+        str(canonicalize_name(requirement.name)),
+        specifiers[0].version,
+        is_active,
+        requirement_text,
+    )
+
+
 def _validate_requirements(
     prepared: PreparedEvidenceDirectory,
     path: Path,
     *,
     role: str,
-) -> tuple[str, RequirementNames]:
+) -> tuple[str, dict[str, str]]:
     text, digest = _read_generated_file(prepared, path, role=role)
-    all_names: set[str] = set()
-    unconditional_names: set[str] = set()
+    active_versions: dict[str, str] = {}
+    seen_entries: set[str] = set()
     for entry in _requirement_entries(text, role=role):
-        if HASH_PATTERN.search(entry) is None:
-            raise DependencyAuditError(f"{role} must contain only hash-locked requirements")
-        name_match = PACKAGE_NAME_PATTERN.match(entry)
-        if name_match is None:
-            raise DependencyAuditError(f"{role} contains an invalid requirement entry")
-        normalized_name = _normalize_package_name(name_match.group(1))
-        all_names.add(normalized_name)
-        if ";" not in entry:
-            unconditional_names.add(normalized_name)
-    return digest, RequirementNames(frozenset(all_names), frozenset(unconditional_names))
+        name, version, is_active, requirement_text = _parse_requirement_entry(entry, role=role)
+        if requirement_text in seen_entries:
+            raise DependencyAuditError(f"{role} contains duplicate requirements entries")
+        seen_entries.add(requirement_text)
+        if not is_active:
+            continue
+        previous_version = active_versions.get(name)
+        if previous_version is not None and previous_version != version:
+            raise DependencyAuditError(f"{role} contains multiple active versions for {name}")
+        active_versions[name] = version
+    if not active_versions:
+        raise DependencyAuditError(f"{role} contains no active hash-locked requirements")
+    return digest, active_versions
 
 
 def _audit_dependencies(payload: object, *, role: str) -> list[object]:
-    if isinstance(payload, list):
-        return payload
     if not isinstance(payload, dict):
-        raise DependencyAuditError(f"{role} did not contain valid pip-audit JSON")
-    dependencies = payload.get("dependencies")
-    fixes = payload.get("fixes", [])
-    if not isinstance(dependencies, list) or not isinstance(fixes, list) or fixes:
-        raise DependencyAuditError(f"{role} did not contain valid pip-audit JSON")
+        raise DependencyAuditError(f"{role} must be a JSON object")
+    if set(payload) != {"dependencies", "fixes"}:
+        raise DependencyAuditError(f"{role} must contain exactly dependencies and fixes")
+    dependencies = payload["dependencies"]
+    fixes = payload["fixes"]
+    if not isinstance(dependencies, list) or not isinstance(fixes, list):
+        raise DependencyAuditError(f"{role} dependencies and fixes must be lists")
+    if fixes:
+        raise DependencyAuditError(f"{role} fixes must be empty")
     return dependencies
 
 
@@ -525,7 +825,7 @@ def _validate_audit_output(
     path: Path,
     *,
     role: str,
-    requirement_names: RequirementNames,
+    active_requirements: Mapping[str, str],
 ) -> str:
     text, digest = _read_generated_file(prepared, path, role=role)
     try:
@@ -533,35 +833,36 @@ def _validate_audit_output(
     except (json.JSONDecodeError, TypeError):
         raise DependencyAuditError(f"{role} must contain valid JSON") from None
     dependencies = _audit_dependencies(payload, role=role)
-    if not dependencies:
-        raise DependencyAuditError(f"{role} did not contain audited dependencies")
-
-    audited_names: set[str] = set()
+    audited_versions: dict[str, str] = {}
     for dependency in dependencies:
         if not isinstance(dependency, dict):
+            raise DependencyAuditError(f"{role} did not contain valid pip-audit JSON")
+        if not set(dependency).issubset({"name", "version", "vulns", "skip_reason"}):
             raise DependencyAuditError(f"{role} did not contain valid pip-audit JSON")
         name = dependency.get("name")
         version = dependency.get("version")
         vulnerabilities = dependency.get("vulns")
-        if (
-            not isinstance(name, str)
-            or not name
-            or not isinstance(version, str)
-            or not version
-            or not isinstance(vulnerabilities, list)
-        ):
-            raise DependencyAuditError(f"{role} did not contain valid pip-audit JSON")
+        skip_reason = dependency.get("skip_reason", "")
+        if not isinstance(name, str) or not name:
+            raise DependencyAuditError(f"{role} dependency name is required")
+        if not isinstance(version, str) or not version:
+            raise DependencyAuditError(f"{role} dependency version is required")
+        if not isinstance(vulnerabilities, list):
+            raise DependencyAuditError(f"{role} dependency vulnerabilities must be a list")
         if vulnerabilities:
             raise DependencyAuditError(f"{role} reported vulnerabilities")
-        normalized_name = _normalize_package_name(name)
-        if normalized_name in audited_names:
-            raise DependencyAuditError(f"{role} contained duplicate dependency evidence")
-        audited_names.add(normalized_name)
-
-    if not requirement_names.unconditional_names.issubset(audited_names):
-        raise DependencyAuditError(f"{role} dependency set did not match requirements")
-    if not audited_names.issubset(requirement_names.all_names):
-        raise DependencyAuditError(f"{role} dependency set did not match requirements")
+        if not isinstance(skip_reason, str):
+            raise DependencyAuditError(f"{role} skip reason must be text")
+        if skip_reason.strip():
+            raise DependencyAuditError(f"{role} contains a nonempty skip reason")
+        normalized_name = str(canonicalize_name(name))
+        if normalized_name in audited_versions:
+            raise DependencyAuditError(f"{role} contained a duplicate dependency record")
+        audited_versions[normalized_name] = version
+    if audited_versions != dict(active_requirements):
+        raise DependencyAuditError(
+            f"{role} active dependency map and dependency set did not match requirements"
+        )
     return digest
 
 
@@ -577,7 +878,30 @@ def _observation_timestamp(now: Clock) -> str:
     return observed_at.isoformat()
 
 
-def _write_manifest(prepared: PreparedEvidenceDirectory, observed_at: str) -> None:
+def _revalidate_success_snapshot(
+    prepared: PreparedEvidenceDirectory,
+    snapshot: EvidenceSnapshot,
+) -> None:
+    _require_prepared_directory(prepared, phase="publication")
+    for filename, expected_digest in snapshot.digests:
+        _, current_digest = _read_generated_file(
+            prepared,
+            prepared.path / filename,
+            role=f"{filename} evidence",
+        )
+        if current_digest != expected_digest:
+            raise DependencyAuditError("generated evidence changed before publication")
+    _revalidate_frozen_lock(snapshot.lock, before_publication=True)
+    _require_prepared_directory(prepared, phase="publication")
+
+
+def _write_manifest(
+    prepared: PreparedEvidenceDirectory,
+    observed_at: str,
+    snapshot: EvidenceSnapshot,
+) -> None:
+    sha256 = dict(snapshot.digests)
+    sha256["uv.lock"] = snapshot.lock.sha256
     manifest = {
         "audit_tool": AUDIT_TOOL,
         "observed_at": observed_at,
@@ -591,13 +915,76 @@ def _write_manifest(prepared: PreparedEvidenceDirectory, observed_at: str) -> No
                 "result": "tui-pip-audit.json",
             },
         },
+        "sha256": sha256,
     }
-    _write_text_atomically(
+    content = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    temporary_name = _write_relative_temporary(prepared, "manifest.json", content)
+    try:
+        _revalidate_success_snapshot(prepared, snapshot)
+        try:
+            _relative_link(prepared, temporary_name, "manifest.json")
+        except FileExistsError:
+            raise DependencyAuditError("dependency audit manifest already exists") from None
+        except OSError:
+            raise DependencyAuditError("dependency audit manifest could not be published") from None
+    finally:
+        _remove_relative_temporary(prepared, temporary_name)
+
+
+def _collect_final_snapshot(
+    prepared: PreparedEvidenceDirectory,
+    initial_digests: Mapping[str, str],
+    core_active: Mapping[str, str],
+    tui_active: Mapping[str, str],
+    lock: FrozenLockSnapshot,
+) -> EvidenceSnapshot:
+    core_requirements = prepared.path / "core-requirements.txt"
+    tui_requirements = prepared.path / "tui-requirements.txt"
+    core_result = prepared.path / "core-pip-audit.json"
+    tui_result = prepared.path / "tui-pip-audit.json"
+    final_core_digest, final_core_active = _validate_requirements(
         prepared,
-        prepared.path / "manifest.json",
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        exclusive=True,
+        core_requirements,
+        role="core requirements output",
     )
+    final_tui_digest, final_tui_active = _validate_requirements(
+        prepared,
+        tui_requirements,
+        role="TUI requirements output",
+    )
+    if (
+        final_core_digest != initial_digests["core-requirements.txt"]
+        or final_tui_digest != initial_digests["tui-requirements.txt"]
+    ):
+        raise DependencyAuditError("generated evidence changed after validation")
+    final_digests = {
+        "core-requirements.txt": final_core_digest,
+        "tui-requirements.txt": final_tui_digest,
+        "core-pip-audit.json": _validate_audit_output(
+            prepared,
+            core_result,
+            role="core audit output",
+            active_requirements=final_core_active,
+        ),
+        "tui-pip-audit.json": _validate_audit_output(
+            prepared,
+            tui_result,
+            role="TUI audit output",
+            active_requirements=final_tui_active,
+        ),
+    }
+    if final_core_active != dict(core_active) or final_tui_active != dict(tui_active):
+        raise DependencyAuditError("generated evidence changed after validation")
+    if final_digests != dict(initial_digests):
+        raise DependencyAuditError("generated evidence changed after validation")
+    _, log_digest = _read_generated_file(
+        prepared,
+        prepared.path / "pip-audit.log",
+        role="combined audit log",
+    )
+    final_digests["pip-audit.log"] = log_digest
+    _revalidate_frozen_lock(lock)
+    return EvidenceSnapshot(tuple(sorted(final_digests.items())), lock)
 
 
 def verify_dependency_audit(
@@ -609,8 +996,9 @@ def verify_dependency_audit(
     """Export and audit locked dependency paths, then write success evidence.
 
     The evidence directory must be new. Each subprocess is bounded and runs
-    from the exact repository root against the frozen lock. A manifest is
-    written only after both requirement sets and both audit results validate.
+    from the exact repository root against one immutable frozen lock snapshot.
+    A manifest is written only after both requirement sets, both audit results,
+    the combined log, and the lock validate immediately before publication.
 
     Args:
         evidence_dir: New directory that will own all generated audit evidence.
@@ -624,89 +1012,87 @@ def verify_dependency_audit(
         DependencyAuditError: If collection or evidence validation fails.
     """
 
-    _validate_frozen_lock()
+    lock = _snapshot_frozen_lock()
     prepared = _prepare_evidence_directory(evidence_dir)
-    commands = build_commands(prepared.path)
-    environment = _sanitized_environment()
-    captures: list[CommandCapture] = []
-    core_requirements = prepared.path / "core-requirements.txt"
-    tui_requirements = prepared.path / "tui-requirements.txt"
-    core_result = prepared.path / "core-pip-audit.json"
-    tui_result = prepared.path / "tui-pip-audit.json"
-    outputs = (core_requirements, tui_requirements, core_result, tui_result)
-    digests: dict[Path, str] = {}
-    requirement_contracts: dict[str, RequirementNames] = {}
+    try:
+        commands = build_commands(prepared.path)
+        captures: list[CommandCapture] = []
+        core_requirements = prepared.path / "core-requirements.txt"
+        tui_requirements = prepared.path / "tui-requirements.txt"
+        core_result = prepared.path / "core-pip-audit.json"
+        tui_result = prepared.path / "tui-pip-audit.json"
+        outputs = (core_requirements, tui_requirements, core_result, tui_result)
+        initial_digests: dict[str, str] = {}
+        active_requirements: dict[str, dict[str, str]] = {}
 
-    for command_index, (command, role, output) in enumerate(
-        zip(commands, COMMAND_ROLES, outputs, strict=True)
-    ):
-        _run_checked(
-            command,
-            role=role,
-            prepared=prepared,
-            environment=environment,
-            captures=captures,
-            run_command=run_command,
-        )
-        if command_index == 0:
-            digest, requirement_contracts["core"] = _validate_requirements(
-                prepared,
-                output,
-                role="core requirements output",
+        with tempfile.TemporaryDirectory(prefix="localql-dependency-audit-") as run_temp_text:
+            run_temp = Path(run_temp_text)
+            uv_cache_dir = run_temp / "uv-cache"
+            uv_tool_dir = run_temp / "uv-tools"
+            uv_cache_dir.mkdir(mode=0o700)
+            uv_tool_dir.mkdir(mode=0o700)
+            environment = _sanitized_environment(
+                uv_cache_dir=uv_cache_dir,
+                uv_tool_dir=uv_tool_dir,
             )
-        elif command_index == 1:
-            digest, requirement_contracts["tui"] = _validate_requirements(
-                prepared,
-                output,
-                role="TUI requirements output",
-            )
-        elif command_index == 2:
-            digest = _validate_audit_output(
-                prepared,
-                output,
-                role="core audit output",
-                requirement_names=requirement_contracts["core"],
-            )
-        else:
-            digest = _validate_audit_output(
-                prepared,
-                output,
-                role="TUI audit output",
-                requirement_names=requirement_contracts["tui"],
-            )
-        digests[output] = digest
 
-    final_core_digest, final_core_contract = _validate_requirements(
-        prepared,
-        core_requirements,
-        role="core requirements output",
-    )
-    final_tui_digest, final_tui_contract = _validate_requirements(
-        prepared,
-        tui_requirements,
-        role="TUI requirements output",
-    )
-    final_digests = {
-        core_requirements: final_core_digest,
-        tui_requirements: final_tui_digest,
-        core_result: _validate_audit_output(
-            prepared,
-            core_result,
-            role="core audit output",
-            requirement_names=final_core_contract,
-        ),
-        tui_result: _validate_audit_output(
-            prepared,
-            tui_result,
-            role="TUI audit output",
-            requirement_names=final_tui_contract,
-        ),
-    }
-    if final_digests != digests:
-        raise DependencyAuditError("generated evidence changed after validation")
+            for command_index, (command, role, output) in enumerate(
+                zip(commands, COMMAND_ROLES, outputs, strict=True)
+            ):
+                _require_prepared_directory(prepared)
+                _revalidate_frozen_lock(lock)
+                try:
+                    _run_checked(
+                        command,
+                        role=role,
+                        prepared=prepared,
+                        environment=environment,
+                        captures=captures,
+                        run_command=run_command,
+                    )
+                finally:
+                    _require_prepared_directory(prepared)
+                    _revalidate_frozen_lock(lock)
+                if command_index == 0:
+                    digest, active_requirements["core"] = _validate_requirements(
+                        prepared,
+                        output,
+                        role="core requirements output",
+                    )
+                elif command_index == 1:
+                    digest, active_requirements["tui"] = _validate_requirements(
+                        prepared,
+                        output,
+                        role="TUI requirements output",
+                    )
+                elif command_index == 2:
+                    digest = _validate_audit_output(
+                        prepared,
+                        output,
+                        role="core audit output",
+                        active_requirements=active_requirements["core"],
+                    )
+                else:
+                    digest = _validate_audit_output(
+                        prepared,
+                        output,
+                        role="TUI audit output",
+                        active_requirements=active_requirements["tui"],
+                    )
+                initial_digests[output.name] = digest
 
-    _write_manifest(prepared, _observation_timestamp(now))
-    return core_result, tui_result
+            snapshot = _collect_final_snapshot(
+                prepared,
+                initial_digests,
+                active_requirements["core"],
+                active_requirements["tui"],
+                lock,
+            )
+            observed_at = _observation_timestamp(now)
+            _write_manifest(prepared, observed_at, snapshot)
+        return core_result, tui_result
+    finally:
+        _close_evidence_directory(prepared)
 
 
 def _build_parser() -> argparse.ArgumentParser:
