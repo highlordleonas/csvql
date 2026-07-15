@@ -588,7 +588,7 @@ def test_pyproject_public_metadata_is_consistent() -> None:
     project = payload["project"]
 
     assert project["name"] == "localql"
-    assert project["version"] == "1.0.1"
+    assert project["version"] == "1.0.2"
     assert project["readme"] == "README.md"
     assert project["license"] == "MIT"
     assert "LICENSE" in payload["project"]["license-files"]
@@ -767,6 +767,20 @@ def test_v102_documents_match_implemented_but_unreleased_truth() -> None:
     assert "fully materializes" in roadmap
 
 
+def test_v102_candidate_identity_is_machine_consistent() -> None:
+    workflow = read_text(".github/workflows/publish.yml")
+    package_init = read_text("src/csvql/__init__.py")
+    changelog = read_text("CHANGELOG.md")
+    release_notes = read_text("docs/release-notes/v1.md")
+
+    assert "EXPECTED_TAG: v1.0.2" in workflow
+    assert 'EXPECTED_VERSION: "1.0.2"' in workflow
+    assert "pypi-release-1.0.2.json" in workflow
+    assert '__version__ = "1.0.2"' in package_init
+    assert changelog.index("## [1.0.2]") < changelog.index("## [1.0.1]")
+    assert release_notes.index("## 1.0.2") < release_notes.index("## 1.0.1")
+
+
 def test_github_actions_are_pinned_by_commit_sha() -> None:
     for path in (".github/workflows/ci.yml", ".github/workflows/publish.yml"):
         payload = yaml.safe_load(read_text(path))
@@ -863,14 +877,14 @@ def test_publish_workflow_splits_build_from_oidc_publish() -> None:
         if step.get("name") == "Record failed verification outcome"
     )
     assert download_step["with"] == {
-        "name": "localql-1.0.1-dist",
+        "name": "localql-1.0.2-dist",
         "path": "release-artifacts",
     }
     assert upload_step["uses"] == (
         "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
     )
     assert upload_step["with"] == {
-        "name": "localql-1.0.1-pypi-verification",
+        "name": "localql-1.0.2-pypi-verification",
         "path": "pypi-verification",
         "if-no-files-found": "error",
     }
@@ -907,7 +921,7 @@ def test_publish_workflow_splits_build_from_oidc_publish() -> None:
         'provenance.get("attestation_bundles")',
         'bundle.get("attestations")',
         "pypi-project.json",
-        "pypi-release-1.0.1.json",
+        "pypi-release-1.0.2.json",
         "pypi-verification",
         "release metadata and digests verified",
         "provenance and non-empty attestation receipts captured",

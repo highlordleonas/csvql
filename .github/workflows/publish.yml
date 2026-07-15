@@ -36,8 +36,8 @@ permissions:
   contents: read
 
 env:
-  EXPECTED_TAG: v1.0.1
-  EXPECTED_VERSION: "1.0.1"
+  EXPECTED_TAG: v1.0.2
+  EXPECTED_VERSION: "1.0.2"
 
 jobs:
   build-and-verify:
@@ -254,7 +254,7 @@ jobs:
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: localql-1.0.1-dist
+          name: localql-1.0.2-dist
           path: |
             dist/*.whl
             dist/*.tar.gz
@@ -280,7 +280,7 @@ jobs:
       - name: Download distribution artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: localql-1.0.1-dist
+          name: localql-1.0.2-dist
           path: release-artifacts
       - name: Verify downloaded artifact hashes and metadata
         run: |
@@ -382,7 +382,7 @@ jobs:
       - name: Download distribution artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: localql-1.0.1-dist
+          name: localql-1.0.2-dist
           path: release-artifacts
       - name: Install uv without caching
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
@@ -532,7 +532,7 @@ jobs:
               else:
                   write_receipt(VERIFICATION_DIR / "pypi-project.json", project_metadata)
                   write_receipt(
-                      VERIFICATION_DIR / "pypi-release-1.0.1.json",
+                      VERIFICATION_DIR / "pypi-release-1.0.2.json",
                       release_metadata,
                   )
                   published_files = published_file_records(release_metadata.get("urls"))
@@ -682,6 +682,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: localql-1.0.1-pypi-verification
+          name: localql-1.0.2-pypi-verification
           path: pypi-verification
           if-no-files-found: error
