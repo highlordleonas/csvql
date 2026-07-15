@@ -108,10 +108,6 @@ sandbox DuckDB or restrict filesystem access. Run only SQL you trust.
   storage or cleanup reporting for large results.
 - Portable control-key fallbacks cover terminal workbench actions when a
   terminal or operating system intercepts function keys.
-- Maintainer release guardrails bind intentional release operations to exact
-  refs and object IDs.
-- The frozen local quality gate now aligns with the supported Python and
-  cross-platform CI matrix.
 
 See the [v1 release notes](https://github.com/highlordleonas/csvql/blob/main/docs/release-notes/v1.md)
 and [changelog](https://github.com/highlordleonas/csvql/blob/main/CHANGELOG.md)

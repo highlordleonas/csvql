@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -13,11 +12,9 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.git_public_push_guard import parse_approval
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PINNED_ACTION_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
-OID_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def read_text(path: str) -> str:
@@ -91,7 +88,6 @@ def test_windows_bash_syntax_finds_bash_from_nested_git_executable(tmp_path: Pat
 
 def test_open_source_trust_files_exist() -> None:
     for path in (
-        "AGENTS.md",
         "LICENSE",
         "CONTRIBUTING.md",
         "CODE_OF_CONDUCT.md",
@@ -99,8 +95,6 @@ def test_open_source_trust_files_exist() -> None:
         "SUPPORT.md",
         "docs/development.md",
         "docs/faq.md",
-        "docs/releasing.md",
-        "docs/v2-point-and-query-design.md",
     ):
         assert (REPO_ROOT / path).is_file(), path
 
@@ -119,335 +113,14 @@ def test_internal_operator_material_is_not_tracked_for_publication() -> None:
     assert not (REPO_ROOT / "docs" / "CODEX_CAPABILITY_REVIEW.md").exists()
     assert not list((REPO_ROOT / "docs").glob("release-candidate-proof-*.md"))
     assert git_tracked_paths("docs/superpowers") == ()
-
-
-def test_public_git_and_release_authority_is_explicit() -> None:
-    agents = normalized_markdown(read_text("AGENTS.md"))
-    releasing = normalized_markdown(read_text("docs/releasing.md"))
-    contributing = normalized_markdown(read_text("CONTRIBUTING.md"))
-    pull_request = normalized_markdown(read_text(".github/pull_request_template.md"))
-
-    for phrase in (
-        "Local `main` mirrors live public `main`",
-        "remain local by default",
-        "public push",
-        "pull-request merge",
-        "version tag",
-        "GitHub Release",
-        "PyPI publication",
-        "separate explicit approval",
+    for path in (
+        "AGENTS.md",
+        "docs/releasing.md",
+        "docs/v1.0.2-tui-spill-reliability-design.md",
+        "docs/v2-point-and-query-design.md",
+        "docs/governance/audits/2026_07_12_project_stewardship_audit.md",
     ):
-        assert phrase in agents
-    for phrase in (
-        "LOCALQL_PUBLIC_PUSH_APPROVAL",
-        "create_branch",
-        "update_branch",
-        "create_annotated_tag",
-        "--no-verify",
-        "hosted rules are authoritative",
-        "make ci-fresh",
-        "never retarget or reuse a version tag",
-        "never replace a PyPI version",
-    ):
-        assert phrase in releasing
-    assert "External contributors push branches to their own forks" in contributing
-    assert "Maintainer development branches remain local by default" in contributing
-    assert "Public release boundary" in pull_request
-
-
-def test_release_runbook_examples_are_machine_valid_without_pushing() -> None:
-    releasing = read_text("docs/releasing.md")
-    json_blocks = fenced_blocks(releasing, "json")
-    bash_blocks = fenced_blocks(releasing, "bash")
-
-    assert len(json_blocks) == 3
-    approvals = tuple(parse_approval(block) for block in json_blocks)
-    assert tuple(approval.operation for approval in approvals) == (
-        "create_branch",
-        "update_branch",
-        "create_annotated_tag",
-    )
-
-    push_block = next(block for block in bash_blocks if "LOCALQL_PUBLIC_PUSH_APPROVAL=" in block)
-    continued_push_block = re.sub(r"\\\n[ \t]*", " ", push_block)
-    assignment, *push_argv = shlex.split(continued_push_block)
-    variable, separator, inline_manifest = assignment.partition("=")
-    assert (variable, separator) == ("LOCALQL_PUBLIC_PUSH_APPROVAL", "=")
-    assert inline_manifest == json_blocks[0]
-    expected_refspec = "1111111111111111111111111111111111111111:refs/heads/release/v1.0.2"
-    assert push_argv == [
-        "git",
-        "push",
-        "https://github.com/highlordleonas/csvql.git",
-        expected_refspec,
-    ]
-    assert len(push_argv[3:]) == 1
-    source_oid, destination_ref = push_argv[3].split(":", maxsplit=1)
-    assert OID_RE.fullmatch(source_oid)
-    assert source_oid == approvals[0].new_oid
-    assert destination_ref == approvals[0].destination_ref
-
-    for block in bash_blocks:
-        subprocess.run(
-            [bash_executable(), "-n", "-c", block],
-            check=True,
-            capture_output=True,
-        )
-
-
-def test_release_runbook_candidate_evidence_fails_closed() -> None:
-    releasing = read_text("docs/releasing.md")
-    candidate_section = normalized_markdown(markdown_section(releasing, "Candidate Evidence"))
-    candidate = next(
-        block for block in fenced_blocks(releasing, "bash") if "evidence_dir=" in block
-    )
-    continuation = "\\\n  "
-
-    assert "Any failure stops the evidence run" in candidate_section
-    assert (
-        "Only failures after the evidence directory is claimed leave that directory for diagnosis"
-        in candidate_section
-    )
-    candidate_lines = candidate.splitlines()
-    assert candidate_lines[0] == "set -euo pipefail"
-    assert "||" not in candidate
-    assert 'release_version="v1.0.2"' in candidate_lines
-    assert 'expected_version="1.0.2"' in candidate_lines
-    assert 'artifact_python="3.12.11"' in candidate_lines
-    assert 'intended_publication_date="2026-07-15"' in candidate_lines
-    assert "2026-07-14" not in candidate
-    assert 'mkdir -- "${evidence_dir}"' in candidate
-    assert 'test ! -e "${evidence_dir}"' not in candidate
-    uv_runtime_exports = {
-        line.removeprefix("export ").split("=", maxsplit=1)[0]: line.split("=", maxsplit=1)[1]
-        for line in candidate_lines
-        if line.startswith(
-            (
-                "export UV_CACHE_DIR=",
-                "export UV_TOOL_DIR=",
-                "export UV_PYTHON_INSTALL_DIR=",
-            )
-        )
-    }
-    assert uv_runtime_exports == {
-        "UV_CACHE_DIR": '"${evidence_dir}/uv-cache"',
-        "UV_TOOL_DIR": '"${evidence_dir}/uv-tools"',
-        "UV_PYTHON_INSTALL_DIR": '"${evidence_dir}/uv-python"',
-    }
-    uv_cache_export = 'export UV_CACHE_DIR="${evidence_dir}/uv-cache"'
-    uv_tool_export = 'export UV_TOOL_DIR="${evidence_dir}/uv-tools"'
-    uv_python_export = 'export UV_PYTHON_INSTALL_DIR="${evidence_dir}/uv-python"'
-    for runtime_variable in uv_runtime_exports:
-        assert f'mkdir -m 700 -- "${{{runtime_variable}}}"' in candidate_lines
-    assert "$HOME" not in "\n".join(uv_runtime_exports.values())
-    assert "/private/tmp" not in "\n".join(uv_runtime_exports.values())
-    assert_ordered(
-        candidate,
-        (
-            'mkdir -- "${evidence_dir}"',
-            'printf \'%s\\n\' "${candidate_oid}" > "${evidence_dir}/candidate-commit.txt"',
-            uv_cache_export,
-            uv_tool_export,
-            uv_python_export,
-            'mkdir -m 700 -- "${UV_CACHE_DIR}"',
-            'mkdir -m 700 -- "${UV_TOOL_DIR}"',
-            'mkdir -m 700 -- "${UV_PYTHON_INSTALL_DIR}"',
-            "make ci-fresh",
-        ),
-    )
-    assert 'git cat-file -t "${candidate_oid}"' in candidate
-    assert candidate_lines.count("git diff --quiet --exit-code --") == 2
-    assert candidate_lines.count("git diff --cached --quiet --exit-code --") == 2
-    assert [line for line in candidate_lines if line.startswith("git diff --quiet")] == [
-        "git diff --quiet --exit-code --",
-        "git diff --quiet --exit-code --",
-    ]
-    assert [line for line in candidate_lines if line.startswith("git diff --cached")] == [
-        "git diff --cached --quiet --exit-code --",
-        "git diff --cached --quiet --exit-code --",
-    ]
-    assert (
-        candidate_lines.count('initial_status="$(git status --porcelain=v1 --untracked-files=all)"')
-        == 1
-    )
-    assert (
-        candidate_lines.count('final_status="$(git status --porcelain=v1 --untracked-files=all)"')
-        == 1
-    )
-    assert 'test -z "${initial_status}"' in candidate_lines
-    assert 'test -z "${final_status}"' in candidate_lines
-    assert "localql-untracked" not in candidate
-    assert "git ls-files --others --exclude-standard" not in candidate
-    for rebuild_dir in ("rebuild-constrained", "rebuild-consumer"):
-        assert f'"${{evidence_dir}}/{rebuild_dir}"' in candidate
-
-    for exact_command in (
-        'uvx --from uv==0.11.28 uv build --python "${artifact_python}"',
-        "--build-constraints scripts/release-build-constraints.txt",
-        "--require-hashes",
-        "scripts/audit_package_contents.py "
-        f'{continuation}"${{evidence_dir}}/dist" --expected-version "${{expected_version}}"',
-        "scripts/verify_release_artifacts.py",
-        "uvx --from twine==6.2.0 twine check",
-        "scripts/verify_dependency_audit.py",
-        "scripts/verify_installed_artifacts.py",
-        'test "$(git rev-parse --verify HEAD^{commit})" = "${candidate_oid}"',
-    ):
-        assert exact_command in candidate
-
-    for exact_record in (
-        'uvx --from uv==0.11.28 uv --version > "${evidence_dir}/uv-version.txt"',
-        'uvx --from uv==0.11.28 uv run --python "${artifact_python}" '
-        'python --version > "${evidence_dir}/artifact-python-version.txt"',
-        "shasum -a 256 scripts/release-build-constraints.txt "
-        '> "${evidence_dir}/release-build-constraints.sha256"',
-    ):
-        assert exact_record in candidate
-
-    assert '"${evidence_dir}/dist/localql-1.0.2.tar.gz"' in candidate
-    assert '--out-dir "${evidence_dir}/rebuild-constrained"' in candidate
-    assert '--out-dir "${evidence_dir}/rebuild-consumer"' in candidate
-    assert (
-        '--rebuilt-wheel "${evidence_dir}/rebuild-constrained/localql-1.0.2-py3-none-any.whl"'
-        in (candidate)
-    )
-    assert '--rebuilt-wheel "${evidence_dir}/rebuild-consumer/localql-1.0.2-py3-none-any.whl"' in (
-        candidate
-    )
-    assert (
-        "date -u +'%Y-%m-%dT%H:%M:%SZ' > \"${evidence_dir}/consumer-rebuild-observed-at.txt\""
-    ) in candidate
-    for rebuild_kind in ("constrained", "consumer"):
-        assert f'2>&1 | tee "${{evidence_dir}}/rebuild-{rebuild_kind}.log"' in candidate
-        assert (
-            f"grep -Eo 'hatchling==[0-9]+(\\.[0-9]+)+' {continuation}"
-            f'"${{evidence_dir}}/rebuild-{rebuild_kind}.log" | sort -u '
-            f'{continuation}> "${{evidence_dir}}/rebuild-{rebuild_kind}-backend.txt"'
-        ) in candidate
-        assert f'test -s "${{evidence_dir}}/rebuild-{rebuild_kind}-backend.txt"' in candidate
-
-    assert '--evidence-dir "${evidence_dir}/dependency-audit"' in candidate
-    assert '--core-requirements "${evidence_dir}/dependency-audit/core-requirements.txt"' in (
-        candidate
-    )
-    assert '--tui-requirements "${evidence_dir}/dependency-audit/tui-requirements.txt"' in (
-        candidate
-    )
-    assert '--work-dir "${evidence_dir}/installed-smokes"' in candidate
-    assert '--expected-version "${expected_version}"' in candidate
-    assert '--python "${artifact_python}"' in candidate
-    assert (
-        "scripts/verify_installed_artifacts.py "
-        f'{continuation}--wheel "${{evidence_dir}}/dist/localql-1.0.2-py3-none-any.whl" '
-        f"{continuation}--core-requirements "
-        f'"${{evidence_dir}}/dependency-audit/core-requirements.txt" '
-        f"{continuation}--tui-requirements "
-        f'"${{evidence_dir}}/dependency-audit/tui-requirements.txt" '
-        f'{continuation}--work-dir "${{evidence_dir}}/installed-smokes" '
-        f'{continuation}--expected-version "${{expected_version}}" '
-        f'{continuation}--python "${{artifact_python}}" '
-        f'{continuation}> "${{evidence_dir}}/installed-smokes.json" '
-        f'{continuation}2> "${{evidence_dir}}/installed-smokes.log"'
-    ) in candidate
-
-    for stale_invocation in (
-        'expected_version="${release_version#v}"',
-        "uv build --sdist --wheel",
-        "PY_METADATA",
-        "PY_SMOKE",
-        "uv pip install",
-        f'scripts/audit_package_contents.py {continuation}"${{evidence_dir}}/dist"\n',
-    ):
-        assert stale_invocation not in candidate
-
-    assert_ordered(
-        candidate,
-        (
-            'release_version="v1.0.2"',
-            'expected_version="1.0.2"',
-            'artifact_python="3.12.11"',
-            'candidate_oid="$(git rev-parse --verify HEAD^{commit})"',
-            'git cat-file -t "${candidate_oid}"',
-            "git diff --quiet --exit-code --",
-            "git diff --cached --quiet --exit-code --",
-            'initial_status="$(git status --porcelain=v1 --untracked-files=all)"',
-            'test -z "${initial_status}"',
-            'mkdir -- "${evidence_dir}"',
-            "make ci-fresh",
-            'uvx --from uv==0.11.28 uv build --python "${artifact_python}"',
-            "--build-constraints scripts/release-build-constraints.txt",
-            "--require-hashes",
-            f'scripts/audit_package_contents.py {continuation}"${{evidence_dir}}/dist" '
-            "--expected-version",
-            '--out-dir "${evidence_dir}/rebuild-constrained"',
-            '--out-dir "${evidence_dir}/rebuild-consumer"',
-            "scripts/verify_release_artifacts.py",
-            "uvx --from twine==6.2.0 twine check",
-            "scripts/verify_dependency_audit.py",
-            "scripts/verify_installed_artifacts.py",
-            'intended_publication_date="2026-07-15"',
-            'test "${changelog_date}" = "${intended_publication_date}"',
-            'test "$(git rev-parse --verify HEAD^{commit})" = "${candidate_oid}"',
-            'final_status="$(git status --porcelain=v1 --untracked-files=all)"',
-            'test -z "${final_status}"',
-        ),
-    )
-    final_head_check = candidate.index(
-        'test "$(git rev-parse --verify HEAD^{commit})" = "${candidate_oid}"'
-    )
-    assert candidate.rfind("git diff --quiet --exit-code --") > final_head_check
-    assert candidate.rfind("git diff --cached --quiet --exit-code --") > final_head_check
-    final_diff = candidate.rfind("git diff --quiet --exit-code --")
-    final_cached_diff = candidate.rfind("git diff --cached --quiet --exit-code --")
-    final_status = candidate.index(
-        'final_status="$(git status --porcelain=v1 --untracked-files=all)"'
-    )
-    final_empty_check = candidate.index('test -z "${final_status}"')
-    assert final_head_check < final_diff < final_cached_diff < final_status < final_empty_check
-
-
-def test_release_runbook_binds_hosted_readiness_to_exact_pr_test_merge() -> None:
-    readiness = markdown_section(read_text("docs/releasing.md"), "Hosted Pull Request Readiness")
-    normalized = normalized_markdown(readiness)
-
-    assert_ordered(
-        readiness,
-        (
-            "public_main_base_oid",
-            "candidate_head_oid",
-            "pull_request_number",
-            "test_merge_oid",
-            "ci_workflow_id",
-            "ci_run_id",
-            "ci_run_attempt",
-            "ci_check_suite_id",
-            "ci_actions_integration_id",
-            "expected_job_names",
-        ),
-    )
-    for job_name in (
-        "test (ubuntu-latest, 3.11)",
-        "test (ubuntu-latest, 3.12)",
-        "test (ubuntu-latest, 3.13)",
-        "test (ubuntu-latest, 3.14)",
-        "test (macos-latest, 3.12)",
-        "test (windows-latest, 3.12)",
-    ):
-        assert job_name in readiness
-    for phrase in (
-        "derived from the recorded public_main_base_oid and candidate_head_oid",
-        "read-only evidence",
-        "does not authorize",
-        "branch update",
-        "pull request update",
-        "merge",
-        "tag",
-        "publication",
-    ):
-        assert phrase in normalized
-    normalized_lower = normalized.lower()
-    assert "ci run and check-suite head sha must equal candidate_head_oid" in normalized_lower
-    assert "verify pull request test merge" in normalized_lower
+        assert not (REPO_ROOT / path).exists(), path
 
 
 def test_ci_asserts_every_pull_request_job_uses_the_exact_test_merge() -> None:
@@ -471,89 +144,6 @@ def test_ci_asserts_every_pull_request_job_uses_the_exact_test_merge() -> None:
         'test "$(git rev-parse --verify HEAD^1)" = "${PR_BASE_OID}"\n'
         'test "$(git rev-parse --verify HEAD^2)" = "${PR_HEAD_OID}"\n'
     )
-
-
-def test_release_runbook_reconciliation_validates_before_cas() -> None:
-    releasing = read_text("docs/releasing.md")
-    reconciliation = next(
-        block for block in fenced_blocks(releasing, "bash") if "git update-ref" in block
-    )
-
-    reconciliation_lines = reconciliation.splitlines()
-    assert reconciliation_lines[0] == "set -euo pipefail"
-    assert "||" not in reconciliation
-    assert '[[ "${current_local_main_oid}" =~ ${oid_re} ]]' in reconciliation
-    assert '[[ "${verified_public_main_oid}" =~ ${oid_re} ]]' in reconciliation
-    assert 'git cat-file -t "${current_local_main_oid}"' in reconciliation
-    assert 'git cat-file -t "${verified_public_main_oid}"' in reconciliation
-    assert 'git merge-base --is-ancestor "${current_local_main_oid}"' in reconciliation
-    assert "git for-each-ref --format='%(worktreepath)' refs/heads/main" in reconciliation
-    for critical_line in (
-        '[[ "${current_local_main_oid}" =~ ${oid_re} ]]',
-        '[[ "${verified_public_main_oid}" =~ ${oid_re} ]]',
-        'test "$(git cat-file -t "${current_local_main_oid}")" = "commit"',
-        'test "$(git cat-file -t "${verified_public_main_oid}")" = "commit"',
-        'test "$(git rev-parse --verify refs/heads/main)" = "${current_local_main_oid}"',
-        'test -z "${main_worktree_path}"',
-    ):
-        assert reconciliation_lines.count(critical_line) == 1
-    origin_index = reconciliation_lines.index(
-        'test "$(git rev-parse --verify refs/remotes/origin/main)" = \\'
-    )
-    assert reconciliation_lines[origin_index : origin_index + 2] == [
-        'test "$(git rev-parse --verify refs/remotes/origin/main)" = \\',
-        '  "${verified_public_main_oid}"',
-    ]
-    ancestry_index = reconciliation_lines.index(
-        'git merge-base --is-ancestor "${current_local_main_oid}" \\'
-    )
-    assert reconciliation_lines[ancestry_index : ancestry_index + 2] == [
-        'git merge-base --is-ancestor "${current_local_main_oid}" \\',
-        '  "${verified_public_main_oid}"',
-    ]
-    worktree_index = reconciliation_lines.index('main_worktree_path="$(')
-    assert reconciliation_lines[worktree_index : worktree_index + 3] == [
-        'main_worktree_path="$(',
-        "  git for-each-ref --format='%(worktreepath)' refs/heads/main",
-        ')"',
-    ]
-    assert_ordered(
-        reconciliation,
-        (
-            'current_local_main_oid="CURRENT_LOCAL_MAIN_OID"',
-            'verified_public_main_oid="VERIFIED_PUBLIC_MAIN_OID"',
-            '[[ "${current_local_main_oid}" =~ ${oid_re} ]]',
-            '[[ "${verified_public_main_oid}" =~ ${oid_re} ]]',
-            'git cat-file -t "${current_local_main_oid}"',
-            'git cat-file -t "${verified_public_main_oid}"',
-            "git rev-parse --verify refs/heads/main",
-            "git rev-parse --verify refs/remotes/origin/main",
-            'git merge-base --is-ancestor "${current_local_main_oid}"',
-            "git for-each-ref --format='%(worktreepath)' refs/heads/main",
-            "git update-ref refs/heads/main",
-        ),
-    )
-    update_index = reconciliation_lines.index("git update-ref refs/heads/main \\")
-    assert reconciliation_lines[update_index : update_index + 3] == [
-        "git update-ref refs/heads/main \\",
-        '  "${verified_public_main_oid}" \\',
-        '  "${current_local_main_oid}"',
-    ]
-
-
-def test_public_agents_file_does_not_restore_internal_launch_material() -> None:
-    agents = read_text("AGENTS.md")
-
-    assert len(agents.splitlines()) <= 100
-    assert "make ci" in agents
-    assert "make ci-fresh" in agents
-    assert "trusted local input" in agents
-    for internal_reference in (
-        "docs/CODEX_CAPABILITY_REVIEW.md",
-        "docs/superpowers",
-        "release-candidate-proof-",
-    ):
-        assert internal_reference not in agents
 
 
 def test_security_and_faq_state_trusted_local_sql_boundary() -> None:
@@ -608,84 +198,6 @@ def test_make_targets_separate_sync_from_current_environment_checks() -> None:
         "uv run --frozen --no-sync --all-extras pytest",
     ):
         assert command in makefile
-
-
-def test_canonical_authority_metadata_avoids_transient_working_tree_status() -> None:
-    agents = read_text("AGENTS.md")
-    roadmap = read_text("docs/ROADMAP.md")
-    design = read_text("docs/v2-point-and-query-design.md")
-    authority_metadata = {
-        "AGENTS.md": "\n".join(
-            (
-                markdown_section(agents, "Project Contract"),
-                markdown_section(agents, "Authority And Structure"),
-            )
-        ),
-        "docs/ROADMAP.md": "\n".join(
-            (
-                roadmap.split("\n## ", maxsplit=1)[0],
-                markdown_section(roadmap, "Maintainer Disposition"),
-            )
-        ),
-        "docs/v2-point-and-query-design.md": design.split("\n## ", maxsplit=1)[0],
-    }
-
-    for path, metadata in authority_metadata.items():
-        for transient_phrase in (
-            "Revised candidate",
-            "working-tree",
-            "uncommitted",
-            "repository adoption",
-            "awaiting hostile review",
-        ):
-            assert transient_phrase not in metadata, f"{path}: {transient_phrase}"
-
-
-def test_v2_scope_carries_v1_formats_without_double_booking_them() -> None:
-    roadmap = read_text("docs/ROADMAP.md")
-    design = read_text("docs/v2-point-and-query-design.md")
-    roadmap_v2x = markdown_section(roadmap, "v2.x Evolution")
-    design_v2x = markdown_section(design, "Target v2.x Ecosystem")
-    initial_coverage = normalized_markdown(markdown_section(design, "Initial Source Coverage"))
-    experience = normalized_markdown(markdown_section(design, "Experience"))
-
-    for required_concept in ("v1.x", "local-format baseline", "Parquet", "reuse"):
-        assert required_concept in initial_coverage
-    for required_concept in ("S3", "target v2.x", "not part", "v2.0"):
-        assert required_concept in experience
-    for v1_format in ("JSON", "NDJSON", "Excel"):
-        assert v1_format not in roadmap_v2x
-        assert v1_format not in design_v2x
-
-
-def test_v2_release_gate_applies_only_to_v2_supported_sources() -> None:
-    design = read_text("docs/v2-point-and-query-design.md")
-    release_gates = normalized_markdown(markdown_section(design, "v2.0 Release Gates"))
-
-    assert "v2.0 release" in release_gates
-    assert "shared connector contract" in release_gates
-    assert "Every advertised source" not in release_gates
-
-
-def test_v2_planning_implementation_and_release_gates_are_separate() -> None:
-    design = read_text("docs/v2-point-and-query-design.md")
-    planning = normalized_markdown(markdown_section(design, "Planning Authorization"))
-    plan_approval = normalized_markdown(markdown_section(design, "Plan Approval"))
-    implementation = normalized_markdown(
-        markdown_section(design, "Slice Implementation Authorization")
-    )
-    release = normalized_markdown(markdown_section(design, "v2.0 Release Approval"))
-
-    assert "explicitly authorizes preparation of a plan" in planning
-    assert "does not authorize" in planning
-    assert "Plan approval does not authorize implementation" in plan_approval
-    for required_concept in ("plan is approved", "separately authorizes", "verified v1.1"):
-        assert required_concept in implementation
-    assert "Verified v1.2 is not required before every v2 connector implementation" in (
-        implementation
-    )
-    for required_concept in ("v1.2 local-format baseline", "exact release artifacts"):
-        assert required_concept in release
 
 
 def test_pyproject_public_metadata_is_consistent() -> None:
@@ -747,8 +259,8 @@ def test_v1_0_2_release_copy_covers_sharpening_without_contract_drift() -> None:
     notes = markdown_section(read_text("docs/release-notes/v1.md"), "1.0.2")
     for phrase in (
         "installed-user documentation",
-        "reproducible release evidence",
-        "wheel and source distribution",
+        "large-result storage",
+        "portable control-key fallbacks",
         "core and optional TUI",
     ):
         assert phrase in changelog
@@ -886,34 +398,6 @@ def test_publish_verifies_exact_publisher_and_public_index_install() -> None:
     assert "UV_NO_CACHE=1" not in verification_runs
     assert "localql==${EXPECTED_VERSION}" not in verification_runs
     assert "localql[tui]==${EXPECTED_VERSION}" not in verification_runs
-
-
-def test_release_runbook_names_strict_publication_recovery() -> None:
-    releasing = normalized_markdown(read_text("docs/releasing.md"))
-    for required in (
-        "rerun-failed-jobs",
-        "whole-run rerun is not authorized",
-        "public-but-unreleased",
-        "never top up",
-        "consumer impact",
-        "verified PyPI filenames",
-        "draft Release",
-        "body SHA-256",
-    ):
-        assert required in releasing
-
-
-def test_v102_documents_match_implemented_but_unreleased_truth() -> None:
-    roadmap = normalized_markdown(read_text("docs/ROADMAP.md"))
-    spill_design = normalized_markdown(read_text("docs/v1.0.2-tui-spill-reliability-design.md"))
-
-    assert "Status: Implemented locally; release preparation in progress" in roadmap
-    assert "TUI spill reliability and portable navigation fallbacks are implemented" in roadmap
-    assert "bounded query execution remains deferred to v1.1" in roadmap
-    assert "release-version source refactor remains deferred" in roadmap
-    assert "Implemented and locally verified; unreleased" in spill_design
-    assert "implementation not approved" not in spill_design
-    assert "fully materializes" in roadmap
 
 
 def test_v102_candidate_identity_is_machine_consistent() -> None:

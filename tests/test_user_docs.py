@@ -72,15 +72,13 @@ CONTRIBUTOR_SUPPORT_DOCS = {
     "SUPPORT.md",
     "docs/development.md",
 }
-MAINTAINER_RELEASE_DOCS = {"docs/releasing.md"}
-PRODUCT_DIRECTION_DOCS = {
-    "docs/ROADMAP.md",
-    "docs/v1.0.2-tui-spill-reliability-design.md",
-    "docs/v2-point-and-query-design.md",
-}
-EXCLUDED_INTERNAL_DOCS = {
+PRODUCT_DIRECTION_DOCS = {"docs/ROADMAP.md"}
+INTERNAL_DOCUMENTS = {
     "AGENTS.md",
     "docs/governance/audits/2026_07_12_project_stewardship_audit.md",
+    "docs/releasing.md",
+    "docs/v1.0.2-tui-spill-reliability-design.md",
+    "docs/v2-point-and-query-design.md",
 }
 
 
@@ -123,7 +121,9 @@ def tracked_markdown_paths() -> tuple[str, ...]:
         capture_output=True,
         text=True,
     )
-    return tuple(sorted(completed.stdout.splitlines()))
+    return tuple(
+        sorted(path for path in completed.stdout.splitlines() if (REPO_ROOT / path).is_file())
+    )
 
 
 def fenced_blocks(document: str, language: str) -> tuple[str, ...]:
@@ -206,12 +206,7 @@ def https_targets(document: str) -> tuple[str, ...]:
 
 
 PUBLIC_RENDERED_DOCS = tuple(
-    sorted(
-        PUBLIC_PRODUCT_DOCS
-        | CONTRIBUTOR_SUPPORT_DOCS
-        | MAINTAINER_RELEASE_DOCS
-        | PRODUCT_DIRECTION_DOCS
-    )
+    sorted(PUBLIC_PRODUCT_DOCS | CONTRIBUTOR_SUPPORT_DOCS | PRODUCT_DIRECTION_DOCS)
 )
 
 
@@ -271,20 +266,13 @@ def normalized_markdown_section(path: str, heading: str) -> str:
 
 def test_every_tracked_markdown_file_has_one_publication_classification() -> None:
     tracked = set(tracked_markdown_paths())
-    classified = (
-        PUBLIC_PRODUCT_DOCS
-        | CONTRIBUTOR_SUPPORT_DOCS
-        | MAINTAINER_RELEASE_DOCS
-        | PRODUCT_DIRECTION_DOCS
-        | EXCLUDED_INTERNAL_DOCS
-    )
+    classified = PUBLIC_PRODUCT_DOCS | CONTRIBUTOR_SUPPORT_DOCS | PRODUCT_DIRECTION_DOCS
     assert tracked == classified
+    assert not tracked.intersection(INTERNAL_DOCUMENTS)
     classes = (
         PUBLIC_PRODUCT_DOCS,
         CONTRIBUTOR_SUPPORT_DOCS,
-        MAINTAINER_RELEASE_DOCS,
         PRODUCT_DIRECTION_DOCS,
-        EXCLUDED_INTERNAL_DOCS,
     )
     assert all(
         left.isdisjoint(right)
