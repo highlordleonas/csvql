@@ -833,14 +833,14 @@ def test_github_actions_are_pinned_by_commit_sha() -> None:
 def test_ci_and_publish_pin_exact_release_toolchain() -> None:
     ci = yaml.safe_load(read_text(".github/workflows/ci.yml"))
     publish = yaml.safe_load(read_text(".github/workflows/publish.yml"))
-    for workflow in (ci, publish):
+    for workflow, expected_install_steps in ((ci, 1), (publish, 2)):
         install_steps = [
             step
             for job in workflow["jobs"].values()
             for step in job.get("steps", [])
-            if step.get("name") == "Install uv"
+            if str(step.get("uses", "")).startswith("astral-sh/setup-uv@")
         ]
-        assert install_steps
+        assert len(install_steps) == expected_install_steps
         for step in install_steps:
             assert step["uses"] == ("astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86")
             assert step["with"]["version"] == "0.11.28"
@@ -852,22 +852,69 @@ def test_ci_and_publish_pin_exact_release_toolchain() -> None:
     assert "--build-constraints scripts/release-build-constraints.txt" in build_runs
     assert "--require-hashes" in build_runs
 
+    build_step = next(step for step in publish_build["steps"] if step.get("name") == "Build")
+    build_commands = tuple(
+        line.strip() for line in str(build_step["run"]).splitlines() if line.strip()
+    )
+    for evidence_command in (
+        "uv --version > dist/uv-version.txt",
+        'uv run --python "${ARTIFACT_PYTHON}" python --version > dist/python-version.txt',
+        "shasum -a 256 scripts/release-build-constraints.txt "
+        "> dist/release-build-constraints.sha256",
+    ):
+        assert evidence_command in build_commands
+
+    upload_step = next(
+        step
+        for step in publish_build["steps"]
+        if step.get("name") == "Upload distribution artifacts"
+    )
+    uploaded_paths = tuple(
+        line.strip() for line in str(upload_step["with"]["path"]).splitlines() if line.strip()
+    )
+    for evidence_path in (
+        "dist/uv-version.txt",
+        "dist/python-version.txt",
+        "dist/release-build-constraints.sha256",
+    ):
+        assert evidence_path in uploaded_paths
+
 
 def test_release_build_constraints_are_exact_and_hashed() -> None:
-    lines = [
-        line
+    constraint_lines = [
+        line.strip()
         for line in read_text("scripts/release-build-constraints.txt").splitlines()
         if line and not line.startswith("#") and not line.startswith("    --hash=")
     ]
-    assert lines == [
+    assert constraint_lines == [
         "hatchling==1.31.0 \\",
         "packaging==26.2 \\",
         "pathspec==1.1.1 \\",
         "pluggy==1.6.0 \\",
         "trove-classifiers==2026.6.1.19 \\",
     ]
-    document = read_text("scripts/release-build-constraints.txt")
-    assert document.count("--hash=sha256:") == 5
+
+    closure_lines = [
+        line.strip()
+        for line in read_text("scripts/release-build-constraints.txt").splitlines()
+        if line and not line.startswith("#")
+    ]
+    normalized_closure = tuple(
+        " ".join((requirement.removesuffix(" \\"), hash_line))
+        for requirement, hash_line in zip(closure_lines[::2], closure_lines[1::2], strict=True)
+    )
+    assert normalized_closure == (
+        "hatchling==1.31.0 "
+        "--hash=sha256:aac80bec8b6fe35e8480f1c335be8910fa210a0e6f735a139be205dadcacb544",
+        "packaging==26.2 "
+        "--hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e",
+        "pathspec==1.1.1 "
+        "--hash=sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189",
+        "pluggy==1.6.0 "
+        "--hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746",
+        "trove-classifiers==2026.6.1.19 "
+        "--hash=sha256:ab4c4ec93cc4a4e7815fa759906e05e6bb3f2fbd92ea0f897288c6a43efd15b3",
+    )
 
 
 def test_publish_workflow_splits_build_from_oidc_publish() -> None:
