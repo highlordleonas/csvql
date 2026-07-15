@@ -184,19 +184,40 @@ def test_release_runbook_candidate_evidence_fails_closed() -> None:
     assert "2026-07-14" not in candidate
     assert 'mkdir -- "${evidence_dir}"' in candidate
     assert 'test ! -e "${evidence_dir}"' not in candidate
-    uv_cache_exports = [line for line in candidate_lines if line.startswith("export UV_CACHE_DIR=")]
-    assert uv_cache_exports == ['export UV_CACHE_DIR="${evidence_dir}/uv-cache"']
-    uv_cache_export = uv_cache_exports[0]
-    assert 'mkdir -m 700 -- "${UV_CACHE_DIR}"' in candidate_lines
-    assert "$HOME" not in uv_cache_export
-    assert "/private/tmp" not in uv_cache_export
+    uv_runtime_exports = {
+        line.removeprefix("export ").split("=", maxsplit=1)[0]: line.split("=", maxsplit=1)[1]
+        for line in candidate_lines
+        if line.startswith(
+            (
+                "export UV_CACHE_DIR=",
+                "export UV_TOOL_DIR=",
+                "export UV_PYTHON_INSTALL_DIR=",
+            )
+        )
+    }
+    assert uv_runtime_exports == {
+        "UV_CACHE_DIR": '"${evidence_dir}/uv-cache"',
+        "UV_TOOL_DIR": '"${evidence_dir}/uv-tools"',
+        "UV_PYTHON_INSTALL_DIR": '"${evidence_dir}/uv-python"',
+    }
+    uv_cache_export = 'export UV_CACHE_DIR="${evidence_dir}/uv-cache"'
+    uv_tool_export = 'export UV_TOOL_DIR="${evidence_dir}/uv-tools"'
+    uv_python_export = 'export UV_PYTHON_INSTALL_DIR="${evidence_dir}/uv-python"'
+    for runtime_variable in uv_runtime_exports:
+        assert f'mkdir -m 700 -- "${{{runtime_variable}}}"' in candidate_lines
+    assert "$HOME" not in "\n".join(uv_runtime_exports.values())
+    assert "/private/tmp" not in "\n".join(uv_runtime_exports.values())
     assert_ordered(
         candidate,
         (
             'mkdir -- "${evidence_dir}"',
             'printf \'%s\\n\' "${candidate_oid}" > "${evidence_dir}/candidate-commit.txt"',
             uv_cache_export,
+            uv_tool_export,
+            uv_python_export,
             'mkdir -m 700 -- "${UV_CACHE_DIR}"',
+            'mkdir -m 700 -- "${UV_TOOL_DIR}"',
+            'mkdir -m 700 -- "${UV_PYTHON_INSTALL_DIR}"',
             "make ci-fresh",
         ),
     )

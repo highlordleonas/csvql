@@ -129,7 +129,11 @@ mkdir -p -- "${evidence_root}"
 mkdir -- "${evidence_dir}"
 printf '%s\n' "${candidate_oid}" > "${evidence_dir}/candidate-commit.txt"
 export UV_CACHE_DIR="${evidence_dir}/uv-cache"
+export UV_TOOL_DIR="${evidence_dir}/uv-tools"
+export UV_PYTHON_INSTALL_DIR="${evidence_dir}/uv-python"
 mkdir -m 700 -- "${UV_CACHE_DIR}"
+mkdir -m 700 -- "${UV_TOOL_DIR}"
+mkdir -m 700 -- "${UV_PYTHON_INSTALL_DIR}"
 
 make ci-fresh
 uvx --from uv==0.11.28 uv build --python "${artifact_python}" \
