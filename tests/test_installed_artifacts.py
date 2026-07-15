@@ -82,6 +82,11 @@ EXPECTED_INHERITED_ENVIRONMENT_NAMES = {
 }
 
 
+def assert_posix_private_mode(mode: int, *, platform_name: str = os.name) -> None:
+    if platform_name != "nt":
+        assert mode & 0o777 == 0o600
+
+
 def test_windows_metadata_identity_uses_birthtime_instead_of_deprecated_ctime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -101,6 +106,13 @@ def test_windows_metadata_identity_uses_birthtime_instead_of_deprecated_ctime(
     assert verifier._metadata_identity(path_metadata) == verifier._metadata_identity(
         descriptor_metadata
     )
+
+
+def test_snapshot_mode_check_does_not_apply_posix_mask_on_windows() -> None:
+    assert_posix_private_mode(0o100666, platform_name="nt")
+
+    with pytest.raises(AssertionError):
+        assert_posix_private_mode(0o100666, platform_name="posix")
 
 
 EXPECTED_EXPLICIT_ENVIRONMENT = {
@@ -941,7 +953,7 @@ def test_source_mutation_during_snapshot_fails_closed(
     assert mutated is True
 
 
-def test_snapshots_are_private_regular_single_link_files(tmp_path: Path) -> None:
+def test_snapshots_are_regular_single_link_files_with_posix_private_mode(tmp_path: Path) -> None:
     runner = RecordingRunner()
     _, work_dir = _verify_local(tmp_path, runner)
 
@@ -950,7 +962,7 @@ def test_snapshots_are_private_regular_single_link_files(tmp_path: Path) -> None
         assert snapshot.is_file()
         assert not snapshot.is_symlink()
         assert metadata.st_nlink == 1
-        assert metadata.st_mode & 0o777 == 0o600
+        assert_posix_private_mode(metadata.st_mode)
 
 
 @pytest.mark.parametrize("existing_contents", [False, True])

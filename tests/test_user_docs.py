@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
@@ -83,12 +84,35 @@ EXCLUDED_INTERNAL_DOCS = {
 }
 
 
-def bash_executable(*, platform_name: str = os.name) -> str:
-    return "gitbash.exe" if platform_name == "nt" else "bash"
+def bash_executable(
+    *,
+    platform_name: str = os.name,
+    git_executable: str | None = None,
+) -> str:
+    if platform_name != "nt":
+        return "bash"
+
+    resolved_git = git_executable or shutil.which("git")
+    if resolved_git is None:
+        raise FileNotFoundError("Git for Windows is required to validate Bash examples")
+    git_path = Path(resolved_git)
+    for candidate in (git_path.with_name("bash.exe"), git_path.parent.parent / "bin" / "bash.exe"):
+        if candidate.is_file():
+            return str(candidate)
+    raise FileNotFoundError("Git for Windows bash.exe was not found")
 
 
-def test_windows_bash_syntax_uses_git_bash_alias() -> None:
-    assert bash_executable(platform_name="nt") == "gitbash.exe"
+def test_windows_bash_syntax_uses_git_for_windows_installation(tmp_path: Path) -> None:
+    git_executable = tmp_path / "Git" / "cmd" / "git.exe"
+    expected_bash = tmp_path / "Git" / "bin" / "bash.exe"
+    git_executable.parent.mkdir(parents=True)
+    expected_bash.parent.mkdir(parents=True)
+    git_executable.touch()
+    expected_bash.touch()
+
+    assert bash_executable(platform_name="nt", git_executable=str(git_executable)) == str(
+        expected_bash
+    )
 
 
 def tracked_markdown_paths() -> tuple[str, ...]:
