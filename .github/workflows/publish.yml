@@ -47,6 +47,7 @@ jobs:
       actions: read
     env:
       ARTIFACT_PYTHON: "3.12.11"
+      EVIDENCE_DIR: ${{ github.workspace }}
     defaults:
       run:
         shell: bash
@@ -163,7 +164,7 @@ jobs:
       - name: Set up Python
         run: uv python install "${ARTIFACT_PYTHON}"
       - name: Install dependencies
-        run: uv sync --all-extras --frozen
+        run: uv sync --all-extras --all-groups --frozen
       - name: Check formatting
         run: uv run ruff format --check .
       - name: Lint
@@ -172,103 +173,115 @@ jobs:
         run: uv run --all-extras mypy src
       - name: Test
         run: uv run --all-extras pytest
-      - name: Build
+      - name: Build exact release artifacts
         run: |
-          uv build --python "${ARTIFACT_PYTHON}" --sdist --wheel --out-dir dist --build-constraints scripts/release-build-constraints.txt --require-hashes
-          uv --version > dist/uv-version.txt
-          uv run --python "${ARTIFACT_PYTHON}" python --version > dist/python-version.txt
+          set -euo pipefail
+          uvx --from uv==0.11.28 uv build --python "${ARTIFACT_PYTHON}" \
+            --sdist --wheel \
+            --out-dir "${EVIDENCE_DIR}/dist" \
+            --build-constraints scripts/release-build-constraints.txt \
+            --require-hashes
+          uvx --from uv==0.11.28 uv --version > dist/uv-version.txt
+          uvx --from uv==0.11.28 uv run --python "${ARTIFACT_PYTHON}" python --version > dist/artifact-python-version.txt
           shasum -a 256 scripts/release-build-constraints.txt > dist/release-build-constraints.sha256
       - name: Audit package contents
-        run: uv run python scripts/audit_package_contents.py dist
-      - name: Verify artifact identity and hashes
         run: |
-          python - <<'PY'
-          from __future__ import annotations
-
-          import email.parser
-          import hashlib
-          import os
-          import tarfile
-          import zipfile
-          from pathlib import Path
-
-          dist = Path("dist")
-          expected_tag = os.environ["EXPECTED_TAG"]
-          expected_version = os.environ["EXPECTED_VERSION"]
-          if os.environ["GITHUB_REF"] != f"refs/tags/{expected_tag}":
-              raise SystemExit("publish workflow must run on the expected release tag")
-
-          wheels = sorted(dist.glob("localql-*.whl"))
-          sdists = sorted(dist.glob("localql-*.tar.gz"))
-          if len(wheels) != 1 or len(sdists) != 1:
-              raise SystemExit("expected exactly one localql wheel and one localql sdist")
-
-          def wheel_version(path: Path) -> str:
-              with zipfile.ZipFile(path) as archive:
-                  metadata_names = [
-                      name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
-                  ]
-                  if len(metadata_names) != 1:
-                      raise SystemExit(f"{path}: expected exactly one wheel METADATA file")
-                  metadata = archive.read(metadata_names[0]).decode("utf-8")
-              return str(email.parser.Parser().parsestr(metadata)["Version"])
-
-          def sdist_version(path: Path) -> str:
-              with tarfile.open(path) as archive:
-                  members = [
-                      member for member in archive.getmembers() if member.name.endswith("/PKG-INFO")
-                  ]
-                  if len(members) != 1:
-                      raise SystemExit(f"{path}: expected exactly one sdist PKG-INFO file")
-                  extracted = archive.extractfile(members[0])
-                  if extracted is None:
-                      raise SystemExit(f"{path}: could not read sdist PKG-INFO")
-                  metadata = extracted.read().decode("utf-8")
-              return str(email.parser.Parser().parsestr(metadata)["Version"])
-
-          versions = {wheel_version(wheels[0]), sdist_version(sdists[0])}
-          if versions != {expected_version}:
-              raise SystemExit(f"artifact versions do not match {expected_version}: {versions}")
-
-          hash_lines = []
-          for path in [*wheels, *sdists]:
-              digest = hashlib.sha256(path.read_bytes()).hexdigest()
-              hash_lines.append(f"{digest}  {path.name}\n")
-          (dist / "SHA256SUMS.txt").write_text("".join(hash_lines), encoding="utf-8")
-          PY
-      - name: Installed wheel smoke
+          set -euo pipefail
+          uv run --frozen --no-sync python scripts/audit_package_contents.py \
+            "${EVIDENCE_DIR}/dist" --expected-version "${EXPECTED_VERSION}"
+      - name: Rebuild sdist with reviewed constraints
         run: |
-          wheel="$(python - <<'PY'
-          from pathlib import Path
-
-          wheels = sorted(Path("dist").glob("localql-*.whl"))
-          if len(wheels) != 1:
-              raise SystemExit("expected exactly one localql wheel")
-          print(wheels[0].resolve())
-          PY
-          )"
-          smoke_root="$(mktemp -d)"
-          uv venv --seed "${smoke_root}/venv"
-          uv pip install --python "${smoke_root}/venv/bin/python" "${wheel}"
-          printf 'order_id,status\nORD-1,paid\n' > "${smoke_root}/orders.csv"
+          set -euo pipefail
+          mkdir -- "${EVIDENCE_DIR}/rebuild-constrained"
+          uvx --from uv==0.11.28 uv build --verbose --wheel \
+            "${EVIDENCE_DIR}/dist/localql-1.0.2.tar.gz" \
+            --python "${ARTIFACT_PYTHON}" \
+            --out-dir "${EVIDENCE_DIR}/rebuild-constrained" \
+            --build-constraints scripts/release-build-constraints.txt \
+            --require-hashes \
+            2>&1 | tee "${EVIDENCE_DIR}/rebuild-constrained.log"
+          grep -Eo 'hatchling==[0-9]+(\.[0-9]+)+' \
+            "${EVIDENCE_DIR}/rebuild-constrained.log" | sort -u \
+            > "${EVIDENCE_DIR}/rebuild-constrained-backend.txt"
+          test -s "${EVIDENCE_DIR}/rebuild-constrained-backend.txt"
+      - name: Rebuild sdist as a consumer
+        run: |
+          set -euo pipefail
+          mkdir -- "${EVIDENCE_DIR}/rebuild-consumer"
+          date -u +'%Y-%m-%dT%H:%M:%SZ' \
+            > "${EVIDENCE_DIR}/consumer-rebuild-observed-at.txt"
+          uvx --from uv==0.11.28 uv build --verbose --wheel \
+            "${EVIDENCE_DIR}/dist/localql-1.0.2.tar.gz" \
+            --python "${ARTIFACT_PYTHON}" \
+            --out-dir "${EVIDENCE_DIR}/rebuild-consumer" \
+            2>&1 | tee "${EVIDENCE_DIR}/rebuild-consumer.log"
+          grep -Eo 'hatchling==[0-9]+(\.[0-9]+)+' \
+            "${EVIDENCE_DIR}/rebuild-consumer.log" | sort -u \
+            > "${EVIDENCE_DIR}/rebuild-consumer-backend.txt"
+          test -s "${EVIDENCE_DIR}/rebuild-consumer-backend.txt"
+      - name: Verify release artifacts and immutable manifest
+        run: |
+          set -euo pipefail
+          uv run --frozen --no-sync python scripts/verify_release_artifacts.py \
+            "${EVIDENCE_DIR}/dist" --expected-version "${EXPECTED_VERSION}" \
+            --rebuilt-wheel "${EVIDENCE_DIR}/rebuild-constrained/localql-1.0.2-py3-none-any.whl" \
+            --rebuilt-wheel "${EVIDENCE_DIR}/rebuild-consumer/localql-1.0.2-py3-none-any.whl" \
+            --manifest "${EVIDENCE_DIR}/dist/artifact-manifest.json"
           (
-            cd "${smoke_root}"
-            unset PYTHONPATH
-            "${smoke_root}/venv/bin/csvql" --version
-            "${smoke_root}/venv/bin/csvql" query "${smoke_root}/orders.csv" \
-              "SELECT COUNT(*) AS order_count FROM orders" --output json
+            cd "${EVIDENCE_DIR}/dist"
+            shasum -a 256 \
+              localql-1.0.2-py3-none-any.whl \
+              localql-1.0.2.tar.gz \
+              > SHA256SUMS.txt
           )
+      - name: Check distribution metadata
+        run: |
+          set -euo pipefail
+          uvx --from twine==6.2.0 twine check \
+            "${EVIDENCE_DIR}/dist/localql-1.0.2-py3-none-any.whl" \
+            "${EVIDENCE_DIR}/dist/localql-1.0.2.tar.gz"
+      - name: Audit locked dependency paths
+        run: |
+          set -euo pipefail
+          uv run --frozen --no-sync python scripts/verify_dependency_audit.py \
+            --evidence-dir "${EVIDENCE_DIR}/dependency-audit"
+      - name: Verify installed release artifacts
+        run: |
+          set -euo pipefail
+          uv run --frozen --no-sync python scripts/verify_installed_artifacts.py \
+            --wheel "${EVIDENCE_DIR}/dist/localql-1.0.2-py3-none-any.whl" \
+            --core-requirements "${EVIDENCE_DIR}/dependency-audit/core-requirements.txt" \
+            --tui-requirements "${EVIDENCE_DIR}/dependency-audit/tui-requirements.txt" \
+            --work-dir "${EVIDENCE_DIR}/installed-smokes" \
+            --expected-version "${EXPECTED_VERSION}" \
+            --python "${ARTIFACT_PYTHON}" \
+            > "${EVIDENCE_DIR}/installed-smokes.json"
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: localql-1.0.2-dist
           path: |
-            dist/*.whl
-            dist/*.tar.gz
+            dist/localql-1.0.2-py3-none-any.whl
+            dist/localql-1.0.2.tar.gz
+            dist/artifact-manifest.json
             dist/SHA256SUMS.txt
             dist/uv-version.txt
-            dist/python-version.txt
+            dist/artifact-python-version.txt
             dist/release-build-constraints.sha256
+            rebuild-constrained/localql-1.0.2-py3-none-any.whl
+            rebuild-constrained.log
+            rebuild-constrained-backend.txt
+            rebuild-consumer/localql-1.0.2-py3-none-any.whl
+            rebuild-consumer.log
+            rebuild-consumer-backend.txt
+            consumer-rebuild-observed-at.txt
+            dependency-audit/core-requirements.txt
+            dependency-audit/tui-requirements.txt
+            dependency-audit/core-pip-audit.json
+            dependency-audit/tui-pip-audit.json
+            dependency-audit/pip-audit.log
+            dependency-audit/manifest.json
+            installed-smokes.json
           if-no-files-found: error
 
   publish:
@@ -294,9 +307,9 @@ jobs:
           path: release-artifacts
       - name: Verify downloaded artifact hashes and metadata
         run: |
-          cd release-artifacts
+          cd release-artifacts/dist
           shasum -a 256 -c SHA256SUMS.txt
-          cd ..
+          cd ../..
           python - <<'PY'
           from __future__ import annotations
 
@@ -306,7 +319,7 @@ jobs:
           import zipfile
           from pathlib import Path
 
-          dist = Path("release-artifacts")
+          dist = Path("release-artifacts/dist")
           expected_version = os.environ["EXPECTED_VERSION"]
           wheels = sorted(dist.glob("localql-*.whl"))
           sdists = sorted(dist.glob("localql-*.tar.gz"))
@@ -341,7 +354,7 @@ jobs:
               raise SystemExit(f"artifact versions do not match {expected_version}: {versions}")
           PY
           mkdir -p dist
-          cp release-artifacts/*.whl release-artifacts/*.tar.gz dist/
+          cp release-artifacts/dist/*.whl release-artifacts/dist/*.tar.gz dist/
       - name: Require version to be absent from PyPI
         run: |
           python - <<'PY'
@@ -389,6 +402,7 @@ jobs:
       run:
         shell: bash
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - name: Download distribution artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -399,6 +413,11 @@ jobs:
         with:
           version: "0.11.28"
           enable-cache: false
+      - name: Prepare frozen verification environment
+        run: |
+          set -euo pipefail
+          uv python install 3.12.11
+          uv sync --all-extras --all-groups --frozen
       - name: Verify published artifacts and capture provenance
         id: verify_pypi_release
         timeout-minutes: 7
@@ -419,7 +438,7 @@ jobs:
 
           PROJECT = "localql"
           VERSION = os.environ["EXPECTED_VERSION"]
-          ARTIFACT_DIR = Path("release-artifacts")
+          ARTIFACT_DIR = Path("release-artifacts/dist")
           VERIFICATION_DIR = Path("pypi-verification")
           MAX_ATTEMPTS = 8
           POLL_SECONDS = 10
@@ -640,43 +659,12 @@ jobs:
       - name: Install exact public release and run core and TUI smoke
         run: |
           set -euo pipefail
-          smoke_root="$(mktemp -d)"
-          printf 'order_id,status\nORD-1,paid\n' > "${smoke_root}/orders.csv"
-          uv python install 3.12
-          uv venv --python 3.12 --seed "${smoke_root}/core"
-          UV_NO_CACHE=1 uv pip install \
-            --python "${smoke_root}/core/bin/python" \
-            --index-url https://pypi.org/simple \
-            "localql==${EXPECTED_VERSION}"
-          test "$("${smoke_root}/core/bin/csvql" --version)" = "${EXPECTED_VERSION}"
-          "${smoke_root}/core/bin/csvql" query "${smoke_root}/orders.csv" \
-            "SELECT COUNT(*) AS order_count FROM orders" --output json \
-            > "${smoke_root}/query.json"
-          python - "${smoke_root}/query.json" <<'PY'
-          import json
-          import sys
-          from pathlib import Path
-
-          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-          if not isinstance(payload, dict):
-              raise SystemExit("public-index query smoke returned invalid JSON")
-          expected = {
-              "columns": ["order_count"],
-              "rows": [{"order_count": 1}],
-              "row_count": 1,
-          }
-          observed = {key: payload.get(key) for key in expected}
-          if observed != expected:
-              raise SystemExit(f"public-index query smoke mismatch: {observed!r}")
-          PY
-          uv venv --python 3.12 --seed "${smoke_root}/tui"
-          UV_NO_CACHE=1 uv pip install \
-            --python "${smoke_root}/tui/bin/python" \
-            --index-url https://pypi.org/simple \
-            "localql[tui]==${EXPECTED_VERSION}"
-          "${smoke_root}/tui/bin/python" -c \
-            "import textual; import csvql.tui_app; print('tui-extra-ok')"
-          "${smoke_root}/tui/bin/csvql" menu --help
+          uv run --frozen --no-sync python scripts/verify_installed_artifacts.py \
+            --work-dir post-publish-smoke \
+            --expected-version 1.0.2 \
+            --python 3.12.11 \
+            --public-index \
+            --allow-published-version-check
       - name: Record failed verification outcome
         if: always() && steps.verify_pypi_release.outcome != 'success'
         run: |

@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import io
-import json
 import re
 import shlex
 import subprocess
 import sys
-import tarfile
 import tomllib
-import zipfile
-from importlib.metadata import version as installed_distribution_version
 from pathlib import Path
 
 import yaml
@@ -58,12 +53,6 @@ def assert_ordered(document: str, phrases: tuple[str, ...]) -> None:
     for phrase in phrases:
         cursor = document.find(phrase, cursor + 1)
         assert cursor >= 0, phrase
-
-
-def heredoc_block(script: str, marker: str) -> str:
-    matches = re.findall(rf"<<'{re.escape(marker)}'\n(.*?)\n{re.escape(marker)}", script, re.DOTALL)
-    assert len(matches) == 1, marker
-    return matches[0]
 
 
 def test_open_source_trust_files_exist() -> None:
@@ -172,12 +161,13 @@ def test_release_runbook_examples_are_machine_valid_without_pushing() -> None:
         )
 
 
-def test_release_runbook_candidate_evidence_fails_closed(tmp_path: Path) -> None:
+def test_release_runbook_candidate_evidence_fails_closed() -> None:
     releasing = read_text("docs/releasing.md")
     candidate_section = normalized_markdown(markdown_section(releasing, "Candidate Evidence"))
     candidate = next(
         block for block in fenced_blocks(releasing, "bash") if "evidence_dir=" in block
     )
+    continuation = "\\\n  "
 
     assert "Any failure stops the evidence run" in candidate_section
     assert (
@@ -187,8 +177,11 @@ def test_release_runbook_candidate_evidence_fails_closed(tmp_path: Path) -> None
     candidate_lines = candidate.splitlines()
     assert candidate_lines[0] == "set -euo pipefail"
     assert "||" not in candidate
-    assert '[[ "${release_version}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]' in candidate
-    assert 'expected_version="${release_version#v}"' in candidate
+    assert 'release_version="v1.0.2"' in candidate_lines
+    assert 'expected_version="1.0.2"' in candidate_lines
+    assert 'artifact_python="3.12.11"' in candidate_lines
+    assert 'intended_publication_date="2026-07-15"' in candidate_lines
+    assert "2026-07-14" not in candidate
     assert 'mkdir -- "${evidence_dir}"' in candidate
     assert 'test ! -e "${evidence_dir}"' not in candidate
     assert 'git cat-file -t "${candidate_oid}"' in candidate
@@ -214,36 +207,81 @@ def test_release_runbook_candidate_evidence_fails_closed(tmp_path: Path) -> None
     assert 'test -z "${final_status}"' in candidate_lines
     assert "localql-untracked" not in candidate
     assert "git ls-files --others --exclude-standard" not in candidate
-    assert "shopt -s nullglob" in candidate
-    assert 'wheels=("${evidence_dir}"/dist/*.whl)' in candidate_lines
-    assert 'sdists=("${evidence_dir}"/dist/*.tar.gz)' in candidate_lines
-    assert "if (( ${#wheels[@]} != 1 )); then" in candidate
-    assert "if (( ${#sdists[@]} != 1 )); then" in candidate
-    assert candidate_lines.count("  exit 1") == 2
+    for rebuild_dir in ("rebuild-constrained", "rebuild-consumer"):
+        assert f'"${{evidence_dir}}/{rebuild_dir}"' in candidate
 
-    metadata_validation = heredoc_block(candidate, "PY_METADATA")
-    assert "zipfile.ZipFile(wheel_path)" in metadata_validation
-    assert 'tarfile.open(sdist_path, "r:*")' in metadata_validation
-    assert 'metadata["Name"]' in metadata_validation
-    assert 'metadata["Version"]' in metadata_validation
-    assert '("localql", expected_version)' in metadata_validation
+    for exact_command in (
+        'uvx --from uv==0.11.28 uv build --python "${artifact_python}"',
+        "--build-constraints scripts/release-build-constraints.txt",
+        "--require-hashes",
+        "scripts/audit_package_contents.py "
+        f'{continuation}"${{evidence_dir}}/dist" --expected-version "${{expected_version}}"',
+        "scripts/verify_release_artifacts.py",
+        "uvx --from twine==6.2.0 twine check",
+        "scripts/verify_dependency_audit.py",
+        "scripts/verify_installed_artifacts.py",
+        'test "$(git rev-parse --verify HEAD^{commit})" = "${candidate_oid}"',
+    ):
+        assert exact_command in candidate
 
-    smoke_validation = heredoc_block(candidate, "PY_SMOKE")
-    assert "from importlib.metadata import version" in smoke_validation
-    assert 'version("localql")' in smoke_validation
-    assert '"columns": ["order_count"]' in smoke_validation
-    assert '"rows": [{"order_count": 1}]' in smoke_validation
-    assert '"row_count": 1' in smoke_validation
-    assert "observed_result != expected_result" in smoke_validation
-    assert 'cli_version="$(' in candidate
-    assert 'test "${cli_version}" = "${expected_version}"' in candidate_lines
-    assert 'query_json="$(' in candidate
-    assert "query-smoke.json" in candidate
+    for exact_record in (
+        'uvx --from uv==0.11.28 uv --version > "${evidence_dir}/uv-version.txt"',
+        'uvx --from uv==0.11.28 uv run --python "${artifact_python}" '
+        'python --version > "${evidence_dir}/artifact-python-version.txt"',
+        "shasum -a 256 scripts/release-build-constraints.txt "
+        '> "${evidence_dir}/release-build-constraints.sha256"',
+    ):
+        assert exact_record in candidate
+
+    assert '"${evidence_dir}/dist/localql-1.0.2.tar.gz"' in candidate
+    assert '--out-dir "${evidence_dir}/rebuild-constrained"' in candidate
+    assert '--out-dir "${evidence_dir}/rebuild-consumer"' in candidate
+    assert (
+        '--rebuilt-wheel "${evidence_dir}/rebuild-constrained/localql-1.0.2-py3-none-any.whl"'
+        in (candidate)
+    )
+    assert '--rebuilt-wheel "${evidence_dir}/rebuild-consumer/localql-1.0.2-py3-none-any.whl"' in (
+        candidate
+    )
+    assert (
+        "date -u +'%Y-%m-%dT%H:%M:%SZ' > \"${evidence_dir}/consumer-rebuild-observed-at.txt\""
+    ) in candidate
+    for rebuild_kind in ("constrained", "consumer"):
+        assert f'2>&1 | tee "${{evidence_dir}}/rebuild-{rebuild_kind}.log"' in candidate
+        assert (
+            f"grep -Eo 'hatchling==[0-9]+(\\.[0-9]+)+' {continuation}"
+            f'"${{evidence_dir}}/rebuild-{rebuild_kind}.log" | sort -u '
+            f'{continuation}> "${{evidence_dir}}/rebuild-{rebuild_kind}-backend.txt"'
+        ) in candidate
+        assert f'test -s "${{evidence_dir}}/rebuild-{rebuild_kind}-backend.txt"' in candidate
+
+    assert '--evidence-dir "${evidence_dir}/dependency-audit"' in candidate
+    assert '--core-requirements "${evidence_dir}/dependency-audit/core-requirements.txt"' in (
+        candidate
+    )
+    assert '--tui-requirements "${evidence_dir}/dependency-audit/tui-requirements.txt"' in (
+        candidate
+    )
+    assert '--work-dir "${evidence_dir}/installed-smokes"' in candidate
+    assert '--expected-version "${expected_version}"' in candidate
+    assert '--python "${artifact_python}"' in candidate
+
+    for stale_invocation in (
+        'expected_version="${release_version#v}"',
+        "uv build --sdist --wheel",
+        "PY_METADATA",
+        "PY_SMOKE",
+        "uv pip install",
+        f'scripts/audit_package_contents.py {continuation}"${{evidence_dir}}/dist"\n',
+    ):
+        assert stale_invocation not in candidate
+
     assert_ordered(
         candidate,
         (
-            '[[ "${release_version}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]',
-            'expected_version="${release_version#v}"',
+            'release_version="v1.0.2"',
+            'expected_version="1.0.2"',
+            'artifact_python="3.12.11"',
             'candidate_oid="$(git rev-parse --verify HEAD^{commit})"',
             'git cat-file -t "${candidate_oid}"',
             "git diff --quiet --exit-code --",
@@ -252,17 +290,19 @@ def test_release_runbook_candidate_evidence_fails_closed(tmp_path: Path) -> None
             'test -z "${initial_status}"',
             'mkdir -- "${evidence_dir}"',
             "make ci-fresh",
-            "uv build --sdist --wheel",
-            "shopt -s nullglob",
-            'wheels=("${evidence_dir}"/dist/*.whl)',
-            'sdists=("${evidence_dir}"/dist/*.tar.gz)',
-            "if (( ${#wheels[@]} != 1 )); then",
-            "if (( ${#sdists[@]} != 1 )); then",
-            "scripts/audit_package_contents.py",
-            "PY_METADATA",
-            'test "${cli_version}" = "${expected_version}"',
-            '"${smoke_root}/venv/bin/csvql" query',
-            "PY_SMOKE",
+            'uvx --from uv==0.11.28 uv build --python "${artifact_python}"',
+            "--build-constraints scripts/release-build-constraints.txt",
+            "--require-hashes",
+            f'scripts/audit_package_contents.py {continuation}"${{evidence_dir}}/dist" '
+            "--expected-version",
+            '--out-dir "${evidence_dir}/rebuild-constrained"',
+            '--out-dir "${evidence_dir}/rebuild-consumer"',
+            "scripts/verify_release_artifacts.py",
+            "uvx --from twine==6.2.0 twine check",
+            "scripts/verify_dependency_audit.py",
+            "scripts/verify_installed_artifacts.py",
+            'intended_publication_date="2026-07-15"',
+            'test "${changelog_date}" = "${intended_publication_date}"',
             'test "$(git rev-parse --verify HEAD^{commit})" = "${candidate_oid}"',
             'final_status="$(git status --porcelain=v1 --untracked-files=all)"',
             'test -z "${final_status}"',
@@ -281,89 +321,44 @@ def test_release_runbook_candidate_evidence_fails_closed(tmp_path: Path) -> None
     final_empty_check = candidate.index('test -z "${final_status}"')
     assert final_head_check < final_diff < final_cached_diff < final_status < final_empty_check
 
-    def write_wheel(path: Path, version: str) -> None:
-        metadata = f"Metadata-Version: 2.4\nName: localql\nVersion: {version}\n\n"
-        with zipfile.ZipFile(path, "w") as archive:
-            archive.writestr(f"localql-{version}.dist-info/METADATA", metadata)
 
-    def write_sdist(path: Path, version: str) -> None:
-        metadata = f"Metadata-Version: 2.4\nName: localql\nVersion: {version}\n\n".encode()
-        member = tarfile.TarInfo(f"localql-{version}/PKG-INFO")
-        member.size = len(metadata)
-        with tarfile.open(path, "w:gz") as archive:
-            archive.addfile(member, io.BytesIO(metadata))
+def test_release_runbook_binds_hosted_readiness_to_exact_pr_test_merge() -> None:
+    readiness = markdown_section(read_text("docs/releasing.md"), "Hosted Pull Request Readiness")
+    normalized = normalized_markdown(readiness)
 
-    wheel = tmp_path / "localql.whl"
-    sdist = tmp_path / "localql.tar.gz"
-    write_wheel(wheel, "1.2.3")
-    write_sdist(sdist, "1.2.3")
-    matching_metadata = subprocess.run(
-        [sys.executable, "-c", metadata_validation, "1.2.3", str(wheel), str(sdist)],
-        text=True,
-        capture_output=True,
-    )
-    assert matching_metadata.returncode == 0, matching_metadata.stderr
-
-    write_wheel(wheel, "9.9.9")
-    wheel_mismatch = subprocess.run(
-        [sys.executable, "-c", metadata_validation, "1.2.3", str(wheel), str(sdist)],
-        text=True,
-        capture_output=True,
-    )
-    assert wheel_mismatch.returncode != 0
-
-    write_wheel(wheel, "1.2.3")
-    write_sdist(sdist, "9.9.9")
-    sdist_mismatch = subprocess.run(
-        [sys.executable, "-c", metadata_validation, "1.2.3", str(wheel), str(sdist)],
-        text=True,
-        capture_output=True,
-    )
-    assert sdist_mismatch.returncode != 0
-
-    query_path = tmp_path / "query.json"
-    query_path.write_text(
-        json.dumps(
-            {
-                "columns": ["order_count"],
-                "elapsed_ms": 0.1,
-                "row_count": 1,
-                "rows": [{"order_count": 1}],
-            }
+    assert_ordered(
+        readiness,
+        (
+            "public_main_base_oid",
+            "candidate_head_oid",
+            "pull_request_number",
+            "test_merge_oid",
+            "ci_workflow_id",
+            "ci_run_id",
+            "ci_run_attempt",
+            "expected_job_names",
         ),
-        encoding="utf-8",
     )
-    current_version = installed_distribution_version("localql")
-    matching_smoke = subprocess.run(
-        [sys.executable, "-c", smoke_validation, current_version, str(query_path)],
-        text=True,
-        capture_output=True,
-    )
-    assert matching_smoke.returncode == 0, matching_smoke.stderr
-
-    version_mismatch = subprocess.run(
-        [sys.executable, "-c", smoke_validation, "0.0.0", str(query_path)],
-        text=True,
-        capture_output=True,
-    )
-    assert version_mismatch.returncode != 0
-
-    query_path.write_text(
-        json.dumps(
-            {
-                "columns": ["wrong_column"],
-                "row_count": 2,
-                "rows": [{"order_count": 2}],
-            }
-        ),
-        encoding="utf-8",
-    )
-    query_mismatch = subprocess.run(
-        [sys.executable, "-c", smoke_validation, current_version, str(query_path)],
-        text=True,
-        capture_output=True,
-    )
-    assert query_mismatch.returncode != 0
+    for job_name in (
+        "test (ubuntu-latest, 3.11)",
+        "test (ubuntu-latest, 3.12)",
+        "test (ubuntu-latest, 3.13)",
+        "test (ubuntu-latest, 3.14)",
+        "test (macos-latest, 3.12)",
+        "test (windows-latest, 3.12)",
+    ):
+        assert job_name in readiness
+    for phrase in (
+        "derived from the recorded public_main_base_oid and candidate_head_oid",
+        "read-only evidence",
+        "does not authorize",
+        "branch update",
+        "pull request update",
+        "merge",
+        "tag",
+        "publication",
+    ):
+        assert phrase in normalized
 
 
 def test_release_runbook_reconciliation_validates_before_cas() -> None:
@@ -767,14 +762,18 @@ def test_publish_verifies_exact_publisher_and_public_index_install() -> None:
         'bundle.get("publisher")',
         '"published_files"',
         '"publication_run_id"',
-        "UV_NO_CACHE=1",
-        "https://pypi.org/simple",
-        "localql==${EXPECTED_VERSION}",
-        "localql[tui]==${EXPECTED_VERSION}",
-        'csvql" query',
-        'csvql" menu --help',
+        "scripts/verify_installed_artifacts.py",
+        "--work-dir post-publish-smoke",
+        "--expected-version 1.0.2",
+        "--python 3.12.11",
+        "--public-index",
+        "--allow-published-version-check",
     ):
         assert required in verification_runs
+
+    assert "UV_NO_CACHE=1" not in verification_runs
+    assert "localql==${EXPECTED_VERSION}" not in verification_runs
+    assert "localql[tui]==${EXPECTED_VERSION}" not in verification_runs
 
 
 def test_release_runbook_names_strict_publication_recovery() -> None:
@@ -852,13 +851,18 @@ def test_ci_and_publish_pin_exact_release_toolchain() -> None:
     assert "--build-constraints scripts/release-build-constraints.txt" in build_runs
     assert "--require-hashes" in build_runs
 
-    build_step = next(step for step in publish_build["steps"] if step.get("name") == "Build")
+    build_step = next(
+        step
+        for step in publish_build["steps"]
+        if step.get("name") == "Build exact release artifacts"
+    )
     build_commands = tuple(
         line.strip() for line in str(build_step["run"]).splitlines() if line.strip()
     )
     for evidence_command in (
-        "uv --version > dist/uv-version.txt",
-        'uv run --python "${ARTIFACT_PYTHON}" python --version > dist/python-version.txt',
+        "uvx --from uv==0.11.28 uv --version > dist/uv-version.txt",
+        'uvx --from uv==0.11.28 uv run --python "${ARTIFACT_PYTHON}" python --version '
+        "> dist/artifact-python-version.txt",
         "shasum -a 256 scripts/release-build-constraints.txt "
         "> dist/release-build-constraints.sha256",
     ):
@@ -874,10 +878,152 @@ def test_ci_and_publish_pin_exact_release_toolchain() -> None:
     )
     for evidence_path in (
         "dist/uv-version.txt",
-        "dist/python-version.txt",
+        "dist/artifact-python-version.txt",
         "dist/release-build-constraints.sha256",
     ):
         assert evidence_path in uploaded_paths
+
+
+def test_ci_keeps_exact_matrix_and_adds_one_conditional_artifact_step() -> None:
+    payload = yaml.safe_load(read_text(".github/workflows/ci.yml"))
+
+    assert set(payload["jobs"]) == {"test"}
+    job = payload["jobs"]["test"]
+    assert job["strategy"]["matrix"]["include"] == [
+        {"os": "ubuntu-latest", "python-version": "3.11"},
+        {"os": "ubuntu-latest", "python-version": "3.12"},
+        {"os": "ubuntu-latest", "python-version": "3.13"},
+        {"os": "ubuntu-latest", "python-version": "3.14"},
+        {"os": "macos-latest", "python-version": "3.12"},
+        {"os": "windows-latest", "python-version": "3.12"},
+    ]
+    artifact_steps = [
+        step for step in job["steps"] if step.get("name") == "Verify exact release artifacts"
+    ]
+    assert len(artifact_steps) == 1
+    artifact_step = artifact_steps[0]
+    assert artifact_step["if"] == (
+        "matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'"
+    )
+    assert (
+        str(artifact_step["run"])
+        == """set -euo pipefail
+uv python install "${ARTIFACT_PYTHON}"
+mkdir -p output/ci-release-dist
+uv build --python "${ARTIFACT_PYTHON}" --sdist --wheel \\
+  --out-dir output/ci-release-dist \\
+  --build-constraints scripts/release-build-constraints.txt \\
+  --require-hashes
+uv run --frozen --no-sync python scripts/audit_package_contents.py \\
+  output/ci-release-dist --expected-version 1.0.2
+uv run --frozen --no-sync python scripts/verify_release_artifacts.py \\
+  output/ci-release-dist --expected-version 1.0.2 \\
+  --manifest output/ci-release-artifact-manifest.json
+uvx --from twine==6.2.0 twine check \\
+  output/ci-release-dist/localql-1.0.2-py3-none-any.whl \\
+  output/ci-release-dist/localql-1.0.2.tar.gz
+uv --version > output/ci-release-uv-version.txt
+uv run --python "${ARTIFACT_PYTHON}" --no-sync python --version \\
+  > output/ci-release-python-version.txt
+shasum -a 256 scripts/release-build-constraints.txt \\
+  > output/ci-release-build-constraints.sha256
+"""
+    )
+
+
+def test_publish_reuses_exact_release_proof_and_uploads_immutable_evidence() -> None:
+    payload = yaml.safe_load(read_text(".github/workflows/publish.yml"))
+    build_job = payload["jobs"]["build-and-verify"]
+    steps = build_job["steps"]
+    runs = "\n".join(str(step.get("run", "")) for step in steps)
+
+    install = next(step for step in steps if step.get("name") == "Install dependencies")
+    assert install["run"] == "uv sync --all-extras --all-groups --frozen"
+    assert_ordered(
+        runs,
+        (
+            'uvx --from uv==0.11.28 uv build --python "${ARTIFACT_PYTHON}"',
+            "--build-constraints scripts/release-build-constraints.txt",
+            "--require-hashes",
+            "scripts/audit_package_contents.py",
+            '--expected-version "${EXPECTED_VERSION}"',
+            '--out-dir "${EVIDENCE_DIR}/rebuild-constrained"',
+            '--out-dir "${EVIDENCE_DIR}/rebuild-consumer"',
+            "scripts/verify_release_artifacts.py",
+            '--rebuilt-wheel "${EVIDENCE_DIR}/rebuild-constrained/localql-1.0.2-py3-none-any.whl"',
+            '--rebuilt-wheel "${EVIDENCE_DIR}/rebuild-consumer/localql-1.0.2-py3-none-any.whl"',
+            "uvx --from twine==6.2.0 twine check",
+            "scripts/verify_dependency_audit.py",
+            "scripts/verify_installed_artifacts.py",
+        ),
+    )
+    for required in (
+        '--evidence-dir "${EVIDENCE_DIR}/dependency-audit"',
+        '--core-requirements "${EVIDENCE_DIR}/dependency-audit/core-requirements.txt"',
+        '--tui-requirements "${EVIDENCE_DIR}/dependency-audit/tui-requirements.txt"',
+        '--work-dir "${EVIDENCE_DIR}/installed-smokes"',
+        '--expected-version "${EXPECTED_VERSION}"',
+        '--python "${ARTIFACT_PYTHON}"',
+        '2>&1 | tee "${EVIDENCE_DIR}/rebuild-constrained.log"',
+        '2>&1 | tee "${EVIDENCE_DIR}/rebuild-consumer.log"',
+        '"${EVIDENCE_DIR}/consumer-rebuild-observed-at.txt"',
+    ):
+        assert required in runs
+
+    step_names = [step.get("name") for step in steps]
+    assert "Verify artifact identity and hashes" not in step_names
+    assert "Installed wheel smoke" not in step_names
+    assert "python - <<'PY'" not in "\n".join(
+        str(step.get("run", ""))
+        for step in steps
+        if step.get("name") != "Verify release and tag-CI identity"
+    )
+
+    upload = next(step for step in steps if step.get("name") == "Upload distribution artifacts")
+    uploaded_paths = {
+        line.strip() for line in str(upload["with"]["path"]).splitlines() if line.strip()
+    }
+    assert uploaded_paths == {
+        "dist/localql-1.0.2-py3-none-any.whl",
+        "dist/localql-1.0.2.tar.gz",
+        "dist/artifact-manifest.json",
+        "dist/SHA256SUMS.txt",
+        "dist/uv-version.txt",
+        "dist/artifact-python-version.txt",
+        "dist/release-build-constraints.sha256",
+        "rebuild-constrained/localql-1.0.2-py3-none-any.whl",
+        "rebuild-constrained.log",
+        "rebuild-constrained-backend.txt",
+        "rebuild-consumer/localql-1.0.2-py3-none-any.whl",
+        "rebuild-consumer.log",
+        "rebuild-consumer-backend.txt",
+        "consumer-rebuild-observed-at.txt",
+        "dependency-audit/core-requirements.txt",
+        "dependency-audit/tui-requirements.txt",
+        "dependency-audit/core-pip-audit.json",
+        "dependency-audit/tui-pip-audit.json",
+        "dependency-audit/pip-audit.log",
+        "dependency-audit/manifest.json",
+        "installed-smokes.json",
+    }
+
+    verification_steps = payload["jobs"]["post-publish-verification"]["steps"]
+    public_smoke = next(
+        step
+        for step in verification_steps
+        if step.get("name") == "Install exact public release and run core and TUI smoke"
+    )
+    assert (
+        str(public_smoke["run"])
+        == """set -euo pipefail
+uv run --frozen --no-sync python scripts/verify_installed_artifacts.py \\
+  --work-dir post-publish-smoke \\
+  --expected-version 1.0.2 \\
+  --python 3.12.11 \\
+  --public-index \\
+  --allow-published-version-check
+"""
+    )
 
 
 def test_release_build_constraints_are_exact_and_hashed() -> None:
@@ -952,17 +1098,17 @@ def test_publish_workflow_splits_build_from_oidc_publish() -> None:
     verification_uses = "\n".join(str(step.get("uses", "")) for step in verification_job["steps"])
 
     for required in (
-        "uv sync --all-extras --frozen",
+        "uv sync --all-extras --all-groups --frozen",
         "uv run ruff format --check .",
         "uv run ruff check .",
         "uv run --all-extras mypy src",
         "uv run --all-extras pytest",
-        'uv build --python "${ARTIFACT_PYTHON}" --sdist --wheel --out-dir dist '
-        "--build-constraints scripts/release-build-constraints.txt --require-hashes",
-        "scripts/audit_package_contents.py dist",
+        'uvx --from uv==0.11.28 uv build --python "${ARTIFACT_PYTHON}"',
+        "scripts/audit_package_contents.py",
+        "scripts/verify_release_artifacts.py",
+        "scripts/verify_dependency_audit.py",
+        "scripts/verify_installed_artifacts.py",
         "SHA256SUMS.txt",
-        'csvql" query',
-        "unset PYTHONPATH",
     ):
         assert required in build_runs
 
@@ -979,7 +1125,7 @@ def test_publish_workflow_splits_build_from_oidc_publish() -> None:
     assert "actions/download-artifact@" in publish_uses
     assert "pypa/gh-action-pypi-publish@" in publish_uses
     assert "shasum -a 256 -c SHA256SUMS.txt" in publish_runs
-    assert "cp release-artifacts/*.whl release-artifacts/*.tar.gz dist/" in publish_runs
+    assert "cp release-artifacts/dist/*.whl release-artifacts/dist/*.tar.gz dist/" in (publish_runs)
     assert "packages-dir: dist/" in workflow
     assert "print-hash: true" in workflow
     assert "attestations: true" in workflow
@@ -1062,11 +1208,9 @@ def test_publish_workflow_splits_build_from_oidc_publish() -> None:
     assert worst_case_seconds < verification_step["timeout-minutes"] * 60
 
     for forbidden in (
-        "uv sync",
         "uv build",
-        "uv run",
+        "uv pip install",
         "python -m csvql",
-        "scripts/",
         "gh-action-pypi-publish",
     ):
         assert forbidden not in verification_runs

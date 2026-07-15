@@ -103,14 +103,17 @@ Start from a clean candidate commit and record every command, result, commit
 ID, version, artifact filename, and SHA-256 digest. Use a new evidence directory
 for every attempt. The directory is claimed with one plain `mkdir`, which fails
 if that candidate name was already used; do not delete or reuse a failed claim.
-Replace `vX.Y.Z` with the exact version, then run the entire block in Bash from
-the repository root:
+For the v1.0.2 candidate, run the entire block in Bash from the repository
+root. The version, artifact Python, and intended publication date are fixed
+inputs; changing any of them requires a new candidate commit and a complete
+proof rerun:
 
 ```bash
 set -euo pipefail
-release_version="vX.Y.Z"
-[[ "${release_version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-expected_version="${release_version#v}"
+release_version="v1.0.2"
+expected_version="1.0.2"
+artifact_python="3.12.11"
+test "${release_version}" = "v${expected_version}"
 candidate_oid="$(git rev-parse --verify HEAD^{commit})"
 test "$(git cat-file -t "${candidate_oid}")" = "commit"
 git diff --quiet --exit-code --
@@ -127,109 +130,72 @@ mkdir -- "${evidence_dir}"
 printf '%s\n' "${candidate_oid}" > "${evidence_dir}/candidate-commit.txt"
 
 make ci-fresh
-uv build --sdist --wheel --out-dir "${evidence_dir}/dist"
-
-shopt -s nullglob
-wheels=("${evidence_dir}"/dist/*.whl)
-sdists=("${evidence_dir}"/dist/*.tar.gz)
-if (( ${#wheels[@]} != 1 )); then
-  printf 'expected exactly one wheel, found %s\n' "${#wheels[@]}" >&2
-  exit 1
-fi
-if (( ${#sdists[@]} != 1 )); then
-  printf 'expected exactly one sdist, found %s\n' "${#sdists[@]}" >&2
-  exit 1
-fi
+uvx --from uv==0.11.28 uv build --python "${artifact_python}" \
+  --sdist --wheel \
+  --out-dir "${evidence_dir}/dist" \
+  --build-constraints scripts/release-build-constraints.txt \
+  --require-hashes
+uvx --from uv==0.11.28 uv --version > "${evidence_dir}/uv-version.txt"
+uvx --from uv==0.11.28 uv run --python "${artifact_python}" python --version > "${evidence_dir}/artifact-python-version.txt"
+shasum -a 256 scripts/release-build-constraints.txt > "${evidence_dir}/release-build-constraints.sha256"
 
 uv run --frozen --no-sync python scripts/audit_package_contents.py \
-  "${evidence_dir}/dist"
-uv run --frozen --no-sync python - \
-  "${expected_version}" "${wheels[0]}" "${sdists[0]}" <<'PY_METADATA'
-from email.parser import BytesParser
-from email.policy import default
-from pathlib import PurePosixPath
-import sys
-import tarfile
-import zipfile
+  "${evidence_dir}/dist" --expected-version "${expected_version}"
 
-expected_version, wheel_path, sdist_path = sys.argv[1:]
+mkdir -- \
+  "${evidence_dir}/rebuild-constrained" \
+  "${evidence_dir}/rebuild-consumer"
+uvx --from uv==0.11.28 uv build --verbose --wheel \
+  "${evidence_dir}/dist/localql-1.0.2.tar.gz" \
+  --python "${artifact_python}" \
+  --out-dir "${evidence_dir}/rebuild-constrained" \
+  --build-constraints scripts/release-build-constraints.txt \
+  --require-hashes \
+  2>&1 | tee "${evidence_dir}/rebuild-constrained.log"
+grep -Eo 'hatchling==[0-9]+(\.[0-9]+)+' \
+  "${evidence_dir}/rebuild-constrained.log" | sort -u \
+  > "${evidence_dir}/rebuild-constrained-backend.txt"
+test -s "${evidence_dir}/rebuild-constrained-backend.txt"
 
+date -u +'%Y-%m-%dT%H:%M:%SZ' > "${evidence_dir}/consumer-rebuild-observed-at.txt"
+uvx --from uv==0.11.28 uv build --verbose --wheel \
+  "${evidence_dir}/dist/localql-1.0.2.tar.gz" \
+  --python "${artifact_python}" \
+  --out-dir "${evidence_dir}/rebuild-consumer" \
+  2>&1 | tee "${evidence_dir}/rebuild-consumer.log"
+grep -Eo 'hatchling==[0-9]+(\.[0-9]+)+' \
+  "${evidence_dir}/rebuild-consumer.log" | sort -u \
+  > "${evidence_dir}/rebuild-consumer-backend.txt"
+test -s "${evidence_dir}/rebuild-consumer-backend.txt"
 
-def validate_metadata(raw: bytes, source: str) -> None:
-    metadata = BytesParser(policy=default).parsebytes(raw)
-    observed = (metadata["Name"], metadata["Version"])
-    if observed != ("localql", expected_version):
-        raise SystemExit(f"{source} metadata mismatch: {observed!r}")
+uv run --frozen --no-sync python scripts/verify_release_artifacts.py \
+  "${evidence_dir}/dist" --expected-version "${expected_version}" \
+  --rebuilt-wheel "${evidence_dir}/rebuild-constrained/localql-1.0.2-py3-none-any.whl" \
+  --rebuilt-wheel "${evidence_dir}/rebuild-consumer/localql-1.0.2-py3-none-any.whl" \
+  --manifest "${evidence_dir}/artifact-manifest.json"
+uvx --from twine==6.2.0 twine check \
+  "${evidence_dir}/dist/localql-1.0.2-py3-none-any.whl" \
+  "${evidence_dir}/dist/localql-1.0.2.tar.gz"
 
+uv run --frozen --no-sync python scripts/verify_dependency_audit.py \
+  --evidence-dir "${evidence_dir}/dependency-audit"
+uv run --frozen --no-sync python scripts/verify_installed_artifacts.py \
+  --wheel "${evidence_dir}/dist/localql-1.0.2-py3-none-any.whl" \
+  --core-requirements "${evidence_dir}/dependency-audit/core-requirements.txt" \
+  --tui-requirements "${evidence_dir}/dependency-audit/tui-requirements.txt" \
+  --work-dir "${evidence_dir}/installed-smokes" \
+  --expected-version "${expected_version}" \
+  --python "${artifact_python}" \
+  > "${evidence_dir}/installed-smokes.json"
 
-with zipfile.ZipFile(wheel_path) as wheel:
-    metadata_paths = [
-        name
-        for name in wheel.namelist()
-        if name.endswith(".dist-info/METADATA")
-    ]
-    if len(metadata_paths) != 1:
-        raise SystemExit("wheel must contain exactly one METADATA file")
-    validate_metadata(wheel.read(metadata_paths[0]), "wheel")
-
-with tarfile.open(sdist_path, "r:*") as sdist:
-    metadata_members = [
-        member
-        for member in sdist.getmembers()
-        if member.isfile()
-        and len(PurePosixPath(member.name).parts) == 2
-        and PurePosixPath(member.name).name == "PKG-INFO"
-    ]
-    if len(metadata_members) != 1:
-        raise SystemExit("sdist must contain exactly one root PKG-INFO file")
-    metadata_file = sdist.extractfile(metadata_members[0])
-    if metadata_file is None:
-        raise SystemExit("sdist PKG-INFO is unreadable")
-    validate_metadata(metadata_file.read(), "sdist")
-PY_METADATA
-
-artifacts=("${wheels[@]}" "${sdists[@]}")
-shasum -a 256 "${artifacts[@]}" > "${evidence_dir}/SHA256SUMS.txt"
-
-smoke_root="$(mktemp -d)"
-uv venv --seed "${smoke_root}/venv"
-uv pip install --python "${smoke_root}/venv/bin/python" "${wheels[0]}"
-printf 'order_id,status\nORD-1,paid\n' > "${smoke_root}/orders.csv"
-unset PYTHONPATH
-cli_version="$("${smoke_root}/venv/bin/csvql" --version)"
-test "${cli_version}" = "${expected_version}"
-query_json="$(
-  "${smoke_root}/venv/bin/csvql" query "${smoke_root}/orders.csv" \
-    "SELECT COUNT(*) AS order_count FROM orders" --output json
+intended_publication_date="2026-07-15"
+changelog_date="$(
+  sed -n 's/^## \[1\.0\.2\] - \([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\)$/\1/p' \
+    CHANGELOG.md
 )"
-printf '%s\n' "${query_json}" > "${evidence_dir}/query-smoke.json"
-"${smoke_root}/venv/bin/python" - \
-  "${expected_version}" "${evidence_dir}/query-smoke.json" <<'PY_SMOKE'
-from importlib.metadata import version
-import json
-import sys
-
-expected_version, query_path = sys.argv[1:]
-installed_version = version("localql")
-if installed_version != expected_version:
-    raise SystemExit(
-        f"installed localql version mismatch: {installed_version!r}"
-    )
-
-with open(query_path, encoding="utf-8") as handle:
-    query_result = json.load(handle)
-expected_result = {
-    "columns": ["order_count"],
-    "rows": [{"order_count": 1}],
-    "row_count": 1,
-}
-observed_result = {
-    key: query_result.get(key)
-    for key in expected_result
-}
-if observed_result != expected_result:
-    raise SystemExit(f"installed query result mismatch: {observed_result!r}")
-PY_SMOKE
+test "${changelog_date}" = "${intended_publication_date}"
+printf '%s\n' "${intended_publication_date}" \
+  > "${evidence_dir}/intended-publication-date.txt"
 
 git status --short --ignored > "${evidence_dir}/git-status-short-ignored.txt"
 test "$(git rev-parse --verify HEAD^{commit})" = "${candidate_oid}"
@@ -243,10 +209,46 @@ Any failure stops the evidence run. Only failures after the evidence directory
 is claimed leave that directory for diagnosis; failures before the claim create
 no evidence directory. Require the exact version and an `order_count` of `1`.
 Confirm the ignored-file inventory contains nothing unexpectedly public, and
-inspect both wheel and source distribution contents. Record an adversarial
-review of release claims, compatibility, known limitations, deferred work, and
-any skipped check. Evidence must match the exact candidate commit and artifacts;
-stale evidence is invalid.
+inspect the artifact manifest and both package archives. The current intended
+publication date is exactly `2026-07-15`. If the 1.0.2 heading in `CHANGELOG.md`
+does not carry that date, stop, update it in a new candidate commit, and rerun
+all proof. Do not derive or inject a date dynamically into artifacts that have
+already been built. Record an adversarial review of release claims,
+compatibility, known limitations, deferred work, and any skipped check. Evidence
+must match the exact candidate commit and artifacts; stale evidence is invalid.
+
+## Hosted Pull Request Readiness
+
+After a separately approved public branch push and pull-request creation,
+record the exact hosted-readiness identity in this field order:
+
+```text
+public_main_base_oid: <40-character lowercase commit OID>
+candidate_head_oid: <40-character lowercase commit OID>
+pull_request_number: <positive integer>
+test_merge_oid: <40-character lowercase commit OID>
+ci_workflow_id: <positive integer>
+ci_run_id: <positive integer>
+ci_run_attempt: <positive integer>
+expected_job_names:
+  - test (ubuntu-latest, 3.11)
+  - test (ubuntu-latest, 3.12)
+  - test (ubuntu-latest, 3.13)
+  - test (ubuntu-latest, 3.14)
+  - test (macos-latest, 3.12)
+  - test (windows-latest, 3.12)
+```
+
+Accept the run only when the workflow identity is `.github/workflows/ci.yml`,
+all six exact jobs completed successfully on the recorded attempt, and the
+recorded `test_merge_oid` is GitHub's pull-request test-merge commit derived
+from the recorded public_main_base_oid and candidate_head_oid. The pull
+request base and head, both ordered test-merge parents, the pull-request merge
+ref, and the CI run head must all agree with those recorded objects.
+
+This is read-only evidence and does not authorize a branch update, pull request
+update, merge, tag, publication, or any other hosted write. Any mismatch stops
+readiness and requires a new evidence record rather than reinterpretation.
 
 ## Failure And Recovery
 

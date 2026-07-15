@@ -64,3 +64,26 @@ jobs:
         run: uv run --all-extras mypy src
       - name: Test
         run: uv run --all-extras pytest
+      - name: Verify exact release artifacts
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: |
+          set -euo pipefail
+          uv python install "${ARTIFACT_PYTHON}"
+          mkdir -p output/ci-release-dist
+          uv build --python "${ARTIFACT_PYTHON}" --sdist --wheel \
+            --out-dir output/ci-release-dist \
+            --build-constraints scripts/release-build-constraints.txt \
+            --require-hashes
+          uv run --frozen --no-sync python scripts/audit_package_contents.py \
+            output/ci-release-dist --expected-version 1.0.2
+          uv run --frozen --no-sync python scripts/verify_release_artifacts.py \
+            output/ci-release-dist --expected-version 1.0.2 \
+            --manifest output/ci-release-artifact-manifest.json
+          uvx --from twine==6.2.0 twine check \
+            output/ci-release-dist/localql-1.0.2-py3-none-any.whl \
+            output/ci-release-dist/localql-1.0.2.tar.gz
+          uv --version > output/ci-release-uv-version.txt
+          uv run --python "${ARTIFACT_PYTHON}" --no-sync python --version \
+            > output/ci-release-python-version.txt
+          shasum -a 256 scripts/release-build-constraints.txt \
+            > output/ci-release-build-constraints.sha256
