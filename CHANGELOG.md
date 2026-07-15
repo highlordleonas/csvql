@@ -2,7 +2,7 @@
 
 This changelog lists the changes in each LocalQL release.
 
-## [1.0.2] - 2026-07-14
+## [1.0.2] - 2026-07-15
 
 ### Changed
 
@@ -16,11 +16,16 @@ This changelog lists the changes in each LocalQL release.
   and bind intentional release operations to exact refs and object IDs.
 - Aligned the frozen local quality gate with the supported Python and
   cross-platform CI matrix and recorded the structured-data roadmap.
+- Sharpened installed-user documentation across pip and uv-tool paths.
+- Made reproducible release evidence explicit for the exact
+  wheel and source distribution.
+- Validated separate core and optional TUI installation paths.
+- Confirmed the v1 CSV CLI, Python, catalog, JSON, exit-code, and export
+  contracts are unchanged.
 
-Compatibility: the v1 CSV CLI, Python, catalog, JSON, exit-code, and export
-contracts are unchanged. TUI spill storage reduces duplicate retained result
-memory after handling, but query execution still fully materializes Python
-results and is not streaming or execution-memory bounded.
+TUI spill storage reduces duplicate retained result memory after handling, but
+query execution still fully materializes Python results and is not streaming or
+execution-memory bounded.
 
 ## [1.0.1] - 2026-07-10
 

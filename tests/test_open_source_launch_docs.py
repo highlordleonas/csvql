@@ -585,24 +585,46 @@ def test_pyproject_public_metadata_is_consistent() -> None:
     payload = tomllib.loads(read_text("pyproject.toml"))
     project = payload["project"]
 
+    assert payload["build-system"] == {
+        "requires": ["hatchling"],
+        "build-backend": "hatchling.build",
+    }
     assert project["name"] == "localql"
     assert project["version"] == "1.0.2"
+    assert project["description"] == (
+        "Local-first CSV analytics with a CLI, optional terminal workbench, "
+        "and automation-friendly Python and JSON interfaces."
+    )
     assert project["readme"] == "README.md"
     assert project["license"] == "MIT"
     assert "LICENSE" in payload["project"]["license-files"]
     assert "License :: OSI Approved :: MIT License" in project["classifiers"]
     assert "Operating System :: OS Independent" in project["classifiers"]
-    assert "csv" in project["keywords"]
-    assert "duckdb" in project["keywords"]
-    assert "local-analytics" in project["keywords"]
+    assert set(project["keywords"]) == {
+        "automation",
+        "cli",
+        "csv",
+        "data-engineering",
+        "data-quality",
+        "duckdb",
+        "local-analytics",
+        "sql",
+        "terminal",
+        "tui",
+    }
     assert project["urls"] == {
         "Repository": "https://github.com/highlordleonas/csvql",
+        "Documentation": (
+            "https://github.com/highlordleonas/csvql/blob/main/docs/getting-started.md"
+        ),
         "Issues": "https://github.com/highlordleonas/csvql/issues",
+        "Security": "https://github.com/highlordleonas/csvql/blob/main/SECURITY.md",
         "Changelog": "https://github.com/highlordleonas/csvql/blob/main/CHANGELOG.md",
         "Release notes": (
             "https://github.com/highlordleonas/csvql/blob/main/docs/release-notes/v1.md"
         ),
     }
+    assert "textual>=8.2.8" in project["optional-dependencies"]["tui"]
     assert project["requires-python"] == ">=3.11,<3.15"
     for classifier in (
         "Programming Language :: Python :: 3.11",
@@ -611,6 +633,24 @@ def test_pyproject_public_metadata_is_consistent() -> None:
         "Programming Language :: Python :: 3.14",
     ):
         assert classifier in project["classifiers"]
+
+
+def test_v1_0_2_release_copy_covers_sharpening_without_contract_drift() -> None:
+    changelog = markdown_section(read_text("CHANGELOG.md"), "[1.0.2] - 2026-07-15")
+    notes = markdown_section(read_text("docs/release-notes/v1.md"), "1.0.2")
+    for phrase in (
+        "installed-user documentation",
+        "reproducible release evidence",
+        "wheel and source distribution",
+        "core and optional TUI",
+    ):
+        assert phrase in changelog
+        assert phrase in notes
+    for document in (changelog, notes):
+        assert (
+            "v1 CSV CLI, Python, catalog, JSON, exit-code, and export contracts are unchanged"
+            in normalized_markdown(document)
+        )
 
 
 def test_publish_workflow_is_manual_only() -> None:
