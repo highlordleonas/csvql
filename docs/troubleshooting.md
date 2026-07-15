@@ -3,6 +3,54 @@
 Start with the error shown in your terminal, then use the matching section below
 for common causes and fixes.
 
+## `csvql`: command not found
+
+First identify how LocalQL was installed. A `pip` install belongs to a selected
+Python environment, while `uv tool` creates an isolated application environment.
+
+For a `pip` install, check the interpreter and environment that `pip` is using:
+
+```console
+python -m pip --version
+python -m pip show localql
+python -m csvql --version
+```
+
+If the module command works but `csvql --version` does not, activate that Python
+environment or add its scripts directory to `PATH`:
+
+```console
+python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
+```
+
+`python -m pip` and the shell's `csvql` command can refer to different Python
+environments. Use the same environment for installation and execution.
+
+For a `uv tool` install, confirm that LocalQL has an isolated tool environment,
+then add uv's executable directory to `PATH`:
+
+```console
+uv tool list
+uv tool dir --bin
+uv tool update-shell
+```
+
+Open a new shell after `uv tool update-shell`, then retry `csvql --version`.
+
+## Unsupported Python version
+
+LocalQL supports Python 3.11 through 3.14. If installation reports an
+incompatible Python requirement, check the selected interpreter and its `pip`:
+
+```console
+python --version
+python -m pip --version
+```
+
+Install LocalQL with a supported interpreter. For `pip`, the interpreter in
+`python -m pip` selects the environment; for `uv tool`, choose a supported
+interpreter when creating the tool environment.
+
 ## Common exit codes
 
 | Exit code | What it usually means | What to try |
@@ -115,10 +163,20 @@ csvql export queries/revenue_health.sql \
 
 ## `CSVQL TUI dependency is not installed`
 
-Install the optional TUI dependency:
+Reinstall LocalQL with the optional `tui` extra in the same installation mode
+you chose for the core command.
 
-```bash
-pip install "localql[tui]"
+For a `pip` environment:
+
+```console
+python -m pip install "localql[tui]"
+```
+
+For an isolated uv tool:
+
+```console
+uv tool uninstall localql
+uv tool install "localql[tui]"
 ```
 
 From a source checkout:

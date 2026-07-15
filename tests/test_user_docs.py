@@ -485,6 +485,33 @@ def test_installed_user_and_source_checkout_commands_are_distinguished() -> None
     assert "uv sync --all-extras --frozen" in getting_started
 
 
+def test_troubleshooting_covers_install_and_environment_failures() -> None:
+    document = read_doc("docs/troubleshooting.md")
+    for phrase in (
+        "`csvql`: command not found",
+        "python -m pip show localql",
+        "python -m pip --version",
+        "uv tool list",
+        "uv tool update-shell",
+        "Python 3.11 through 3.14",
+        'python -m pip install "localql[tui]"',
+    ):
+        assert phrase in document
+
+
+def test_faq_covers_install_modes_upgrade_tui_and_supported_python() -> None:
+    document = read_doc("docs/faq.md")
+    for heading in (
+        "Should I use pip or uv tool?",
+        "How do I upgrade or uninstall LocalQL?",
+        "Which Python versions are supported?",
+        "Why is the terminal workbench optional?",
+    ):
+        assert f"## {heading}" in document
+    assert "Python 3.11 through 3.14" in document
+    assert "trusted local DuckDB SQL" in document
+
+
 def test_getting_started_names_the_current_checkout_context() -> None:
     getting_started = read_doc("docs/getting-started.md")
 
