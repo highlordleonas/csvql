@@ -178,7 +178,11 @@ def _make_private_directory(path: Path) -> Path:
     return path
 
 
-def _sanitized_environment(*, uv_cache_dir: Path) -> dict[str, str]:
+def _sanitized_environment(
+    *,
+    uv_cache_dir: Path,
+    uv_python_install_dir: Path,
+) -> dict[str, str]:
     environment = {
         name: os.environ[name] for name in INHERITED_ENVIRONMENT_ALLOWLIST if name in os.environ
     }
@@ -193,6 +197,7 @@ def _sanitized_environment(*, uv_cache_dir: Path) -> dict[str, str]:
             "UV_CACHE_DIR": str(uv_cache_dir),
             "UV_DEFAULT_INDEX": PUBLIC_INDEX_URL,
             "UV_NO_CONFIG": "1",
+            "UV_PYTHON_INSTALL_DIR": str(uv_python_install_dir),
         }
     )
     return environment
@@ -801,6 +806,7 @@ def verify_installed_artifacts(
 
     resolved_work_dir = _prepare_work_dir(work_dir)
     uv_cache_dir = _make_private_directory(resolved_work_dir / "uv-cache")
+    uv_python_install_dir = _make_private_directory(resolved_work_dir / "uv-python")
     if public_index:
         snapshotted_inputs: dict[str, SnapshottedInput] = {}
     else:
@@ -816,7 +822,10 @@ def verify_installed_artifacts(
         resolved_wheel = snapshotted_inputs["wheel"].path
         resolved_core_requirements = snapshotted_inputs["core_requirements"].path
         resolved_tui_requirements = snapshotted_inputs["tui_requirements"].path
-    environment = _sanitized_environment(uv_cache_dir=uv_cache_dir)
+    environment = _sanitized_environment(
+        uv_cache_dir=uv_cache_dir,
+        uv_python_install_dir=uv_python_install_dir,
+    )
     with tempfile.TemporaryDirectory(prefix="localql-installed-smoke-") as project_text:
         project_dir = Path(project_text).resolve()
         if project_dir.is_relative_to(REPO_ROOT):

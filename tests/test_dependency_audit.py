@@ -1011,31 +1011,39 @@ def test_private_runtime_cleanup_failure_cannot_publish_success(
     assert not (evidence_dir / "manifest.json").exists()
 
 
-def test_each_run_uses_private_temporary_uv_cache_and_tool_directories(
+def test_each_run_uses_private_temporary_uv_runtime_directories(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shared_cache = tmp_path / "shared-cache"
     shared_tools = tmp_path / "shared-tools"
+    shared_python = tmp_path / "shared-python"
     monkeypatch.setenv("UV_CACHE_DIR", str(shared_cache))
     monkeypatch.setenv("UV_TOOL_DIR", str(shared_tools))
+    monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", str(shared_python))
     runner = RecordingRunner()
 
     _verify(tmp_path, runner)
 
     cache_values = {call["env"].get("UV_CACHE_DIR") for call in runner.calls}
     tool_values = {call["env"].get("UV_TOOL_DIR") for call in runner.calls}
+    python_values = {call["env"].get("UV_PYTHON_INSTALL_DIR") for call in runner.calls}
     assert None not in cache_values
     assert None not in tool_values
+    assert None not in python_values
     assert len(cache_values) == 1
     assert len(tool_values) == 1
+    assert len(python_values) == 1
     cache_dir = Path(cache_values.pop())
     tool_dir = Path(tool_values.pop())
+    python_dir = Path(python_values.pop())
     assert cache_dir != shared_cache
     assert tool_dir != shared_tools
-    assert cache_dir.parent == tool_dir.parent
+    assert python_dir != shared_python
+    assert cache_dir.parent == tool_dir.parent == python_dir.parent
     assert not cache_dir.exists()
     assert not tool_dir.exists()
+    assert not python_dir.exists()
 
 
 def test_forced_non_posix_fallback_never_opens_or_fstats_directories(

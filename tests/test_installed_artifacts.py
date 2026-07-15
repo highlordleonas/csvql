@@ -455,6 +455,7 @@ def test_subprocess_boundary_is_sanitized_bounded_and_outside_repo(
         "UV_PROJECT": "/hostile/project",
         "UV_PYTHON": "/hostile/python",
         "UV_PYTHON_DOWNLOADS": "never",
+        "UV_PYTHON_INSTALL_DIR": "/hostile/python-install",
         "UV_TOOL_BIN_DIR": "/hostile/default-bin",
         "UV_TOOL_DIR": "/hostile/default-tools",
         "UV_WORKING_DIR": "/hostile/working-dir",
@@ -473,20 +474,30 @@ def test_subprocess_boundary_is_sanitized_bounded_and_outside_repo(
         assert call["timeout"] == verifier.COMMAND_TIMEOUT_SECONDS
         environment = call["env"]
         for name, hostile_value in hostile_environment.items():
-            if name in EXPECTED_EXPLICIT_ENVIRONMENT or name == "UV_CACHE_DIR":
+            if name in EXPECTED_EXPLICIT_ENVIRONMENT or name in {
+                "UV_CACHE_DIR",
+                "UV_PYTHON_INSTALL_DIR",
+            }:
                 assert environment[name] != hostile_value
             elif name not in {"UV_TOOL_DIR", "UV_TOOL_BIN_DIR"}:
                 assert name not in environment
         assert environment | EXPECTED_EXPLICIT_ENVIRONMENT == environment
         assert environment["UV_CACHE_DIR"] == str(work_dir / "uv-cache")
+        assert environment["UV_PYTHON_INSTALL_DIR"] == str(work_dir / "uv-python")
         assert set(environment) <= (
             EXPECTED_INHERITED_ENVIRONMENT_NAMES
             | set(EXPECTED_EXPLICIT_ENVIRONMENT)
-            | {"UV_CACHE_DIR", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR"}
+            | {
+                "UV_CACHE_DIR",
+                "UV_PYTHON_INSTALL_DIR",
+                "UV_TOOL_DIR",
+                "UV_TOOL_BIN_DIR",
+            }
         )
         assert not call["cwd"].is_relative_to(REPO_ROOT)
 
     assert (work_dir / "uv-cache").is_dir()
+    assert (work_dir / "uv-python").is_dir()
 
     tool_calls = [call for call in runner.calls if call["args"][:3] == ["uv", "tool", "install"]]
     assert len(tool_calls) == 2

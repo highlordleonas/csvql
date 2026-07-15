@@ -447,6 +447,7 @@ def _require_requirements_parser() -> str:
 def _sanitized_environment(
     *,
     uv_cache_dir: Path,
+    uv_python_install_dir: Path,
     uv_tool_dir: Path,
 ) -> dict[str, str]:
     environment = {
@@ -460,6 +461,7 @@ def _sanitized_environment(
             "UV_CACHE_DIR": str(uv_cache_dir),
             "UV_NO_CONFIG": "1",
             "UV_PYTHON": REQUIRED_PYTHON_VERSION,
+            "UV_PYTHON_INSTALL_DIR": str(uv_python_install_dir),
             "UV_TOOL_DIR": str(uv_tool_dir),
         }
     )
@@ -1052,11 +1054,14 @@ def verify_dependency_audit(
             with tempfile.TemporaryDirectory(prefix="localql-dependency-audit-") as run_temp_text:
                 run_temp = Path(run_temp_text)
                 uv_cache_dir = run_temp / "uv-cache"
+                uv_python_install_dir = run_temp / "uv-python"
                 uv_tool_dir = run_temp / "uv-tools"
                 uv_cache_dir.mkdir(mode=0o700)
+                uv_python_install_dir.mkdir(mode=0o700)
                 uv_tool_dir.mkdir(mode=0o700)
                 environment = _sanitized_environment(
                     uv_cache_dir=uv_cache_dir,
+                    uv_python_install_dir=uv_python_install_dir,
                     uv_tool_dir=uv_tool_dir,
                 )
 
