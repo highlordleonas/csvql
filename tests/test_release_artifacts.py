@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import io
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -169,6 +170,75 @@ def write_artifact_pair(
     write_wheel(wheel, wheel_entries(wheel_payload, entry_points=entry_points))
     write_sdist(sdist, sdist_payload)
     return wheel, sdist
+
+
+def invoke_wheel_archive_interface(
+    module: ModuleType,
+    interface: str,
+    wheel: Path,
+    tmp_path: Path,
+) -> None:
+    if interface == "artifact-pair":
+        sdist = wheel.parent / EXPECTED_SDIST
+        write_sdist(sdist, metadata_bytes())
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.2")
+        return
+    if interface == "semantic-manifest":
+        module.semantic_wheel_manifest(wheel)
+        return
+    counterpart = tmp_path / f"{interface}-counterpart" / EXPECTED_WHEEL
+    write_wheel(counterpart, wheel_entries(metadata_bytes()))
+    if interface == "rebuilt-original":
+        module.verify_rebuilt_wheel(wheel, counterpart)
+        return
+    if interface == "rebuilt-candidate":
+        module.verify_rebuilt_wheel(counterpart, wheel)
+        return
+    raise AssertionError(f"unknown test interface: {interface}")
+
+
+def wheel_with_total_members(path: Path, total_members: int) -> None:
+    entries = wheel_entries(metadata_bytes())
+    entries.extend(
+        (f"csvql/generated_{index:04d}.py", "") for index in range(total_members - len(entries))
+    )
+    write_wheel(path, entries)
+
+
+def wheel_with_name_volume(path: Path, minimum_name_bytes: int) -> None:
+    entries = wheel_entries(metadata_bytes())
+    index = 0
+    observed_name_bytes = sum(
+        len((member.filename if isinstance(member, zipfile.ZipInfo) else member).encode("utf-8"))
+        for member, _ in entries
+    )
+    while observed_name_bytes <= minimum_name_bytes:
+        name = f"csvql/{index:04d}_{'n' * 500}.py"
+        entries.append((name, ""))
+        observed_name_bytes += len(name.encode("utf-8"))
+        index += 1
+    write_wheel(path, entries)
+
+
+def sdist_with_total_members(path: Path, total_members: int) -> None:
+    extras: list[tuple[tarfile.TarInfo, bytes]] = []
+    for index in range(total_members - 2):
+        extras.append((tarfile.TarInfo(f"{SDIST_ROOT}/generated_{index:04d}.py"), b""))
+    write_sdist(path, metadata_bytes(), extra_entries=extras)
+
+
+def sdist_with_name_volume(path: Path, minimum_name_bytes: int) -> None:
+    extras: list[tuple[tarfile.TarInfo, bytes]] = []
+    observed_name_bytes = len(f"{SDIST_ROOT}/PKG-INFO".encode()) + len(
+        f"{SDIST_ROOT}/README.md".encode()
+    )
+    index = 0
+    while observed_name_bytes <= minimum_name_bytes:
+        name = f"{SDIST_ROOT}/generated/{index:04d}_{'n' * 500}.py"
+        extras.append((tarfile.TarInfo(name), b""))
+        observed_name_bytes += len(name.encode("utf-8"))
+        index += 1
+    write_sdist(path, metadata_bytes(), extra_entries=extras)
 
 
 def test_public_interfaces_and_constants_are_exact(tmp_path: Path) -> None:
@@ -565,3 +635,293 @@ def test_failures_do_not_expose_member_contents_or_terminal_controls(tmp_path: P
     rendered = str(error_info.value)
     assert synthetic not in rendered
     assert "\x1b" not in rendered
+
+
+@pytest.mark.parametrize(
+    "hostile_member",
+    [
+        f"nested/{DIST_INFO}/METADATA",
+        "alternate-1.0.2.dist-info/METADATA",
+        f"nested/{DIST_INFO}/RECORD",
+        "alternate-1.0.2.dist-info/RECORD",
+    ],
+)
+@pytest.mark.parametrize(
+    "interface",
+    ["artifact-pair", "semantic-manifest", "rebuilt-original", "rebuilt-candidate"],
+)
+def test_wheel_interfaces_reject_every_noncanonical_dist_info_namespace(
+    tmp_path: Path,
+    interface: str,
+    hostile_member: str,
+) -> None:
+    module = release_module()
+    wheel = tmp_path / "hostile" / EXPECTED_WHEEL
+    entries = wheel_entries(metadata_bytes())
+    content = metadata_bytes() if hostile_member.endswith("/METADATA") else "ignored-record\n"
+    entries.append((hostile_member, content))
+    write_wheel(wheel, entries)
+
+    with pytest.raises(ValueError, match="dist-info namespace"):
+        invoke_wheel_archive_interface(module, interface, wheel, tmp_path)
+
+
+def test_semantic_manifest_excludes_only_exact_canonical_record(tmp_path: Path) -> None:
+    module = release_module()
+    wheel = tmp_path / EXPECTED_WHEEL
+    entries = wheel_entries(metadata_bytes())
+    entries.append((f"csvql/{DIST_INFO}/RECORD", "must-not-be-ignored\n"))
+    write_wheel(wheel, entries)
+
+    with pytest.raises(ValueError, match="dist-info namespace"):
+        module.semantic_wheel_manifest(wheel)
+
+
+@pytest.mark.parametrize("artifact_name", [EXPECTED_WHEEL, EXPECTED_SDIST])
+def test_manifest_rejects_direct_input_path_alias(
+    tmp_path: Path,
+    artifact_name: str,
+) -> None:
+    module = release_module()
+    wheel, sdist = write_artifact_pair(tmp_path)
+    artifacts = module.ArtifactSet(wheel, sdist)
+    destination = tmp_path / artifact_name
+    before = destination.read_bytes()
+
+    with pytest.raises(ValueError, match="alias of a release artifact"):
+        module.write_artifact_manifest(artifacts, destination)
+
+    assert destination.read_bytes() == before
+
+
+def test_manifest_rejects_symlink_destination_without_touching_target(tmp_path: Path) -> None:
+    module = release_module()
+    wheel, sdist = write_artifact_pair(tmp_path / "dist")
+    artifacts = module.ArtifactSet(wheel, sdist)
+    target = tmp_path / "existing-manifest.json"
+    target.write_text("preserve me\n", encoding="utf-8")
+    destination = tmp_path / "artifact-manifest.json"
+    destination.symlink_to(target)
+
+    with pytest.raises(ValueError, match="symlink"):
+        module.write_artifact_manifest(artifacts, destination)
+
+    assert target.read_text(encoding="utf-8") == "preserve me\n"
+    assert destination.is_symlink()
+
+
+@pytest.mark.skipif(not hasattr(os, "link"), reason="hardlinks are unavailable")
+def test_manifest_rejects_hardlink_alias_without_touching_artifact(tmp_path: Path) -> None:
+    module = release_module()
+    wheel, sdist = write_artifact_pair(tmp_path / "dist")
+    artifacts = module.ArtifactSet(wheel, sdist)
+    destination = tmp_path / "artifact-manifest.json"
+    before = wheel.read_bytes()
+    os.link(wheel, destination)
+
+    with pytest.raises(ValueError, match="alias of a release artifact"):
+        module.write_artifact_manifest(artifacts, destination)
+
+    assert wheel.read_bytes() == before
+    assert destination.read_bytes() == before
+
+
+def test_manifest_rejects_special_file_destination(tmp_path: Path) -> None:
+    module = release_module()
+    wheel, sdist = write_artifact_pair(tmp_path / "dist")
+    destination = tmp_path / "artifact-manifest.json"
+    destination.mkdir()
+
+    with pytest.raises(ValueError, match="non-symlink regular file"):
+        module.write_artifact_manifest(module.ArtifactSet(wheel, sdist), destination)
+
+
+def test_manifest_replace_failure_preserves_destination_and_removes_temporary_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = release_module()
+    wheel, sdist = write_artifact_pair(tmp_path / "dist")
+    destination = tmp_path / "artifact-manifest.json"
+    destination.write_text("previous complete manifest\n", encoding="utf-8")
+
+    def fail_replace(source: str | Path, target: str | Path) -> None:
+        source_path = Path(source)
+        assert source_path.parent == destination.parent
+        assert source_path.is_file()
+        assert Path(target) == destination
+        raise OSError("synthetic atomic replace failure")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+
+    with pytest.raises(ValueError, match="write the release artifact manifest"):
+        module.write_artifact_manifest(module.ArtifactSet(wheel, sdist), destination)
+
+    assert destination.read_text(encoding="utf-8") == "previous complete manifest\n"
+    assert list(tmp_path.glob(f".{destination.name}.*.tmp")) == []
+
+
+def test_archive_limits_reuse_task_7_compressed_size_constants() -> None:
+    audit_module = importlib.import_module("scripts.audit_package_contents")
+    module = release_module()
+
+    assert module.WHEEL_SIZE_LIMIT == audit_module.WHEEL_SIZE_LIMIT
+    assert module.SDIST_SIZE_LIMIT == audit_module.SDIST_SIZE_LIMIT
+
+
+@pytest.mark.parametrize(
+    "interface",
+    [
+        "artifact-pair",
+        "semantic-manifest",
+        "rebuilt-original",
+        "rebuilt-candidate",
+        "artifact-manifest",
+    ],
+)
+def test_wheel_compressed_size_limit_applies_to_every_direct_interface(
+    tmp_path: Path,
+    interface: str,
+) -> None:
+    module = release_module()
+    hostile = tmp_path / "hostile" / EXPECTED_WHEEL
+    hostile.parent.mkdir(parents=True)
+    hostile.write_bytes(b"x" * (1024 * 1024 + 1))
+
+    with pytest.raises(ValueError, match="compressed size"):
+        if interface == "artifact-manifest":
+            sdist = hostile.parent / EXPECTED_SDIST
+            write_sdist(sdist, metadata_bytes())
+            module.write_artifact_manifest(
+                module.ArtifactSet(hostile, sdist),
+                tmp_path / "manifest.json",
+            )
+        else:
+            invoke_wheel_archive_interface(module, interface, hostile, tmp_path)
+
+
+@pytest.mark.parametrize("interface", ["artifact-pair", "artifact-manifest"])
+def test_sdist_compressed_size_limit_applies_to_every_direct_interface(
+    tmp_path: Path,
+    interface: str,
+) -> None:
+    module = release_module()
+    wheel = tmp_path / EXPECTED_WHEEL
+    sdist = tmp_path / EXPECTED_SDIST
+    write_wheel(wheel, wheel_entries(metadata_bytes()))
+    sdist.write_bytes(b"x" * (5 * 1024 * 1024 + 1))
+
+    with pytest.raises(ValueError, match="compressed size"):
+        artifacts = module.ArtifactSet(wheel, sdist)
+        if interface == "artifact-pair":
+            module.verify_artifact_pair(artifacts, "1.0.2")
+        else:
+            module.write_artifact_manifest(artifacts, tmp_path / "manifest.json")
+
+
+@pytest.mark.parametrize(
+    "interface",
+    ["artifact-pair", "semantic-manifest", "rebuilt-original", "rebuilt-candidate"],
+)
+def test_wheel_member_count_limit_applies_to_every_archive_reading_interface(
+    tmp_path: Path,
+    interface: str,
+) -> None:
+    module = release_module()
+    hostile = tmp_path / "hostile" / EXPECTED_WHEEL
+    wheel_with_total_members(hostile, 4097)
+
+    with pytest.raises(ValueError, match="member count"):
+        invoke_wheel_archive_interface(module, interface, hostile, tmp_path)
+
+
+def test_sdist_member_count_limit_is_fail_closed(tmp_path: Path) -> None:
+    module = release_module()
+    wheel = tmp_path / EXPECTED_WHEEL
+    sdist = tmp_path / EXPECTED_SDIST
+    write_wheel(wheel, wheel_entries(metadata_bytes()))
+    sdist_with_total_members(sdist, 4097)
+
+    with pytest.raises(ValueError, match="member count"):
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.2")
+
+
+@pytest.mark.parametrize(
+    "interface",
+    ["artifact-pair", "semantic-manifest", "rebuilt-original", "rebuilt-candidate"],
+)
+def test_wheel_member_name_volume_limit_applies_to_every_archive_reading_interface(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    interface: str,
+) -> None:
+    module = release_module()
+    hostile = tmp_path / "hostile" / EXPECTED_WHEEL
+    wheel_with_name_volume(hostile, 1024 * 1024)
+    monkeypatch.setattr(module, "WHEEL_SIZE_LIMIT", hostile.stat().st_size + 1, raising=False)
+
+    with pytest.raises(ValueError, match="member-name bytes"):
+        invoke_wheel_archive_interface(module, interface, hostile, tmp_path)
+
+
+def test_sdist_member_name_volume_limit_is_fail_closed(tmp_path: Path) -> None:
+    module = release_module()
+    wheel = tmp_path / EXPECTED_WHEEL
+    sdist = tmp_path / EXPECTED_SDIST
+    write_wheel(wheel, wheel_entries(metadata_bytes()))
+    sdist_with_name_volume(sdist, 1024 * 1024)
+
+    with pytest.raises(ValueError, match="member-name bytes"):
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.2")
+
+
+class IncrementalTarArchive:
+    def __init__(self, *, budget: str) -> None:
+        self.budget = budget
+        self.yielded = 0
+
+    def __enter__(self) -> IncrementalTarArchive:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def __iter__(self) -> IncrementalTarArchive:
+        return self
+
+    def __next__(self) -> tarfile.TarInfo:
+        self.yielded += 1
+        if self.budget == "member count":
+            if self.yielded > 4097:
+                raise AssertionError("tar enumeration continued beyond the first exceeded budget")
+            return tarfile.TarInfo(f"{SDIST_ROOT}/generated_{self.yielded:04d}.py")
+        if self.yielded > 1:
+            raise AssertionError("tar enumeration continued beyond the first exceeded budget")
+        return tarfile.TarInfo("n" * (1024 * 1024 + 1))
+
+    def getmembers(self) -> list[tarfile.TarInfo]:
+        raise AssertionError("tar metadata must be enumerated incrementally")
+
+    def extractfile(self, _info: tarfile.TarInfo) -> None:
+        raise AssertionError("payload processing must not start after a metadata budget failure")
+
+
+@pytest.mark.parametrize("budget", ["member count", "member-name bytes"])
+def test_sdist_metadata_enumeration_stops_at_first_budget_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    budget: str,
+) -> None:
+    module = release_module()
+    wheel = tmp_path / EXPECTED_WHEEL
+    sdist = tmp_path / EXPECTED_SDIST
+    write_wheel(wheel, wheel_entries(metadata_bytes()))
+    sdist.write_bytes(b"synthetic tar boundary")
+    archive = IncrementalTarArchive(budget=budget)
+    monkeypatch.setattr(module.tarfile, "open", lambda *_args, **_kwargs: archive)
+
+    with pytest.raises(ValueError, match=budget):
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.2")
+
+    expected_yielded = 4097 if budget == "member count" else 1
+    assert archive.yielded == expected_yielded

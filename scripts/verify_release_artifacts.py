@@ -7,10 +7,12 @@ import configparser
 import email.policy
 import hashlib
 import json
+import os
 import posixpath
 import re
 import stat
 import tarfile
+import tempfile
 import zipfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -20,9 +22,23 @@ from pathlib import Path
 from typing import BinaryIO
 
 try:
-    from scripts.audit_package_contents import find_archives
+    from scripts.audit_package_contents import (
+        MEMBER_EXPANDED_SIZE_LIMIT,
+        SDIST_EXPANDED_SIZE_LIMIT,
+        SDIST_SIZE_LIMIT,
+        WHEEL_EXPANDED_SIZE_LIMIT,
+        WHEEL_SIZE_LIMIT,
+        find_archives,
+    )
 except ModuleNotFoundError:
-    from audit_package_contents import find_archives
+    from audit_package_contents import (  # type: ignore[no-redef]
+        MEMBER_EXPANDED_SIZE_LIMIT,
+        SDIST_EXPANDED_SIZE_LIMIT,
+        SDIST_SIZE_LIMIT,
+        WHEEL_EXPANDED_SIZE_LIMIT,
+        WHEEL_SIZE_LIMIT,
+        find_archives,
+    )
 
 EXPECTED_VERSION = "1.0.2"
 EXPECTED_WHEEL = "localql-1.0.2-py3-none-any.whl"
@@ -30,6 +46,7 @@ EXPECTED_SDIST = "localql-1.0.2.tar.gz"
 EXPECTED_ENTRY_POINT = "csvql = csvql.cli:main"
 EXPECTED_DIST_INFO = "localql-1.0.2.dist-info"
 EXPECTED_SDIST_ROOT = "localql-1.0.2"
+EXPECTED_RECORD = "localql-1.0.2.dist-info/RECORD"
 
 METADATA_KEYS = (
     "Name",
@@ -50,9 +67,8 @@ REPEATABLE_METADATA_KEYS = {
     "Project-URL",
     "Classifier",
 }
-MEMBER_SIZE_LIMIT = 5 * 1024 * 1024
-WHEEL_TOTAL_SIZE_LIMIT = 10 * 1024 * 1024
-SDIST_TOTAL_SIZE_LIMIT = 50 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 4096
+MAX_MEMBER_NAME_BYTES = 1024 * 1024
 HASH_CHUNK_SIZE = 1024 * 1024
 READ_CHUNK_SIZE = 64 * 1024
 
@@ -78,20 +94,26 @@ def _validate_expected_version(expected_version: str) -> None:
         raise _fail(f"Expected release version must be {EXPECTED_VERSION}.")
 
 
-def _validate_regular_artifact(path: Path, expected_name: str) -> None:
+def _validate_regular_artifact(
+    path: Path,
+    expected_name: str,
+    compressed_size_limit: int,
+) -> None:
     if path.name != expected_name:
         raise _fail("Release artifact filename does not match the exact expected identity.")
     try:
-        mode = path.lstat().st_mode
+        artifact_stat = path.lstat()
     except OSError:
         raise _fail("Release artifact must be an accessible regular file.") from None
-    if path.is_symlink() or not stat.S_ISREG(mode):
+    if path.is_symlink() or not stat.S_ISREG(artifact_stat.st_mode):
         raise _fail("Release artifact must be a non-symlink regular file.")
+    if artifact_stat.st_size > compressed_size_limit:
+        raise _fail("Release artifact exceeds the compressed size limit.")
 
 
 def _validate_artifact_paths(artifacts: ArtifactSet) -> None:
-    _validate_regular_artifact(artifacts.wheel, EXPECTED_WHEEL)
-    _validate_regular_artifact(artifacts.sdist, EXPECTED_SDIST)
+    _validate_regular_artifact(artifacts.wheel, EXPECTED_WHEEL, WHEEL_SIZE_LIMIT)
+    _validate_regular_artifact(artifacts.sdist, EXPECTED_SDIST, SDIST_SIZE_LIMIT)
     try:
         wheel_parent = artifacts.wheel.parent.resolve(strict=True)
         sdist_parent = artifacts.sdist.parent.resolve(strict=True)
@@ -146,8 +168,64 @@ def _reject_duplicate_or_ambiguous_names(
         raise _fail(f"{role} contains ambiguous normalized archive members.")
 
 
+def _member_name_size(name: str, *, role: str) -> int:
+    try:
+        return len(name.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise _fail(f"{role} contains a noncanonical member name.") from None
+
+
+def _validate_member_metadata_budget(
+    *,
+    role: str,
+    member_count: int,
+    member_name_bytes: int,
+) -> None:
+    if member_count > MAX_ARCHIVE_MEMBERS:
+        raise _fail(f"{role} member count exceeds the metadata budget.")
+    if member_name_bytes > MAX_MEMBER_NAME_BYTES:
+        raise _fail(f"{role} member-name bytes exceed the metadata budget.")
+
+
+def _validate_dist_info_namespace(
+    infos: list[zipfile.ZipInfo],
+    kinds: list[tuple[bool, bool]],
+) -> None:
+    canonical_namespace_seen = False
+    for info, (_, is_directory) in zip(infos, kinds, strict=True):
+        name = info.filename[:-1] if is_directory and info.filename.endswith("/") else info.filename
+        components = name.split("/")
+        dist_info_components = [
+            (index, component)
+            for index, component in enumerate(components)
+            if component.endswith(".dist-info")
+        ]
+        if not dist_info_components:
+            continue
+        if dist_info_components != [(0, EXPECTED_DIST_INFO)]:
+            raise _fail("Wheel archive contains a noncanonical dist-info namespace.")
+        if len(components) == 1 and not is_directory:
+            raise _fail("Wheel archive contains a noncanonical dist-info namespace.")
+        canonical_namespace_seen = True
+    if not canonical_namespace_seen:
+        raise _fail("Wheel archive is missing the canonical dist-info namespace.")
+
+
 def _validated_zip_infos(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
     infos = archive.infolist()
+    _validate_member_metadata_budget(
+        role="Wheel archive",
+        member_count=len(infos),
+        member_name_bytes=0,
+    )
+    member_name_bytes = sum(
+        _member_name_size(info.filename, role="Wheel archive") for info in infos
+    )
+    _validate_member_metadata_budget(
+        role="Wheel archive",
+        member_count=len(infos),
+        member_name_bytes=member_name_bytes,
+    )
     kinds = [_zip_member_kind(info) for info in infos]
     names_and_directory_flags = [
         (info.filename, is_directory) for info, (_, is_directory) in zip(infos, kinds, strict=True)
@@ -162,16 +240,26 @@ def _validated_zip_infos(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
             raise _fail("Wheel archive contains a special member.")
         if is_directory and info.file_size != 0:
             raise _fail("Wheel archive contains a payload-bearing directory.")
-        if info.file_size < 0 or info.file_size > MEMBER_SIZE_LIMIT:
+        if info.file_size < 0 or info.file_size > MEMBER_EXPANDED_SIZE_LIMIT:
             raise _fail("Wheel archive member exceeds the expanded size limit.")
         total_size += info.file_size
-    if total_size > WHEEL_TOTAL_SIZE_LIMIT:
+    if total_size > WHEEL_EXPANDED_SIZE_LIMIT:
         raise _fail("Wheel archive exceeds the expanded total size limit.")
+    _validate_dist_info_namespace(infos, kinds)
     return infos
 
 
 def _validated_tar_infos(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
-    infos = archive.getmembers()
+    infos: list[tarfile.TarInfo] = []
+    member_name_bytes = 0
+    for info in archive:
+        member_name_bytes += _member_name_size(info.name, role="Sdist archive")
+        _validate_member_metadata_budget(
+            role="Sdist archive",
+            member_count=len(infos) + 1,
+            member_name_bytes=member_name_bytes,
+        )
+        infos.append(info)
     names_and_directory_flags = [(info.name, info.isdir()) for info in infos]
     _reject_duplicate_or_ambiguous_names(names_and_directory_flags, role="Sdist archive")
 
@@ -183,10 +271,10 @@ def _validated_tar_infos(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
             raise _fail("Sdist archive contains a special member.")
         if info.isdir() and info.size != 0:
             raise _fail("Sdist archive contains a payload-bearing directory.")
-        if info.size < 0 or info.size > MEMBER_SIZE_LIMIT:
+        if info.size < 0 or info.size > MEMBER_EXPANDED_SIZE_LIMIT:
             raise _fail("Sdist archive member exceeds the expanded size limit.")
         total_size += info.size
-    if total_size > SDIST_TOTAL_SIZE_LIMIT:
+    if total_size > SDIST_EXPANDED_SIZE_LIMIT:
         raise _fail("Sdist archive exceeds the expanded total size limit.")
     return infos
 
@@ -195,7 +283,7 @@ def _read_bounded(member_file: BinaryIO, declared_size: int, *, role: str) -> by
     payload = bytearray()
     while chunk := member_file.read(READ_CHUNK_SIZE):
         payload.extend(chunk)
-        if len(payload) > declared_size or len(payload) > MEMBER_SIZE_LIMIT:
+        if len(payload) > declared_size or len(payload) > MEMBER_EXPANDED_SIZE_LIMIT:
             raise _fail(f"{role} payload exceeds its declared bounded size.")
     if len(payload) != declared_size:
         raise _fail(f"{role} payload does not match its declared size.")
@@ -389,7 +477,7 @@ def _sha256_stream(member_file: BinaryIO) -> str:
     observed_size = 0
     while chunk := member_file.read(HASH_CHUNK_SIZE):
         observed_size += len(chunk)
-        if observed_size > MEMBER_SIZE_LIMIT:
+        if observed_size > MEMBER_EXPANDED_SIZE_LIMIT:
             raise _fail("Wheel member exceeds the bounded hashing size.")
         digest.update(chunk)
     return digest.hexdigest()
@@ -398,13 +486,14 @@ def _sha256_stream(member_file: BinaryIO) -> str:
 def semantic_wheel_manifest(path: Path) -> dict[str, str]:
     """Return content digests for canonical wheel members other than RECORD."""
 
+    _validate_regular_artifact(path, EXPECTED_WHEEL, WHEEL_SIZE_LIMIT)
     try:
         with zipfile.ZipFile(path) as archive:
             infos = _validated_zip_infos(archive)
             manifest: dict[str, str] = {}
             for info in sorted(infos, key=lambda item: item.filename):
                 is_regular, _ = _zip_member_kind(info)
-                if not is_regular or info.filename.endswith(".dist-info/RECORD"):
+                if not is_regular or info.filename == EXPECTED_RECORD:
                     continue
                 with archive.open(info) as member_file:
                     manifest[info.filename] = _sha256_stream(member_file)
@@ -418,8 +507,8 @@ def semantic_wheel_manifest(path: Path) -> dict[str, str]:
 def verify_rebuilt_wheel(original: Path, rebuilt: Path) -> None:
     """Require a rebuilt wheel to match metadata and decompressed member content."""
 
-    _validate_regular_artifact(original, EXPECTED_WHEEL)
-    _validate_regular_artifact(rebuilt, EXPECTED_WHEEL)
+    _validate_regular_artifact(original, EXPECTED_WHEEL, WHEEL_SIZE_LIMIT)
+    _validate_regular_artifact(rebuilt, EXPECTED_WHEEL, WHEEL_SIZE_LIMIT)
     original_root, original_message, _ = _wheel_metadata(original)
     rebuilt_root, rebuilt_message, _ = _wheel_metadata(rebuilt)
     if original_root != EXPECTED_DIST_INFO or rebuilt_root != EXPECTED_DIST_INFO:
@@ -439,10 +528,77 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _validate_manifest_destination(artifacts: ArtifactSet, destination: Path) -> None:
+    try:
+        destination_stat = destination.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise _fail("Unable to inspect the release artifact manifest destination.") from None
+
+    if stat.S_ISLNK(destination_stat.st_mode):
+        raise _fail("Release artifact manifest destination must not be a symlink.")
+    if not stat.S_ISREG(destination_stat.st_mode):
+        raise _fail(
+            "Release artifact manifest destination must be absent or a non-symlink regular file."
+        )
+    try:
+        aliases_input = any(
+            os.path.samefile(destination, artifact)
+            for artifact in (artifacts.wheel, artifacts.sdist)
+        )
+    except OSError:
+        raise _fail("Unable to compare the release artifact manifest destination.") from None
+    if aliases_input:
+        raise _fail("Release artifact manifest destination is an alias of a release artifact.")
+
+
+def _remove_temporary_manifest(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        raise _fail("Unable to clean up the temporary release artifact manifest.") from None
+
+
+def _write_manifest_atomically(
+    artifacts: ArtifactSet,
+    destination: Path,
+    content: str,
+) -> None:
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            temporary_file.write(content)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        _validate_manifest_destination(artifacts, destination)
+        os.replace(temporary_path, destination)
+    except ArtifactVerificationError:
+        if temporary_path is not None:
+            _remove_temporary_manifest(temporary_path)
+        raise
+    except OSError:
+        if temporary_path is not None:
+            _remove_temporary_manifest(temporary_path)
+        raise _fail("Unable to write the release artifact manifest.") from None
+    else:
+        if temporary_path is not None:
+            _remove_temporary_manifest(temporary_path)
+
+
 def write_artifact_manifest(artifacts: ArtifactSet, destination: Path) -> None:
     """Write the deterministic SHA-256 and size manifest for the exact artifact pair."""
 
     _validate_artifact_paths(artifacts)
+    _validate_manifest_destination(artifacts, destination)
     try:
         payload = {
             "artifacts": [
@@ -460,12 +616,10 @@ def write_artifact_manifest(artifacts: ArtifactSet, destination: Path) -> None:
             "distribution": "localql",
             "version": "1.0.2",
         }
-        destination.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        content = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     except OSError:
         raise _fail("Unable to write the release artifact manifest.") from None
+    _write_manifest_atomically(artifacts, destination, content)
 
 
 def main() -> None:
