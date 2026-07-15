@@ -167,7 +167,7 @@ def test_release_runbook_examples_are_machine_valid_without_pushing() -> None:
     for block in bash_blocks:
         subprocess.run(
             ["bash", "-n"],
-            input=block.encode("utf-8"),
+            input=(block + "\n").encode("utf-8"),
             check=True,
             capture_output=True,
         )

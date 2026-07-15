@@ -6189,7 +6189,7 @@ def test_source_intelligence_printable_keys_only_work_when_sources_focused(
 
             app.query_one("#sources", DataTable).focus()
             await pilot.press("c")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
             columns_table = app.query_one("#results", DataTable)
             column_headers = tuple(str(column.label) for column in columns_table.columns.values())
             return editor_text, column_headers
