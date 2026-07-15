@@ -45,6 +45,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+    env:
+      ARTIFACT_PYTHON: "3.12.11"
     defaults:
       run:
         shell: bash
@@ -156,9 +158,10 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
         with:
+          version: "0.11.28"
           enable-cache: true
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install "${ARTIFACT_PYTHON}"
       - name: Install dependencies
         run: uv sync --all-extras --frozen
       - name: Check formatting
@@ -170,7 +173,11 @@ jobs:
       - name: Test
         run: uv run --all-extras pytest
       - name: Build
-        run: uv build --sdist --wheel --out-dir dist
+        run: |
+          uv build --python "${ARTIFACT_PYTHON}" --sdist --wheel --out-dir dist --build-constraints scripts/release-build-constraints.txt --require-hashes
+          uv --version > dist/uv-version.txt
+          uv run --python "${ARTIFACT_PYTHON}" python --version > dist/python-version.txt
+          shasum -a 256 scripts/release-build-constraints.txt > dist/release-build-constraints.sha256
       - name: Audit package contents
         run: uv run python scripts/audit_package_contents.py dist
       - name: Verify artifact identity and hashes
@@ -259,6 +266,9 @@ jobs:
             dist/*.whl
             dist/*.tar.gz
             dist/SHA256SUMS.txt
+            dist/uv-version.txt
+            dist/python-version.txt
+            dist/release-build-constraints.sha256
           if-no-files-found: error
 
   publish:
@@ -387,6 +397,7 @@ jobs:
       - name: Install uv without caching
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
         with:
+          version: "0.11.28"
           enable-cache: false
       - name: Verify published artifacts and capture provenance
         id: verify_pypi_release

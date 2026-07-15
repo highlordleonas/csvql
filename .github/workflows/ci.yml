@@ -6,6 +6,9 @@ on:
     branches: [main]
     tags: ["v*"]
 
+env:
+  ARTIFACT_PYTHON: "3.12.11"
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -37,6 +40,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
         with:
+          version: "0.11.28"
           enable-cache: true
       - name: Set up Python
         run: uv python install ${{ matrix.python-version }}

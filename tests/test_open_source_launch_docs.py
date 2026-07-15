@@ -830,6 +830,46 @@ def test_github_actions_are_pinned_by_commit_sha() -> None:
                 assert PINNED_ACTION_RE.fullmatch(uses), f"{path}: {uses}"
 
 
+def test_ci_and_publish_pin_exact_release_toolchain() -> None:
+    ci = yaml.safe_load(read_text(".github/workflows/ci.yml"))
+    publish = yaml.safe_load(read_text(".github/workflows/publish.yml"))
+    for workflow in (ci, publish):
+        install_steps = [
+            step
+            for job in workflow["jobs"].values()
+            for step in job.get("steps", [])
+            if step.get("name") == "Install uv"
+        ]
+        assert install_steps
+        for step in install_steps:
+            assert step["uses"] == ("astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86")
+            assert step["with"]["version"] == "0.11.28"
+
+    publish_build = publish["jobs"]["build-and-verify"]
+    assert publish_build["env"]["ARTIFACT_PYTHON"] == "3.12.11"
+    assert ci["env"]["ARTIFACT_PYTHON"] == "3.12.11"
+    build_runs = "\n".join(str(step.get("run", "")) for step in publish_build["steps"])
+    assert "--build-constraints scripts/release-build-constraints.txt" in build_runs
+    assert "--require-hashes" in build_runs
+
+
+def test_release_build_constraints_are_exact_and_hashed() -> None:
+    lines = [
+        line
+        for line in read_text("scripts/release-build-constraints.txt").splitlines()
+        if line and not line.startswith("#") and not line.startswith("    --hash=")
+    ]
+    assert lines == [
+        "hatchling==1.31.0 \\",
+        "packaging==26.2 \\",
+        "pathspec==1.1.1 \\",
+        "pluggy==1.6.0 \\",
+        "trove-classifiers==2026.6.1.19 \\",
+    ]
+    document = read_text("scripts/release-build-constraints.txt")
+    assert document.count("--hash=sha256:") == 5
+
+
 def test_publish_workflow_splits_build_from_oidc_publish() -> None:
     workflow = read_text(".github/workflows/publish.yml")
     payload = yaml.safe_load(workflow)
@@ -870,7 +910,8 @@ def test_publish_workflow_splits_build_from_oidc_publish() -> None:
         "uv run ruff check .",
         "uv run --all-extras mypy src",
         "uv run --all-extras pytest",
-        "uv build --sdist --wheel --out-dir dist",
+        'uv build --python "${ARTIFACT_PYTHON}" --sdist --wheel --out-dir dist '
+        "--build-constraints scripts/release-build-constraints.txt --require-hashes",
         "scripts/audit_package_contents.py dist",
         "SHA256SUMS.txt",
         'csvql" query',
