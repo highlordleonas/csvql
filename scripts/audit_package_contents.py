@@ -167,7 +167,7 @@ def find_archives(dist_dir: Path, expected_version: str) -> tuple[Path, Path]:
         raise SystemExit(f"Unable to inspect release archive directory: {safe_dist_dir}") from error
 
     if observed != expected:
-        expected_names = ", ".join(sorted(path.name for path in expected))
+        expected_names = ", ".join(sorted(_sanitize_untrusted_text(path.name) for path in expected))
         observed_names = (
             ", ".join(sorted(_sanitize_untrusted_text(path.name) for path in observed)) or "none"
         )
@@ -229,8 +229,15 @@ def _normalized_member_name(name: str) -> str:
 def _zip_member(info: zipfile.ZipInfo) -> ArchiveMember:
     unix_mode = (info.external_attr >> 16) & 0xFFFF
     file_type = stat.S_IFMT(unix_mode) if info.create_system == 3 else 0
-    is_directory = info.is_dir()
-    is_regular = not is_directory and file_type in {0, stat.S_IFREG}
+    filename_is_directory = info.is_dir()
+    if file_type == 0:
+        is_directory = filename_is_directory
+        is_regular = not filename_is_directory
+    else:
+        unix_is_directory = file_type == stat.S_IFDIR
+        metadata_agrees = filename_is_directory == unix_is_directory
+        is_directory = metadata_agrees and unix_is_directory
+        is_regular = metadata_agrees and file_type == stat.S_IFREG
     return ArchiveMember(info.filename, info.file_size, is_regular, is_directory)
 
 
@@ -261,6 +268,8 @@ def _metadata_findings(
             findings.append(AuditFinding(path.name, "unsafe-member-name", member.name))
         if not member.is_regular and not member.is_directory:
             findings.append(AuditFinding(path.name, "special-entry", member.name))
+        if member.is_directory and member.size != 0:
+            findings.append(AuditFinding(path.name, "directory-payload", member.name))
         if member.size < 0 or member.size > MEMBER_EXPANDED_SIZE_LIMIT:
             findings.append(AuditFinding(path.name, "expanded-member-size", member.name))
 

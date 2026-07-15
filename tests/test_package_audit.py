@@ -74,7 +74,7 @@ def write_sdist(
         for member, content in entries:
             raw = content.encode() if isinstance(content, str) else content
             info = tarfile.TarInfo(member) if isinstance(member, str) else member
-            if info.isfile():
+            if info.isfile() or raw:
                 info.size = len(raw)
                 archive.addfile(info, io.BytesIO(raw))
             else:
@@ -113,11 +113,23 @@ def valid_sdist_members(version: str = "1.0.2") -> dict[str, str | bytes]:
     }
 
 
-def wheel_symlink(name: str, target: str = "target") -> WheelEntry:
+def wheel_special_member(
+    name: str,
+    file_type: int,
+    content: str | bytes = b"",
+) -> WheelEntry:
     info = zipfile.ZipInfo(name)
     info.create_system = 3
-    info.external_attr = (stat.S_IFLNK | 0o777) << 16
-    return info, target
+    info.external_attr = (file_type | 0o777) << 16
+    return info, content
+
+
+def wheel_symlink(name: str, target: str = "target") -> WheelEntry:
+    return wheel_special_member(name, stat.S_IFLNK, target)
+
+
+def wheel_directory(name: str, content: str | bytes = b"") -> WheelEntry:
+    return wheel_special_member(name, stat.S_IFDIR, content)
 
 
 def tar_special_member(name: str, member_type: bytes) -> TarEntry:
@@ -243,6 +255,20 @@ def test_find_archives_redacts_untrusted_artifact_names(tmp_path: Path) -> None:
 
     message = str(exc_info.value)
     assert synthetic not in message
+    assert "\n" not in message
+    assert "\x1b" not in message
+
+
+def test_find_archives_sanitizes_expected_version_in_error_text(tmp_path: Path) -> None:
+    synthetic = "pypi-" + "A" * 40
+    expected_version = f"1.0.2-{synthetic}\n\x1b[31mfound: forged"
+
+    with pytest.raises(SystemExit) as exc_info:
+        find_archives(tmp_path, expected_version)
+
+    message = str(exc_info.value)
+    assert synthetic not in message
+    assert "<redacted>" in message
     assert "\n" not in message
     assert "\x1b" not in message
 
@@ -470,6 +496,37 @@ def test_audit_archive_rejects_zip_unix_symlink(tmp_path: Path) -> None:
     assert ("special-entry", "csvql/link.py") in finding_pairs(findings)
 
 
+@pytest.mark.parametrize(
+    "file_type",
+    [stat.S_IFLNK, stat.S_IFIFO, stat.S_IFCHR, stat.S_IFBLK],
+)
+def test_trailing_slash_zip_special_entry_does_not_satisfy_required_tree(
+    tmp_path: Path, file_type: int
+) -> None:
+    wheel = tmp_path / "localql-1.0.2-py3-none-any.whl"
+    members = valid_wheel_members()
+    members.pop("csvql/__init__.py")
+    entries: list[WheelEntry] = list(members.items())
+    entries.append(wheel_special_member("csvql/", file_type))
+    write_wheel(wheel, entries)
+
+    findings = audit_module.audit_archive(wheel, "1.0.2")
+
+    assert ("special-entry", "csvql/") in finding_pairs(findings)
+    assert ("missing-required-entry", "csvql/") in finding_pairs(findings)
+
+
+def test_audit_archive_rejects_payload_bearing_zip_directory(tmp_path: Path) -> None:
+    wheel = tmp_path / "localql-1.0.2-py3-none-any.whl"
+    entries: list[WheelEntry] = list(valid_wheel_members().items())
+    entries.append(wheel_directory("csvql/data/", b"not-empty"))
+    write_wheel(wheel, entries)
+
+    findings = audit_module.audit_archive(wheel, "1.0.2")
+
+    assert ("directory-payload", "csvql/data/") in finding_pairs(findings)
+
+
 def test_required_wheel_file_must_be_regular(tmp_path: Path) -> None:
     wheel = tmp_path / "localql-1.0.2-py3-none-any.whl"
     members = valid_wheel_members()
@@ -586,6 +643,19 @@ def test_audit_archive_rejects_tar_special_members(tmp_path: Path, member_type: 
     findings = audit_module.audit_archive(sdist, "1.0.2")
 
     assert ("special-entry", "localql-1.0.2/docs/special") in finding_pairs(findings)
+
+
+def test_audit_archive_rejects_payload_bearing_tar_directory(tmp_path: Path) -> None:
+    sdist = tmp_path / "localql-1.0.2.tar.gz"
+    entries: list[TarEntry] = list(valid_sdist_members().items())
+    directory = tarfile.TarInfo("localql-1.0.2/docs/data/")
+    directory.type = tarfile.DIRTYPE
+    entries.append((directory, b"not-empty"))
+    write_sdist(sdist, entries)
+
+    findings = audit_module.audit_archive(sdist, "1.0.2")
+
+    assert ("directory-payload", "localql-1.0.2/docs/data") in finding_pairs(findings)
 
 
 def test_required_sdist_tree_accepts_real_directory_entry(tmp_path: Path) -> None:
