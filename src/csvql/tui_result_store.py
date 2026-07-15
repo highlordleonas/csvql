@@ -9,6 +9,7 @@ import pickle
 import re
 import secrets
 import stat
+import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -163,14 +164,12 @@ class _PlatformLease:
     def acquire_nonblocking(self) -> bool:
         self.file.seek(0)
         try:
-            if os.name == "nt":
+            if sys.platform == "win32":
                 import msvcrt
 
-                # These members exist only on Windows; the non-Windows typeshed
-                # stub intentionally omits them even behind the runtime guard.
-                msvcrt.locking(  # type: ignore[attr-defined]
+                msvcrt.locking(
                     self.file.fileno(),
-                    msvcrt.LK_NBLCK,  # type: ignore[attr-defined]
+                    msvcrt.LK_NBLCK,
                     1,
                 )
             else:
@@ -196,12 +195,12 @@ class _PlatformLease:
         if not self.is_locked:
             return
         self.file.seek(0)
-        if os.name == "nt":
+        if sys.platform == "win32":
             import msvcrt
 
-            msvcrt.locking(  # type: ignore[attr-defined]
+            msvcrt.locking(
                 self.file.fileno(),
-                msvcrt.LK_UNLCK,  # type: ignore[attr-defined]
+                msvcrt.LK_UNLCK,
                 1,
             )
         else:
@@ -817,7 +816,7 @@ def _write_exclusive_bytes(
 
 def _open_spill_file(file_descriptor: int) -> BinaryIO:
     try:
-        if os.name != "nt":
+        if sys.platform != "win32":
             os.fchmod(file_descriptor, 0o600)
         return os.fdopen(file_descriptor, "wb")
     except Exception:
