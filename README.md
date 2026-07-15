@@ -11,74 +11,97 @@ readable output, exports, and an optional terminal menu.
 
 ![LocalQL: Query local CSVs with SQL](https://raw.githubusercontent.com/highlordleonas/csvql/main/docs/assets/localql-social-preview.jpg)
 
-## Contents
+## Choose your workflow
 
-- [Quickstart](#quickstart)
-- [Core workflows](#core-workflows)
-- [Terminal menu](#terminal-menu)
-- [Safety](#safety)
-- [Documentation](#documentation)
-
-## Quickstart
-
-Install LocalQL:
-
-```bash
-pip install localql
-```
-
-The query below uses the example data in this repository. From another
-directory, replace the path with one of your own CSV files.
-
-Query the example CSV:
-
-```bash
-csvql query examples/saas_revenue/data/revenue_movements.csv \
-  "SELECT movement_type, SUM(mrr_delta) AS net_mrr_change
-   FROM revenue_movements
-   GROUP BY movement_type
-   ORDER BY movement_type"
-```
-
-![Terminal screenshot of a LocalQL query over the SaaS revenue example](https://raw.githubusercontent.com/highlordleonas/csvql/main/docs/assets/localql-terminal-query.svg)
-
-For a complete copy-and-paste walkthrough, see
-[Getting started](https://github.com/highlordleonas/csvql/blob/main/docs/getting-started.md).
-
-## Core workflows
-
-| When you want to… | Start here |
+| You want to… | Start with |
 | --- | --- |
-| Query a CSV or join named tables | [CLI reference](https://github.com/highlordleonas/csvql/blob/main/docs/cli-reference.md#query-csv-files) |
-| Reuse a project catalog and saved SQL | [Project catalogs](https://github.com/highlordleonas/csvql/blob/main/docs/cli-reference.md#project-catalogs) |
-| Inspect, sample, or profile a source | [Inspect, sample, and profile](https://github.com/highlordleonas/csvql/blob/main/docs/cli-reference.md#inspect-sample-and-profile) |
-| Export a result or reuse it as a CSV source | [Save and reuse results](https://github.com/highlordleonas/csvql/blob/main/docs/cli-reference.md#save-and-reuse-results) |
-| Check configured data-quality rules | [Data-quality checks](https://github.com/highlordleonas/csvql/blob/main/docs/cli-reference.md#data-quality-checks) |
+| Query, inspect, profile, check, or export local CSV data | The `csvql` CLI |
+| Explore sources and results interactively in a terminal | The optional `csvql menu` workbench |
+| Embed project-backed queries in Python | `CSVQLSession` |
+| Produce stable automation output | `--output json` and the JSON contract |
 
-CSVQL does not implement a SQL engine. DuckDB executes SQL; CSVQL manages the
-local workflow around table aliases, project configuration, output, and exports.
+DuckDB executes your SQL; LocalQL manages the local workflow around CSV table
+aliases, project configuration, output, and exports.
 
-## Terminal menu
+## Installation
+
+Install the core command into your selected Python environment and confirm the
+installed version:
+
+```console
+python -m pip install localql
+csvql --version
+```
+
+For the optional terminal workbench, or for an isolated application
+environment, use one of these alternatives:
+
+```console
+python -m pip install "localql[tui]"
+uv tool install localql
+uv tool install "localql[tui]"
+```
+
+`uv` must already be installed before you use `uv tool`. `pip` installs into
+the selected Python environment; `uv tool` creates an isolated application
+environment.
+
+## 60-second quickstart
+
+Create a small CSV in your current directory, then query it with the installed
+`csvql` command. These two lines work in Bash-compatible shells and PowerShell:
+
+```console
+python -c "from pathlib import Path; Path('orders.csv').write_text('order_id,status\nORD-1,paid\nORD-2,pending\nORD-3,paid\n', encoding='utf-8')"
+csvql query orders.csv "SELECT status, COUNT(*) AS order_count FROM orders GROUP BY status ORDER BY status" --output json
+```
+
+The result reports two `paid` source rows, one `pending` source row, and two
+grouped result rows. Timing fields may vary and are not part of this expected
+result.
+
+For a complete walkthrough of projects, saved SQL, exports, and result reuse,
+see [Getting started](https://github.com/highlordleonas/csvql/blob/main/docs/getting-started.md).
+
+## Terminal workbench
 
 The optional `csvql menu` workbench provides sources, a SQL editor, results,
 history, and explicit export actions in the terminal:
 
-```bash
-pip install "localql[tui]"
+```console
 csvql menu
 csvql menu /path/to/orders.csv
 ```
 
 ![Terminal screenshot of the LocalQL TUI workbench with sources, SQL, history, and results](https://raw.githubusercontent.com/highlordleonas/csvql/main/docs/assets/localql-tui-workbench.svg)
 
-The terminal menu is optional; all core commands also work without it. See the
+The terminal workbench is optional; all core commands work without it. See the
 [Terminal menu guide](https://github.com/highlordleonas/csvql/blob/main/docs/tui-guide.md)
 for keys, source actions, history, and result handling.
 
-## Safety
+## Compatibility and safety
+
+LocalQL supports Python 3.11 through 3.14. The v1 CLI, Python, project catalog,
+JSON, exit-code, and export contracts remain compatible in 1.0.2.
 
 LocalQL treats user-authored SQL as trusted local DuckDB SQL. It does not
 sandbox DuckDB or restrict filesystem access. Run only SQL you trust.
+
+## What's new in 1.0.2
+
+- The optional terminal workbench now uses secure temporary workspaces, atomic
+  spill completion, conservative recovery, bounded previews, and sanitized
+  storage or cleanup reporting for large results.
+- Portable control-key fallbacks cover terminal workbench actions when a
+  terminal or operating system intercepts function keys.
+- Maintainer release guardrails bind intentional release operations to exact
+  refs and object IDs.
+- The frozen local quality gate now aligns with the supported Python and
+  cross-platform CI matrix.
+
+See the [v1 release notes](https://github.com/highlordleonas/csvql/blob/main/docs/release-notes/v1.md)
+and [changelog](https://github.com/highlordleonas/csvql/blob/main/CHANGELOG.md)
+for details.
 
 ## Documentation
 

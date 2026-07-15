@@ -1,37 +1,51 @@
 # Getting Started
 
-This walkthrough uses the local SaaS revenue example to show the core CSVQL
-workflow: query one CSV, use a project catalog, run saved SQL, and export a
-result. DuckDB executes SQL; CSVQL handles table aliases, project configuration,
-output formatting, and predictable local error handling.
+Start with the installed LocalQL command from any working directory. This guide
+also covers the package lifecycle, then uses the repository's SaaS revenue
+project to demonstrate catalogs, saved SQL, exports, and result reuse. DuckDB
+executes SQL; LocalQL handles table aliases, project configuration, output
+formatting, and predictable local error handling.
 
-## Install
-
-This walkthrough uses files from the LocalQL repository. If you do not already
-have a checkout, clone it and enter the project directory first:
-
-```bash
-git clone https://github.com/highlordleonas/csvql.git
-cd csvql
-```
-
-Install the package with the optional terminal menu:
-
-```bash
-pip install "localql[tui]"
-```
-
-From a source checkout, use the repo-local toolchain instead:
-
-```bash
-uv sync --all-extras
-uv run csvql --help
-```
+## Install and manage LocalQL
 
 The installable distribution is `localql`. The command, Python import package,
 and project config file remain `csvql` and `.csvql.yml`.
-The examples below use the installed `csvql` command; from a source checkout,
-prefix the same commands with `uv run`.
+
+| Lifecycle | pip environment | isolated uv tool |
+| --- | --- | --- |
+| Core install | `python -m pip install localql` | `uv tool install localql` |
+| TUI install | `python -m pip install "localql[tui]"` | `uv tool install "localql[tui]"` |
+| Upgrade core | `python -m pip install --upgrade localql` | `uv tool upgrade localql` |
+| Upgrade TUI | `python -m pip install --upgrade "localql[tui]"` | `uv tool upgrade localql` |
+| Uninstall | `python -m pip uninstall localql` | `uv tool uninstall localql` |
+
+`pip` installs into the selected Python environment. `uv tool` creates an
+isolated application environment, and `uv` must already be installed before
+you use it.
+
+An existing uv tool keeps the extras selected when it was installed. To change
+between core and TUI mode, uninstall LocalQL and reinstall it with the desired
+package expression.
+
+Confirm which installed version your shell resolves:
+
+```console
+csvql --version
+```
+
+## Develop from a source checkout
+
+From an existing LocalQL source checkout, use the frozen repo environment for
+development commands:
+
+```bash
+uv sync --all-extras --frozen
+uv run --all-extras csvql --help
+```
+
+The examples below use the installed `csvql` command from the repository root.
+When developing against source instead, run the same commands through the
+repo-local environment with `uv run --all-extras`.
 
 ## Query One CSV
 

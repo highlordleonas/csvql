@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -184,12 +185,38 @@ def read_doc(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
-def normalized_markdown_section(path: str, heading: str) -> str:
+def markdown_section(path: str, heading: str) -> str:
     marker = f"## {heading}\n"
     _, separator, remainder = read_doc(path).partition(marker)
     assert separator, f"{path}: missing {heading!r} section"
     section, _, _ = remainder.partition("\n## ")
-    return " ".join(section.split())
+    return section
+
+
+def readme_quickstart() -> str:
+    blocks = fenced_blocks(
+        markdown_section("README.md", "60-second quickstart"),
+        "console",
+    )
+    assert len(blocks) == 1
+    return blocks[0]
+
+
+def assert_quickstart_result(stdout: str) -> None:
+    payload = json.loads(stdout)
+    observed = {key: payload.get(key) for key in ("columns", "rows", "row_count")}
+    assert observed == {
+        "columns": ["status", "order_count"],
+        "rows": [
+            {"status": "paid", "order_count": 2},
+            {"status": "pending", "order_count": 1},
+        ],
+        "row_count": 2,
+    }
+
+
+def normalized_markdown_section(path: str, heading: str) -> str:
+    return " ".join(markdown_section(path, heading).split())
 
 
 def test_every_tracked_markdown_file_has_one_publication_classification() -> None:
@@ -350,7 +377,7 @@ def test_public_bash_fences_are_syntactically_valid() -> None:
 def test_readme_is_a_curated_user_starting_point() -> None:
     readme = read_doc("README.md")
 
-    assert "## Contents" in readme
+    assert "## Documentation" in readme
     for expected_link in (
         f"[Getting started]({REPO_BLOB_PREFIX}docs/getting-started.md)",
         f"[CLI reference]({REPO_BLOB_PREFIX}docs/cli-reference.md)",
@@ -362,6 +389,51 @@ def test_readme_is_a_curated_user_starting_point() -> None:
         f"[Support]({REPO_BLOB_PREFIX}SUPPORT.md)",
     ):
         assert expected_link in readme
+
+
+def test_readme_quickstart_is_cross_shell_and_semantically_executable(
+    tmp_path: Path,
+) -> None:
+    block = readme_quickstart()
+    assert "examples/" not in block
+    assert "uv run" not in block
+    assert "\\\n" not in block
+    command = (
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", block]
+        if os.name == "nt"
+        else ["bash", "-c", block]
+    )
+    completed = subprocess.run(
+        command,
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert_quickstart_result(completed.stdout)
+
+
+def test_install_upgrade_and_uninstall_lifecycle_is_complete() -> None:
+    combined = "\n".join(read_doc(path) for path in ("README.md", "docs/getting-started.md"))
+    for command in (
+        "python -m pip install localql",
+        'python -m pip install "localql[tui]"',
+        "uv tool install localql",
+        'uv tool install "localql[tui]"',
+        "python -m pip install --upgrade localql",
+        "uv tool upgrade localql",
+        "python -m pip uninstall localql",
+        "uv tool uninstall localql",
+        "csvql --version",
+    ):
+        assert command in combined
+
+
+def test_installed_user_and_source_checkout_commands_are_distinguished() -> None:
+    getting_started = read_doc("docs/getting-started.md")
+    assert "uv run" not in markdown_section("README.md", "60-second quickstart")
+    assert "Develop from a source checkout" in getting_started
+    assert "uv sync --all-extras --frozen" in getting_started
 
 
 def test_readme_links_are_safe_for_pypi_rendering() -> None:
