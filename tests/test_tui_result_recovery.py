@@ -719,6 +719,41 @@ def test_recovery_removes_only_exact_files_from_valid_old_candidate(tmp_path: Pa
     assert summary.workspaces_failed == 0
 
 
+def test_windows_recovery_accepts_explicit_child_of_current_temp_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_user_temp_root = tmp_path / "current-user-temp"
+    explicit_temp_root = current_user_temp_root / "pytest-subdirectory"
+    explicit_temp_root.mkdir(parents=True)
+    workspace = _write_candidate(explicit_temp_root, created_at=_OLD_CREATED_AT)
+    monkeypatch.setattr(result_store, "_is_windows_platform", lambda: True)
+    monkeypatch.setattr(result_store.tempfile, "gettempdir", lambda: str(current_user_temp_root))
+
+    summary = recover_abandoned_result_workspaces(temp_root=explicit_temp_root, now=_NOW)
+
+    assert summary.workspaces_removed == 1
+    assert not workspace.exists()
+
+
+def test_windows_recovery_rejects_explicit_root_outside_current_temp_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_user_temp_root = tmp_path / "current-user-temp"
+    current_user_temp_root.mkdir()
+    explicit_temp_root = tmp_path / "outside-current-user-temp"
+    explicit_temp_root.mkdir()
+    workspace = _write_candidate(explicit_temp_root, created_at=_OLD_CREATED_AT)
+    monkeypatch.setattr(result_store, "_is_windows_platform", lambda: True)
+    monkeypatch.setattr(result_store.tempfile, "gettempdir", lambda: str(current_user_temp_root))
+
+    summary = recover_abandoned_result_workspaces(temp_root=explicit_temp_root, now=_NOW)
+
+    assert summary.workspaces_removed == 0
+    assert workspace.exists()
+
+
 def test_recovery_stops_at_temporary_root_entry_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

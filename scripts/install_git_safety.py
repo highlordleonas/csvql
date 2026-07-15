@@ -313,7 +313,7 @@ def _installed_payload_shape_unsafe(installed_hook_dir: Path) -> bool:
             return True
         if not stat.S_ISREG(metadata.st_mode):
             return True
-        if stat.S_IMODE(metadata.st_mode) != expected_mode:
+        if os.name != "nt" and stat.S_IMODE(metadata.st_mode) != expected_mode:
             return True
     return False
 

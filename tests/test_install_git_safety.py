@@ -541,11 +541,14 @@ def test_apply_installs_branch_independent_guardrails(git_repo: Path) -> None:
     assert result.returncode == 0, result.stderr
     git_common_dir = resolved_git_common_dir(git_repo)
     installed = git_common_dir / "localql-hooks"
-    assert stat.S_IMODE((installed / "pre-push").lstat().st_mode) == 0o755
+    if os.name != "nt":
+        assert stat.S_IMODE((installed / "pre-push").lstat().st_mode) == 0o755
     assert (installed / "git_public_push_guard.py").is_file()
-    assert stat.S_IMODE((installed / "git_public_push_guard.py").lstat().st_mode) == 0o644
+    if os.name != "nt":
+        assert stat.S_IMODE((installed / "git_public_push_guard.py").lstat().st_mode) == 0o644
     assert (installed / "SHA256SUMS").is_file()
-    assert stat.S_IMODE((installed / "SHA256SUMS").lstat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE((installed / "SHA256SUMS").lstat().st_mode) == 0o600
     assert git(git_repo, "config", "--local", "--get", "core.hooksPath").stdout.strip() == str(
         installed
     )
@@ -569,6 +572,18 @@ def test_apply_writes_exact_source_checksums(git_repo: Path) -> None:
     assert (installed / "SHA256SUMS").read_text(encoding="utf-8") == expected
 
 
+def test_windows_payload_validation_does_not_require_posix_execute_bits(
+    git_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert run_installer(git_repo, "apply", "--confirm", CANONICAL_REPOSITORY).returncode == 0
+    installed = resolved_git_common_dir(git_repo) / "localql-hooks"
+    (installed / "pre-push").chmod(0o600)
+    monkeypatch.setattr(install_git_safety.os, "name", "nt")
+
+    assert install_git_safety._installed_payload_status(installed) == "valid"
+
+
 def test_apply_is_idempotent_and_check_detects_tampering(git_repo: Path) -> None:
     assert run_installer(git_repo, "apply", "--confirm", CANONICAL_REPOSITORY).returncode == 0
     assert run_installer(git_repo, "apply", "--confirm", CANONICAL_REPOSITORY).returncode == 0
@@ -581,6 +596,7 @@ def test_apply_is_idempotent_and_check_detects_tampering(git_repo: Path) -> None
     assert "hook checksum: mismatch" in result.stdout
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not use POSIX execute bits")
 def test_check_detects_a_nonexecutable_installed_hook(git_repo: Path) -> None:
     assert run_installer(git_repo, "apply", "--confirm", CANONICAL_REPOSITORY).returncode == 0
     installed_hook = resolved_git_common_dir(git_repo) / "localql-hooks/pre-push"
@@ -626,6 +642,7 @@ def test_check_and_apply_refuse_symlinked_installed_payloads(
         ("SHA256SUMS", 0o644),
     ],
 )
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not use POSIX file modes")
 def test_check_and_apply_refuse_incorrect_installed_payload_modes(
     git_repo: Path, payload_name: str, wrong_mode: int
 ) -> None:
@@ -777,7 +794,8 @@ def test_apply_rolls_back_managed_hook_payloads_after_mid_apply_failure(
         for name, (content, mode) in original_files.items():
             path = installed / name
             assert path.read_bytes() == content
-            assert stat.S_IMODE(path.lstat().st_mode) == mode
+            if os.name != "nt":
+                assert stat.S_IMODE(path.lstat().st_mode) == mode
     else:
         assert not installed.exists()
 

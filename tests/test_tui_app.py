@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shutil
 import threading
 from pathlib import Path
@@ -5041,6 +5042,8 @@ def test_lost_workspace_before_prompt_marks_all_spilled_siblings_unavailable(
     state, store, sequences = _two_spilled_buffer_results(tmp_path)
     workspace = store.workspace_path
     assert workspace is not None
+    if os.name == "nt":
+        assert store._close_active_lease()
     shutil.rmtree(workspace)
 
     async def run_case() -> tuple[str, str, bool]:
@@ -5093,6 +5096,8 @@ def test_lost_workspace_after_prompt_marks_all_spilled_siblings_unavailable(
             await pilot.pause()
             await pilot.press(action_key)
             await pilot.pause()
+            if os.name == "nt":
+                assert store._close_active_lease()
             shutil.rmtree(workspace)
             app.screen.query_one(input_selector, Input).value = input_value
             await pilot.press("enter")

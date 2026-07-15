@@ -150,7 +150,10 @@ def test_spill_uses_exact_workspace_grammar_and_atomic_final_name(tmp_path: Path
         "format_version": 1,
         "session_id": "a" * 32,
     }
-    assert (workspace / TUI_RESULT_LEASE_NAME).read_bytes() == b"0"
+    lease_path = workspace / TUI_RESULT_LEASE_NAME
+    assert lease_path.stat().st_size == 1
+    if os.name != "nt":
+        assert lease_path.read_bytes() == b"0"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits only")
@@ -692,6 +695,8 @@ def test_lost_workspace_invalidates_all_registered_spills(tmp_path: Path) -> Non
     second = store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=2)
     workspace = store.workspace_path
     assert workspace is not None
+    if os.name == "nt":
+        assert store._close_active_lease()
     shutil.rmtree(workspace)
 
     with pytest.raises(TUIResultStorageError, match="no longer available") as error:
@@ -1107,6 +1112,8 @@ def test_cleanup_rejects_replaced_workspace_identity(tmp_path: Path) -> None:
     workspace = store.workspace_path
     assert workspace is not None
     owned_workspace = tmp_path / "moved-owned-workspace"
+    if os.name == "nt":
+        assert store._close_active_lease()
     workspace.rename(owned_workspace)
     workspace.mkdir()
     replacement_paths = tuple(
@@ -1123,6 +1130,20 @@ def test_cleanup_rejects_replaced_workspace_identity(tmp_path: Path) -> None:
     assert (owned_workspace / TUI_RESULT_LEASE_NAME).is_file()
     assert (owned_workspace / "query-1.pickle").is_file()
     assert summary == TUIResultCleanupSummary(workspaces_failed=1)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows active-lease contract")
+def test_windows_active_lease_prevents_lease_removal(tmp_path: Path) -> None:
+    store = TUIResultStore(temp_root=tmp_path, session_id="a" * 32)
+    store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
+    workspace = store.workspace_path
+    assert workspace is not None
+
+    with pytest.raises(PermissionError):
+        (workspace / TUI_RESULT_LEASE_NAME).unlink()
+
+    assert store.cleanup().warning_count == 0
+    assert not workspace.exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX parent symlink regression")

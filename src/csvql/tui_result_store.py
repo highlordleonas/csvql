@@ -958,7 +958,8 @@ def _resolve_recovery_root(temp_root: Path | None) -> Path | None:
             current_user_stat = current_user_root.lstat()
             if not stat.S_ISDIR(current_user_stat.st_mode) or _is_reparse_point(current_user_stat):
                 return None
-            if root != current_user_root.resolve(strict=True):
+            current_user_root = current_user_root.resolve(strict=True)
+            if not root.is_relative_to(current_user_root):
                 return None
     except (OSError, RuntimeError):
         return None
