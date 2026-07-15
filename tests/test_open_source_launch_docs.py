@@ -302,6 +302,19 @@ def test_release_runbook_candidate_evidence_fails_closed() -> None:
     assert '--work-dir "${evidence_dir}/installed-smokes"' in candidate
     assert '--expected-version "${expected_version}"' in candidate
     assert '--python "${artifact_python}"' in candidate
+    assert (
+        "scripts/verify_installed_artifacts.py "
+        f'{continuation}--wheel "${{evidence_dir}}/dist/localql-1.0.2-py3-none-any.whl" '
+        f"{continuation}--core-requirements "
+        f'"${{evidence_dir}}/dependency-audit/core-requirements.txt" '
+        f"{continuation}--tui-requirements "
+        f'"${{evidence_dir}}/dependency-audit/tui-requirements.txt" '
+        f'{continuation}--work-dir "${{evidence_dir}}/installed-smokes" '
+        f'{continuation}--expected-version "${{expected_version}}" '
+        f'{continuation}--python "${{artifact_python}}" '
+        f'{continuation}> "${{evidence_dir}}/installed-smokes.json" '
+        f'{continuation}2> "${{evidence_dir}}/installed-smokes.log"'
+    ) in candidate
 
     for stale_invocation in (
         'expected_version="${release_version#v}"',

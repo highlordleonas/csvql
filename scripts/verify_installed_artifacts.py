@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -366,8 +367,16 @@ def _run_checked(
         ) from None
     except TimeoutExpired:
         raise InstalledArtifactVerificationError(f"{role} timed out") from None
-    except OSError:
-        raise InstalledArtifactVerificationError(f"{role} could not be executed") from None
+    except OSError as exc:
+        error_number = exc.errno
+        if type(error_number) is not int:
+            error_identity = "UNKNOWN (errno unavailable)"
+        else:
+            error_name = errno.errorcode.get(error_number, "UNKNOWN")
+            error_identity = f"{error_name} (errno {error_number})"
+        raise InstalledArtifactVerificationError(
+            f"{role} could not be executed: {error_identity}"
+        ) from None
     if completed.returncode != 0:
         raise InstalledArtifactVerificationError(
             f"{role} failed with exit status {completed.returncode}"

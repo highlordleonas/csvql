@@ -192,7 +192,8 @@ uv run --frozen --no-sync python scripts/verify_installed_artifacts.py \
   --work-dir "${evidence_dir}/installed-smokes" \
   --expected-version "${expected_version}" \
   --python "${artifact_python}" \
-  > "${evidence_dir}/installed-smokes.json"
+  > "${evidence_dir}/installed-smokes.json" \
+  2> "${evidence_dir}/installed-smokes.log"
 
 intended_publication_date="2026-07-15"
 changelog_date="$(

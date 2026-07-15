@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -1065,6 +1066,75 @@ def test_subprocess_timeout_uses_controlled_context(tmp_path: Path) -> None:
     assert "secret-output" not in str(excinfo.value)
     rendered_traceback = "".join(traceback.format_exception(excinfo.value))
     assert "secret-output" not in rendered_traceback
+    assert excinfo.value.__suppress_context__ is True
+
+
+def test_subprocess_os_error_preserves_safe_errno_without_hostile_context(
+    tmp_path: Path,
+) -> None:
+    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
+
+    def os_error_runner(args: Sequence[object], **kwargs: object) -> CompletedProcess[str]:
+        raise OSError(
+            errno.EAGAIN,
+            "token=secret-spawn-detail",
+            "/secret/executable/path",
+        )
+
+    with pytest.raises(verifier.InstalledArtifactVerificationError) as excinfo:
+        verifier.verify_installed_artifacts(
+            wheel=wheel,
+            core_requirements=core_requirements,
+            tui_requirements=tui_requirements,
+            work_dir=tmp_path / "work",
+            expected_version="1.0.2",
+            python_version="3.12.11",
+            public_index=False,
+            allow_published_version_check=False,
+            run_command=os_error_runner,
+        )
+
+    message = str(excinfo.value)
+    assert "verify selected uv" in message
+    assert f"EAGAIN (errno {errno.EAGAIN})" in message
+    assert "secret" not in message
+    rendered_traceback = "".join(traceback.format_exception(excinfo.value))
+    assert "/secret/executable/path" not in rendered_traceback
+    assert "secret-spawn-detail" not in rendered_traceback
+    assert excinfo.value.__suppress_context__ is True
+
+
+def test_subprocess_os_error_rejects_hostile_non_numeric_errno(tmp_path: Path) -> None:
+    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
+
+    def os_error_runner(args: Sequence[object], **kwargs: object) -> CompletedProcess[str]:
+        raise OSError(
+            "token=secret-errno",
+            "token=secret-spawn-detail",
+            "/secret/executable/path",
+        )
+
+    with pytest.raises(verifier.InstalledArtifactVerificationError) as excinfo:
+        verifier.verify_installed_artifacts(
+            wheel=wheel,
+            core_requirements=core_requirements,
+            tui_requirements=tui_requirements,
+            work_dir=tmp_path / "work",
+            expected_version="1.0.2",
+            python_version="3.12.11",
+            public_index=False,
+            allow_published_version_check=False,
+            run_command=os_error_runner,
+        )
+
+    message = str(excinfo.value)
+    assert "verify selected uv" in message
+    assert "UNKNOWN (errno unavailable)" in message
+    assert "secret" not in message
+    rendered_traceback = "".join(traceback.format_exception(excinfo.value))
+    assert "/secret/executable/path" not in rendered_traceback
+    assert "secret-errno" not in rendered_traceback
+    assert "secret-spawn-detail" not in rendered_traceback
     assert excinfo.value.__suppress_context__ is True
 
 
