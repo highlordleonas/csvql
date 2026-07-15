@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REPO_BLOB_PREFIX = "https://github.com/highlordleonas/csvql/blob/main/"
 REPO_RAW_PREFIX = "https://raw.githubusercontent.com/highlordleonas/csvql/main/"
 REPO_RAW_URL = urlparse(REPO_RAW_PREFIX)
+QUICKSTART_TIMEOUT_SECONDS = 30
 LINK_RE = re.compile(r"!?\[[^]]*\]\(([^)]+)\)")
 HTTPS_TARGET_RE = re.compile(
     r"""https://[^\s<>()\[\]{}"'`]+""",
@@ -215,6 +216,22 @@ def assert_quickstart_result(stdout: str) -> None:
     }
 
 
+def run_quickstart_block(block: str, *, cwd: Path) -> subprocess.CompletedProcess[str]:
+    command = (
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", block]
+        if os.name == "nt"
+        else ["bash", "-c", block]
+    )
+    return subprocess.run(
+        command,
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=QUICKSTART_TIMEOUT_SECONDS,
+    )
+
+
 def normalized_markdown_section(path: str, heading: str) -> str:
     return " ".join(markdown_section(path, heading).split())
 
@@ -391,6 +408,20 @@ def test_readme_is_a_curated_user_starting_point() -> None:
         assert expected_link in readme
 
 
+def test_readme_top_level_sections_are_in_the_approved_order() -> None:
+    headings = tuple(re.findall(r"^## (.+)$", read_doc("README.md"), flags=re.MULTILINE))
+
+    assert headings == (
+        "Choose your workflow",
+        "Installation",
+        "60-second quickstart",
+        "Terminal workbench",
+        "Compatibility and safety",
+        "What's new in 1.0.2",
+        "Documentation",
+    )
+
+
 def test_readme_quickstart_is_cross_shell_and_semantically_executable(
     tmp_path: Path,
 ) -> None:
@@ -398,19 +429,22 @@ def test_readme_quickstart_is_cross_shell_and_semantically_executable(
     assert "examples/" not in block
     assert "uv run" not in block
     assert "\\\n" not in block
-    command = (
-        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", block]
-        if os.name == "nt"
-        else ["bash", "-c", block]
-    )
-    completed = subprocess.run(
-        command,
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    completed = run_quickstart_block(block, cwd=tmp_path)
     assert_quickstart_result(completed.stdout)
+
+
+def test_readme_quickstart_timeout_is_bounded_and_visible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def simulated_timeout(*args: object, **kwargs: object) -> None:
+        assert kwargs.get("timeout") == 30
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", simulated_timeout)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_quickstart_block("csvql --version", cwd=tmp_path)
 
 
 def test_install_upgrade_and_uninstall_lifecycle_is_complete() -> None:
@@ -421,6 +455,7 @@ def test_install_upgrade_and_uninstall_lifecycle_is_complete() -> None:
         "uv tool install localql",
         'uv tool install "localql[tui]"',
         "python -m pip install --upgrade localql",
+        'python -m pip install --upgrade "localql[tui]"',
         "uv tool upgrade localql",
         "python -m pip uninstall localql",
         "uv tool uninstall localql",
@@ -429,11 +464,32 @@ def test_install_upgrade_and_uninstall_lifecycle_is_complete() -> None:
         assert command in combined
 
 
+def test_installed_commands_have_actionable_path_guidance() -> None:
+    for path in ("README.md", "docs/getting-started.md"):
+        document = " ".join(read_doc(path).split())
+        for expected in (
+            "selected Python environment's scripts directory",
+            "uv tool executable directory",
+            "python -m pip show localql",
+            "python -c \"import sysconfig; print(sysconfig.get_path('scripts'))\"",
+            "uv tool dir --bin",
+            "uv tool update-shell",
+        ):
+            assert expected in document, (path, expected)
+
+
 def test_installed_user_and_source_checkout_commands_are_distinguished() -> None:
     getting_started = read_doc("docs/getting-started.md")
     assert "uv run" not in markdown_section("README.md", "60-second quickstart")
     assert "Develop from a source checkout" in getting_started
     assert "uv sync --all-extras --frozen" in getting_started
+
+
+def test_getting_started_names_the_current_checkout_context() -> None:
+    getting_started = read_doc("docs/getting-started.md")
+
+    assert "repository root you entered above" not in getting_started
+    assert "root of an existing LocalQL source checkout" in getting_started
 
 
 def test_readme_links_are_safe_for_pypi_rendering() -> None:

@@ -46,6 +46,20 @@ uv tool install "localql[tui]"
 the selected Python environment; `uv tool` creates an isolated application
 environment.
 
+Whichever installer you use, its executable directory must be on `PATH`: the
+selected Python environment's scripts directory for `pip`, or the uv tool
+executable directory for `uv tool`. If `csvql --version` is not found:
+
+- For `pip`, `python -m pip show localql` confirms the selected environment and
+  `python -c "import sysconfig; print(sysconfig.get_path('scripts'))"` prints its
+  scripts directory. Activate that environment or add the printed directory to
+  `PATH`.
+- For `uv tool`, `uv tool dir --bin` prints the executable directory and
+  `uv tool update-shell` adds it to `PATH`. Open a new shell afterward.
+
+See [Troubleshooting](https://github.com/highlordleonas/csvql/blob/main/docs/troubleshooting.md)
+for more installation diagnostics.
+
 ## 60-second quickstart
 
 Create a small CSV in your current directory, then query it with the installed
