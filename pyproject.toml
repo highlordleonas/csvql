@@ -58,7 +58,21 @@ csvql = "csvql.cli:main"
 packages = ["src/csvql"]
 
 [tool.hatch.build.targets.sdist]
-exclude = ["/AGENTS.md", "/docs/governance/audits", "/docs/superpowers"]
+include = [
+    "/CHANGELOG.md",
+    "/CODE_OF_CONDUCT.md",
+    "/CONTRIBUTING.md",
+    "/LICENSE",
+    "/README.md",
+    "/SECURITY.md",
+    "/SUPPORT.md",
+    "/docs",
+    "/examples",
+    "/pyproject.toml",
+    "/scripts/release-build-constraints.txt",
+    "/src",
+]
+exclude = ["/docs/governance/audits", "/docs/superpowers"]
 
 [tool.ruff]
 line-length = 100
