@@ -3,19 +3,50 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import tempfile
 import textwrap
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from subprocess import CalledProcessError, CompletedProcess, TimeoutExpired
 
 COMMAND_TIMEOUT_SECONDS = 300.0
+COPY_CHUNK_SIZE = 1024 * 1024
 REQUIRED_PYTHON_VERSION = "3.12.11"
+REQUIRED_UV_VERSION = "0.11.28"
+PUBLIC_INDEX_URL = "https://pypi.org/simple"
 REPO_ROOT = Path(__file__).resolve().parents[1]
+INHERITED_ENVIRONMENT_ALLOWLIST = frozenset(
+    {
+        "COMSPEC",
+        "CURL_CA_BUNDLE",
+        "HOME",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LANG",
+        "LANGUAGE",
+        "LC_ALL",
+        "LC_CTYPE",
+        "PATH",
+        "PATHEXT",
+        "REQUESTS_CA_BUNDLE",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "TZ",
+        "USERPROFILE",
+        "WINDIR",
+    }
+)
 QUERY_SQL = "SELECT status, COUNT(*) AS order_count FROM orders GROUP BY status ORDER BY status"
 EXPECTED_QUERY_SUBSET: Mapping[str, object] = {
     "columns": ["status", "order_count"],
@@ -52,6 +83,15 @@ TUI_IMPORT_SMOKE = textwrap.dedent(
 RunCommand = Callable[..., CompletedProcess[str]]
 
 
+@dataclass(frozen=True, slots=True)
+class SnapshottedInput:
+    """Private immutable input used by every local installation command."""
+
+    path: Path
+    filename: str
+    sha256: str
+
+
 class InstalledArtifactVerificationError(RuntimeError):
     """Raised when isolated installed-artifact evidence is invalid."""
 
@@ -76,66 +116,224 @@ def _validate_expected_version(expected_version: str) -> None:
         )
 
 
+def _absolute_path(path: Path) -> Path:
+    return Path(os.path.abspath(path.expanduser()))
+
+
 def _validate_local_file(path: Path, *, exact_name: str, role: str) -> Path:
-    candidate = path.expanduser()
+    candidate = _absolute_path(path)
     if candidate.name != exact_name:
         raise InstalledArtifactVerificationError(f"{role} must use the exact filename")
-    if candidate.is_symlink() or not candidate.is_file():
-        raise InstalledArtifactVerificationError(f"{role} must be a regular file, not a symlink")
     try:
-        return candidate.resolve(strict=True)
+        metadata = candidate.lstat()
     except OSError as exc:
         raise InstalledArtifactVerificationError(f"{role} must be a readable regular file") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise InstalledArtifactVerificationError(f"{role} must be a regular file, not a symlink")
+    if metadata.st_nlink != 1:
+        raise InstalledArtifactVerificationError(f"{role} must not be a hardlink")
+    return candidate
 
 
 def _prepare_work_dir(work_dir: Path) -> Path:
-    candidate = work_dir.expanduser().resolve(strict=False)
-    if candidate.exists() or candidate.is_symlink():
-        raise InstalledArtifactVerificationError("work directory must not already exist")
-    if not candidate.parent.is_dir():
+    candidate = _absolute_path(work_dir)
+    try:
+        existing_metadata = candidate.lstat()
+    except FileNotFoundError:
+        existing_metadata = None
+    except OSError as exc:
         raise InstalledArtifactVerificationError(
-            "work directory parent must be an existing directory"
+            "work directory path could not be inspected"
+        ) from exc
+    if existing_metadata is not None and stat.S_ISLNK(existing_metadata.st_mode):
+        raise InstalledArtifactVerificationError("work directory must not be a symlink")
+    if existing_metadata is not None:
+        raise InstalledArtifactVerificationError("work directory must not already exist")
+    try:
+        parent_metadata = candidate.parent.lstat()
+    except OSError as exc:
+        raise InstalledArtifactVerificationError(
+            "work directory requires a real existing parent directory"
+        ) from exc
+    if stat.S_ISLNK(parent_metadata.st_mode) or not stat.S_ISDIR(parent_metadata.st_mode):
+        raise InstalledArtifactVerificationError(
+            "work directory requires a real existing parent directory"
         )
     try:
-        candidate.mkdir(mode=0o700)
+        os.mkdir(candidate, mode=0o700)
+    except FileExistsError:
+        raise InstalledArtifactVerificationError("work directory must not already exist") from None
     except OSError as exc:
         raise InstalledArtifactVerificationError("could not create the work directory") from exc
     return candidate
 
 
-def _sanitized_environment(*, public_index: bool) -> dict[str, str]:
-    environment = dict(os.environ)
-    for name in (
-        "PYTHONPATH",
-        "PYTHONHOME",
-        "PYTHONUSERBASE",
-        "VIRTUAL_ENV",
-        "PIP_TARGET",
-        "PIP_PREFIX",
-        "UV_TOOL_DIR",
-        "UV_TOOL_BIN_DIR",
-    ):
-        environment.pop(name, None)
-    environment["PYTHONNOUSERSITE"] = "1"
-    environment["PIP_CONFIG_FILE"] = os.devnull
-    environment["UV_NO_CONFIG"] = "1"
-    if public_index:
-        for name in (
-            "PIP_EXTRA_INDEX_URL",
-            "PIP_FIND_LINKS",
-            "PIP_INDEX_URL",
-            "PIP_NO_INDEX",
-            "UV_DEFAULT_INDEX",
-            "UV_EXTRA_INDEX_URL",
-            "UV_FIND_LINKS",
-            "UV_INDEX",
-            "UV_INDEX_URL",
-            "UV_NO_INDEX",
-        ):
-            environment.pop(name, None)
-        environment["PIP_INDEX_URL"] = "https://pypi.org/simple"
-        environment["UV_DEFAULT_INDEX"] = "https://pypi.org/simple"
+def _make_private_directory(path: Path) -> Path:
+    try:
+        os.mkdir(path, mode=0o700)
+    except OSError as exc:
+        raise InstalledArtifactVerificationError(
+            "could not create a private proof directory"
+        ) from exc
+    return path
+
+
+def _sanitized_environment(*, uv_cache_dir: Path) -> dict[str, str]:
+    environment = {
+        name: os.environ[name] for name in INHERITED_ENVIRONMENT_ALLOWLIST if name in os.environ
+    }
+    environment.update(
+        {
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_INDEX_URL": PUBLIC_INDEX_URL,
+            "PIP_NO_CACHE_DIR": "1",
+            "PIP_NO_INPUT": "1",
+            "PYTHONNOUSERSITE": "1",
+            "UV_CACHE_DIR": str(uv_cache_dir),
+            "UV_DEFAULT_INDEX": PUBLIC_INDEX_URL,
+            "UV_NO_CONFIG": "1",
+        }
+    )
     return environment
+
+
+def _metadata_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _write_all(file_descriptor: int, content: bytes) -> None:
+    offset = 0
+    while offset < len(content):
+        written = os.write(file_descriptor, content[offset:])
+        if written <= 0:
+            raise OSError("snapshot write made no progress")
+        offset += written
+
+
+def _snapshot_input(source: Path, *, destination_dir: Path, role: str) -> SnapshottedInput:
+    destination = destination_dir / source.name
+    try:
+        path_metadata_before = source.lstat()
+    except OSError:
+        raise InstalledArtifactVerificationError(f"{role} changed before snapshot") from None
+    if stat.S_ISLNK(path_metadata_before.st_mode) or not stat.S_ISREG(path_metadata_before.st_mode):
+        raise InstalledArtifactVerificationError(f"{role} must remain a regular file")
+    if path_metadata_before.st_nlink != 1:
+        raise InstalledArtifactVerificationError(f"{role} must not be a hardlink")
+
+    source_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+    source_flags |= getattr(os, "O_NOFOLLOW", 0)
+    destination_flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        source_descriptor = os.open(source, source_flags)
+    except OSError:
+        raise InstalledArtifactVerificationError(f"{role} changed before snapshot") from None
+
+    destination_descriptor: int | None = None
+    try:
+        opened_metadata_before = os.fstat(source_descriptor)
+        if _metadata_identity(opened_metadata_before) != _metadata_identity(path_metadata_before):
+            raise InstalledArtifactVerificationError(f"{role} changed before snapshot")
+        if not stat.S_ISREG(opened_metadata_before.st_mode) or opened_metadata_before.st_nlink != 1:
+            raise InstalledArtifactVerificationError(
+                f"{role} must remain a single-link regular file"
+            )
+        try:
+            destination_descriptor = os.open(destination, destination_flags, 0o600)
+        except OSError:
+            raise InstalledArtifactVerificationError(
+                f"could not create the private {role} snapshot"
+            ) from None
+
+        digest = hashlib.sha256()
+        copied_size = 0
+        try:
+            while chunk := os.read(source_descriptor, COPY_CHUNK_SIZE):
+                digest.update(chunk)
+                _write_all(destination_descriptor, chunk)
+                copied_size += len(chunk)
+            os.fsync(destination_descriptor)
+        except OSError:
+            raise InstalledArtifactVerificationError(
+                f"could not copy the {role} snapshot"
+            ) from None
+
+        opened_metadata_after = os.fstat(source_descriptor)
+        try:
+            path_metadata_after = source.lstat()
+        except OSError:
+            raise InstalledArtifactVerificationError(f"{role} changed during snapshot") from None
+        initial_identity = _metadata_identity(opened_metadata_before)
+        if (
+            _metadata_identity(opened_metadata_after) != initial_identity
+            or _metadata_identity(path_metadata_after) != initial_identity
+        ):
+            raise InstalledArtifactVerificationError(f"{role} changed during snapshot")
+
+        destination_metadata = os.fstat(destination_descriptor)
+        if (
+            not stat.S_ISREG(destination_metadata.st_mode)
+            or destination_metadata.st_nlink != 1
+            or destination_metadata.st_size != copied_size
+        ):
+            raise InstalledArtifactVerificationError(f"private {role} snapshot was not stable")
+    finally:
+        if destination_descriptor is not None:
+            os.close(destination_descriptor)
+        os.close(source_descriptor)
+
+    return SnapshottedInput(
+        path=destination,
+        filename=source.name,
+        sha256=digest.hexdigest(),
+    )
+
+
+def _snapshot_local_inputs(
+    *,
+    wheel: Path,
+    core_requirements: Path,
+    tui_requirements: Path,
+    work_dir: Path,
+) -> dict[str, SnapshottedInput]:
+    inputs_dir = _make_private_directory(work_dir / "inputs")
+    return {
+        "core_requirements": _snapshot_input(
+            core_requirements,
+            destination_dir=inputs_dir,
+            role="core requirements",
+        ),
+        "tui_requirements": _snapshot_input(
+            tui_requirements,
+            destination_dir=inputs_dir,
+            role="TUI requirements",
+        ),
+        "wheel": _snapshot_input(wheel, destination_dir=inputs_dir, role="wheel"),
+    }
+
+
+def _input_evidence(
+    inputs: Mapping[str, SnapshottedInput],
+) -> dict[str, dict[str, str]]:
+    return {
+        role: {"filename": snapshot.filename, "sha256": snapshot.sha256}
+        for role, snapshot in inputs.items()
+    }
 
 
 def _run_checked(
@@ -160,16 +358,31 @@ def _run_checked(
     except CalledProcessError as exc:
         raise InstalledArtifactVerificationError(
             f"{role} failed with exit status {exc.returncode}"
-        ) from exc
-    except TimeoutExpired as exc:
-        raise InstalledArtifactVerificationError(f"{role} timed out") from exc
-    except OSError as exc:
-        raise InstalledArtifactVerificationError(f"{role} could not be executed") from exc
+        ) from None
+    except TimeoutExpired:
+        raise InstalledArtifactVerificationError(f"{role} timed out") from None
+    except OSError:
+        raise InstalledArtifactVerificationError(f"{role} could not be executed") from None
     if completed.returncode != 0:
         raise InstalledArtifactVerificationError(
             f"{role} failed with exit status {completed.returncode}"
         )
     return completed
+
+
+def _require_uv_identity(completed: CompletedProcess[str]) -> str:
+    match = re.fullmatch(r"uv ([^\s]+)(?: .*)?", completed.stdout.strip())
+    if match is None or match.group(1) != REQUIRED_UV_VERSION:
+        raise InstalledArtifactVerificationError("selected uv identity did not match")
+    return f"uv {match.group(1)}"
+
+
+def _require_python_identity(completed: CompletedProcess[str], *, role: str) -> str:
+    observed = completed.stdout.strip() or completed.stderr.strip()
+    expected = f"Python {REQUIRED_PYTHON_VERSION}"
+    if observed != expected:
+        raise InstalledArtifactVerificationError(f"{role} Python identity did not match")
+    return observed
 
 
 def _require_version(completed: CompletedProcess[str], *, expected_version: str, role: str) -> None:
@@ -214,7 +427,7 @@ def _run_pip_smokes(
     public_index: bool,
     environment: Mapping[str, str],
     run_command: RunCommand,
-) -> None:
+) -> dict[str, str]:
     core_venv = work_dir / "pip-core"
     core_python = environment_executable_path(core_venv, "python")
     core_csvql = environment_executable_path(core_venv, "csvql")
@@ -225,6 +438,14 @@ def _run_pip_smokes(
         environment=environment,
         run_command=run_command,
     )
+    completed = _run_checked(
+        [str(core_python), "--version"],
+        role="verify core pip Python",
+        cwd=project_dir,
+        environment=environment,
+        run_command=run_command,
+    )
+    core_python_identity = _require_python_identity(completed, role="core pip")
     if public_index:
         _run_checked(
             [str(core_python), "-m", "pip", "install", f"localql=={expected_version}"],
@@ -299,6 +520,14 @@ def _run_pip_smokes(
         environment=environment,
         run_command=run_command,
     )
+    completed = _run_checked(
+        [str(tui_python), "--version"],
+        role="verify TUI pip Python",
+        cwd=project_dir,
+        environment=environment,
+        run_command=run_command,
+    )
+    tui_python_identity = _require_python_identity(completed, role="TUI pip")
     if public_index:
         _run_checked(
             [str(tui_python), "-m", "pip", "install", f"localql[tui]=={expected_version}"],
@@ -347,6 +576,10 @@ def _run_pip_smokes(
         environment=environment,
         run_command=run_command,
     )
+    return {
+        "pip_core_python": core_python_identity,
+        "pip_tui_python": tui_python_identity,
+    }
 
 
 def _tool_environment(
@@ -375,7 +608,7 @@ def _run_uv_tool_smokes(
     public_index: bool,
     environment: Mapping[str, str],
     run_command: RunCommand,
-) -> None:
+) -> dict[str, str]:
     core_tool_dir = work_dir / "uv-tool-core"
     core_bin_dir = work_dir / "uv-tool-core-bin"
     core_environment = _tool_environment(
@@ -412,6 +645,15 @@ def _run_uv_tool_smokes(
         environment=core_environment,
         run_command=run_command,
     )
+    core_python = environment_executable_path(core_tool_dir / "localql", "python")
+    completed = _run_checked(
+        [str(core_python), "--version"],
+        role="verify core uv-tool Python",
+        cwd=project_dir,
+        environment=core_environment,
+        run_command=run_command,
+    )
+    core_python_identity = _require_python_identity(completed, role="core uv-tool")
     core_csvql = environment_executable_path(core_bin_dir, "csvql")
     completed = _run_checked(
         [str(core_csvql), "--version"],
@@ -459,6 +701,15 @@ def _run_uv_tool_smokes(
         environment=tui_environment,
         run_command=run_command,
     )
+    tui_python = environment_executable_path(tui_tool_dir / "localql", "python")
+    completed = _run_checked(
+        [str(tui_python), "--version"],
+        role="verify TUI uv-tool Python",
+        cwd=project_dir,
+        environment=tui_environment,
+        run_command=run_command,
+    )
+    tui_python_identity = _require_python_identity(completed, role="TUI uv-tool")
     tui_csvql = environment_executable_path(tui_bin_dir, "csvql")
     completed = _run_checked(
         [str(tui_csvql), "--version"],
@@ -468,7 +719,6 @@ def _run_uv_tool_smokes(
         run_command=run_command,
     )
     _require_version(completed, expected_version=expected_version, role="TUI uv-tool")
-    tui_python = environment_executable_path(tui_tool_dir / "localql", "python")
     _run_checked(
         [str(tui_python), "-c", TUI_IMPORT_SMOKE],
         role="run uv-tool TUI import smoke",
@@ -483,6 +733,10 @@ def _run_uv_tool_smokes(
         environment=tui_environment,
         run_command=run_command,
     )
+    return {
+        "uv_tool_core_python": core_python_identity,
+        "uv_tool_tui_python": tui_python_identity,
+    }
 
 
 def verify_installed_artifacts(
@@ -546,7 +800,23 @@ def verify_installed_artifacts(
         )
 
     resolved_work_dir = _prepare_work_dir(work_dir)
-    environment = _sanitized_environment(public_index=public_index)
+    uv_cache_dir = _make_private_directory(resolved_work_dir / "uv-cache")
+    if public_index:
+        snapshotted_inputs: dict[str, SnapshottedInput] = {}
+    else:
+        assert resolved_wheel is not None
+        assert resolved_core_requirements is not None
+        assert resolved_tui_requirements is not None
+        snapshotted_inputs = _snapshot_local_inputs(
+            wheel=resolved_wheel,
+            core_requirements=resolved_core_requirements,
+            tui_requirements=resolved_tui_requirements,
+            work_dir=resolved_work_dir,
+        )
+        resolved_wheel = snapshotted_inputs["wheel"].path
+        resolved_core_requirements = snapshotted_inputs["core_requirements"].path
+        resolved_tui_requirements = snapshotted_inputs["tui_requirements"].path
+    environment = _sanitized_environment(uv_cache_dir=uv_cache_dir)
     with tempfile.TemporaryDirectory(prefix="localql-installed-smoke-") as project_text:
         project_dir = Path(project_text).resolve()
         if project_dir.is_relative_to(REPO_ROOT):
@@ -554,29 +824,41 @@ def verify_installed_artifacts(
                 "temporary smoke project must be outside the repository source tree"
             )
         _write_smoke_project(project_dir)
-        _run_pip_smokes(
-            wheel=resolved_wheel,
-            core_requirements=resolved_core_requirements,
-            tui_requirements=resolved_tui_requirements,
-            work_dir=resolved_work_dir,
-            project_dir=project_dir,
-            expected_version=expected_version,
-            python_version=python_version,
-            public_index=public_index,
+        completed = _run_checked(
+            ["uv", "--version"],
+            role="verify selected uv",
+            cwd=project_dir,
             environment=environment,
             run_command=run_command,
         )
-        _run_uv_tool_smokes(
-            wheel=resolved_wheel,
-            core_requirements=resolved_core_requirements,
-            tui_requirements=resolved_tui_requirements,
-            work_dir=resolved_work_dir,
-            project_dir=project_dir,
-            expected_version=expected_version,
-            python_version=python_version,
-            public_index=public_index,
-            environment=environment,
-            run_command=run_command,
+        identities = {"uv": _require_uv_identity(completed)}
+        identities.update(
+            _run_pip_smokes(
+                wheel=resolved_wheel,
+                core_requirements=resolved_core_requirements,
+                tui_requirements=resolved_tui_requirements,
+                work_dir=resolved_work_dir,
+                project_dir=project_dir,
+                expected_version=expected_version,
+                python_version=python_version,
+                public_index=public_index,
+                environment=environment,
+                run_command=run_command,
+            )
+        )
+        identities.update(
+            _run_uv_tool_smokes(
+                wheel=resolved_wheel,
+                core_requirements=resolved_core_requirements,
+                tui_requirements=resolved_tui_requirements,
+                work_dir=resolved_work_dir,
+                project_dir=project_dir,
+                expected_version=expected_version,
+                python_version=python_version,
+                public_index=public_index,
+                environment=environment,
+                run_command=run_command,
+            )
         )
 
     return {
@@ -593,6 +875,8 @@ def verify_installed_artifacts(
             "uv_tool_tui_version": "passed",
         },
         "expected_version": expected_version,
+        "identities": identities,
+        "inputs": _input_evidence(snapshotted_inputs),
         "mode": "public-index" if public_index else "local-artifact",
         "python": python_version,
         "schema_version": 1,
