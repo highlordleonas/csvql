@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import sys
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from importlib import metadata
@@ -970,6 +971,44 @@ def test_manifest_temp_cleanup_failure_does_not_reverse_published_success(
         source = REPO_ROOT / filename if filename == "uv.lock" else evidence_dir / filename
         assert digest == _sha256(source)
     assert tuple(evidence_dir.glob(".manifest.json.*.tmp"))
+
+
+def test_private_runtime_cleanup_failure_cannot_publish_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cleanup_calls = 0
+
+    def fail_private_runtime_cleanup(
+        temporary_directory: tempfile.TemporaryDirectory[str],
+    ) -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        raise OSError("forced private runtime cleanup failure")
+
+    monkeypatch.setattr(
+        verifier.tempfile.TemporaryDirectory,
+        "cleanup",
+        fail_private_runtime_cleanup,
+    )
+    runner = RecordingRunner()
+    evidence_dir = tmp_path / "dependency-audit"
+
+    with pytest.raises(SystemExit) as excinfo:
+        verifier.main(
+            ["--evidence-dir", str(evidence_dir)],
+            run_command=runner,
+            now=_fixed_now,
+        )
+
+    captured = capsys.readouterr()
+    assert excinfo.value.code == 2
+    assert captured.out == ""
+    assert "private dependency-audit runtime cleanup failed" in captured.err
+    assert cleanup_calls == 1
+    assert len(runner.calls) == 4
+    assert not (evidence_dir / "manifest.json").exists()
 
 
 def test_each_run_uses_private_temporary_uv_cache_and_tool_directories(

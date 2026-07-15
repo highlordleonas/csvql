@@ -1048,71 +1048,74 @@ def verify_dependency_audit(
         initial_digests: dict[str, str] = {}
         active_requirements: dict[str, dict[str, str]] = {}
 
-        with tempfile.TemporaryDirectory(prefix="localql-dependency-audit-") as run_temp_text:
-            run_temp = Path(run_temp_text)
-            uv_cache_dir = run_temp / "uv-cache"
-            uv_tool_dir = run_temp / "uv-tools"
-            uv_cache_dir.mkdir(mode=0o700)
-            uv_tool_dir.mkdir(mode=0o700)
-            environment = _sanitized_environment(
-                uv_cache_dir=uv_cache_dir,
-                uv_tool_dir=uv_tool_dir,
-            )
+        try:
+            with tempfile.TemporaryDirectory(prefix="localql-dependency-audit-") as run_temp_text:
+                run_temp = Path(run_temp_text)
+                uv_cache_dir = run_temp / "uv-cache"
+                uv_tool_dir = run_temp / "uv-tools"
+                uv_cache_dir.mkdir(mode=0o700)
+                uv_tool_dir.mkdir(mode=0o700)
+                environment = _sanitized_environment(
+                    uv_cache_dir=uv_cache_dir,
+                    uv_tool_dir=uv_tool_dir,
+                )
 
-            for command_index, (command, role, output) in enumerate(
-                zip(commands, COMMAND_ROLES, outputs, strict=True)
-            ):
-                _require_prepared_directory(prepared)
-                _revalidate_frozen_lock(lock)
-                try:
-                    _run_checked(
-                        command,
-                        role=role,
-                        prepared=prepared,
-                        environment=environment,
-                        captures=captures,
-                        run_command=run_command,
-                    )
-                finally:
+                for command_index, (command, role, output) in enumerate(
+                    zip(commands, COMMAND_ROLES, outputs, strict=True)
+                ):
                     _require_prepared_directory(prepared)
                     _revalidate_frozen_lock(lock)
-                if command_index == 0:
-                    digest, active_requirements["core"] = _validate_requirements(
-                        prepared,
-                        output,
-                        role="core requirements output",
-                    )
-                elif command_index == 1:
-                    digest, active_requirements["tui"] = _validate_requirements(
-                        prepared,
-                        output,
-                        role="TUI requirements output",
-                    )
-                elif command_index == 2:
-                    digest = _validate_audit_output(
-                        prepared,
-                        output,
-                        role="core audit output",
-                        active_requirements=active_requirements["core"],
-                    )
-                else:
-                    digest = _validate_audit_output(
-                        prepared,
-                        output,
-                        role="TUI audit output",
-                        active_requirements=active_requirements["tui"],
-                    )
-                initial_digests[output.name] = digest
+                    try:
+                        _run_checked(
+                            command,
+                            role=role,
+                            prepared=prepared,
+                            environment=environment,
+                            captures=captures,
+                            run_command=run_command,
+                        )
+                    finally:
+                        _require_prepared_directory(prepared)
+                        _revalidate_frozen_lock(lock)
+                    if command_index == 0:
+                        digest, active_requirements["core"] = _validate_requirements(
+                            prepared,
+                            output,
+                            role="core requirements output",
+                        )
+                    elif command_index == 1:
+                        digest, active_requirements["tui"] = _validate_requirements(
+                            prepared,
+                            output,
+                            role="TUI requirements output",
+                        )
+                    elif command_index == 2:
+                        digest = _validate_audit_output(
+                            prepared,
+                            output,
+                            role="core audit output",
+                            active_requirements=active_requirements["core"],
+                        )
+                    else:
+                        digest = _validate_audit_output(
+                            prepared,
+                            output,
+                            role="TUI audit output",
+                            active_requirements=active_requirements["tui"],
+                        )
+                    initial_digests[output.name] = digest
+        except OSError:
+            raise DependencyAuditError("private dependency-audit runtime cleanup failed") from None
 
-            snapshot = _collect_final_snapshot(
-                prepared,
-                initial_digests,
-                active_requirements["core"],
-                active_requirements["tui"],
-                lock,
-            )
-            observed_at = _observation_timestamp(now)
-            _write_manifest(prepared, observed_at, snapshot, requirements_parser)
+        snapshot = _collect_final_snapshot(
+            prepared,
+            initial_digests,
+            active_requirements["core"],
+            active_requirements["tui"],
+            lock,
+        )
+        observed_at = _observation_timestamp(now)
+        _write_manifest(prepared, observed_at, snapshot, requirements_parser)
         return core_result, tui_result
     finally:
         _close_evidence_directory(prepared)
