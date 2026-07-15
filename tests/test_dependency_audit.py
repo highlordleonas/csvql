@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
+from importlib import metadata
 from pathlib import Path
 from subprocess import CalledProcessError, CompletedProcess, TimeoutExpired
 from typing import Any
@@ -232,6 +234,7 @@ def test_success_writes_validated_manifest_and_combined_raw_log(tmp_path: Path) 
                 "result": "tui-pip-audit.json",
             },
         },
+        "requirements_parser": "packaging==26.2",
         "sha256": {
             "core-pip-audit.json": _sha256(evidence_dir / "core-pip-audit.json"),
             "core-requirements.txt": _sha256(evidence_dir / "core-requirements.txt"),
@@ -277,6 +280,22 @@ def test_every_command_is_bounded_checked_sanitized_and_runs_at_repo_root(
         assert environment["PIP_NO_INPUT"] == "1"
         assert environment["PYTHONNOUSERSITE"] == "1"
         assert environment["UV_NO_CONFIG"] == "1"
+        assert environment["UV_PYTHON"] == "3.12.11"
+
+
+def test_packaging_version_mismatch_is_rejected_before_evidence_collection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(metadata, "version", lambda distribution_name: "26.1")
+    runner = RecordingRunner()
+    evidence_dir = tmp_path / "dependency-audit"
+
+    with pytest.raises(verifier.DependencyAuditError, match=r"packaging==26\.2"):
+        verifier.verify_dependency_audit(evidence_dir, run_command=runner, now=_fixed_now)
+
+    assert runner.calls == []
+    assert not evidence_dir.exists()
 
 
 @pytest.mark.parametrize("fail_at", range(4))
@@ -923,6 +942,36 @@ def test_direct_prepublication_mutation_cannot_publish_manifest(
     assert not tuple(evidence_dir.glob(".manifest.json.*.tmp"))
 
 
+def test_manifest_temp_cleanup_failure_does_not_reverse_published_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_unlink = verifier._relative_unlink
+
+    def fail_manifest_temp_cleanup(
+        prepared: verifier.PreparedEvidenceDirectory,
+        filename: str,
+    ) -> None:
+        if filename.startswith(".manifest.json."):
+            raise OSError("forced cleanup failure")
+        real_unlink(prepared, filename)
+
+    monkeypatch.setattr(verifier, "_relative_unlink", fail_manifest_temp_cleanup)
+
+    result_paths, evidence_dir = _verify(tmp_path, RecordingRunner())
+
+    assert result_paths == (
+        evidence_dir / "core-pip-audit.json",
+        evidence_dir / "tui-pip-audit.json",
+    )
+    manifest = json.loads((evidence_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["requirements_parser"] == "packaging==26.2"
+    for filename, digest in manifest["sha256"].items():
+        source = REPO_ROOT / filename if filename == "uv.lock" else evidence_dir / filename
+        assert digest == _sha256(source)
+    assert tuple(evidence_dir.glob(".manifest.json.*.tmp"))
+
+
 def test_each_run_uses_private_temporary_uv_cache_and_tool_directories(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -948,6 +997,47 @@ def test_each_run_uses_private_temporary_uv_cache_and_tool_directories(
     assert cache_dir.parent == tool_dir.parent
     assert not cache_dir.exists()
     assert not tool_dir.exists()
+
+
+def test_forced_non_posix_fallback_never_opens_or_fstats_directories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(verifier, "DESCRIPTOR_RELATIVE_IO", False)
+
+    class RejectDirectoryDescriptorOs:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(os, name)
+
+        def open(
+            self,
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            assert dir_fd is None
+            candidate = Path(os.fsdecode(path))
+            if candidate.is_dir():
+                raise AssertionError(f"fallback opened directory: {candidate}")
+            return os.open(path, flags, mode)
+
+        def fstat(self, file_descriptor: int) -> os.stat_result:
+            observed = os.fstat(file_descriptor)
+            if stat.S_ISDIR(observed.st_mode):
+                raise AssertionError("fallback fstat called on a directory descriptor")
+            return observed
+
+    monkeypatch.setattr(verifier, "os", RejectDirectoryDescriptorOs())
+
+    result_paths, evidence_dir = _verify(tmp_path, RecordingRunner())
+
+    assert result_paths == (
+        evidence_dir / "core-pip-audit.json",
+        evidence_dir / "tui-pip-audit.json",
+    )
+    assert (evidence_dir / "manifest.json").is_file()
 
 
 def test_evidence_leaf_creation_is_relative_to_a_held_parent_descriptor(

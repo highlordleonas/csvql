@@ -14,6 +14,7 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from importlib import metadata
 from pathlib import Path
 from subprocess import CalledProcessError, CompletedProcess, TimeoutExpired
 
@@ -23,6 +24,9 @@ from packaging.utils import canonicalize_name
 
 AUDIT_TOOL = "pip-audit==2.10.1"
 COMMAND_TIMEOUT_SECONDS = 300.0
+PACKAGING_DISTRIBUTION = "packaging"
+REQUIRED_PACKAGING_VERSION = "26.2"
+REQUIREMENTS_PARSER = f"{PACKAGING_DISTRIBUTION}=={REQUIRED_PACKAGING_VERSION}"
 REQUIRED_PYTHON_VERSION = "3.12.11"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DESCRIPTOR_RELATIVE_IO = os.name == "posix"
@@ -78,11 +82,11 @@ class DependencyAuditError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class PreparedEvidenceDirectory:
-    """Exclusive evidence directory held through parent and leaf descriptors."""
+    """Exclusive evidence directory with optional POSIX-held descriptors."""
 
     path: Path
-    parent_descriptor: int
-    evidence_descriptor: int
+    parent_descriptor: int | None
+    evidence_descriptor: int | None
     parent_identity: DirectoryIdentity
     evidence_identity: DirectoryIdentity
     path_identities: tuple[tuple[Path, DirectoryIdentity], ...]
@@ -238,9 +242,7 @@ def _open_parent_directory(path: Path) -> int:
 
 def _open_evidence_directory(candidate: Path, parent_descriptor: int) -> int:
     try:
-        if DESCRIPTOR_RELATIVE_IO:
-            return os.open(candidate.name, _directory_open_flags(), dir_fd=parent_descriptor)
-        return os.open(candidate, _directory_open_flags())
+        return os.open(candidate.name, _directory_open_flags(), dir_fd=parent_descriptor)
     except OSError:
         raise DependencyAuditError("evidence directory changed during creation") from None
 
@@ -265,19 +267,26 @@ def _prepare_evidence_directory(evidence_dir: Path) -> PreparedEvidenceDirectory
         raise DependencyAuditError("evidence directory parent could not be created") from None
     _validate_parent_chain(candidate)
 
-    parent_descriptor = _open_parent_directory(candidate.parent)
+    parent_descriptor: int | None = None
     evidence_descriptor: int | None = None
     try:
-        parent_metadata = os.fstat(parent_descriptor)
-        try:
-            parent_path_metadata = candidate.parent.lstat()
-        except OSError:
-            raise DependencyAuditError("evidence directory changed during creation") from None
-        if _directory_identity(parent_metadata) != _directory_identity(parent_path_metadata):
-            raise DependencyAuditError("evidence directory changed during creation")
+        if DESCRIPTOR_RELATIVE_IO:
+            parent_descriptor = _open_parent_directory(candidate.parent)
+            parent_metadata = os.fstat(parent_descriptor)
+            try:
+                parent_path_metadata = candidate.parent.lstat()
+            except OSError:
+                raise DependencyAuditError("evidence directory changed during creation") from None
+            if _directory_identity(parent_metadata) != _directory_identity(parent_path_metadata):
+                raise DependencyAuditError("evidence directory changed during creation")
+        else:
+            try:
+                parent_metadata = candidate.parent.lstat()
+            except OSError:
+                raise DependencyAuditError("evidence directory changed during creation") from None
 
         try:
-            if DESCRIPTOR_RELATIVE_IO:
+            if parent_descriptor is not None:
                 os.mkdir(candidate.name, mode=0o700, dir_fd=parent_descriptor)
             else:
                 candidate.mkdir(mode=0o700, parents=False, exist_ok=False)
@@ -286,8 +295,14 @@ def _prepare_evidence_directory(evidence_dir: Path) -> PreparedEvidenceDirectory
         except OSError:
             raise DependencyAuditError("evidence directory could not be created") from None
 
-        evidence_descriptor = _open_evidence_directory(candidate, parent_descriptor)
-        evidence_metadata = os.fstat(evidence_descriptor)
+        if parent_descriptor is not None:
+            evidence_descriptor = _open_evidence_directory(candidate, parent_descriptor)
+            evidence_metadata = os.fstat(evidence_descriptor)
+        else:
+            try:
+                evidence_metadata = candidate.lstat()
+            except OSError:
+                raise DependencyAuditError("evidence directory changed during creation") from None
         path_identities: list[tuple[Path, DirectoryIdentity]] = []
         for component in (candidate, *candidate.parents):
             try:
@@ -312,13 +327,16 @@ def _prepare_evidence_directory(evidence_dir: Path) -> PreparedEvidenceDirectory
     except BaseException:
         if evidence_descriptor is not None:
             os.close(evidence_descriptor)
-        os.close(parent_descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
         raise
 
 
 def _close_evidence_directory(prepared: PreparedEvidenceDirectory) -> None:
-    os.close(prepared.evidence_descriptor)
-    os.close(prepared.parent_descriptor)
+    if prepared.evidence_descriptor is not None:
+        os.close(prepared.evidence_descriptor)
+    if prepared.parent_descriptor is not None:
+        os.close(prepared.parent_descriptor)
 
 
 def _require_prepared_directory(
@@ -326,15 +344,19 @@ def _require_prepared_directory(
     *,
     phase: str = "collection",
 ) -> None:
-    try:
-        parent_metadata = os.fstat(prepared.parent_descriptor)
-        evidence_metadata = os.fstat(prepared.evidence_descriptor)
-    except OSError:
-        raise DependencyAuditError(f"evidence directory path changed during {phase}") from None
-    if _directory_identity(parent_metadata) != prepared.parent_identity:
+    descriptors = (prepared.parent_descriptor, prepared.evidence_descriptor)
+    if (descriptors[0] is None) != (descriptors[1] is None):
         raise DependencyAuditError(f"evidence directory path changed during {phase}")
-    if _directory_identity(evidence_metadata) != prepared.evidence_identity:
-        raise DependencyAuditError(f"evidence directory path changed during {phase}")
+    if descriptors[0] is not None and descriptors[1] is not None:
+        try:
+            parent_metadata = os.fstat(descriptors[0])
+            evidence_metadata = os.fstat(descriptors[1])
+        except OSError:
+            raise DependencyAuditError(f"evidence directory path changed during {phase}") from None
+        if _directory_identity(parent_metadata) != prepared.parent_identity:
+            raise DependencyAuditError(f"evidence directory path changed during {phase}")
+        if _directory_identity(evidence_metadata) != prepared.evidence_identity:
+            raise DependencyAuditError(f"evidence directory path changed during {phase}")
     for component, expected_identity in prepared.path_identities:
         try:
             metadata = component.lstat()
@@ -412,6 +434,16 @@ def _revalidate_frozen_lock(
         raise DependencyAuditError(f"uv.lock changed{suffix}")
 
 
+def _require_requirements_parser() -> str:
+    try:
+        observed_version = metadata.version(PACKAGING_DISTRIBUTION)
+    except metadata.PackageNotFoundError:
+        raise DependencyAuditError(f"{REQUIREMENTS_PARSER} is required") from None
+    if observed_version != REQUIRED_PACKAGING_VERSION:
+        raise DependencyAuditError(f"{REQUIREMENTS_PARSER} is required")
+    return REQUIREMENTS_PARSER
+
+
 def _sanitized_environment(
     *,
     uv_cache_dir: Path,
@@ -427,6 +459,7 @@ def _sanitized_environment(
             "PYTHONNOUSERSITE": "1",
             "UV_CACHE_DIR": str(uv_cache_dir),
             "UV_NO_CONFIG": "1",
+            "UV_PYTHON": REQUIRED_PYTHON_VERSION,
             "UV_TOOL_DIR": str(uv_tool_dir),
         }
     )
@@ -459,7 +492,7 @@ def _format_combined_log(captures: Sequence[CommandCapture]) -> str:
 
 
 def _relative_stat(prepared: PreparedEvidenceDirectory, filename: str) -> os.stat_result:
-    if DESCRIPTOR_RELATIVE_IO:
+    if prepared.evidence_descriptor is not None:
         return os.stat(filename, dir_fd=prepared.evidence_descriptor, follow_symlinks=False)
     return (prepared.path / filename).lstat()
 
@@ -470,13 +503,13 @@ def _relative_open(
     flags: int,
     mode: int = 0o777,
 ) -> int:
-    if DESCRIPTOR_RELATIVE_IO:
+    if prepared.evidence_descriptor is not None:
         return os.open(filename, flags, mode, dir_fd=prepared.evidence_descriptor)
     return os.open(prepared.path / filename, flags, mode)
 
 
 def _relative_unlink(prepared: PreparedEvidenceDirectory, filename: str) -> None:
-    if DESCRIPTOR_RELATIVE_IO:
+    if prepared.evidence_descriptor is not None:
         os.unlink(filename, dir_fd=prepared.evidence_descriptor)
     else:
         (prepared.path / filename).unlink()
@@ -487,7 +520,7 @@ def _relative_replace(
     source_name: str,
     destination_name: str,
 ) -> None:
-    if DESCRIPTOR_RELATIVE_IO:
+    if prepared.evidence_descriptor is not None:
         os.replace(
             source_name,
             destination_name,
@@ -503,7 +536,7 @@ def _relative_link(
     source_name: str,
     destination_name: str,
 ) -> None:
-    if DESCRIPTOR_RELATIVE_IO:
+    if prepared.evidence_descriptor is not None:
         os.link(
             source_name,
             destination_name,
@@ -573,44 +606,25 @@ def _write_relative_temporary(
     return temporary_name
 
 
-def _write_text_atomically(
+def _write_combined_log(
     prepared: PreparedEvidenceDirectory,
-    destination: Path,
-    content: str,
-    *,
-    exclusive: bool,
+    captures: Sequence[CommandCapture],
 ) -> None:
-    if destination.parent != prepared.path:
-        raise DependencyAuditError("evidence output escaped the evidence directory")
     _require_prepared_directory(prepared)
-    temporary_name = _write_relative_temporary(prepared, destination.name, content)
+    temporary_name = _write_relative_temporary(
+        prepared,
+        "pip-audit.log",
+        _format_combined_log(captures),
+    )
     try:
         _require_prepared_directory(prepared)
-        if exclusive:
-            try:
-                _relative_link(prepared, temporary_name, destination.name)
-            except FileExistsError:
-                raise DependencyAuditError("dependency audit manifest already exists") from None
-        else:
-            _relative_replace(prepared, temporary_name, destination.name)
-            temporary_name = ""
+        _relative_replace(prepared, temporary_name, "pip-audit.log")
+        temporary_name = ""
     except OSError:
         raise DependencyAuditError("evidence output could not be written atomically") from None
     finally:
         if temporary_name:
             _remove_relative_temporary(prepared, temporary_name)
-
-
-def _write_combined_log(
-    prepared: PreparedEvidenceDirectory,
-    captures: Sequence[CommandCapture],
-) -> None:
-    _write_text_atomically(
-        prepared,
-        prepared.path / "pip-audit.log",
-        _format_combined_log(captures),
-        exclusive=False,
-    )
 
 
 def _run_checked(
@@ -899,6 +913,7 @@ def _write_manifest(
     prepared: PreparedEvidenceDirectory,
     observed_at: str,
     snapshot: EvidenceSnapshot,
+    requirements_parser: str,
 ) -> None:
     sha256 = dict(snapshot.digests)
     sha256["uv.lock"] = snapshot.lock.sha256
@@ -915,10 +930,12 @@ def _write_manifest(
                 "result": "tui-pip-audit.json",
             },
         },
+        "requirements_parser": requirements_parser,
         "sha256": sha256,
     }
     content = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     temporary_name = _write_relative_temporary(prepared, "manifest.json", content)
+    published = False
     try:
         _revalidate_success_snapshot(prepared, snapshot)
         try:
@@ -927,8 +944,13 @@ def _write_manifest(
             raise DependencyAuditError("dependency audit manifest already exists") from None
         except OSError:
             raise DependencyAuditError("dependency audit manifest could not be published") from None
+        published = True
     finally:
-        _remove_relative_temporary(prepared, temporary_name)
+        try:
+            _remove_relative_temporary(prepared, temporary_name)
+        except DependencyAuditError:
+            if not published:
+                raise
 
 
 def _collect_final_snapshot(
@@ -1012,6 +1034,7 @@ def verify_dependency_audit(
         DependencyAuditError: If collection or evidence validation fails.
     """
 
+    requirements_parser = _require_requirements_parser()
     lock = _snapshot_frozen_lock()
     prepared = _prepare_evidence_directory(evidence_dir)
     try:
@@ -1089,7 +1112,7 @@ def verify_dependency_audit(
                 lock,
             )
             observed_at = _observation_timestamp(now)
-            _write_manifest(prepared, observed_at, snapshot)
+            _write_manifest(prepared, observed_at, snapshot, requirements_parser)
         return core_result, tui_result
     finally:
         _close_evidence_directory(prepared)
