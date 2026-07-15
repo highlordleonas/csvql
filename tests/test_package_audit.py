@@ -623,6 +623,15 @@ def test_audit_archive_accepts_complete_permitted_sdist_contract(tmp_path: Path)
     assert audit_module.audit_archive(sdist, "1.0.2") == []
 
 
+def test_audit_archive_accepts_hatchling_vcs_exclusion_file(tmp_path: Path) -> None:
+    sdist = tmp_path / "localql-1.0.2.tar.gz"
+    members = valid_sdist_members()
+    members["localql-1.0.2/.gitignore"] = "output/\n.venv/\n"
+    write_sdist(sdist, members)
+
+    assert audit_module.audit_archive(sdist, "1.0.2") == []
+
+
 @pytest.mark.parametrize(
     "member_type",
     [

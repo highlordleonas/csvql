@@ -22,6 +22,7 @@ SCAN_CHUNK_SIZE = 64 * 1024
 
 WHEEL_ALLOWED_ROOTS = {"csvql", "localql-1.0.2.dist-info"}
 SDIST_ALLOWED_ROOT_FILES = {
+    ".gitignore",
     "CHANGELOG.md",
     "CODE_OF_CONDUCT.md",
     "CONTRIBUTING.md",
