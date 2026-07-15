@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
+import pytest
 import yaml
 
 from csvql import CSVQLSession
@@ -13,10 +14,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REPO_BLOB_PREFIX = "https://github.com/highlordleonas/csvql/blob/main/"
 REPO_RAW_PREFIX = "https://raw.githubusercontent.com/highlordleonas/csvql/main/"
 LINK_RE = re.compile(r"!?\[[^]]*\]\(([^)]+)\)")
-HTTPS_TARGET_RE = re.compile(r"""https://[^\s<>()\[\]{}"'`]+""")
+HTTPS_TARGET_RE = re.compile(
+    r"""https://[^\s<>()\[\]{}"'`]+""",
+    flags=re.IGNORECASE,
+)
 HEADING_RE = re.compile(r"^#{1,6} +(.+?) *#* *$", flags=re.MULTILINE)
 JSON_FENCE_RE = re.compile(r"```json\n(.*?)\n```", flags=re.DOTALL)
 API_FACTORY_RE = re.compile(r"CSVQLSession\.(from_[a-z_]+)\(")
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<fence>`{3,})(?P<info>[^`]*)$")
 ALLOWED_HTTPS_HOSTS = {
     "github.com",
     "img.shields.io",
@@ -25,6 +30,8 @@ ALLOWED_HTTPS_HOSTS = {
 }
 NON_LIVE_EXAMPLE_HOSTS = {"api.example.com"}
 IMAGE_RE = re.compile(r"!\[([^]]*)\]\(([^)]+)\)")
+IMAGE_START_RE = re.compile(r"!\[")
+HTML_IMAGE_RE = re.compile(r"<img\b", flags=re.IGNORECASE)
 EXPECTED_CLI_COMMANDS = {
     "add",
     "check",
@@ -39,7 +46,7 @@ EXPECTED_CLI_COMMANDS = {
     "sample",
     "tables",
 }
-CSVQL_COMMAND_RE = re.compile(r"(?:^|\s)csvql\s+([a-z][a-z-]*)\b")
+CSVQL_COMMAND_RE = re.compile(r"(?:^|[\s;&|(){}])csvql[ \t]+([a-z][a-z-]*)\b")
 PUBLIC_PRODUCT_DOCS = {
     "CHANGELOG.md",
     "README.md",
@@ -84,13 +91,56 @@ def tracked_markdown_paths() -> tuple[str, ...]:
 
 
 def fenced_blocks(document: str, language: str) -> tuple[str, ...]:
-    return tuple(
-        re.findall(
-            rf"^```{re.escape(language)}\n(.*?)\n```$",
-            document,
-            flags=re.MULTILINE | re.DOTALL,
+    lines = document.splitlines()
+    blocks: list[str] = []
+    line_index = 0
+    while line_index < len(lines):
+        opening = FENCE_OPEN_RE.fullmatch(lines[line_index])
+        if opening is None:
+            line_index += 1
+            continue
+
+        fence_width = len(opening.group("fence"))
+        closing_re = re.compile(rf"^ {{0,3}}`{{{fence_width},}}[ \t]*$")
+        content_start = line_index + 1
+        closing_index = content_start
+        while closing_index < len(lines) and closing_re.fullmatch(lines[closing_index]) is None:
+            closing_index += 1
+
+        info = opening.group("info").strip()
+        block_language = info.split(maxsplit=1)[0] if info else ""
+        if block_language == language:
+            blocks.append("\n".join(lines[content_start:closing_index]))
+        line_index = closing_index + 1
+
+    return tuple(blocks)
+
+
+def assert_reviewed_https_targets(document: str, *, path: str) -> None:
+    for target in https_targets(document):
+        host = urlparse(target).hostname
+        assert host in ALLOWED_HTTPS_HOSTS | NON_LIVE_EXAMPLE_HOSTS, (
+            path,
+            target,
         )
-    )
+
+
+def assert_public_images_are_valid(document: str, *, path: str) -> None:
+    html_image = HTML_IMAGE_RE.search(document)
+    assert html_image is None, f"{path}: unsupported image syntax: HTML <img>"
+
+    for image_start in IMAGE_START_RE.finditer(document):
+        image = IMAGE_RE.match(document, image_start.start())
+        assert image is not None, f"{path}: unsupported image syntax"
+        alt_text, target = image.groups()
+        assert alt_text.strip(), (path, target)
+        if target.startswith(REPO_RAW_PREFIX):
+            asset = REPO_ROOT / target.removeprefix(REPO_RAW_PREFIX)
+        elif "://" not in target:
+            asset = (REPO_ROOT / path).parent / target.partition("#")[0]
+        else:
+            continue
+        assert asset.is_file(), (path, target)
 
 
 def https_targets(document: str) -> tuple[str, ...]:
@@ -158,27 +208,55 @@ def test_https_target_discovery_includes_nested_badges_and_bare_urls() -> None:
     )
 
 
+def test_remote_domain_review_rejects_mixed_case_unreviewed_scheme() -> None:
+    with pytest.raises(AssertionError, match=r"unreviewed\.example"):
+        assert_reviewed_https_targets(
+            "[x](HTTPS://unreviewed.example/path)",
+            path="fixture.md",
+        )
+
+
+def test_fenced_blocks_support_commonmark_width_and_indentation() -> None:
+    document = (
+        "````bash\n"
+        'echo "$(csvql nonexistent)"\n'
+        "````\n"
+        "   ```bash\n"
+        "echo ready;csvql nonexistent\n"
+        "   ```\n"
+    )
+
+    assert fenced_blocks(document, "bash") == (
+        'echo "$(csvql nonexistent)"',
+        "echo ready;csvql nonexistent",
+    )
+
+
+def test_csvql_command_discovery_supports_shell_control_boundaries() -> None:
+    block = 'echo "$(csvql nonexistent)"\necho ready;csvql nonexistent'
+
+    assert CSVQL_COMMAND_RE.findall(block) == ["nonexistent", "nonexistent"]
+
+
+def test_public_image_enforcement_rejects_reference_and_html_forms() -> None:
+    unsupported_documents = (
+        "![Reference alt][diagram]\n\n[diagram]: docs/assets/example.svg\n",
+        '<img src="docs/assets/example.svg" alt="HTML alt">\n',
+    )
+
+    for document in unsupported_documents:
+        with pytest.raises(AssertionError, match="unsupported image syntax"):
+            assert_public_images_are_valid(document, path="fixture.md")
+
+
 def test_public_documentation_remote_domains_are_reviewed() -> None:
     for path in PUBLIC_RENDERED_DOCS:
-        for target in https_targets(read_doc(path)):
-            host = urlparse(target).hostname
-            assert host in ALLOWED_HTTPS_HOSTS | NON_LIVE_EXAMPLE_HOSTS, (
-                path,
-                target,
-            )
+        assert_reviewed_https_targets(read_doc(path), path=path)
 
 
 def test_public_documentation_images_have_alt_text_and_real_targets() -> None:
     for path in PUBLIC_RENDERED_DOCS:
-        for alt_text, target in IMAGE_RE.findall(read_doc(path)):
-            assert alt_text.strip(), (path, target)
-            if target.startswith(REPO_RAW_PREFIX):
-                asset = REPO_ROOT / target.removeprefix(REPO_RAW_PREFIX)
-            elif "://" not in target:
-                asset = (REPO_ROOT / path).parent / target.partition("#")[0]
-            else:
-                continue
-            assert asset.is_file(), (path, target)
+        assert_public_images_are_valid(read_doc(path), path=path)
 
 
 def test_issue_forms_cover_bug_docs_feature_and_private_security_routes() -> None:
