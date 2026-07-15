@@ -251,6 +251,20 @@ def test_environment_executable_path_uses_native_layout(
     )
 
 
+@pytest.mark.parametrize(
+    ("os_name", "expected"),
+    [
+        ("posix", Path("tool-bin") / "csvql"),
+        ("nt", Path("tool-bin") / "csvql.exe"),
+    ],
+)
+def test_tool_bin_executable_path_uses_native_layout(
+    os_name: str,
+    expected: Path,
+) -> None:
+    assert verifier.tool_bin_executable_path(Path("tool-bin"), "csvql", os_name=os_name) == expected
+
+
 def test_local_mode_composes_exact_pip_and_uv_tool_commands(tmp_path: Path) -> None:
     runner = RecordingRunner()
     evidence, work_dir = _verify_local(tmp_path, runner)
@@ -271,6 +285,10 @@ def test_local_mode_composes_exact_pip_and_uv_tool_commands(tmp_path: Path) -> N
     tui_python = verifier.environment_executable_path(tui_venv, "python")
     core_csvql = verifier.environment_executable_path(core_venv, "csvql")
     tui_csvql = verifier.environment_executable_path(tui_venv, "csvql")
+    tool_core_csvql = verifier.tool_bin_executable_path(
+        work_dir / "uv-tool-core-bin",
+        "csvql",
+    )
     wheel_requirement = f"localql[tui] @ {wheel.as_uri()}"
     commands = [call["args"] for call in runner.calls]
 
@@ -317,6 +335,7 @@ def test_local_mode_composes_exact_pip_and_uv_tool_commands(tmp_path: Path) -> N
         wheel_requirement,
     ] in commands
     assert [str(tui_csvql), "menu", "--help"] in commands
+    assert [str(tool_core_csvql), "--version"] in commands
     assert [
         "uv",
         "tool",
@@ -386,7 +405,7 @@ def test_tui_smokes_use_isolated_python_and_cli(tmp_path: Path) -> None:
         work_dir / "uv-tool-tui" / "localql",
         "python",
     )
-    tool_tui_csvql = verifier.environment_executable_path(
+    tool_tui_csvql = verifier.tool_bin_executable_path(
         work_dir / "uv-tool-tui-bin",
         "csvql",
     )

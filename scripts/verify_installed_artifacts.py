@@ -110,6 +110,19 @@ def environment_executable_path(
     return environment_dir / "bin" / executable
 
 
+def tool_bin_executable_path(
+    tool_bin_dir: Path,
+    executable: str,
+    *,
+    os_name: str = os.name,
+) -> Path:
+    """Return an executable path from uv's flat tool bin directory."""
+
+    if os_name == "nt":
+        return tool_bin_dir / f"{executable}.exe"
+    return tool_bin_dir / executable
+
+
 def _validate_expected_version(expected_version: str) -> None:
     if re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}", expected_version) is None:
         raise InstalledArtifactVerificationError(
@@ -668,7 +681,7 @@ def _run_uv_tool_smokes(
         run_command=run_command,
     )
     core_python_identity = _require_python_identity(completed, role="core uv-tool")
-    core_csvql = environment_executable_path(core_bin_dir, "csvql")
+    core_csvql = tool_bin_executable_path(core_bin_dir, "csvql")
     completed = _run_checked(
         [str(core_csvql), "--version"],
         role="run core uv-tool version smoke",
@@ -724,7 +737,7 @@ def _run_uv_tool_smokes(
         run_command=run_command,
     )
     tui_python_identity = _require_python_identity(completed, role="TUI uv-tool")
-    tui_csvql = environment_executable_path(tui_bin_dir, "csvql")
+    tui_csvql = tool_bin_executable_path(tui_bin_dir, "csvql")
     completed = _run_checked(
         [str(tui_csvql), "--version"],
         role="run TUI uv-tool version smoke",
