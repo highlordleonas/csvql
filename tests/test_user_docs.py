@@ -13,6 +13,7 @@ from csvql.cli import app
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPO_BLOB_PREFIX = "https://github.com/highlordleonas/csvql/blob/main/"
 REPO_RAW_PREFIX = "https://raw.githubusercontent.com/highlordleonas/csvql/main/"
+REPO_RAW_URL = urlparse(REPO_RAW_PREFIX)
 LINK_RE = re.compile(r"!?\[[^]]*\]\(([^)]+)\)")
 HTTPS_TARGET_RE = re.compile(
     r"""https://[^\s<>()\[\]{}"'`]+""",
@@ -21,7 +22,7 @@ HTTPS_TARGET_RE = re.compile(
 HEADING_RE = re.compile(r"^#{1,6} +(.+?) *#* *$", flags=re.MULTILINE)
 JSON_FENCE_RE = re.compile(r"```json\n(.*?)\n```", flags=re.DOTALL)
 API_FACTORY_RE = re.compile(r"CSVQLSession\.(from_[a-z_]+)\(")
-FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<fence>`{3,})(?P<info>[^`]*)$")
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 ALLOWED_HTTPS_HOSTS = {
     "github.com",
     "img.shields.io",
@@ -46,7 +47,7 @@ EXPECTED_CLI_COMMANDS = {
     "sample",
     "tables",
 }
-CSVQL_COMMAND_RE = re.compile(r"(?:^|[\s;&|(){}])csvql[ \t]+([a-z][a-z-]*)\b")
+CSVQL_COMMAND_RE = re.compile(r"(?:^|[\s;&|(){}`])csvql[ \t]+([a-z][a-z-]*)\b")
 PUBLIC_PRODUCT_DOCS = {
     "CHANGELOG.md",
     "README.md",
@@ -100,14 +101,21 @@ def fenced_blocks(document: str, language: str) -> tuple[str, ...]:
             line_index += 1
             continue
 
-        fence_width = len(opening.group("fence"))
-        closing_re = re.compile(rf"^ {{0,3}}`{{{fence_width},}}[ \t]*$")
+        fence = opening.group("fence")
+        info = opening.group("info")
+        if fence.startswith("`") and "`" in info:
+            line_index += 1
+            continue
+
+        fence_width = len(fence)
+        fence_character = re.escape(fence[0])
+        closing_re = re.compile(rf"^ {{0,3}}{fence_character}{{{fence_width},}}[ \t]*$")
         content_start = line_index + 1
         closing_index = content_start
         while closing_index < len(lines) and closing_re.fullmatch(lines[closing_index]) is None:
             closing_index += 1
 
-        info = opening.group("info").strip()
+        info = info.strip()
         block_language = info.split(maxsplit=1)[0] if info else ""
         if block_language == language:
             blocks.append("\n".join(lines[content_start:closing_index]))
@@ -125,6 +133,22 @@ def assert_reviewed_https_targets(document: str, *, path: str) -> None:
         )
 
 
+def repository_raw_asset(target: str) -> Path | None:
+    parsed = urlparse(target)
+    host = parsed.hostname.lower() if parsed.hostname is not None else None
+    if (
+        parsed.scheme.lower() != REPO_RAW_URL.scheme
+        or host != REPO_RAW_URL.hostname
+        or not parsed.path.startswith(REPO_RAW_URL.path)
+    ):
+        return None
+
+    relative_path = parsed.path.removeprefix(REPO_RAW_URL.path)
+    asset = (REPO_ROOT / relative_path).resolve()
+    assert asset.is_relative_to(REPO_ROOT), (target, "asset path escapes repository")
+    return asset
+
+
 def assert_public_images_are_valid(document: str, *, path: str) -> None:
     html_image = HTML_IMAGE_RE.search(document)
     assert html_image is None, f"{path}: unsupported image syntax: HTML <img>"
@@ -134,11 +158,10 @@ def assert_public_images_are_valid(document: str, *, path: str) -> None:
         assert image is not None, f"{path}: unsupported image syntax"
         alt_text, target = image.groups()
         assert alt_text.strip(), (path, target)
-        if target.startswith(REPO_RAW_PREFIX):
-            asset = REPO_ROOT / target.removeprefix(REPO_RAW_PREFIX)
-        elif "://" not in target:
+        asset = repository_raw_asset(target)
+        if asset is None and "://" not in target:
             asset = (REPO_ROOT / path).parent / target.partition("#")[0]
-        else:
+        elif asset is None:
             continue
         assert asset.is_file(), (path, target)
 
@@ -238,6 +261,23 @@ def test_csvql_command_discovery_supports_shell_control_boundaries() -> None:
     assert CSVQL_COMMAND_RE.findall(block) == ["nonexistent", "nonexistent"]
 
 
+def test_fenced_blocks_support_tilde_fences() -> None:
+    document = "~~~bash\necho ready\n~~~\n"
+
+    assert fenced_blocks(document, "bash") == ("echo ready",)
+    subprocess.run(
+        ["bash", "-n", "-c", fenced_blocks(document, "bash")[0]],
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_csvql_command_discovery_supports_legacy_backticks() -> None:
+    block = 'echo "`csvql nonexistent`"'
+
+    assert CSVQL_COMMAND_RE.findall(block) == ["nonexistent"]
+
+
 def test_public_image_enforcement_rejects_reference_and_html_forms() -> None:
     unsupported_documents = (
         "![Reference alt][diagram]\n\n[diagram]: docs/assets/example.svg\n",
@@ -247,6 +287,13 @@ def test_public_image_enforcement_rejects_reference_and_html_forms() -> None:
     for document in unsupported_documents:
         with pytest.raises(AssertionError, match="unsupported image syntax"):
             assert_public_images_are_valid(document, path="fixture.md")
+
+
+def test_public_image_enforcement_checks_mixed_case_raw_repo_targets() -> None:
+    target = "HTTPS://raw.githubusercontent.com/highlordleonas/csvql/main/does-not-exist.png"
+
+    with pytest.raises(AssertionError, match="does-not-exist"):
+        assert_public_images_are_valid(f"![Alt text]({target})", path="fixture.md")
 
 
 def test_public_documentation_remote_domains_are_reviewed() -> None:
