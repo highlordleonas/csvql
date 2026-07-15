@@ -829,6 +829,12 @@ def test_github_actions_are_pinned_by_commit_sha() -> None:
                 assert PINNED_ACTION_RE.fullmatch(uses), f"{path}: {uses}"
 
 
+def test_ci_workflow_declares_exact_least_privilege_permissions() -> None:
+    payload = yaml.safe_load(read_text(".github/workflows/ci.yml"))
+
+    assert payload["permissions"] == {"contents": "read"}
+
+
 def test_ci_and_publish_pin_exact_release_toolchain() -> None:
     ci = yaml.safe_load(read_text(".github/workflows/ci.yml"))
     publish = yaml.safe_load(read_text(".github/workflows/publish.yml"))
@@ -1026,6 +1032,63 @@ uv run --frozen --no-sync python scripts/verify_installed_artifacts.py \\
     )
 
 
+def test_publish_rebuild_steps_apply_constraints_only_to_constrained_build() -> None:
+    payload = yaml.safe_load(read_text(".github/workflows/publish.yml"))
+    steps = payload["jobs"]["build-and-verify"]["steps"]
+    constrained = next(
+        step for step in steps if step.get("name") == "Rebuild sdist with reviewed constraints"
+    )
+    consumer = next(step for step in steps if step.get("name") == "Rebuild sdist as a consumer")
+    constrained_run = str(constrained["run"])
+    consumer_run = str(consumer["run"])
+
+    for required_flag in (
+        "--build-constraints scripts/release-build-constraints.txt",
+        "--require-hashes",
+    ):
+        assert required_flag in constrained_run
+        assert required_flag not in consumer_run
+
+
+def test_post_publish_failure_receipt_covers_provenance_and_public_smoke() -> None:
+    payload = yaml.safe_load(read_text(".github/workflows/publish.yml"))
+    steps = payload["jobs"]["post-publish-verification"]["steps"]
+    provenance = next(step for step in steps if step.get("id") == "verify_pypi_release")
+    public_smoke = next(
+        step
+        for step in steps
+        if step.get("name") == "Install exact public release and run core and TUI smoke"
+    )
+    failure_receipt = next(
+        step for step in steps if step.get("name") == "Record failed verification outcome"
+    )
+    receipt_upload = next(
+        step for step in steps if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    )
+
+    assert public_smoke["id"] == "verify_public_index_smoke"
+    assert steps.index(provenance) < steps.index(public_smoke) < steps.index(failure_receipt)
+    assert failure_receipt["if"] == (
+        "always() && (steps.verify_pypi_release.outcome != 'success' || "
+        "steps.verify_public_index_smoke.outcome != 'success')"
+    )
+    assert failure_receipt["env"] == {
+        "PROVENANCE_OUTCOME": "${{ steps.verify_pypi_release.outcome }}",
+        "PUBLIC_INDEX_SMOKE_OUTCOME": "${{ steps.verify_public_index_smoke.outcome }}",
+    }
+    failure_run = str(failure_receipt["run"])
+    assert "${PROVENANCE_OUTCOME}" in failure_run
+    assert "${PUBLIC_INDEX_SMOKE_OUTCOME}" in failure_run
+    assert "verification-outcome.txt" in failure_run
+    assert "verification-status.txt" in failure_run
+    assert (
+        "cp pypi-verification/verification-outcome.txt \\\n"
+        "  pypi-verification/verification-status.txt" in failure_run
+    )
+    assert "if test ! -s pypi-verification/verification-status.txt" not in failure_run
+    assert receipt_upload["if"] == "always()"
+
+
 def test_release_build_constraints_are_exact_and_hashed() -> None:
     constraint_lines = [
         line.strip()
@@ -1085,6 +1148,7 @@ def test_publish_workflow_splits_build_from_oidc_publish() -> None:
 
     verification_step_ids = [step.get("id") for step in verification_job["steps"]]
     assert "verify_pypi_release" in verification_step_ids
+    assert "verify_public_index_smoke" in verification_step_ids
     verification_step = next(
         step for step in verification_job["steps"] if step.get("id") == "verify_pypi_release"
     )
@@ -1167,7 +1231,10 @@ def test_publish_workflow_splits_build_from_oidc_publish() -> None:
     assert verification_job["steps"].index(failure_step) < verification_job["steps"].index(
         upload_step
     )
-    assert failure_step["if"] == "always() && steps.verify_pypi_release.outcome != 'success'"
+    assert failure_step["if"] == (
+        "always() && (steps.verify_pypi_release.outcome != 'success' || "
+        "steps.verify_public_index_smoke.outcome != 'success')"
+    )
     failure_run = str(failure_step["run"])
     assert "verification-outcome.txt" in failure_run
     assert "verification-status.txt" in failure_run

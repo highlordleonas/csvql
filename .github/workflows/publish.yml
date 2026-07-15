@@ -657,6 +657,7 @@ jobs:
               raise SystemExit(status_path.read_text(encoding="utf-8").strip())
           PY
       - name: Install exact public release and run core and TUI smoke
+        id: verify_public_index_smoke
         run: |
           set -euo pipefail
           uv run --frozen --no-sync python scripts/verify_installed_artifacts.py \
@@ -666,17 +667,20 @@ jobs:
             --public-index \
             --allow-published-version-check
       - name: Record failed verification outcome
-        if: always() && steps.verify_pypi_release.outcome != 'success'
+        if: always() && (steps.verify_pypi_release.outcome != 'success' || steps.verify_public_index_smoke.outcome != 'success')
+        env:
+          PROVENANCE_OUTCOME: ${{ steps.verify_pypi_release.outcome }}
+          PUBLIC_INDEX_SMOKE_OUTCOME: ${{ steps.verify_public_index_smoke.outcome }}
         run: |
+          set -euo pipefail
           mkdir -p pypi-verification
           printf '%s\n' \
-            'PyPI post-publish verification failed, timed out, or skipped before completion. Release metadata and digest verification did not complete; inspect workflow logs and captured partial receipts. No cryptographic attestation verification was performed.' \
+            'PyPI post-publish verification failed, timed out, or skipped before completion. Inspect workflow logs and captured partial receipts. No cryptographic attestation verification was performed.' \
+            "Provenance verification outcome: ${PROVENANCE_OUTCOME}." \
+            "Public-index installed-artifact smoke outcome: ${PUBLIC_INDEX_SMOKE_OUTCOME}." \
             > pypi-verification/verification-outcome.txt
-          if test ! -s pypi-verification/verification-status.txt || \
-            grep -Fqx 'PyPI verification started.' pypi-verification/verification-status.txt; then
-            cp pypi-verification/verification-outcome.txt \
-              pypi-verification/verification-status.txt
-          fi
+          cp pypi-verification/verification-outcome.txt \
+            pypi-verification/verification-status.txt
       - name: Upload PyPI verification receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
