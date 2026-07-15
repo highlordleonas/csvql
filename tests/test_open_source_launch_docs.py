@@ -184,6 +184,22 @@ def test_release_runbook_candidate_evidence_fails_closed() -> None:
     assert "2026-07-14" not in candidate
     assert 'mkdir -- "${evidence_dir}"' in candidate
     assert 'test ! -e "${evidence_dir}"' not in candidate
+    uv_cache_exports = [line for line in candidate_lines if line.startswith("export UV_CACHE_DIR=")]
+    assert uv_cache_exports == ['export UV_CACHE_DIR="${evidence_dir}/uv-cache"']
+    uv_cache_export = uv_cache_exports[0]
+    assert 'mkdir -m 700 -- "${UV_CACHE_DIR}"' in candidate_lines
+    assert "$HOME" not in uv_cache_export
+    assert "/private/tmp" not in uv_cache_export
+    assert_ordered(
+        candidate,
+        (
+            'mkdir -- "${evidence_dir}"',
+            'printf \'%s\\n\' "${candidate_oid}" > "${evidence_dir}/candidate-commit.txt"',
+            uv_cache_export,
+            'mkdir -m 700 -- "${UV_CACHE_DIR}"',
+            "make ci-fresh",
+        ),
+    )
     assert 'git cat-file -t "${candidate_oid}"' in candidate
     assert candidate_lines.count("git diff --quiet --exit-code --") == 2
     assert candidate_lines.count("git diff --cached --quiet --exit-code --") == 2

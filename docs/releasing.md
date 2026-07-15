@@ -128,6 +128,8 @@ evidence_dir="${evidence_root}/${release_version}-${candidate_oid}"
 mkdir -p -- "${evidence_root}"
 mkdir -- "${evidence_dir}"
 printf '%s\n' "${candidate_oid}" > "${evidence_dir}/candidate-commit.txt"
+export UV_CACHE_DIR="${evidence_dir}/uv-cache"
+mkdir -m 700 -- "${UV_CACHE_DIR}"
 
 make ci-fresh
 uvx --from uv==0.11.28 uv build --python "${artifact_python}" \
