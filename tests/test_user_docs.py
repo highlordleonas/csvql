@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REPO_BLOB_PREFIX = "https://github.com/highlordleonas/csvql/blob/main/"
 REPO_RAW_PREFIX = "https://raw.githubusercontent.com/highlordleonas/csvql/main/"
 LINK_RE = re.compile(r"!?\[[^]]*\]\(([^)]+)\)")
+HTTPS_TARGET_RE = re.compile(r"""https://[^\s<>()\[\]{}"'`]+""")
 HEADING_RE = re.compile(r"^#{1,6} +(.+?) *#* *$", flags=re.MULTILINE)
 JSON_FENCE_RE = re.compile(r"```json\n(.*?)\n```", flags=re.DOTALL)
 API_FACTORY_RE = re.compile(r"CSVQLSession\.(from_[a-z_]+)\(")
@@ -92,6 +93,10 @@ def fenced_blocks(document: str, language: str) -> tuple[str, ...]:
     )
 
 
+def https_targets(document: str) -> tuple[str, ...]:
+    return tuple(HTTPS_TARGET_RE.findall(document))
+
+
 PUBLIC_RENDERED_DOCS = tuple(
     sorted(
         PUBLIC_PRODUCT_DOCS
@@ -139,11 +144,23 @@ def test_every_tracked_markdown_file_has_one_publication_classification() -> Non
     assert not any(path.startswith("docs/superpowers/") for path in tracked)
 
 
+def test_https_target_discovery_includes_nested_badges_and_bare_urls() -> None:
+    document = (
+        "[![CI](https://img.shields.io/x)]"
+        "(https://github.com/highlordleonas/csvql)\n"
+        "https://pypi.org/project/localql/\n"
+    )
+
+    assert https_targets(document) == (
+        "https://img.shields.io/x",
+        "https://github.com/highlordleonas/csvql",
+        "https://pypi.org/project/localql/",
+    )
+
+
 def test_public_documentation_remote_domains_are_reviewed() -> None:
     for path in PUBLIC_RENDERED_DOCS:
-        for target in LINK_RE.findall(read_doc(path)):
-            if not target.startswith("https://"):
-                continue
+        for target in https_targets(read_doc(path)):
             host = urlparse(target).hostname
             assert host in ALLOWED_HTTPS_HOSTS | NON_LIVE_EXAMPLE_HOSTS, (
                 path,
