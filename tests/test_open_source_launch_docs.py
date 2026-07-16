@@ -134,7 +134,7 @@ def test_pyproject_public_metadata_is_consistent() -> None:
     project = payload["project"]
 
     assert project["name"] == "localql"
-    assert project["version"] == "1.0.3"
+    assert project["version"] == "1.0.4"
     assert project["readme"] == "README.md"
     assert project["license"] == "MIT"
     assert "LICENSE" in payload["project"]["license-files"]
@@ -227,6 +227,8 @@ def test_publish_workflow_uses_identity_bound_trusted_publishing() -> None:
     for required in (
         "git cat-file -t",
         "git rev-parse",
+        "refs/tags/${EXPECTED_TAG}:refs/localql/verified-tags/${EXPECTED_TAG}",
+        'VERIFIED_TAG_REF="refs/localql/verified-tags/${EXPECTED_TAG}"',
         "tag-ci-jobs.json",
         "uv sync --all-extras --all-groups --frozen",
         "scripts/release-build-constraints.txt",
@@ -235,7 +237,7 @@ def test_publish_workflow_uses_identity_bound_trusted_publishing() -> None:
         "--expected-version",
         "scripts/verify_release_artifacts.py",
         "artifact-manifest.json",
-        "localql-1.0.3-publish-bundle",
+        "localql-1.0.4-publish-bundle",
     ):
         assert required in build_runs or required in workflow
 
@@ -245,13 +247,13 @@ def test_publish_workflow_uses_identity_bound_trusted_publishing() -> None:
         "scripts/verify_dependency_audit.py",
         "scripts/verify_installed_artifacts.py",
         "scripts/release-audit-tool-requirements.txt",
-        "localql-1.0.3-publish-bundle",
-        "localql-1.0.3-verification-evidence",
+        "localql-1.0.4-publish-bundle",
+        "localql-1.0.4-verification-evidence",
     ):
         assert required in captured_verification_runs or required in captured_verification_text
 
-    assert "localql-1.0.3-publish-bundle" in publish_text
-    assert "localql-1.0.3-verification-evidence" not in publish_text
+    assert "localql-1.0.4-publish-bundle" in publish_text
+    assert "localql-1.0.4-verification-evidence" not in publish_text
     assert "pypa/gh-action-pypi-publish@" in publish_uses
     assert "PYPI_TOKEN" not in publish_runs
     assert "twine upload" not in publish_runs
@@ -261,7 +263,7 @@ def test_publish_workflow_uses_identity_bound_trusted_publishing() -> None:
     assert "shasum -a 256 -c SHA256SUMS.txt" in publish_runs
 
     for required in (
-        "localql-1.0.3-pypi-verification",
+        "localql-1.0.4-pypi-verification",
         "https://pypi.org/pypi/{project}/json",
         "https://pypi.org/integrity/{project}/{version}",
         "verification-status.txt",

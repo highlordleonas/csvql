@@ -3,6 +3,12 @@
 This page records user-visible changes in each LocalQL release. For a guided
 overview of the v1 feature set, see the [v1 release notes](docs/release-notes/v1.md).
 
+## [1.0.4] - 2026-07-15
+
+### Changed
+
+- No changes to the LocalQL command-line interface or Python API.
+
 ## [1.0.3] - 2026-07-15
 
 ### Fixed

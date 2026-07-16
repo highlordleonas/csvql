@@ -22,10 +22,10 @@ import pytest
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "verify_release_artifacts.py"
 sys.path.insert(0, str(MODULE_PATH.parents[1]))
-EXPECTED_WHEEL = "localql-1.0.3-py3-none-any.whl"
-EXPECTED_SDIST = "localql-1.0.3.tar.gz"
-DIST_INFO = "localql-1.0.3.dist-info"
-SDIST_ROOT = "localql-1.0.3"
+EXPECTED_WHEEL = "localql-1.0.4-py3-none-any.whl"
+EXPECTED_SDIST = "localql-1.0.4.tar.gz"
+DIST_INFO = "localql-1.0.4.dist-info"
+SDIST_ROOT = "localql-1.0.4"
 
 EXPECTED_METADATA_KEYS = (
     "Name",
@@ -42,7 +42,7 @@ EXPECTED_METADATA_KEYS = (
 
 BASE_METADATA: dict[str, list[str]] = {
     "Name": ["localql"],
-    "Version": ["1.0.3"],
+    "Version": ["1.0.4"],
     "Summary": ["Local CSV analytics"],
     "Requires-Python": [">=3.11,<3.15"],
     "Requires-Dist": ["duckdb<2,>=1.5.0", "typer>=0.12.3"],
@@ -109,7 +109,7 @@ def wheel_entries(
     record: str = "record-one\n",
 ) -> list[tuple[str | zipfile.ZipInfo, bytes | str]]:
     entries: list[tuple[str | zipfile.ZipInfo, bytes | str]] = [
-        ("csvql/__init__.py", '__version__ = "1.0.3"\n'),
+        ("csvql/__init__.py", '__version__ = "1.0.4"\n'),
         (f"{DIST_INFO}/WHEEL", "Wheel-Version: 1.0\n"),
         (f"{DIST_INFO}/RECORD", record),
     ]
@@ -181,7 +181,7 @@ def invoke_wheel_archive_interface(
     if interface == "artifact-pair":
         sdist = wheel.parent / EXPECTED_SDIST
         write_sdist(sdist, metadata_bytes())
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.3")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
         return
     if interface == "semantic-manifest":
         module.semantic_wheel_manifest(wheel)
@@ -313,7 +313,7 @@ def test_artifact_pair_rejects_each_metadata_contract_mismatch(
     )
 
     with pytest.raises(ValueError, match="metadata"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.3")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
 
 
 def test_artifact_pair_rejects_long_description_mismatch(tmp_path: Path) -> None:
@@ -324,14 +324,14 @@ def test_artifact_pair_rejects_long_description_mismatch(tmp_path: Path) -> None
     )
 
     with pytest.raises(ValueError, match="long description"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.3")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
 
 
 def test_artifact_pair_accepts_exact_metadata_and_entry_point(tmp_path: Path) -> None:
     module = release_module()
     wheel, sdist = write_artifact_pair(tmp_path)
 
-    assert module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.3") is None
+    assert module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4") is None
 
 
 @pytest.mark.parametrize(
@@ -351,7 +351,7 @@ def test_artifact_pair_rejects_missing_wrong_or_duplicate_entry_point(
     wheel, sdist = write_artifact_pair(tmp_path, entry_points=entry_points)
 
     with pytest.raises(ValueError, match="entry point"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.3")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
 
 
 @pytest.mark.parametrize("bad_kind", ["duplicate", "noncanonical", "special"])
@@ -383,7 +383,7 @@ def test_artifact_pair_rejects_ambiguous_or_unsafe_metadata_members(
     write_sdist(sdist, metadata_bytes())
 
     with pytest.raises(ValueError):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.3")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
 
 
 def test_metadata_contract_rejects_duplicate_headers() -> None:
@@ -413,7 +413,7 @@ def test_sdist_requires_exactly_one_two_component_pkg_info(tmp_path: Path) -> No
     write_sdist(sdist, metadata_bytes(), extra_entries=[(extra, metadata_bytes())])
 
     with pytest.raises(ValueError, match="PKG-INFO"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.3")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
 
 
 def test_semantic_manifest_ignores_timestamp_order_and_record(tmp_path: Path) -> None:
@@ -506,7 +506,7 @@ def test_artifact_manifest_is_exact_deterministic_json_with_final_newline(tmp_pa
             },
         ],
         "distribution": "localql",
-        "version": "1.0.3",
+        "version": "1.0.4",
     }
 
     assert module.write_artifact_manifest(artifacts, destination) is None
@@ -565,7 +565,7 @@ def test_cli_selects_exact_pair_repeated_rebuilds_and_manifest(
             "verify_release_artifacts.py",
             str(dist_dir),
             "--expected-version",
-            "1.0.3",
+            "1.0.4",
             "--rebuilt-wheel",
             str(rebuilt_one),
             "--rebuilt-wheel",
@@ -610,7 +610,7 @@ def test_cli_rejects_extra_archive_in_exact_selection(
             "verify_release_artifacts.py",
             str(tmp_path),
             "--expected-version",
-            "1.0.3",
+            "1.0.4",
             "--manifest",
             str(tmp_path / "manifest.json"),
         ],
@@ -641,9 +641,9 @@ def test_failures_do_not_expose_member_contents_or_terminal_controls(tmp_path: P
     "hostile_member",
     [
         f"nested/{DIST_INFO}/METADATA",
-        "alternate-1.0.3.dist-info/METADATA",
+        "alternate-1.0.4.dist-info/METADATA",
         f"nested/{DIST_INFO}/RECORD",
-        "alternate-1.0.3.dist-info/RECORD",
+        "alternate-1.0.4.dist-info/RECORD",
     ],
 )
 @pytest.mark.parametrize(
@@ -814,7 +814,7 @@ def test_sdist_compressed_size_limit_applies_to_every_direct_interface(
     with pytest.raises(ValueError, match="compressed size"):
         artifacts = module.ArtifactSet(wheel, sdist)
         if interface == "artifact-pair":
-            module.verify_artifact_pair(artifacts, "1.0.3")
+            module.verify_artifact_pair(artifacts, "1.0.4")
         else:
             module.write_artifact_manifest(artifacts, tmp_path / "manifest.json")
 
@@ -843,7 +843,7 @@ def test_sdist_member_count_limit_is_fail_closed(tmp_path: Path) -> None:
     sdist_with_total_members(sdist, 4097)
 
     with pytest.raises(ValueError, match="member count"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.3")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
 
 
 @pytest.mark.parametrize(
@@ -872,7 +872,7 @@ def test_sdist_member_name_volume_limit_is_fail_closed(tmp_path: Path) -> None:
     sdist_with_name_volume(sdist, 1024 * 1024)
 
     with pytest.raises(ValueError, match="member-name bytes"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.3")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
 
 
 class IncrementalTarArchive:
@@ -921,7 +921,7 @@ def test_sdist_metadata_enumeration_stops_at_first_budget_failure(
     monkeypatch.setattr(module.tarfile, "open", lambda *_args, **_kwargs: archive)
 
     with pytest.raises(ValueError, match=budget):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.3")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
 
     expected_yielded = 4097 if budget == "member count" else 1
     assert archive.yielded == expected_yielded

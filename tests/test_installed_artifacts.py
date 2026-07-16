@@ -760,7 +760,7 @@ def test_local_mode_requires_every_exact_input(tmp_path: Path, missing_input: st
 @pytest.mark.parametrize(
     ("role", "wrong_name"),
     [
-        ("wheel", "localql-1.0.3-py3-none-any.whl"),
+        ("wheel", "localql-1.0.4-py3-none-any.whl"),
         ("core", "requirements.txt"),
         ("tui", "requirements-tui.txt"),
     ],
@@ -1224,7 +1224,7 @@ def test_version_evidence_requires_exact_expected_version(tmp_path: Path) -> Non
                 and command[0] != "uv"
                 and Path(command[0]).stem != "python"
             ):
-                return CompletedProcess(args=command, returncode=0, stdout="1.0.3\n", stderr="")
+                return CompletedProcess(args=command, returncode=0, stdout="1.0.4\n", stderr="")
             return completed
 
     with pytest.raises(verifier.InstalledArtifactVerificationError, match="version evidence"):
