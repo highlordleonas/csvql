@@ -40,13 +40,13 @@ except ModuleNotFoundError:
         find_archives,
     )
 
-EXPECTED_VERSION = "1.0.2"
-EXPECTED_WHEEL = "localql-1.0.2-py3-none-any.whl"
-EXPECTED_SDIST = "localql-1.0.2.tar.gz"
+EXPECTED_VERSION = "1.0.3"
+EXPECTED_WHEEL = "localql-1.0.3-py3-none-any.whl"
+EXPECTED_SDIST = "localql-1.0.3.tar.gz"
 EXPECTED_ENTRY_POINT = "csvql = csvql.cli:main"
-EXPECTED_DIST_INFO = "localql-1.0.2.dist-info"
-EXPECTED_SDIST_ROOT = "localql-1.0.2"
-EXPECTED_RECORD = "localql-1.0.2.dist-info/RECORD"
+EXPECTED_DIST_INFO = "localql-1.0.3.dist-info"
+EXPECTED_SDIST_ROOT = "localql-1.0.3"
+EXPECTED_RECORD = "localql-1.0.3.dist-info/RECORD"
 
 METADATA_KEYS = (
     "Name",
@@ -614,7 +614,7 @@ def write_artifact_manifest(artifacts: ArtifactSet, destination: Path) -> None:
                 },
             ],
             "distribution": "localql",
-            "version": "1.0.2",
+            "version": "1.0.3",
         }
         content = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     except OSError:

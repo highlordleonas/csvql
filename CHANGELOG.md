@@ -3,6 +3,17 @@
 This page records user-visible changes in each LocalQL release. For a guided
 overview of the v1 feature set, see the [v1 release notes](docs/release-notes/v1.md).
 
+## [1.0.3] - 2026-07-15
+
+### Fixed
+
+- The changelog and v1 release notes now describe the current LocalQL release.
+
+### Changed
+
+- The optional `csvql menu` handles restored and unavailable results more
+  reliably.
+
 ## [1.0.1] - 2026-07-10
 
 ### Fixed

@@ -36,8 +36,8 @@ permissions:
   contents: read
 
 env:
-  EXPECTED_TAG: v1.0.2
-  EXPECTED_VERSION: "1.0.2"
+  EXPECTED_TAG: v1.0.3
+  EXPECTED_VERSION: "1.0.3"
 
 jobs:
   build-and-capture:
@@ -194,7 +194,7 @@ jobs:
           set -euo pipefail
           mkdir -- "${EVIDENCE_DIR}/rebuild-constrained"
           uv build --verbose --wheel \
-            "${EVIDENCE_DIR}/dist/localql-1.0.2.tar.gz" \
+            "${EVIDENCE_DIR}/dist/localql-1.0.3.tar.gz" \
             --python "${ARTIFACT_PYTHON}" \
             --out-dir "${EVIDENCE_DIR}/rebuild-constrained" \
             --build-constraints scripts/release-build-constraints.txt \
@@ -211,7 +211,7 @@ jobs:
           date -u +'%Y-%m-%dT%H:%M:%SZ' \
             > "${EVIDENCE_DIR}/consumer-rebuild-observed-at.txt"
           uv build --verbose --wheel \
-            "${EVIDENCE_DIR}/dist/localql-1.0.2.tar.gz" \
+            "${EVIDENCE_DIR}/dist/localql-1.0.3.tar.gz" \
             --python "${ARTIFACT_PYTHON}" \
             --out-dir "${EVIDENCE_DIR}/rebuild-consumer" \
             2>&1 | tee "${EVIDENCE_DIR}/rebuild-consumer.log"
@@ -224,20 +224,20 @@ jobs:
           set -euo pipefail
           uv run --frozen --no-sync python scripts/verify_release_artifacts.py \
             "${EVIDENCE_DIR}/dist" --expected-version "${EXPECTED_VERSION}" \
-            --rebuilt-wheel "${EVIDENCE_DIR}/rebuild-constrained/localql-1.0.2-py3-none-any.whl" \
-            --rebuilt-wheel "${EVIDENCE_DIR}/rebuild-consumer/localql-1.0.2-py3-none-any.whl" \
+            --rebuilt-wheel "${EVIDENCE_DIR}/rebuild-constrained/localql-1.0.3-py3-none-any.whl" \
+            --rebuilt-wheel "${EVIDENCE_DIR}/rebuild-consumer/localql-1.0.3-py3-none-any.whl" \
             --manifest "${EVIDENCE_DIR}/dist/artifact-manifest.json"
           (
             cd "${EVIDENCE_DIR}/dist"
             shasum -a 256 \
-              localql-1.0.2-py3-none-any.whl \
-              localql-1.0.2.tar.gz \
+              localql-1.0.3-py3-none-any.whl \
+              localql-1.0.3.tar.gz \
               > SHA256SUMS.txt
           )
       - name: Capture immutable publication bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: localql-1.0.2-publish-bundle
+          name: localql-1.0.3-publish-bundle
           path: dist
           if-no-files-found: error
 
@@ -257,7 +257,7 @@ jobs:
       - name: Download immutable publication bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: localql-1.0.2-publish-bundle
+          name: localql-1.0.3-publish-bundle
           path: captured-artifacts
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
@@ -282,8 +282,8 @@ jobs:
         run: |
           set -euo pipefail
           uvx --from twine==6.2.0 twine check \
-            captured-artifacts/dist/localql-1.0.2-py3-none-any.whl \
-            captured-artifacts/dist/localql-1.0.2.tar.gz
+            captured-artifacts/dist/localql-1.0.3-py3-none-any.whl \
+            captured-artifacts/dist/localql-1.0.3.tar.gz
       - name: Audit locked dependency paths
         run: |
           set -euo pipefail
@@ -293,7 +293,7 @@ jobs:
         run: |
           set -euo pipefail
           uv run --frozen --no-sync python scripts/verify_installed_artifacts.py \
-            --wheel captured-artifacts/dist/localql-1.0.2-py3-none-any.whl \
+            --wheel captured-artifacts/dist/localql-1.0.3-py3-none-any.whl \
             --core-requirements "${VERIFICATION_DIR}/dependency-audit/core-requirements.txt" \
             --tui-requirements "${VERIFICATION_DIR}/dependency-audit/tui-requirements.txt" \
             --work-dir "${VERIFICATION_DIR}/installed-smokes" \
@@ -304,7 +304,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: localql-1.0.2-verification-evidence
+          name: localql-1.0.3-verification-evidence
           path: verification-evidence
           if-no-files-found: error
 
@@ -327,7 +327,7 @@ jobs:
       - name: Download immutable publication bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: localql-1.0.2-publish-bundle
+          name: localql-1.0.3-publish-bundle
           path: release-artifacts
       - name: Verify downloaded artifact hashes and metadata
         run: |
@@ -430,7 +430,7 @@ jobs:
       - name: Download distribution artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: localql-1.0.2-publish-bundle
+          name: localql-1.0.3-publish-bundle
           path: release-artifacts
       - name: Install uv without caching
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
@@ -586,7 +586,7 @@ jobs:
               else:
                   write_evidence(VERIFICATION_DIR / "pypi-project.json", project_metadata)
                   write_evidence(
-                      VERIFICATION_DIR / "pypi-release-1.0.2.json",
+                      VERIFICATION_DIR / "pypi-release-1.0.3.json",
                       release_metadata,
                   )
                   published_files = published_file_records(release_metadata.get("urls"))
@@ -686,7 +686,7 @@ jobs:
           set -euo pipefail
           uv run --frozen --no-sync python scripts/verify_installed_artifacts.py \
             --work-dir post-publish-smoke \
-            --expected-version 1.0.2 \
+            --expected-version 1.0.3 \
             --python 3.12.11 \
             --public-index \
             --allow-published-version-check
@@ -709,6 +709,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: localql-1.0.2-pypi-verification
+          name: localql-1.0.3-pypi-verification
           path: pypi-verification
           if-no-files-found: error
