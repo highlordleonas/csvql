@@ -18,6 +18,9 @@ USER_DOC_PATHS = tuple(
         for path in REPO_ROOT.glob(pattern)
     )
 )
+INSTALLED_USER_DOC_PATHS = tuple(
+    path for path in USER_DOC_PATHS if path not in {"CONTRIBUTING.md", "docs/development.md"}
+)
 
 
 def read_doc(path: str) -> str:
@@ -41,9 +44,51 @@ def test_readme_is_a_curated_user_starting_point() -> None:
         assert expected_link in readme
 
 
+def test_readme_guides_an_installed_user_from_setup_to_support() -> None:
+    readme = read_doc("README.md")
+
+    for heading in (
+        "## Install and first query",
+        "## Optional terminal menu",
+        "## Compatibility and safety",
+        "## Get help and stay current",
+    ):
+        assert heading in readme
+
+    assert readme.index("## Install and first query") < readme.index("## Optional terminal menu")
+    assert readme.index("## Optional terminal menu") < readme.index("## Compatibility and safety")
+    assert "python -m pip install localql" in readme
+    assert 'csvql query orders.csv "SELECT * FROM orders LIMIT 5"' in readme
+    assert 'python -m pip install "localql[tui]"' in readme
+    assert "Python 3.11 through 3.14" in readme
+    assert "macOS, Linux, and Windows" in readme
+    assert "trusted local DuckDB SQL" in readme
+    for label in ("Support", "Security", "Changelog", "v1 release notes"):
+        assert f"[{label}](" in readme
+
+
+def test_getting_started_orders_the_core_query_before_the_optional_tui() -> None:
+    getting_started = read_doc("docs/getting-started.md")
+
+    install_index = getting_started.index("## Install LocalQL")
+    query_index = getting_started.index("## Query a CSV")
+    first_query_index = getting_started.index(
+        'csvql query orders.csv "SELECT * FROM orders LIMIT 5"'
+    )
+    tui_install_index = getting_started.index('python -m pip install "localql[tui]"')
+    terminal_menu_index = getting_started.index("## Use the optional terminal menu")
+
+    assert install_index < query_index < first_query_index < terminal_menu_index < tui_install_index
+
+
 def test_readme_links_are_safe_for_pypi_rendering() -> None:
     for target in LINK_RE.findall(read_doc("README.md")):
         assert target.startswith(("https://", "mailto:", "#")), target
+
+
+def test_installed_user_docs_do_not_use_source_checkout_commands() -> None:
+    for path in INSTALLED_USER_DOC_PATHS:
+        assert "uv run" not in read_doc(path), path
 
 
 def test_long_reference_docs_include_curated_navigation() -> None:

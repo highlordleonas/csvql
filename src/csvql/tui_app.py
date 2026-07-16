@@ -3,7 +3,7 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from textual import events
 from textual.app import App, ComposeResult, ScreenStackError
@@ -27,7 +27,12 @@ from csvql.tui_help import WORKBENCH_HELP
 from csvql.tui_native_picker import (
     choose_csv_paths_with_native_picker as _choose_csv_paths_with_native_picker,
 )
-from csvql.tui_result_store import TUIResultStore
+from csvql.tui_result_store import (
+    TUIResultCleanupSummary,
+    TUIResultHandle,
+    TUIResultStorageError,
+    TUIResultStore,
+)
 from csvql.tui_results import (
     make_result_view_state,
     populate_result_table,
@@ -50,7 +55,7 @@ from csvql.tui_state import (
     TUIQueryHistoryItem,
     TUIQueryOutcome,
     TUIQueryRunMode,
-    TUIQueryRunState,
+    TUIResultViewState,
     TUISessionState,
     TUISource,
     TUISourceColumn,
@@ -143,6 +148,17 @@ _MIN_TERMINAL_WIDTH = 100
 _MIN_TERMINAL_HEIGHT = 30
 _RECOMMENDED_TERMINAL_WIDTH = 120
 _RECOMMENDED_TERMINAL_HEIGHT = 36
+_FULL_RESULT_UNAVAILABLE_MESSAGE = (
+    "The full result is no longer available because its temporary storage was lost."
+)
+_UNEXPECTED_QUERY_WORKER_FAILURE_MESSAGE = "Unable to complete the query. Try running it again."
+_UNEXPECTED_OPERATION_WORKER_FAILURE_MESSAGE = "Unable to complete this action. Try again."
+_BufferOutcomeDisposition = Literal[
+    "stored_success",
+    "storage_error",
+    "no_result",
+    "execution_error",
+]
 
 
 class _PromptInputScreen(ModalScreen[str | None]):
@@ -243,6 +259,12 @@ class _ExportOutcome:
 @dataclass(frozen=True, slots=True)
 class _SaveResultSourceOutcome:
     source: TUISource
+
+
+@dataclass(frozen=True, slots=True)
+class _QueryResultStorageOutcome:
+    handle: TUIResultHandle | None
+    error_message: str | None = None
 
 
 class _SQLAssistPickerScreen(ModalScreen[str | None]):
@@ -437,6 +459,8 @@ class CSVQLMenuApp(App[None]):
         table_mappings: Sequence[str] = (),
         start_dir: Path | None = None,
         initial_state: TUISessionState | None = None,
+        result_store: TUIResultStore | None = None,
+        initial_cleanup_summary: TUIResultCleanupSummary | None = None,
     ) -> None:
         super().__init__()
         self.start_dir = (start_dir or Path.cwd()).resolve()
@@ -460,7 +484,15 @@ class CSVQLMenuApp(App[None]):
                 table_mappings=table_mappings,
                 start_dir=self.start_dir,
             )
-        self._result_store = TUIResultStore()
+        self._result_store = result_store or TUIResultStore()
+        self._cleanup_summary = initial_cleanup_summary or TUIResultCleanupSummary()
+        self._did_cleanup = False
+
+    @property
+    def cleanup_summary(self) -> TUIResultCleanupSummary:
+        """Return bounded recovery and shutdown cleanup counts."""
+
+        return self._cleanup_summary
 
     def compose(self) -> ComposeResult:
         yield Static("", id="status", markup=False)
@@ -493,7 +525,10 @@ class CSVQLMenuApp(App[None]):
         self._terminal_size_warning_initialized = True
 
     def on_unmount(self) -> None:
-        self._result_store.cleanup()
+        if self._did_cleanup:
+            return
+        self._did_cleanup = True
+        self._cleanup_summary = self._cleanup_summary.merge(self._result_store.cleanup())
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         del event
@@ -935,7 +970,11 @@ class CSVQLMenuApp(App[None]):
             return
         if self._is_focused("#history"):
             self._show_selected_history_result()
+        if self._show_active_result_unavailable():
+            return
         if self._active_query_result() is None:
+            if self._show_active_result_unavailable():
+                return
             self._show_error(CSVQLError("Run a query before exporting."))
             return
 
@@ -955,8 +994,12 @@ class CSVQLMenuApp(App[None]):
             return
         if self._is_focused("#history"):
             self._show_selected_history_result()
+        if self._show_active_result_unavailable():
+            return
         result = self._active_query_result()
         if result is None:
+            if self._show_active_result_unavailable():
+                return
             if self.state.last_result_status == "no_result":
                 self._show_error(CSVQLError("The last statement did not produce a tabular result."))
                 return
@@ -1186,25 +1229,12 @@ class CSVQLMenuApp(App[None]):
             self._show_error(error)
             return
 
-        error_message = self._unexpected_operation_worker_failure_message(operation_label)
-        if error is not None:
-            error_message = f"{error_message} {error}"
-        self._show_error(
-            CSVQLError(
-                error_message,
-                suggestion="Try the action again.",
-            )
-        )
+        self._show_error(CSVQLError(_UNEXPECTED_OPERATION_WORKER_FAILURE_MESSAGE))
 
     def _unexpected_operation_worker_result_message(self, operation_label: str) -> str:
         if not operation_label:
             return "Unexpected worker result while running the operation."
         return f"Unexpected worker result while {operation_label.lower()}."
-
-    def _unexpected_operation_worker_failure_message(self, operation_label: str) -> str:
-        if not operation_label:
-            return "Unexpected worker failure while running the operation."
-        return f"Unexpected worker failure while {operation_label.lower()}."
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         worker = event.worker
@@ -1605,10 +1635,10 @@ class CSVQLMenuApp(App[None]):
             self._set_run_status_ready()
 
         rejected_error = error
-        if self.state.last_result is not None:
+        if self.state.has_active_result:
             rejected_error = _with_previous_result_suggestion(error)
 
-        if simple_message_without_previous and self.state.last_result is None:
+        if simple_message_without_previous and not self.state.has_active_result:
             message = rejected_error.message
             already_safe = False
         else:
@@ -1714,6 +1744,8 @@ class CSVQLMenuApp(App[None]):
 
         result = self._active_query_result()
         if result is None:
+            if self._show_active_result_unavailable():
+                return
             self._show_error(CSVQLError("Run a query before exporting."))
             return
 
@@ -1772,6 +1804,8 @@ class CSVQLMenuApp(App[None]):
 
         result = self._active_query_result()
         if result is None:
+            if self._show_active_result_unavailable():
+                return
             self._show_error(CSVQLError("Run a query before saving a result as a source."))
             return
 
@@ -1841,12 +1875,30 @@ class CSVQLMenuApp(App[None]):
         return item.sequence
 
     def _active_query_result(self) -> QueryResult | None:
-        sequence = self.state.active_result.sequence
-        if sequence is not None:
-            handle = self.state.active_query_result_handle()
-            if handle is not None:
-                return self._result_store.get(handle)
-        return self.state.last_result
+        record = self.state.active_query_result_record()
+        if record is None or record.availability == "preview_only":
+            return None
+        try:
+            return self._result_store.get(record.handle)
+        except TUIResultStorageError as exc:
+            invalidated_sequences = tuple(
+                sorted({record.handle.sequence, *exc.invalidated_sequences})
+            )
+            self.state.mark_results_unavailable(
+                invalidated_sequences,
+                _FULL_RESULT_UNAVAILABLE_MESSAGE,
+            )
+            self._show_active_result_unavailable()
+            return None
+
+    def _show_active_result_unavailable(self) -> bool:
+        record = self.state.active_query_result_record()
+        if record is None or record.availability != "preview_only":
+            return False
+        message = record.unavailable_message or _FULL_RESULT_UNAVAILABLE_MESSAGE
+        self._set_status(message)
+        self._update_static_text("#results-message", message)
+        return True
 
     def _show_selected_history_result(self) -> None:
         item = self._selected_history_item()
@@ -1864,14 +1916,19 @@ class CSVQLMenuApp(App[None]):
         if item.status == "success":
             if not self.state.restore_query_result(item.sequence):
                 return
+            record = self.state.query_result_record(item.sequence)
+            assert record is not None
             view = self.state.result_view
             populate_result_table(self.query_one("#results", DataTable), view)
             self._refresh_results_title()
             self._refresh_result_tabs()
-            self._update_static_text(
-                "#results-message", f"History query {item.sequence}. {result_preview_message(view)}"
-            )
-            self._set_status(f"Showing query {item.sequence} result from History.")
+            message = f"History query {item.sequence}. {result_preview_message(view)}"
+            status = f"Showing query {item.sequence} result from History."
+            if record.availability == "preview_only" and record.unavailable_message:
+                message = f"{message} {record.unavailable_message}"
+                status = f"{status} {record.unavailable_message}"
+            self._update_static_text("#results-message", message)
+            self._set_status(status)
             return
 
         self.state.clear_last_result()
@@ -1891,7 +1948,7 @@ class CSVQLMenuApp(App[None]):
     def _is_focused(self, selector: str) -> bool:
         try:
             return self.focused is self.query_one(selector)
-        except NoMatches:
+        except (NoMatches, ScreenStackError):
             return False
 
     def _select_relative_buffer_result(self, offset: int) -> None:
@@ -1933,6 +1990,58 @@ class CSVQLMenuApp(App[None]):
         )
         self._set_status(f"Showing buffer result {tab.sequence}.{tab.index}.")
 
+    def _store_query_result(
+        self,
+        outcome: TUIQueryOutcome,
+        view: TUIResultViewState,
+        *,
+        run_mode: TUIQueryRunMode,
+        buffer_result_index: int | None = None,
+        complete_run: bool = True,
+    ) -> _QueryResultStorageOutcome:
+        """Store one query result and convert typed failures into TUI state."""
+
+        assert outcome.result is not None
+        try:
+            stored = self._result_store.put(outcome.result, sequence=outcome.sequence)
+        except TUIResultStorageError as exc:
+            self.state.mark_results_unavailable(
+                exc.invalidated_sequences,
+                _FULL_RESULT_UNAVAILABLE_MESSAGE,
+            )
+            self.state.record_query_storage_error(
+                outcome.sequence,
+                outcome.sql,
+                exc.user_message,
+                run_mode=run_mode,
+                complete_run=complete_run,
+            )
+            self._refresh_history_table_selecting(outcome.sequence)
+            self._set_status(exc.user_message)
+            self._update_static_text("#results-message", exc.user_message)
+            if complete_run:
+                self._set_run_status_ready()
+            return _QueryResultStorageOutcome(
+                handle=None,
+                error_message=exc.user_message,
+            )
+
+        self.state.mark_results_unavailable(
+            stored.invalidated_sequences,
+            _FULL_RESULT_UNAVAILABLE_MESSAGE,
+        )
+        self.state.record_query_success(
+            outcome.sequence,
+            outcome.sql,
+            handle=stored.handle,
+            result_view=view,
+            elapsed_ms=outcome.elapsed_ms or 0.0,
+            run_mode=run_mode,
+            buffer_result_index=buffer_result_index,
+            complete_run=complete_run,
+        )
+        return _QueryResultStorageOutcome(handle=stored.handle)
+
     def _handle_empty_buffer_outcome(self, worker: Worker[object]) -> None:
         sequence = self._sequence_from_worker(worker)
         if sequence is None or not self.state.is_current_query_sequence(sequence):
@@ -1941,7 +2050,7 @@ class CSVQLMenuApp(App[None]):
         self._active_query_sql.pop(sequence, None)
         self._active_query_run_modes.pop(sequence, None)
         self.state.clear_last_result()
-        self.state.query_run = TUIQueryRunState()
+        self.state.finish_query_run()
         self.state.set_buffer_result_tabs(tuple(), selected_sequence=None)
         self._clear_result_grid()
         self._refresh_results_title()
@@ -1960,27 +2069,36 @@ class CSVQLMenuApp(App[None]):
 
         buffer_tabs: list[TUIBufferResultTab] = []
         latest_tabular_sequence: int | None = None
-        latest_outcome: TUIQueryOutcome | None = None
+        latest_handled_outcome: TUIQueryOutcome | None = None
+        latest_handled_disposition: _BufferOutcomeDisposition | None = None
+        latest_storage_error_message: str | None = None
         next_buffer_index = 0
+        storage_error_count = 0
 
         for outcome in outcomes:
-            latest_outcome = outcome
+            latest_handled_outcome = outcome
             if outcome.status == "success" and outcome.result is not None:
-                next_buffer_index += 1
+                candidate_index = next_buffer_index + 1
                 view = make_result_view_state(
                     outcome.result,
                     source_result_sequence=outcome.sequence,
                 )
-                handle = self._result_store.put(outcome.result, sequence=outcome.sequence)
-                self.state.record_query_result_handle(outcome.sequence, handle)
-                self.state.record_query_success(
-                    outcome.sequence,
-                    outcome.sql,
-                    outcome.result,
+                storage_outcome = self._store_query_result(
+                    outcome,
                     view,
                     run_mode="buffer",
-                    buffer_result_index=next_buffer_index,
+                    buffer_result_index=candidate_index,
+                    complete_run=False,
                 )
+                if storage_outcome.handle is None:
+                    assert storage_outcome.error_message is not None
+                    storage_error_count += 1
+                    latest_handled_disposition = "storage_error"
+                    latest_storage_error_message = storage_outcome.error_message
+                    continue
+                latest_handled_disposition = "stored_success"
+                latest_storage_error_message = None
+                next_buffer_index = candidate_index
                 buffer_tabs.append(
                     TUIBufferResultTab(
                         sequence=outcome.sequence,
@@ -1997,7 +2115,10 @@ class CSVQLMenuApp(App[None]):
                     outcome.sql,
                     outcome.elapsed_ms or 0.0,
                     run_mode="buffer",
+                    complete_run=False,
                 )
+                latest_handled_disposition = "no_result"
+                latest_storage_error_message = None
                 continue
 
             self.state.record_query_error(
@@ -2005,20 +2126,31 @@ class CSVQLMenuApp(App[None]):
                 outcome.sql,
                 outcome.error_message or "Query failed.",
                 run_mode="buffer",
+                complete_run=False,
             )
+            latest_handled_disposition = "execution_error"
+            latest_storage_error_message = None
             break
 
+        self.state.finish_query_run()
+
         if latest_tabular_sequence is None:
-            self.state.set_buffer_result_tabs(tuple(), selected_sequence=None)
-            self._clear_result_grid()
+            preserve_previous_result = bool(outcomes) and storage_error_count == len(outcomes)
+            if not preserve_previous_result:
+                self.state.set_buffer_result_tabs(tuple(), selected_sequence=None)
+                self._clear_result_grid()
             self._refresh_results_title()
             self._refresh_result_tabs()
-            if latest_outcome is not None:
-                self._refresh_history_table_selecting(latest_outcome.sequence)
-            if latest_outcome is None:
+            if latest_handled_outcome is not None:
+                self._refresh_history_table_selecting(latest_handled_outcome.sequence)
+            if latest_handled_disposition == "storage_error":
+                assert latest_storage_error_message is not None
+                message = latest_storage_error_message
+            elif latest_handled_disposition == "execution_error":
+                assert latest_handled_outcome is not None
+                message = latest_handled_outcome.error_message or "Query failed."
+            elif latest_handled_outcome is None:
                 message = "Statement completed; no tabular result to display."
-            elif latest_outcome.status == "error":
-                message = latest_outcome.error_message or "Query failed."
             else:
                 message = "Statement completed; no tabular result to display."
             self._set_status(message)
@@ -2033,28 +2165,33 @@ class CSVQLMenuApp(App[None]):
         )
         self._refresh_results_display()
         self._refresh_history_table_selecting(
-            latest_outcome.sequence if latest_outcome is not None else latest_tabular_sequence
+            latest_handled_outcome.sequence
+            if latest_handled_outcome is not None
+            else latest_tabular_sequence
         )
         self._update_static_text("#run-status", "Ready.")
-        if (
-            latest_outcome is not None
-            and latest_outcome.status == "success"
-            and latest_outcome.result is not None
-        ):
+        if latest_handled_disposition == "stored_success":
+            assert latest_handled_outcome is not None
+            assert latest_handled_outcome.result is not None
             completion_message = (
-                f"{latest_outcome.result.row_count} returned row(s) "
-                f"in {latest_outcome.result.elapsed_ms:.1f} ms."
+                f"{latest_handled_outcome.result.row_count} returned row(s) "
+                f"in {latest_handled_outcome.result.elapsed_ms:.1f} ms."
             )
             self._set_status(completion_message)
             self._update_static_text(
                 "#results-message", result_preview_message(self.state.result_view)
             )
-        elif latest_outcome is not None and latest_outcome.status == "no_result":
+        elif latest_handled_disposition == "storage_error":
+            assert latest_storage_error_message is not None
+            self._set_status(latest_storage_error_message)
+            self._update_static_text("#results-message", latest_storage_error_message)
+        elif latest_handled_disposition == "no_result":
             message = "Statement completed; no tabular result to display."
             self._set_status(message)
             self._update_static_text("#results-message", message)
-        elif latest_outcome is not None and latest_outcome.status == "error":
-            error_message = latest_outcome.error_message or "Query failed."
+        elif latest_handled_disposition == "execution_error":
+            assert latest_handled_outcome is not None
+            error_message = latest_handled_outcome.error_message or "Query failed."
             self._set_status(error_message)
             self._update_static_text("#results-message", error_message)
         self.query_one("#sql", TextArea).focus()
@@ -2072,15 +2209,14 @@ class CSVQLMenuApp(App[None]):
                 outcome.result,
                 source_result_sequence=outcome.sequence,
             )
-            handle = self._result_store.put(outcome.result, sequence=outcome.sequence)
-            self.state.record_query_result_handle(outcome.sequence, handle)
-            self.state.record_query_success(
-                outcome.sequence,
-                outcome.sql,
-                outcome.result,
+            storage_outcome = self._store_query_result(
+                outcome,
                 view,
                 run_mode=run_mode,
             )
+            if storage_outcome.handle is None:
+                self.query_one("#sql", TextArea).focus()
+                return
             populate_result_table(self.query_one("#results", DataTable), view)
             self._refresh_results_title()
             self._refresh_result_tabs()
@@ -2129,15 +2265,14 @@ class CSVQLMenuApp(App[None]):
         worker: Worker[object],
         error: BaseException | None,
     ) -> None:
+        del error
         sequence = self._sequence_from_worker(worker)
         if sequence is None or not self.state.is_current_query_sequence(sequence):
             return
 
         sql = self._active_query_sql.pop(sequence, "<unknown>")
         run_mode = self._active_query_run_modes.pop(sequence, "current")
-        error_message = "Unexpected worker failure while running query."
-        if error is not None:
-            error_message = f"{error_message} {error}"
+        error_message = _UNEXPECTED_QUERY_WORKER_FAILURE_MESSAGE
 
         self.state.record_query_error(sequence, sql, error_message, run_mode=run_mode)
         self._refresh_history_table_selecting(sequence)
@@ -2145,12 +2280,7 @@ class CSVQLMenuApp(App[None]):
         self._clear_result_grid()
         self._refresh_results_title()
         self._refresh_result_tabs()
-        self._show_error(
-            CSVQLError(
-                error_message,
-                suggestion="Try running the query again.",
-            )
-        )
+        self._show_error(CSVQLError(error_message))
         self.query_one("#sql", TextArea).focus()
 
     def _sequence_from_worker(self, worker: Worker[object]) -> int | None:

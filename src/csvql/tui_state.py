@@ -1,7 +1,7 @@
 """In-memory session state for the CSVQL menu TUI."""
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -19,6 +19,7 @@ TUIQueryRunMode = Literal["current", "buffer", "rerun"]
 TUIActiveResultKind = Literal["none", "query", "history", "buffer"]
 TUIQueryOutcomeStatus = Literal["success", "no_result", "error"]
 TUIOperationKind = Literal["inspect", "sample", "profile", "columns", "export", "save_result"]
+TUIFullResultAvailability = Literal["available", "preview_only"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +65,16 @@ class TUIResultViewState:
     cell_char_cap: int = 120
     is_truncated: bool = False
     source_result_sequence: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TUIResultRecord:
+    """Session metadata for one successful query result."""
+
+    handle: TUIResultHandle
+    view: TUIResultViewState
+    availability: TUIFullResultAvailability = "available"
+    unavailable_message: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,12 +173,9 @@ class TUISessionState:
     _source_columns: dict[str, tuple[TUISourceColumn, ...]] = field(default_factory=dict)
     _selected_alias: str | None = None
     _query_history: list[TUIQueryHistoryItem] = field(default_factory=list)
-    _query_results: dict[int, QueryResult] = field(default_factory=dict)
-    _query_result_handles: dict[int, TUIResultHandle] = field(default_factory=dict)
-    _query_result_views: dict[int, TUIResultViewState] = field(default_factory=dict)
+    _query_result_records: dict[int, TUIResultRecord] = field(default_factory=dict)
     _next_query_sequence: int = 1
     active_pane: TUIFocusPane = "editor"
-    last_result: QueryResult | None = None
     last_result_status: TUILastResultStatus = "none"
     active_result: TUIActiveResultState = field(default_factory=TUIActiveResultState)
     _buffer_result_tabs: list[TUIBufferResultTab] = field(default_factory=list)
@@ -251,20 +259,16 @@ class TUISessionState:
     def query_history(self) -> tuple[TUIQueryHistoryItem, ...]:
         return tuple(self._query_history)
 
-    def query_result(self, sequence: int) -> QueryResult | None:
-        """Return the stored tabular result for a successful query."""
+    def query_result_record(self, sequence: int) -> TUIResultRecord | None:
+        """Return result metadata for a successful query."""
 
-        return self._query_results.get(sequence)
-
-    def record_query_result_handle(self, sequence: int, handle: TUIResultHandle) -> None:
-        """Store the result-store handle for a successful query."""
-
-        self._query_result_handles[sequence] = handle
+        return self._query_result_records.get(sequence)
 
     def query_result_handle(self, sequence: int) -> TUIResultHandle | None:
-        """Return the stored result-store handle for a successful query."""
+        """Return the result-store handle for a successful query."""
 
-        return self._query_result_handles.get(sequence)
+        record = self.query_result_record(sequence)
+        return record.handle if record is not None else None
 
     def active_query_result_handle(self) -> TUIResultHandle | None:
         """Return the handle for the currently active exportable result, if any."""
@@ -277,7 +281,20 @@ class TUISessionState:
     def query_result_view(self, sequence: int) -> TUIResultViewState | None:
         """Return the stored result-grid view for a successful query."""
 
-        return self._query_result_views.get(sequence)
+        record = self.query_result_record(sequence)
+        return record.view if record is not None else None
+
+    @property
+    def has_active_result(self) -> bool:
+        """Return whether a query preview is active."""
+
+        return self.active_result.sequence is not None
+
+    def active_query_result_record(self) -> TUIResultRecord | None:
+        """Return metadata for the active query result."""
+
+        sequence = self.active_result.sequence
+        return self.query_result_record(sequence) if sequence is not None else None
 
     @property
     def buffer_result_tabs(self) -> tuple[TUIBufferResultTab, ...]:
@@ -315,14 +332,12 @@ class TUISessionState:
     def select_buffer_result(self, sequence: int) -> bool:
         """Select a buffered query result for viewing."""
 
-        result = self.query_result(sequence)
-        view = self.query_result_view(sequence)
+        record = self.query_result_record(sequence)
         tab = next((item for item in self._buffer_result_tabs if item.sequence == sequence), None)
-        if result is None or view is None or tab is None:
+        if record is None or tab is None:
             return False
-        self.last_result = result
         self.last_result_status = "query"
-        self.result_view = view
+        self.result_view = record.view
         self.active_result = TUIActiveResultState(
             kind="buffer",
             label=f"Active result: buffer {sequence}.{tab.index}",
@@ -334,25 +349,17 @@ class TUISessionState:
     def restore_query_result(self, sequence: int) -> bool:
         """Make a successful history row's result the active visible result."""
 
-        result = self.query_result(sequence)
-        view = self.query_result_view(sequence)
-        if result is None or view is None:
+        record = self.query_result_record(sequence)
+        if record is None:
             return False
-        self.last_result = result
         self.last_result_status = "query"
-        self.result_view = view
+        self.result_view = record.view
         self.active_result = TUIActiveResultState(
             kind="history",
             label=f"History preview: query {sequence}",
             sequence=sequence,
         )
         return True
-
-    def set_last_result(self, result: QueryResult) -> None:
-        """Store the most recent query result."""
-
-        self.last_result = result
-        self.last_result_status = "query"
 
     def begin_query_run(self, sql: str) -> int:
         """Start a query run and return its sequence id."""
@@ -374,9 +381,8 @@ class TUISessionState:
         return sequences
 
     def clear_last_result(self) -> None:
-        """Clear stored exportable result and visible result state."""
+        """Clear active selection, visible result state, and buffer tabs."""
 
-        self.last_result = None
         self.last_result_status = "none"
         self.result_view = TUIResultViewState()
         self.active_result = TUIActiveResultState()
@@ -386,28 +392,22 @@ class TUISessionState:
         self,
         sequence: int,
         sql: str,
-        result: QueryResult,
-        result_view: TUIResultViewState | None = None,
         *,
+        handle: TUIResultHandle,
+        result_view: TUIResultViewState,
+        elapsed_ms: float,
         run_mode: TUIQueryRunMode = "current",
         buffer_result_index: int | None = None,
+        complete_run: bool = True,
     ) -> None:
-        """Record a successful query and store its result."""
+        """Record a stored query result without retaining the full result."""
 
         if run_mode == "buffer" and buffer_result_index is None:
             raise ValueError("buffer_result_index is required for buffer results.")
-
-        self.last_result = result
+        self._query_result_records[sequence] = TUIResultRecord(handle=handle, view=result_view)
         self.last_result_status = "query"
-        self.result_view = result_view or TUIResultViewState(
-            columns=result.columns,
-            display_rows=tuple(tuple(str(value) for value in row) for row in result.rows),
-            total_row_count=result.row_count,
-            source_result_sequence=sequence,
-        )
-        self._query_results[sequence] = result
-        self._query_result_views[sequence] = self.result_view
-        if run_mode == "buffer" and buffer_result_index is not None:
+        self.result_view = result_view
+        if run_mode == "buffer":
             self.active_result = TUIActiveResultState(
                 kind="buffer",
                 label=f"Active result: buffer {sequence}.{buffer_result_index}",
@@ -427,10 +427,51 @@ class TUISessionState:
                 sql=sql,
                 status="success",
                 run_mode=run_mode,
-                row_count=result.row_count,
-                elapsed_ms=result.elapsed_ms,
+                row_count=result_view.total_row_count,
+                elapsed_ms=elapsed_ms,
             )
         )
+        if complete_run:
+            self.finish_query_run()
+
+    def record_query_storage_error(
+        self,
+        sequence: int,
+        sql: str,
+        error_message: str,
+        *,
+        run_mode: TUIQueryRunMode = "current",
+        complete_run: bool = True,
+    ) -> None:
+        """Record storage failure without clearing the active result preview."""
+
+        self._query_history.append(
+            TUIQueryHistoryItem(
+                sequence=sequence,
+                sql=sql,
+                status="error",
+                run_mode=run_mode,
+                error_message=error_message,
+            )
+        )
+        if complete_run:
+            self.finish_query_run()
+
+    def mark_results_unavailable(self, sequences: tuple[int, ...], message: str) -> None:
+        """Mark spilled results preview-only while retaining their bounded views."""
+
+        for sequence in sequences:
+            record = self._query_result_records.get(sequence)
+            if record is not None:
+                self._query_result_records[sequence] = replace(
+                    record,
+                    availability="preview_only",
+                    unavailable_message=message,
+                )
+
+    def finish_query_run(self) -> None:
+        """Return the query runner to its idle state."""
+
         self.query_run = TUIQueryRunState()
 
     def record_query_no_result(
@@ -440,6 +481,7 @@ class TUISessionState:
         elapsed_ms: float,
         *,
         run_mode: TUIQueryRunMode = "current",
+        complete_run: bool = True,
     ) -> None:
         """Record a successful statement with no tabular result."""
 
@@ -454,7 +496,8 @@ class TUISessionState:
                 elapsed_ms=elapsed_ms,
             )
         )
-        self.query_run = TUIQueryRunState()
+        if complete_run:
+            self.finish_query_run()
 
     def record_query_error(
         self,
@@ -463,6 +506,7 @@ class TUISessionState:
         error_message: str,
         *,
         run_mode: TUIQueryRunMode = "current",
+        complete_run: bool = True,
     ) -> None:
         """Record a failed query attempt."""
 
@@ -477,7 +521,8 @@ class TUISessionState:
                 error_message=error_message,
             )
         )
-        self.query_run = TUIQueryRunState()
+        if complete_run:
+            self.finish_query_run()
 
     def is_current_query_sequence(self, sequence: int) -> bool:
         """Return true when a worker result belongs to the active query run."""

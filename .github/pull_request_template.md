@@ -1,16 +1,23 @@
-## Summary
+## User impact
 
-## Scope Check
+Who benefits from this change, and what improves for them?
 
-- [ ] This change stays within LocalQL's local CSV, DuckDB, CLI/TUI, explicit export, project catalog, docs, or test scope.
-- [ ] This change does not add web app, cloud connector, NLP execution, hidden cache, sandbox-safe SQL, or production-readiness claims.
-- [ ] Public examples use installed `csvql ...` commands unless the section is specifically for source-checkout development.
+## Scope
 
-## Verification
+What does this pull request change? What is intentionally outside its scope?
 
-- [ ] `uv run ruff format --check .`
-- [ ] `uv run ruff check .`
-- [ ] `uv run --all-extras mypy src`
-- [ ] `uv run --all-extras pytest`
+## Compatibility
 
-## Notes
+Does this affect commands, configuration, output, supported environments, or existing workflows?
+
+## Validation
+
+What tests, checks, or manual steps did you run?
+
+## Documentation
+
+What user-facing documentation changed, or why is no documentation update needed?
+
+## Screenshots
+
+Add screenshots or terminal output when they clarify a user-visible change.

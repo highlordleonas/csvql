@@ -59,14 +59,3 @@ What to expect:
 
 The result is meant to be small enough to inspect in a terminal and structured
 enough to export into another local workflow.
-
-## Regenerate The Data
-
-The committed CSVs are intentional and reproducible. To rewrite them exactly:
-
-```bash
-cd examples/saas_revenue
-uv run python scripts/regenerate_data.py
-```
-
-The script rewrites only the files under `data/`.

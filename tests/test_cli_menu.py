@@ -1,12 +1,16 @@
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from typer.testing import CliRunner
 
+import csvql.tui_launcher as tui_launcher
 from csvql import __version__
 from csvql.cli import app
 from csvql.exceptions import CSVQLError
 from csvql.tui_launcher import run_menu_command
+from csvql.tui_result_store import TUIResultCleanupSummary
 
 runner = CliRunner()
 
@@ -156,3 +160,114 @@ def test_menu_launcher_raises_helpful_error_when_textual_is_missing(
         exc_info.value.suggestion
         == 'Install with pip install "localql[tui]" or run uv sync --all-extras.'
     )
+
+
+def test_launcher_recovers_once_before_constructing_app(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    captured: dict[str, object] = {}
+    recovery_summary = TUIResultCleanupSummary(files_removed=1)
+    app_instance = Mock()
+
+    def recover() -> TUIResultCleanupSummary:
+        events.append("recover")
+        return recovery_summary
+
+    def app_class(**kwargs: object) -> Mock:
+        events.append("construct")
+        captured.update(kwargs)
+        app_instance.run.side_effect = lambda: events.append("run")
+        app_instance.cleanup_summary = TUIResultCleanupSummary()
+        return app_instance
+
+    module = SimpleNamespace(CSVQLMenuApp=app_class)
+    monkeypatch.setattr(tui_launcher, "import_module", lambda name: module)
+    monkeypatch.setattr(
+        tui_launcher,
+        "recover_abandoned_result_workspaces",
+        recover,
+        raising=False,
+    )
+
+    run_menu_command(csv_path=None, table_mappings=(), start_dir=tmp_path)
+
+    assert events == ["recover", "construct", "run"]
+    assert captured["initial_cleanup_summary"] is recovery_summary
+
+
+def test_launcher_emits_one_sanitized_cleanup_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sensitive_path = tmp_path / "private-customer-query.csv"
+    app_instance = Mock()
+    app_instance.cleanup_summary = TUIResultCleanupSummary(
+        files_failed=1,
+        workspaces_failed=2,
+    )
+    module = SimpleNamespace(CSVQLMenuApp=Mock(return_value=app_instance))
+    monkeypatch.setattr(tui_launcher, "import_module", lambda name: module)
+    monkeypatch.setattr(
+        tui_launcher,
+        "recover_abandoned_result_workspaces",
+        lambda: TUIResultCleanupSummary(),
+        raising=False,
+    )
+
+    run_menu_command(
+        csv_path=str(sensitive_path),
+        table_mappings=(f"private={sensitive_path}",),
+        start_dir=tmp_path,
+    )
+
+    assert capsys.readouterr().err == (
+        "LocalQL warning: 3 temporary result cleanup item(s) could not be removed; "
+        "a later launch or operating-system cleanup may remove them.\n"
+    )
+
+
+def test_launcher_is_silent_when_cleanup_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    app_instance = Mock()
+    app_instance.cleanup_summary = TUIResultCleanupSummary()
+    module = SimpleNamespace(CSVQLMenuApp=Mock(return_value=app_instance))
+    monkeypatch.setattr(tui_launcher, "import_module", lambda name: module)
+    monkeypatch.setattr(
+        tui_launcher,
+        "recover_abandoned_result_workspaces",
+        lambda: TUIResultCleanupSummary(),
+        raising=False,
+    )
+
+    run_menu_command(csv_path=None, table_mappings=(), start_dir=tmp_path)
+
+    assert capsys.readouterr().err == ""
+
+
+def test_launcher_does_not_warn_when_app_run_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    app_instance = Mock()
+    app_instance.run.side_effect = RuntimeError("private failure details")
+    app_instance.cleanup_summary = TUIResultCleanupSummary(files_failed=1)
+    module = SimpleNamespace(CSVQLMenuApp=Mock(return_value=app_instance))
+    monkeypatch.setattr(tui_launcher, "import_module", lambda name: module)
+    monkeypatch.setattr(
+        tui_launcher,
+        "recover_abandoned_result_workspaces",
+        lambda: TUIResultCleanupSummary(),
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="private failure details"):
+        run_menu_command(csv_path=None, table_mappings=(), start_dir=tmp_path)
+
+    assert capsys.readouterr().err == ""

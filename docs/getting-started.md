@@ -1,145 +1,88 @@
 # Getting Started
 
-This walkthrough uses the local SaaS revenue example to show the core CSVQL
-workflow: query one CSV, use a project catalog, run saved SQL, and export a
-result. DuckDB executes SQL; CSVQL handles table aliases, project configuration,
-output formatting, and predictable local error handling.
+This guide uses the installed `csvql` command. LocalQL is the package name;
+`csvql` is the command, Python import package, and `.csvql.yml` configuration
+namespace.
 
-## Install
+## Install LocalQL
 
-This walkthrough uses files from the LocalQL repository. If you do not already
-have a checkout, clone it and enter the project directory first:
+Install the core CLI in the Python environment you use for local analysis:
 
-```bash
-git clone https://github.com/highlordleonas/csvql.git
-cd csvql
+```console
+python -m pip install localql
+csvql --version
 ```
 
-Install the package with the optional terminal menu:
+If `csvql` is not found after installation, see
+[Troubleshooting](troubleshooting.md#csvql-command-not-found).
 
-```bash
-pip install "localql[tui]"
+## Query a CSV
+
+Put a CSV in your working directory. For example, create `orders.csv` with a
+header row and a few rows of data, then run:
+
+```console
+csvql query orders.csv "SELECT * FROM orders LIMIT 5"
 ```
 
-From a source checkout, use the repo-local toolchain instead:
+The file stem becomes the table name: `orders.csv` is available as `orders`.
+The command prints a result table. Use `--output json` when a script needs a
+structured result.
 
-```bash
-uv sync --all-extras
-uv run csvql --help
-```
+![Terminal screenshot of a LocalQL query over a CSV file](assets/localql-terminal-query.svg)
 
-The installable distribution is `localql`. The command, Python import package,
-and project config file remain `csvql` and `.csvql.yml`.
-The examples below use the installed `csvql` command; from a source checkout,
-prefix the same commands with `uv run`.
+## Use a project catalog
 
-## Query One CSV
+For repeated work in a directory, initialize a catalog and register a friendly
+table name:
 
-Run this from the repository root you entered above:
-
-```bash
-csvql query examples/saas_revenue/data/revenue_movements.csv \
-  "SELECT movement_type, SUM(mrr_delta) AS net_mrr_change
-   FROM revenue_movements
-   GROUP BY movement_type
-   ORDER BY movement_type"
-```
-
-The table alias comes from the file stem, so `revenue_movements.csv` becomes
-`revenue_movements`.
-
-![Terminal screenshot of a movement-type revenue query](assets/localql-terminal-query.svg)
-
-## Use A Project Catalog
-
-The example project already includes `.csvql.yml` with registered tables:
-
-```bash
-cd examples/saas_revenue
+```console
+csvql init
+csvql add orders data/orders.csv
 csvql tables
+csvql query "SELECT status, COUNT(*) AS order_count FROM orders GROUP BY status"
 ```
 
-Query a registered table without passing file paths:
+LocalQL stores the catalog in `.csvql.yml`. The catalog records table names and
+CSV paths; it does not upload data or run queries automatically.
 
-```bash
-csvql query "SELECT COUNT(*) AS customer_count FROM customers"
+## Run saved SQL and export results
+
+Keep a repeatable query in a file, then run or export it explicitly:
+
+```console
+csvql run queries/orders_by_status.sql --output json
+csvql export queries/orders_by_status.sql --format csv --out orders_by_status.csv
 ```
 
-Add or replace a table in your own project with:
+Use `--force` only when you intend to replace an existing export.
 
-```bash
-csvql add customers data/customers.csv --replace
+## Use the optional terminal menu
+
+After your first core query, install the optional terminal-menu extra when you
+want an interactive source list, SQL editor, results, and history:
+
+```console
+python -m pip install "localql[tui]"
+csvql menu orders.csv
 ```
 
-The project path also supports joined SQL and configured checks:
+The menu lets you add sources, write SQL, inspect results, and export a result
+without changing the core CLI workflow. See the
+[Terminal menu guide](tui-guide.md) for keys and source actions.
 
-![Terminal screenshot of a SaaS project query and passing configured checks](assets/localql-terminal-project.svg)
+![Terminal screenshot of the LocalQL TUI workbench with sources, SQL, history, and results](assets/localql-tui-workbench.svg)
 
-## Run Saved SQL
+## Compatibility and SQL safety
 
-Keep repeatable analysis in SQL files:
+LocalQL supports Python 3.11 through 3.14 on macOS, Linux, and Windows.
 
-```bash
-csvql run queries/revenue_health.sql --output json
-```
+User-authored SQL is trusted local DuckDB SQL. LocalQL does not sandbox DuckDB
+or restrict filesystem access, so run only SQL you trust.
 
-The SaaS example returns one row per month with starting MRR, new MRR,
-expansion, contraction, churn, reactivation, ending MRR, ending ARR, and net
-revenue retention.
+## Next steps
 
-## Export Results
-
-Write the saved analysis to a local file:
-
-```bash
-mkdir -p output
-csvql export queries/revenue_health.sql \
-  --format markdown \
-  --out output/revenue-health.md \
-  --force
-```
-
-LocalQL writes an export only when you run `csvql export` or choose an export
-action in the terminal menu. It does not create a hidden result cache.
-
-## Reuse A Result As A CSV Source
-
-You can turn a result into another CSV source:
-
-```bash
-mkdir -p .csvql/results
-csvql export queries/revenue_health.sql \
-  --format csv \
-  --out .csvql/results/revenue_health.csv \
-  --force
-
-csvql query \
-  --table revenue_health_result=.csvql/results/revenue_health.csv \
-  "SELECT COUNT(*) AS result_rows FROM revenue_health_result"
-```
-
-This is normal CSV reuse. The project catalog stores table names and file paths;
-it does not label generated CSVs differently from other CSV files.
-
-## Open The Terminal Menu
-
-The optional TUI is useful when you want to iterate locally without leaving the
-terminal:
-
-```bash
-csvql menu data/revenue_movements.csv
-```
-
-![Terminal screenshot of the TUI workbench after running the SaaS revenue movement query](assets/localql-tui-workbench.svg)
-
-Use `F4` or `Ctrl+R` to run selected SQL or the current statement, `F12` or
-`Ctrl+B` to run the full editor buffer, `F3` or `Ctrl+O` to choose CSV files,
-`F6` or `Ctrl+Up` for sources, `F5` for results, `F8` for history, and `F9` or
-`q` outside text entry to quit. See [Terminal menu guide](tui-guide.md) for the
-full workflow.
-
-## SQL Safety
-
-CSVQL is for trusted local SQL. DuckDB executes the SQL and can access local
-files according to DuckDB behavior. Do not run untrusted SQL files or pasted SQL
-inside CSVQL.
+- Use the [CLI reference](cli-reference.md) for command options and JSON output.
+- Use [Troubleshooting](troubleshooting.md) when a command or project does not work as expected.
+- Read the [FAQ](faq.md) for package naming, compatibility, and TUI questions.
+- Visit [Support](../SUPPORT.md) for bugs, documentation issues, and focused feature requests.

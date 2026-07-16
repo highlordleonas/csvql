@@ -1,7 +1,21 @@
 # Troubleshooting
 
-Start with the error shown in your terminal, then use the matching section below
-for common causes and fixes.
+Start with the error shown in your terminal, then use the matching section
+below for common causes and fixes.
+
+## `csvql` command not found
+
+Confirm that LocalQL is installed in the Python environment you selected:
+
+```console
+python -m pip show localql
+python -m pip install localql
+csvql --version
+```
+
+If the package is installed but the command is still unavailable, activate the
+same Python environment or add its scripts directory to `PATH`. On Windows,
+open a new terminal after changing `PATH`.
 
 ## Common exit codes
 
@@ -17,183 +31,81 @@ for common causes and fixes.
 | `11` | A configured data-quality check failed. | Inspect the failed checks and repair the data or rule. |
 | `12` | `csvql doctor` found a project-health problem. | Correct the catalog, sources, or check configuration. |
 
-## `CSV file not found`
+## CSV file not found
 
-Typical causes:
+Typical causes are a moved file, a path relative to a different working
+directory, or a stale path in `.csvql.yml`. Check the path, then retry with the
+correct CSV:
 
-- the command is running from a different directory than expected
-- the path in `.csvql.yml` is stale
-- the CSV was moved or deleted
-
-Try:
-
-```bash
-pwd
-csvql query missing.csv "SELECT 1"
+```console
+csvql query orders.csv "SELECT * FROM orders LIMIT 5"
 csvql add orders data/orders.csv --replace
 ```
 
-For project catalogs, CSVQL resolves table paths relative to the project root
+For project catalogs, LocalQL resolves table paths relative to the directory
 that contains `.csvql.yml`.
 
-## `No .csvql.yml project catalog found`
+## No `.csvql.yml` project catalog found
 
-This happens when you run catalog-backed commands without a project catalog and
-without explicit `--table` mappings.
+Catalog-backed commands need a project catalog or explicit `--table` mappings.
+Create a catalog in your project directory:
 
-Start a catalog:
-
-```bash
+```console
 csvql init
 csvql add revenue_movements data/revenue_movements.csv
 csvql tables
 ```
 
-Or bypass the catalog for one command:
+Or provide a table for one command:
 
-```bash
-csvql query \
-  --table revenue_movements=data/revenue_movements.csv \
-  "SELECT COUNT(*) FROM revenue_movements"
+```console
+csvql query --table revenue_movements=data/revenue_movements.csv "SELECT COUNT(*) FROM revenue_movements"
 ```
 
-## `Invalid table mapping`
+## DuckDB query failed
 
-Explicit mappings must use `name=path`:
+Check that the table alias matches the CSV file stem or `--table` mapping, and
+that the SQL column names match the CSV header. These commands help inspect a
+source:
 
-```bash
-csvql query --table orders=data/orders.csv "SELECT COUNT(*) FROM orders"
-```
-
-Table aliases must be valid SQL identifiers: use letters, numbers, and
-underscores, and start with a letter or underscore.
-
-## `DuckDB query failed`
-
-This usually means DuckDB could not bind a table, column, or SQL expression.
-
-Check:
-
-- the table alias matches your CSV file stem or `--table` mapping
-- column names match the CSV header
-- the SQL runs against the registered table names, not file names
-
-Useful inspection commands:
-
-```bash
-csvql tables
+```console
 csvql inspect revenue_movements --output json
 csvql sample revenue_movements --limit 5
 ```
 
-## `Failed to inspect CSV file`
+## Export output already exists
 
-`inspect`, `sample`, and `profile` exit with status `7` when the file exists but
-cannot be read as a CSV. Check that the file is readable, has a header row, and
-uses a consistent CSV structure. `csvql inspect <path>` is the narrowest command
-to retry after correcting the file.
+LocalQL does not overwrite an export unless you choose `--force`:
 
-## Export Output Already Exists
-
-CSVQL refuses to overwrite export files unless you ask for it:
-
-```bash
-mkdir -p output
-csvql export queries/revenue_health.sql \
-  --format csv \
-  --out output/revenue-health.csv
+```console
+csvql export queries/revenue_health.sql --format csv --out output/revenue-health.csv
 ```
 
-If the existing file should be replaced:
+Use `--force` only when replacing that file is intended.
 
-```bash
-csvql export queries/revenue_health.sql \
-  --format csv \
-  --out output/revenue-health.csv \
-  --force
+## Terminal menu dependency is not installed
+
+Install the optional extra, then open the menu again:
+
+```console
+python -m pip install "localql[tui]"
+csvql menu
 ```
 
-## `CSVQL TUI dependency is not installed`
-
-Install the optional TUI dependency:
-
-```bash
-pip install "localql[tui]"
-```
-
-From a source checkout:
-
-```bash
-uv sync --all-extras
-uv run --all-extras csvql menu
-```
-
-## TUI Keybindings Do Not Work In My Terminal
+## Terminal-menu keys do not work
 
 Use `F4` or `Ctrl+R` to run the current SQL. On macOS, `F11` may be intercepted
 by Show Desktop; use `Ctrl+S` to save a result as a derived source.
 
-`F3` opens a native CSV picker on macOS. On other platforms, or when the native
-picker is unavailable, `Ctrl+O` is a portable fallback and both open a path
-prompt where you can paste CSV path(s) or enter `name=path`.
+`F3` opens a native CSV picker on macOS. `Ctrl+O` opens the path prompt on every
+platform. See the [Terminal menu guide](tui-guide.md) for all keybindings.
 
-Core fallbacks:
+## SQL safety
 
-- `F4` or `Ctrl+R`: run selected SQL or the current statement
-- `F3` or `Ctrl+O`: choose CSV file(s) or prompt for paths
-- `F12` or `Ctrl+B`: run the buffer as separate History rows
-- `F6`: sources
-- `F5`: results
-- `F8`: history
-- `F9` or `q`: quit outside text entry
-- `F1`: help
+LocalQL treats user-authored SQL as trusted local DuckDB SQL. It does not
+sandbox DuckDB, restrict filesystem access, or make untrusted SQL safe.
 
-After `F12` or `Ctrl+B`, move through History to recall each successful
-statement's result in the Results pane.
+## Still need help?
 
-## Native CSV Picker Is Unavailable Or Fails
-
-On macOS, `F3` opens the native CSV picker through `osascript`. If that tool is
-missing, unavailable, canceled, or blocked by local desktop permissions, CSVQL
-keeps the TUI running and falls back to the path prompt.
-
-Use either path-prompt route:
-
-```bash
-csvql menu
-```
-
-Then press `Ctrl+O`, or press `F3` and use the fallback prompt if the native
-picker cannot open. Paste one or more `.csv` paths, or enter mappings such as
-`orders=data/orders.csv`.
-
-## Data-Quality Checks Fail
-
-`csvql check` exits `11` when configured checks run and find data-quality
-failures. Use failure samples to inspect the bad rows:
-
-```bash
-csvql check revenue_movements \
-  --output json \
-  --show-failures \
-  --failure-limit 5
-```
-
-Fix either the CSV data or the check definition in `.csvql.yml`.
-
-## Project Health Fails
-
-Run doctor from the project root:
-
-```bash
-csvql doctor --output json
-```
-
-Doctor checks whether the project catalog loads, configured CSV paths exist,
-CSV files are readable, and configured checks reference valid tables and
-columns.
-
-## SQL Safety
-
-CSVQL treats user-authored SQL as trusted local DuckDB SQL. It does not sandbox
-DuckDB, restrict filesystem access, or make untrusted SQL safe.
+Use [Support](../SUPPORT.md) for normal bugs and documentation questions. Use
+[Security](../SECURITY.md) for sensitive vulnerabilities.

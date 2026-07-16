@@ -5,45 +5,67 @@
 [![Python](https://img.shields.io/pypi/pyversions/localql.svg)](https://pypi.org/project/localql/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/highlordleonas/csvql/blob/main/LICENSE)
 
-LocalQL is a lightweight DuckDB-powered tool for querying local CSV files with
-SQL. It installs the `csvql` command and provides named tables, saved SQL,
-readable output, exports, and an optional terminal menu.
+LocalQL is a DuckDB-powered tool for querying local CSV files with SQL. Install
+the `localql` package to use the `csvql` command, organize repeatable work in a
+`.csvql.yml` project catalog, export results, and optionally work in a terminal
+menu.
 
 ![LocalQL: Query local CSVs with SQL](https://raw.githubusercontent.com/highlordleonas/csvql/main/docs/assets/localql-social-preview.jpg)
 
 ## Contents
 
-- [Quickstart](#quickstart)
+- [Install and first query](#install-and-first-query)
+- [Optional terminal menu](#optional-terminal-menu)
+- [Compatibility and safety](#compatibility-and-safety)
 - [Core workflows](#core-workflows)
-- [Terminal menu](#terminal-menu)
-- [Safety](#safety)
-- [Documentation](#documentation)
+- [Get help and stay current](#get-help-and-stay-current)
 
-## Quickstart
+## Install and first query
 
-Install LocalQL:
+Install the core command in your selected Python environment:
 
-```bash
-pip install localql
+```console
+python -m pip install localql
+csvql --version
 ```
 
-The query below uses the example data in this repository. From another
-directory, replace the path with one of your own CSV files.
+To try a query, create a small CSV in the directory where you are working:
 
-Query the example CSV:
-
-```bash
-csvql query examples/saas_revenue/data/revenue_movements.csv \
-  "SELECT movement_type, SUM(mrr_delta) AS net_mrr_change
-   FROM revenue_movements
-   GROUP BY movement_type
-   ORDER BY movement_type"
+```console
+python -c "from pathlib import Path; Path('orders.csv').write_text('order_id,status\nORD-1,paid\nORD-2,pending\nORD-3,paid\n', encoding='utf-8')"
+csvql query orders.csv "SELECT * FROM orders LIMIT 5"
 ```
 
-![Terminal screenshot of a LocalQL query over the SaaS revenue example](https://raw.githubusercontent.com/highlordleonas/csvql/main/docs/assets/localql-terminal-query.svg)
+The file name becomes the SQL table name, so `orders.csv` is available as
+`orders`. A successful command prints a table with the CSV rows. See
+[Getting started](https://github.com/highlordleonas/csvql/blob/main/docs/getting-started.md)
+for project catalogs, saved SQL, and exports.
 
-For a complete copy-and-paste walkthrough, see
-[Getting started](https://github.com/highlordleonas/csvql/blob/main/docs/getting-started.md).
+![Terminal screenshot of a LocalQL query over a CSV file](https://raw.githubusercontent.com/highlordleonas/csvql/main/docs/assets/localql-terminal-query.svg)
+
+## Optional terminal menu
+
+The core CLI needs only `localql`. Install the optional Textual-based terminal
+menu when you want a source list, SQL editor, results, and history in one
+terminal application:
+
+```console
+python -m pip install "localql[tui]"
+csvql menu orders.csv
+```
+
+All core commands remain available without the extra. See the
+[Terminal menu guide](https://github.com/highlordleonas/csvql/blob/main/docs/tui-guide.md)
+for keys and source-management actions.
+
+![Terminal screenshot of the LocalQL TUI workbench with sources, SQL, history, and results](https://raw.githubusercontent.com/highlordleonas/csvql/main/docs/assets/localql-tui-workbench.svg)
+
+## Compatibility and safety
+
+LocalQL supports Python 3.11 through 3.14 on macOS, Linux, and Windows.
+
+LocalQL treats user-authored SQL as trusted local DuckDB SQL. It does not
+sandbox DuckDB or restrict filesystem access. Run only SQL you trust.
 
 ## Core workflows
 
@@ -55,53 +77,18 @@ For a complete copy-and-paste walkthrough, see
 | Export a result or reuse it as a CSV source | [Save and reuse results](https://github.com/highlordleonas/csvql/blob/main/docs/cli-reference.md#save-and-reuse-results) |
 | Check configured data-quality rules | [Data-quality checks](https://github.com/highlordleonas/csvql/blob/main/docs/cli-reference.md#data-quality-checks) |
 
-CSVQL does not implement a SQL engine. DuckDB executes SQL; CSVQL manages the
-local workflow around table aliases, project configuration, output, and exports.
+DuckDB executes SQL; LocalQL manages local CSV table aliases, project
+configuration, output, and explicit exports.
 
-## Terminal menu
-
-The optional `csvql menu` workbench provides sources, a SQL editor, results,
-history, and explicit export actions in the terminal:
-
-```bash
-pip install "localql[tui]"
-csvql menu
-csvql menu /path/to/orders.csv
-```
-
-![Terminal screenshot of the LocalQL TUI workbench with sources, SQL, history, and results](https://raw.githubusercontent.com/highlordleonas/csvql/main/docs/assets/localql-tui-workbench.svg)
-
-The terminal menu is optional; all core commands also work without it. See the
-[Terminal menu guide](https://github.com/highlordleonas/csvql/blob/main/docs/tui-guide.md)
-for keys, source actions, history, and result handling.
-
-## Safety
-
-LocalQL treats user-authored SQL as trusted local DuckDB SQL. It does not
-sandbox DuckDB or restrict filesystem access. Run only SQL you trust.
-
-## Documentation
-
-### Use LocalQL
+## Get help and stay current
 
 - [Getting started](https://github.com/highlordleonas/csvql/blob/main/docs/getting-started.md)
 - [CLI reference](https://github.com/highlordleonas/csvql/blob/main/docs/cli-reference.md)
-- [Terminal menu guide](https://github.com/highlordleonas/csvql/blob/main/docs/tui-guide.md)
 - [Troubleshooting](https://github.com/highlordleonas/csvql/blob/main/docs/troubleshooting.md)
 - [FAQ](https://github.com/highlordleonas/csvql/blob/main/docs/faq.md)
-- [SaaS revenue example](https://github.com/highlordleonas/csvql/blob/main/examples/saas_revenue/README.md)
-
-### Reference
-
-- [JSON output reference](https://github.com/highlordleonas/csvql/blob/main/docs/json-contracts.md)
-- [Architecture](https://github.com/highlordleonas/csvql/blob/main/docs/ARCHITECTURE.md)
-- [v1 release notes](https://github.com/highlordleonas/csvql/blob/main/docs/release-notes/v1.md)
-- [Changelog](https://github.com/highlordleonas/csvql/blob/main/CHANGELOG.md)
-
-### Project and support
-
-- [Roadmap](https://github.com/highlordleonas/csvql/blob/main/docs/ROADMAP.md)
-- [Contributing](https://github.com/highlordleonas/csvql/blob/main/CONTRIBUTING.md)
-- [Security](https://github.com/highlordleonas/csvql/blob/main/SECURITY.md)
 - [Support](https://github.com/highlordleonas/csvql/blob/main/SUPPORT.md)
-- [Code of Conduct](https://github.com/highlordleonas/csvql/blob/main/CODE_OF_CONDUCT.md)
+- [Security](https://github.com/highlordleonas/csvql/blob/main/SECURITY.md)
+- [Changelog](https://github.com/highlordleonas/csvql/blob/main/CHANGELOG.md)
+- [v1 release notes](https://github.com/highlordleonas/csvql/blob/main/docs/release-notes/v1.md)
+- [Contributing](https://github.com/highlordleonas/csvql/blob/main/CONTRIBUTING.md)
+- [Roadmap](https://github.com/highlordleonas/csvql/blob/main/docs/ROADMAP.md)

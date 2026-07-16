@@ -63,7 +63,7 @@ def test_forbidden_entries_detects_internal_and_ignored_paths() -> None:
     ]
 
 
-def test_sdist_build_config_excludes_internal_superpowers_docs() -> None:
+def test_sdist_build_config_excludes_internal_proof_paths() -> None:
     payload = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     sdist_target = (
         payload.get("tool", {})
@@ -73,7 +73,10 @@ def test_sdist_build_config_excludes_internal_superpowers_docs() -> None:
         .get("sdist", {})
     )
 
-    assert "/docs/superpowers" in sdist_target.get("exclude", [])
+    excluded_paths = sdist_target.get("exclude", [])
+
+    assert "/docs/superpowers" in excluded_paths
+    assert "/output" in excluded_paths
 
 
 def test_find_archives_requires_wheel_and_sdist(tmp_path: Path) -> None:
