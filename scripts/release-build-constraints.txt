@@ -1,4 +1,4 @@
-# Python 3.12 build closure for LocalQL 1.0.2 artifacts.
+# Python 3.12 build closure for LocalQL 1.0.3 artifacts.
 # Source: official PyPI JSON observed 2026-07-15T04:14:04Z.
 hatchling==1.31.0 \
     --hash=sha256:aac80bec8b6fe35e8480f1c335be8910fa210a0e6f735a139be205dadcacb544
