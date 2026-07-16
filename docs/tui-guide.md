@@ -1,4 +1,4 @@
-# Terminal Menu Guide
+# LocalQL Terminal Menu Guide
 
 `csvql menu` is an optional Textual-powered terminal workbench for the same
 local CSV sources and trusted SQL used by the CLI. It is useful when you want to
@@ -6,25 +6,18 @@ iterate in a terminal without repeatedly retyping source mappings.
 
 ## Launch
 
-From an installed package, install the optional extra first:
+Install the optional terminal-menu extra first:
 
-```bash
-pip install "localql[tui]"
+```console
+python -m pip install "localql[tui]"
 csvql menu
 ```
 
 Launch with one CSV, or repeat `--table` to load several named CSVs:
 
-```bash
-csvql menu examples/saas_revenue/data/revenue_movements.csv
+```console
+csvql menu revenue_movements.csv
 csvql menu --table customers=customers.csv --table orders=orders.csv
-```
-
-From a source checkout, use the repo-local environment:
-
-```bash
-uv sync --all-extras
-uv run --all-extras csvql menu
 ```
 
 You can add sources after launch with `F3`. On macOS it opens a CSV picker;
@@ -111,7 +104,7 @@ on `F2`, `F5`, `F6`, and `F8`.
 ## History
 
 History is in-memory session state. It is not written to disk, logged, or sent
-anywhere by CSVQL.
+anywhere by LocalQL.
 
 When the History pane is focused:
 
@@ -122,9 +115,9 @@ History clears when the TUI exits.
 
 ## Export Active Result
 
-Press `F7` to export the active tabular result shown in Results. CSVQL prompts
+Press `F7` to export the active tabular result shown in Results. LocalQL prompts
 for a file path. The file suffix chooses the format: `.csv`, `.json`, `.md`,
-`.markdown`, or `.txt`. If the path has no suffix, CSVQL writes `.csv` by
+`.markdown`, or `.txt`. If the path has no suffix, LocalQL writes `.csv` by
 default.
 
 Relative export paths are resolved from the directory where you launched
@@ -137,7 +130,7 @@ result as a derived CSV source. `Alt+S` is also available where terminals emit A
 events, and `F11` is available where the OS does not intercept it. macOS may
 reserve `F11` for Show Desktop.
 
-CSVQL prompts for an alias, writes `.csvql/results/{alias}.csv`, and adds the
+LocalQL prompts for an alias, writes `.csvql/results/{alias}.csv`, and adds the
 alias to the current Sources pane with kind `derived`.
 
 The CSV file remains on disk. The alias becomes durable across TUI sessions only

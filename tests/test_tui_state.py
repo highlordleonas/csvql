@@ -3,17 +3,36 @@ from pathlib import Path
 import pytest
 
 from csvql.exceptions import TableMappingError
-from csvql.models import QueryResult, TableSource
+from csvql.models import TableSource
 from csvql.tui_result_store import TUIResultHandle
 from csvql.tui_state import (
     TUIActiveResultState,
     TUIBufferResultTab,
     TUIQueryHistoryItem,
+    TUIResultRecord,
     TUIResultViewState,
     TUISessionState,
     TUISource,
     TUISourceColumn,
 )
+
+
+def _result_metadata(
+    sequence: int,
+    *,
+    columns: tuple[str, ...] = ("value",),
+    display_rows: tuple[tuple[str, ...], ...] = (("1",),),
+    total_row_count: int = 1,
+) -> tuple[TUIResultHandle, TUIResultViewState]:
+    return (
+        TUIResultHandle(sequence=sequence, is_spilled=False),
+        TUIResultViewState(
+            columns=columns,
+            display_rows=display_rows,
+            total_row_count=total_row_count,
+            source_result_sequence=sequence,
+        ),
+    )
 
 
 def test_tui_source_as_table_source_returns_table_source(tmp_path: Path) -> None:
@@ -123,71 +142,97 @@ def test_selecting_and_getting_sources_is_case_insensitive(tmp_path: Path) -> No
         state.select_source("customers")
 
 
-def test_last_result_tracking(tmp_path: Path) -> None:
+def test_query_success_stores_handle_and_view_without_full_result() -> None:
     state = TUISessionState()
-    state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
-    result = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=1.2)
+    handle = TUIResultHandle(sequence=1, is_spilled=True, temp_path=Path("query-1.pickle"))
+    view = TUIResultViewState(
+        columns=("id",),
+        display_rows=(("1",),),
+        total_row_count=10_001,
+        is_truncated=True,
+        source_result_sequence=1,
+    )
 
-    state.set_last_result(result)
+    state.record_query_success(
+        1,
+        "SELECT * FROM large",
+        handle=handle,
+        result_view=view,
+        elapsed_ms=1.0,
+    )
 
-    assert state.last_result == result
-    assert state.last_result_status == "query"
+    assert state.query_result_record(1) == TUIResultRecord(handle=handle, view=view)
+    assert state.active_result.sequence == 1
+    assert state.result_view is view
+    assert not hasattr(state, "last_result")
+    assert not hasattr(state, "_query_results")
 
 
 def test_clear_last_result_resets_result_and_status(tmp_path: Path) -> None:
     state = TUISessionState()
     state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
-    result = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=1.2)
-
-    state.set_last_result(result)
-    state.result_view = TUIResultViewState(
-        columns=("count",),
-        display_rows=(("2",),),
-        total_row_count=1,
-        is_truncated=True,
-        source_result_sequence=7,
+    handle, view = _result_metadata(1, columns=("count",), display_rows=(("2",),))
+    state.record_query_success(
+        1,
+        "SELECT COUNT(*) FROM orders",
+        handle=handle,
+        result_view=view,
+        elapsed_ms=1.2,
     )
 
     state.clear_last_result()
 
-    assert state.last_result is None
+    assert not state.has_active_result
     assert state.last_result_status == "none"
     assert state.result_view == TUIResultViewState()
+    assert state.query_result_record(1) == TUIResultRecord(handle=handle, view=view)
 
 
 def test_last_result_status_tracks_query_no_result_and_error(tmp_path: Path) -> None:
     state = TUISessionState()
     state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
-    result = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=7.5)
+    handle, view = _result_metadata(1, columns=("count",), display_rows=(("2",),))
 
     assert state.last_result_status == "none"
 
     sequence = state.begin_query_run("SELECT COUNT(*) FROM orders")
-    state.record_query_success(sequence, "SELECT COUNT(*) FROM orders", result)
+    state.record_query_success(
+        sequence,
+        "SELECT COUNT(*) FROM orders",
+        handle=handle,
+        result_view=view,
+        elapsed_ms=7.5,
+    )
 
     assert state.last_result_status == "query"
-    assert state.last_result == result
+    assert state.has_active_result
 
     no_result_sequence = state.begin_query_run("CREATE TABLE scratch AS SELECT 1")
     state.record_query_no_result(no_result_sequence, "CREATE TABLE scratch AS SELECT 1", 2.5)
 
     assert state.last_result_status == "no_result"
-    assert state.last_result is None
+    assert not state.has_active_result
 
     error_sequence = state.begin_query_run("SELECT * FROM missing")
     state.record_query_error(error_sequence, "SELECT * FROM missing", "missing table")
 
     assert state.last_result_status == "error"
-    assert state.last_result is None
+    assert not state.has_active_result
 
 
 def test_query_history_records_success_error_and_no_result(tmp_path: Path) -> None:
     state = TUISessionState()
     state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
-    result = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=7.5)
+    handle, view = _result_metadata(1, columns=("count",), display_rows=(("2",),))
 
     sequence = state.begin_query_run("SELECT COUNT(*) FROM orders")
-    state.record_query_success(sequence, "SELECT COUNT(*) FROM orders", result)
+    state.record_query_success(
+        sequence,
+        "SELECT COUNT(*) FROM orders",
+        handle=handle,
+        result_view=view,
+        elapsed_ms=7.5,
+    )
     no_result_sequence = state.begin_query_run("CREATE TABLE scratch AS SELECT 1")
     state.record_query_no_result(no_result_sequence, "CREATE TABLE scratch AS SELECT 1", 2.5)
     error_sequence = state.begin_query_run("SELECT * FROM missing")
@@ -200,18 +245,22 @@ def test_query_history_records_success_error_and_no_result(tmp_path: Path) -> No
     assert state.query_history[1].error_message is None
     assert state.query_history[2].error_message == "missing table"
     assert state.query_run.is_running is False
-    assert state.last_result is None
+    assert not state.has_active_result
 
 
 def test_query_history_records_result_handles(tmp_path: Path) -> None:
     state = TUISessionState()
     state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
-    result = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=7.5)
-    handle = TUIResultHandle(sequence=1, is_spilled=False)
+    handle, view = _result_metadata(1, columns=("count",), display_rows=(("2",),))
 
     sequence = state.begin_query_run("SELECT COUNT(*) FROM orders")
-    state.record_query_result_handle(sequence, handle)
-    state.record_query_success(sequence, "SELECT COUNT(*) FROM orders", result)
+    state.record_query_success(
+        sequence,
+        "SELECT COUNT(*) FROM orders",
+        handle=handle,
+        result_view=view,
+        elapsed_ms=7.5,
+    )
 
     assert state.query_result_handle(sequence) == handle
     assert state.query_result_handle(99) is None
@@ -220,12 +269,16 @@ def test_query_history_records_result_handles(tmp_path: Path) -> None:
 def test_active_query_result_handle_uses_active_sequence(tmp_path: Path) -> None:
     state = TUISessionState()
     state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
-    result = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=7.5)
-    handle = TUIResultHandle(sequence=1, is_spilled=False)
+    handle, view = _result_metadata(1, columns=("count",), display_rows=(("2",),))
 
     sequence = state.begin_query_run("SELECT COUNT(*) FROM orders")
-    state.record_query_result_handle(sequence, handle)
-    state.record_query_success(sequence, "SELECT COUNT(*) FROM orders", result)
+    state.record_query_success(
+        sequence,
+        "SELECT COUNT(*) FROM orders",
+        handle=handle,
+        result_view=view,
+        elapsed_ms=7.5,
+    )
 
     assert state.active_query_result_handle() == handle
 
@@ -233,26 +286,38 @@ def test_active_query_result_handle_uses_active_sequence(tmp_path: Path) -> None
 def test_query_success_sets_active_query_result(tmp_path: Path) -> None:
     state = TUISessionState()
     state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
-    result = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=7.5)
+    handle, view = _result_metadata(1, columns=("count",), display_rows=(("2",),))
 
     sequence = state.begin_query_run("SELECT COUNT(*) FROM orders")
-    state.record_query_success(sequence, "SELECT COUNT(*) FROM orders", result)
+    state.record_query_success(
+        sequence,
+        "SELECT COUNT(*) FROM orders",
+        handle=handle,
+        result_view=view,
+        elapsed_ms=7.5,
+    )
 
     assert state.active_result == TUIActiveResultState(
         kind="query",
         label="Active result: query 1",
         sequence=1,
     )
-    assert state.last_result == result
+    assert state.active_query_result_record() == TUIResultRecord(handle=handle, view=view)
     assert state.last_result_status == "query"
 
 
 def test_restore_query_result_marks_history_preview(tmp_path: Path) -> None:
     state = TUISessionState()
     state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
-    result = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=7.5)
+    handle, view = _result_metadata(1, columns=("count",), display_rows=(("2",),))
     sequence = state.begin_query_run("SELECT COUNT(*) FROM orders")
-    state.record_query_success(sequence, "SELECT COUNT(*) FROM orders", result)
+    state.record_query_success(
+        sequence,
+        "SELECT COUNT(*) FROM orders",
+        handle=handle,
+        result_view=view,
+        elapsed_ms=7.5,
+    )
 
     assert state.restore_query_result(sequence) is True
 
@@ -261,16 +326,12 @@ def test_restore_query_result_marks_history_preview(tmp_path: Path) -> None:
         label="History preview: query 1",
         sequence=1,
     )
-    assert state.last_result == result
+    assert state.result_view is view
 
 
 def test_restore_query_result_reuses_stored_result_view() -> None:
     state = TUISessionState()
-    result = QueryResult(
-        columns=("id",),
-        rows=tuple((index,) for index in range(1001)),
-        elapsed_ms=1.0,
-    )
+    handle = TUIResultHandle(sequence=1, is_spilled=False)
     view = TUIResultViewState(
         columns=("id",),
         display_rows=(("0",),),
@@ -278,7 +339,13 @@ def test_restore_query_result_reuses_stored_result_view() -> None:
         is_truncated=True,
         source_result_sequence=1,
     )
-    state.record_query_success(1, "SELECT * FROM large", result, view)
+    state.record_query_success(
+        1,
+        "SELECT * FROM large",
+        handle=handle,
+        result_view=view,
+        elapsed_ms=1.0,
+    )
     state.clear_last_result()
 
     restored = state.restore_query_result(1)
@@ -291,14 +358,16 @@ def test_restore_query_result_reuses_stored_result_view() -> None:
 def test_buffer_result_tabs_select_active_result(tmp_path: Path) -> None:
     state = TUISessionState()
     state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
-    first = QueryResult(columns=("first",), rows=((1,),), elapsed_ms=1.0)
-    second = QueryResult(columns=("second",), rows=((2,),), elapsed_ms=1.0)
+    first_handle, first_view = _result_metadata(1, columns=("first",))
+    second_handle, second_view = _result_metadata(2, columns=("second",), display_rows=(("2",),))
 
     first_sequence = state.begin_query_run("SELECT 1 AS first")
     state.record_query_success(
         first_sequence,
         "SELECT 1 AS first",
-        first,
+        handle=first_handle,
+        result_view=first_view,
+        elapsed_ms=1.0,
         run_mode="buffer",
         buffer_result_index=1,
     )
@@ -306,7 +375,9 @@ def test_buffer_result_tabs_select_active_result(tmp_path: Path) -> None:
     state.record_query_success(
         second_sequence,
         "SELECT 2 AS second",
-        second,
+        handle=second_handle,
+        result_view=second_view,
+        elapsed_ms=1.0,
         run_mode="buffer",
         buffer_result_index=2,
     )
@@ -326,17 +397,20 @@ def test_buffer_result_tabs_select_active_result(tmp_path: Path) -> None:
         sequence=2,
         buffer_result_index=2,
     )
-    assert state.last_result == second
+    assert state.result_view is second_view
 
 
 def test_clear_last_result_resets_active_result_and_buffer_tabs(tmp_path: Path) -> None:
     state = TUISessionState()
     state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
     sequence = state.begin_query_run("SELECT 1")
+    handle, view = _result_metadata(sequence)
     state.record_query_success(
         sequence,
         "SELECT 1",
-        QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+        handle=handle,
+        result_view=view,
+        elapsed_ms=1.0,
         run_mode="buffer",
         buffer_result_index=1,
     )
@@ -344,7 +418,7 @@ def test_clear_last_result_resets_active_result_and_buffer_tabs(tmp_path: Path) 
 
     state.clear_last_result()
 
-    assert state.last_result is None
+    assert not state.has_active_result
     assert state.active_result == TUIActiveResultState()
     assert state.buffer_result_tabs == ()
 
@@ -396,11 +470,14 @@ def test_record_query_success_stores_buffer_run_mode(tmp_path: Path) -> None:
         TUISource(name="customers", path=tmp_path / "customers.csv", origin="argument")
     )
     sequence = state.begin_query_run("SELECT 1")
+    handle, view = _result_metadata(sequence)
 
     state.record_query_success(
         sequence,
         "SELECT 1",
-        QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+        handle=handle,
+        result_view=view,
+        elapsed_ms=1.0,
         run_mode="buffer",
         buffer_result_index=1,
     )
@@ -420,16 +497,19 @@ def test_record_query_success_requires_buffer_result_index(tmp_path: Path) -> No
         TUISource(name="customers", path=tmp_path / "customers.csv", origin="argument")
     )
     sequence = state.begin_query_run("SELECT 1")
+    handle, view = _result_metadata(sequence)
 
     with pytest.raises(ValueError, match="buffer_result_index is required for buffer results"):
         state.record_query_success(
             sequence,
             "SELECT 1",
-            QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+            handle=handle,
+            result_view=view,
+            elapsed_ms=1.0,
             run_mode="buffer",
         )
 
-    assert state.last_result is None
+    assert not state.has_active_result
     assert state.active_result == TUIActiveResultState()
 
 
@@ -440,10 +520,13 @@ def test_buffer_result_tabs_reset_stale_active_result_when_cleared_or_replaced(
     state.add_source(TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"))
 
     first_sequence = state.begin_query_run("SELECT 1 AS first")
+    first_handle, first_view = _result_metadata(first_sequence, columns=("first",))
     state.record_query_success(
         first_sequence,
         "SELECT 1 AS first",
-        QueryResult(columns=("first",), rows=((1,),), elapsed_ms=1.0),
+        handle=first_handle,
+        result_view=first_view,
+        elapsed_ms=1.0,
         run_mode="buffer",
         buffer_result_index=1,
     )
@@ -455,10 +538,17 @@ def test_buffer_result_tabs_reset_stale_active_result_when_cleared_or_replaced(
     assert state.active_result == TUIActiveResultState()
 
     second_sequence = state.begin_query_run("SELECT 2 AS second")
+    second_handle, second_view = _result_metadata(
+        second_sequence,
+        columns=("second",),
+        display_rows=(("2",),),
+    )
     state.record_query_success(
         second_sequence,
         "SELECT 2 AS second",
-        QueryResult(columns=("second",), rows=((2,),), elapsed_ms=1.0),
+        handle=second_handle,
+        result_view=second_view,
+        elapsed_ms=1.0,
         run_mode="buffer",
         buffer_result_index=2,
     )
@@ -475,6 +565,88 @@ def test_buffer_result_tabs_reset_stale_active_result_when_cleared_or_replaced(
 
     assert state.buffer_result_tabs == (TUIBufferResultTab(sequence=3, index=1, label="query 3"),)
     assert state.active_result == TUIActiveResultState()
+
+
+def test_storage_error_preserves_active_result_and_appends_history() -> None:
+    state = TUISessionState()
+    handle, view = _result_metadata(1, columns=("id",))
+    state.record_query_success(
+        1,
+        "SELECT 1",
+        handle=handle,
+        result_view=view,
+        elapsed_ms=1.0,
+    )
+    sequence = state.begin_query_run("SELECT * FROM large")
+
+    state.record_query_storage_error(
+        sequence,
+        "SELECT * FROM large",
+        "Unable to store the query result.",
+    )
+
+    assert state.active_result.sequence == 1
+    assert state.result_view is view
+    assert state.query_history[-1].status == "error"
+    assert state.query_history[-1].error_message == "Unable to store the query result."
+    assert state.query_run.is_running is False
+
+
+def test_mark_results_unavailable_keeps_preview() -> None:
+    state = TUISessionState()
+    handle = TUIResultHandle(sequence=1, is_spilled=True, temp_path=Path("query-1.pickle"))
+    view = TUIResultViewState(
+        columns=("id",),
+        display_rows=(("1",),),
+        total_row_count=10_001,
+        is_truncated=True,
+        source_result_sequence=1,
+    )
+    state.record_query_success(
+        1,
+        "SELECT * FROM large",
+        handle=handle,
+        result_view=view,
+        elapsed_ms=1.0,
+    )
+
+    state.mark_results_unavailable((1,), "The full result is no longer available.")
+
+    record = state.query_result_record(1)
+    assert record is not None
+    assert record.availability == "preview_only"
+    assert record.unavailable_message == "The full result is no longer available."
+    assert state.result_view is view
+
+
+def test_buffer_outcomes_finish_only_after_batch_completion() -> None:
+    state = TUISessionState()
+    sequences = state.begin_query_batch(("SELECT 1", "SELECT 2"))
+    handle, view = _result_metadata(sequences[0])
+
+    state.record_query_success(
+        sequences[0],
+        "SELECT 1",
+        handle=handle,
+        result_view=view,
+        elapsed_ms=1.0,
+        run_mode="buffer",
+        buffer_result_index=1,
+        complete_run=False,
+    )
+    state.record_query_no_result(
+        sequences[1],
+        "SELECT 2",
+        1.0,
+        run_mode="buffer",
+        complete_run=False,
+    )
+
+    assert state.query_run.is_running is True
+
+    state.finish_query_run()
+
+    assert state.query_run.is_running is False
 
 
 def test_record_query_no_result_stores_run_mode(tmp_path: Path) -> None:

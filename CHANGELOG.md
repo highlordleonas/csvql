@@ -1,18 +1,19 @@
 # Changelog
 
-This changelog lists the changes in each LocalQL release.
+This page records user-visible changes in each LocalQL release. For a guided
+overview of the v1 feature set, see the [v1 release notes](docs/release-notes/v1.md).
 
 ## [1.0.1] - 2026-07-10
 
 ### Fixed
 
-- README links and images now open correctly when the package description is
-  displayed on PyPI.
+- README links and screenshots render correctly in the package description on
+  PyPI.
 
 ### Changed
 
-- Reorganized the public documentation around installation, common workflows,
-  command and JSON references, troubleshooting, and contributor guidance.
+- Installation, command references, troubleshooting, and contributor guidance
+  are easier to navigate.
 
 ## [1.0.0] - 2026-07-01
 
@@ -30,9 +31,7 @@ This changelog lists the changes in each LocalQL release.
 
 ### Notes
 
-- The installable package is named `localql`; the command, Python package, and
+- The installable package is `localql`; the command, Python import package, and
   project configuration remain `csvql` and `.csvql.yml`.
 - LocalQL runs trusted local DuckDB SQL. It does not sandbox DuckDB or restrict
   filesystem access.
-- LocalQL 1.0.0 focuses on local CSV work. It does not include cloud connectors, web
-  dashboards, notebooks, natural-language SQL, or a plugin platform.

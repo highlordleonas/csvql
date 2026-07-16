@@ -1,40 +1,31 @@
-# Contributing
+# Contributing to LocalQL
 
-LocalQL is maintained by one person. Issues are welcome, and focused pull
-requests are useful when they fit the project described below.
+Thanks for helping improve LocalQL. Focused bug reports, documentation fixes,
+small examples, usability improvements, and tests for documented behavior are
+all useful contributions.
 
-## Good First Contributions
+## Before you start
 
-- clear bug reports with a small CSV example
-- documentation fixes
-- examples that use local CSV files
-- focused tests for existing behavior
-- small CLI/TUI usability fixes that preserve documented behavior
+Describe the problem and who it affects. Keep a change focused on local CSV
+workflows, DuckDB SQL, the `csvql` command, the optional terminal menu, exports,
+project catalogs, or documentation. Explain any compatibility impact, including
+changes to command output, `.csvql.yml`, saved SQL, or supported Python versions.
 
-## What Fits The Project
+Do not include sensitive details in a public issue. Use the reporting route in
+[Security](SECURITY.md) for a potential vulnerability.
 
-LocalQL packages the `csvql` command for local CSV analysis with DuckDB.
-The installable distribution is `localql`; the CLI command, Python import
-package, and config file remain `csvql`, `csvql`, and `.csvql.yml`.
+## Work from a source checkout
 
-Contributions should focus on local CSV files, DuckDB SQL, the CLI or terminal
-menu, exports, project catalogs, tests, and public documentation.
-
-LocalQL is not intended to become a web app, hosted dashboard, cloud connector,
-notebook framework, natural-language query tool, dataframe-first API, or plugin
-system. Changes should not describe LocalQL as a sandbox, as safe for untrusted
-SQL, or as suitable for workloads that have not been tested.
-
-## Local Setup
+LocalQL uses `uv` for its contributor environment. From a source checkout:
 
 ```bash
-uv sync --all-extras
-uv run csvql --help
+uv sync --all-extras --frozen
+uv run --all-extras csvql --help
 ```
 
-## Checks
+## Validate your change
 
-Run these checks before opening a pull request:
+Run the checks that cover your change before opening a pull request:
 
 ```bash
 uv run ruff format --check .
@@ -43,24 +34,21 @@ uv run --all-extras mypy src
 uv run --all-extras pytest
 ```
 
-For package metadata or distribution-content changes, also follow the package
-checks in [Development](docs/development.md).
+Update documentation when behavior, commands, installation, compatibility, or
+user-visible output changes. Add a screenshot when it makes a CLI or terminal
+menu change easier to understand.
 
-## Git Workflow
+For package metadata or distribution-content work, follow the package checks in
+[Development](docs/development.md).
 
-Use a short branch name that describes the change, such as
-`docs/improve-quickstart` or `fix/export-message`.
+## Pull requests
 
-Use conventional commit-style subjects, such as `docs: update terminal menu
-guide` or `fix: restore recalled TUI result export`. Keep each commit focused
-on one behavior or documentation change.
+Use a concise title that describes the user-facing change. In the pull request,
+summarize the user impact, scope, compatibility considerations, validation,
+documentation updates, and screenshots when relevant. Keep unrelated cleanup in
+a separate pull request.
 
-## Pull Requests
+## Community
 
-Keep pull requests focused. Include tests or docs updates when behavior changes.
-Do not mix unrelated cleanup into a feature or bug fix.
-
-## Conduct And Security
-
-Follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report sensitive
-vulnerabilities through the path in [Security](SECURITY.md), not public issues.
+Follow the [Code of Conduct](CODE_OF_CONDUCT.md). For normal bugs, questions,
+and documentation problems, start with [Support](SUPPORT.md).

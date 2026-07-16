@@ -13,7 +13,6 @@ build/
 *.egg-info/
 
 .local/
-.superpowers/
 .worktrees/
 
 .csvql/

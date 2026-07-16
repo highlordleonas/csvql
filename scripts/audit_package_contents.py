@@ -7,6 +7,12 @@ import tarfile
 import zipfile
 from pathlib import Path
 
+WHEEL_SIZE_LIMIT = 1024 * 1024
+SDIST_SIZE_LIMIT = 5 * 1024 * 1024
+MEMBER_EXPANDED_SIZE_LIMIT = 5 * 1024 * 1024
+WHEEL_EXPANDED_SIZE_LIMIT = 10 * WHEEL_SIZE_LIMIT
+SDIST_EXPANDED_SIZE_LIMIT = 10 * SDIST_SIZE_LIMIT
+
 FORBIDDEN_NAMES = {
     ".DS_Store",
     ".pytest_cache",
@@ -73,8 +79,10 @@ def forbidden_entries(names: list[str]) -> list[str]:
     return blocked
 
 
-def find_archives(dist_dir: Path) -> tuple[list[Path], list[Path]]:
-    """Find built wheel and sdist archives in ``dist_dir``."""
+def find_archives(
+    dist_dir: Path, expected_version: str | None = None
+) -> tuple[list[Path], list[Path]] | tuple[Path, Path]:
+    """Find release archives, or require the exact pair for an expected version."""
 
     wheels = sorted(dist_dir.glob("*.whl"))
     sdists = sorted(dist_dir.glob("*.tar.gz"))
@@ -82,6 +90,15 @@ def find_archives(dist_dir: Path) -> tuple[list[Path], list[Path]]:
         raise SystemExit(f"No wheel found in {dist_dir}")
     if not sdists:
         raise SystemExit(f"No sdist found in {dist_dir}")
+    if expected_version is not None:
+        expected_wheel = dist_dir / ("localql-" + expected_version + "-py3-none-any.whl")
+        expected_sdist = dist_dir / ("localql-" + expected_version + ".tar.gz")
+        if set(wheels) != {expected_wheel} or set(sdists) != {expected_sdist}:
+            raise SystemExit("Expected exact release archives: one wheel and one sdist.")
+        for artifact in (expected_wheel, expected_sdist):
+            if artifact.is_symlink() or not artifact.is_file():
+                raise SystemExit("Release archives must be regular files.")
+        return expected_wheel, expected_sdist
     return wheels, sdists
 
 
@@ -111,9 +128,15 @@ def main() -> None:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("dist_dir", type=Path)
+    parser.add_argument("--expected-version")
     args = parser.parse_args()
 
-    wheels, sdists = find_archives(args.dist_dir)
+    archives = find_archives(args.dist_dir, args.expected_version)
+    if args.expected_version is None:
+        wheels, sdists = archives
+    else:
+        wheel, sdist = archives
+        wheels, sdists = [wheel], [sdist]
     audit_archives(wheels, sdists)
     print(f"Package content audit passed: {len(wheels)} wheel(s), {len(sdists)} sdist(s).")
 

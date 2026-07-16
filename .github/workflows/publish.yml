@@ -2,17 +2,52 @@ name: publish
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Exact package version authorized for publication
+        required: true
+        type: string
+      tag_object_oid:
+        description: Exact annotated tag object ID authorized for publication
+        required: true
+        type: string
+      peeled_commit_oid:
+        description: Exact commit ID peeled from the annotated tag
+        required: true
+        type: string
+      tag_ci_workflow_id:
+        description: Exact successful tag-CI workflow ID
+        required: true
+        type: string
+      tag_ci_run_id:
+        description: Exact successful tag-CI run ID
+        required: true
+        type: string
+      tag_ci_run_attempt:
+        description: Exact successful tag-CI run attempt
+        required: true
+        type: string
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 env:
-  EXPECTED_TAG: v1.0.1
-  EXPECTED_VERSION: "1.0.1"
+  EXPECTED_TAG: v1.0.2
+  EXPECTED_VERSION: "1.0.2"
 
 jobs:
-  build-and-verify:
+  build-and-capture:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    env:
+      ARTIFACT_PYTHON: "3.12.11"
+      EVIDENCE_DIR: ${{ github.workspace }}
     defaults:
       run:
         shell: bash
@@ -25,14 +60,111 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
+      - name: Verify release and tag-CI identity
+        env:
+          AUTHORIZED_VERSION: ${{ inputs.version }}
+          AUTHORIZED_TAG_OBJECT_OID: ${{ inputs.tag_object_oid }}
+          AUTHORIZED_PEELED_COMMIT_OID: ${{ inputs.peeled_commit_oid }}
+          AUTHORIZED_TAG_CI_WORKFLOW_ID: ${{ inputs.tag_ci_workflow_id }}
+          AUTHORIZED_TAG_CI_RUN_ID: ${{ inputs.tag_ci_run_id }}
+          AUTHORIZED_TAG_CI_RUN_ATTEMPT: ${{ inputs.tag_ci_run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "${AUTHORIZED_VERSION}" = "${EXPECTED_VERSION}"
+          [[ "${AUTHORIZED_TAG_OBJECT_OID}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${AUTHORIZED_PEELED_COMMIT_OID}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${AUTHORIZED_TAG_CI_WORKFLOW_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${AUTHORIZED_TAG_CI_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${AUTHORIZED_TAG_CI_RUN_ATTEMPT}" =~ ^[1-9][0-9]*$ ]]
+          test "$(git cat-file -t "${GITHUB_REF}")" = "tag"
+          test "$(git rev-parse "${GITHUB_REF}^{tag}")" = "${AUTHORIZED_TAG_OBJECT_OID}"
+          test "$(git rev-parse "${GITHUB_REF}^{commit}")" = "${AUTHORIZED_PEELED_COMMIT_OID}"
+          test "${GITHUB_SHA}" = "${AUTHORIZED_PEELED_COMMIT_OID}"
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "${AUTHORIZED_PEELED_COMMIT_OID}" refs/remotes/origin/main
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${AUTHORIZED_TAG_CI_RUN_ID}" \
+            > tag-ci-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${AUTHORIZED_TAG_CI_WORKFLOW_ID}" \
+            > tag-ci-workflow.json
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${AUTHORIZED_TAG_CI_RUN_ID}/attempts/${AUTHORIZED_TAG_CI_RUN_ATTEMPT}/jobs?per_page=100" \
+            > tag-ci-jobs.json
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+
+          expected_jobs = {
+              "test (ubuntu-latest, 3.11)",
+              "test (ubuntu-latest, 3.12)",
+              "test (ubuntu-latest, 3.13)",
+              "test (ubuntu-latest, 3.14)",
+              "test (macos-latest, 3.12)",
+              "test (windows-latest, 3.12)",
+          }
+          run = json.loads(Path("tag-ci-run.json").read_text(encoding="utf-8"))
+          workflow = json.loads(Path("tag-ci-workflow.json").read_text(encoding="utf-8"))
+          jobs_payload = json.loads(Path("tag-ci-jobs.json").read_text(encoding="utf-8"))
+          if not isinstance(run, dict):
+              raise SystemExit("tag-CI run response is invalid")
+          if not isinstance(workflow, dict):
+              raise SystemExit("tag-CI workflow response is invalid")
+          if not isinstance(jobs_payload, dict):
+              raise SystemExit("tag-CI jobs response is invalid")
+
+          expected = {
+              "workflow_id": int(os.environ["AUTHORIZED_TAG_CI_WORKFLOW_ID"]),
+              "run_id": int(os.environ["AUTHORIZED_TAG_CI_RUN_ID"]),
+              "run_attempt": int(os.environ["AUTHORIZED_TAG_CI_RUN_ATTEMPT"]),
+              "head_sha": os.environ["AUTHORIZED_PEELED_COMMIT_OID"],
+          }
+          observed = {
+              "workflow_id": run.get("workflow_id"),
+              "run_id": run.get("id"),
+              "run_attempt": run.get("run_attempt"),
+              "head_sha": run.get("head_sha"),
+          }
+          if observed != expected:
+              raise SystemExit(f"tag-CI identity mismatch: {observed!r}")
+          if workflow.get("id") != expected["workflow_id"]:
+              raise SystemExit("authorized tag-CI workflow ID does not match")
+          if workflow.get("path") != ".github/workflows/ci.yml":
+              raise SystemExit("authorized tag-CI workflow path is not ci.yml")
+          if run.get("event") != "push" or run.get("head_branch") != os.environ["EXPECTED_TAG"]:
+              raise SystemExit("tag-CI event or tag ref mismatch")
+          if run.get("status") != "completed" or run.get("conclusion") != "success":
+              raise SystemExit("authorized tag-CI run did not succeed")
+          jobs = jobs_payload.get("jobs")
+          if not isinstance(jobs, list):
+              raise SystemExit("tag-CI jobs response is invalid")
+          if len(jobs) != len(expected_jobs):
+              raise SystemExit(f"tag-CI job count mismatch: {len(jobs)}")
+          if any(not isinstance(job, dict) for job in jobs):
+              raise SystemExit("tag-CI jobs response contains an invalid job")
+          job_names = [job.get("name") for job in jobs]
+          if any(not isinstance(name, str) for name in job_names):
+              raise SystemExit("tag-CI jobs response contains an invalid job name")
+          observed_jobs = set(job_names)
+          if observed_jobs != expected_jobs:
+              raise SystemExit(f"tag-CI matrix mismatch: {observed_jobs!r}")
+          if any(
+              job.get("status") != "completed" or job.get("conclusion") != "success"
+              for job in jobs
+          ):
+              raise SystemExit("one or more tag-CI jobs did not succeed")
+          PY
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
         with:
+          version: "0.11.28"
           enable-cache: true
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install "${ARTIFACT_PYTHON}"
       - name: Install dependencies
-        run: uv sync --all-extras --frozen
+        run: uv sync --all-extras --all-groups --frozen
       - name: Check formatting
         run: uv run ruff format --check .
       - name: Lint
@@ -41,100 +173,143 @@ jobs:
         run: uv run --all-extras mypy src
       - name: Test
         run: uv run --all-extras pytest
-      - name: Build
-        run: uv build --sdist --wheel --out-dir dist
+      - name: Build exact release artifacts
+        run: |
+          set -euo pipefail
+          uv build --python "${ARTIFACT_PYTHON}" \
+            --sdist --wheel \
+            --out-dir "${EVIDENCE_DIR}/dist" \
+            --build-constraints scripts/release-build-constraints.txt \
+            --require-hashes
+          uv --version > dist/uv-version.txt
+          uv run --python "${ARTIFACT_PYTHON}" python --version > dist/artifact-python-version.txt
+          shasum -a 256 scripts/release-build-constraints.txt > dist/release-build-constraints.sha256
       - name: Audit package contents
-        run: uv run python scripts/audit_package_contents.py dist
-      - name: Verify artifact identity and hashes
         run: |
-          python - <<'PY'
-          from __future__ import annotations
-
-          import email.parser
-          import hashlib
-          import os
-          import tarfile
-          import zipfile
-          from pathlib import Path
-
-          dist = Path("dist")
-          expected_tag = os.environ["EXPECTED_TAG"]
-          expected_version = os.environ["EXPECTED_VERSION"]
-          if os.environ["GITHUB_REF"] != f"refs/tags/{expected_tag}":
-              raise SystemExit("publish workflow must run on the expected release tag")
-
-          wheels = sorted(dist.glob("localql-*.whl"))
-          sdists = sorted(dist.glob("localql-*.tar.gz"))
-          if len(wheels) != 1 or len(sdists) != 1:
-              raise SystemExit("expected exactly one localql wheel and one localql sdist")
-
-          def wheel_version(path: Path) -> str:
-              with zipfile.ZipFile(path) as archive:
-                  metadata_names = [
-                      name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
-                  ]
-                  if len(metadata_names) != 1:
-                      raise SystemExit(f"{path}: expected exactly one wheel METADATA file")
-                  metadata = archive.read(metadata_names[0]).decode("utf-8")
-              return str(email.parser.Parser().parsestr(metadata)["Version"])
-
-          def sdist_version(path: Path) -> str:
-              with tarfile.open(path) as archive:
-                  members = [
-                      member for member in archive.getmembers() if member.name.endswith("/PKG-INFO")
-                  ]
-                  if len(members) != 1:
-                      raise SystemExit(f"{path}: expected exactly one sdist PKG-INFO file")
-                  extracted = archive.extractfile(members[0])
-                  if extracted is None:
-                      raise SystemExit(f"{path}: could not read sdist PKG-INFO")
-                  metadata = extracted.read().decode("utf-8")
-              return str(email.parser.Parser().parsestr(metadata)["Version"])
-
-          versions = {wheel_version(wheels[0]), sdist_version(sdists[0])}
-          if versions != {expected_version}:
-              raise SystemExit(f"artifact versions do not match {expected_version}: {versions}")
-
-          hash_lines = []
-          for path in [*wheels, *sdists]:
-              digest = hashlib.sha256(path.read_bytes()).hexdigest()
-              hash_lines.append(f"{digest}  {path.name}\n")
-          (dist / "SHA256SUMS.txt").write_text("".join(hash_lines), encoding="utf-8")
-          PY
-      - name: Installed wheel smoke
+          set -euo pipefail
+          uv run --frozen --no-sync python scripts/audit_package_contents.py \
+            "${EVIDENCE_DIR}/dist" --expected-version "${EXPECTED_VERSION}"
+      - name: Rebuild sdist with constrained constraints
         run: |
-          wheel="$(python - <<'PY'
-          from pathlib import Path
-
-          wheels = sorted(Path("dist").glob("localql-*.whl"))
-          if len(wheels) != 1:
-              raise SystemExit("expected exactly one localql wheel")
-          print(wheels[0].resolve())
-          PY
-          )"
-          smoke_root="$(mktemp -d)"
-          uv venv --seed "${smoke_root}/venv"
-          uv pip install --python "${smoke_root}/venv/bin/python" "${wheel}"
-          printf 'order_id,status\nORD-1,paid\n' > "${smoke_root}/orders.csv"
+          set -euo pipefail
+          mkdir -- "${EVIDENCE_DIR}/rebuild-constrained"
+          uv build --verbose --wheel \
+            "${EVIDENCE_DIR}/dist/localql-1.0.2.tar.gz" \
+            --python "${ARTIFACT_PYTHON}" \
+            --out-dir "${EVIDENCE_DIR}/rebuild-constrained" \
+            --build-constraints scripts/release-build-constraints.txt \
+            --require-hashes \
+            2>&1 | tee "${EVIDENCE_DIR}/rebuild-constrained.log"
+          grep -Eo 'hatchling==[0-9]+(\.[0-9]+)+' \
+            "${EVIDENCE_DIR}/rebuild-constrained.log" | sort -u \
+            > "${EVIDENCE_DIR}/rebuild-constrained-backend.txt"
+          test -s "${EVIDENCE_DIR}/rebuild-constrained-backend.txt"
+      - name: Rebuild sdist as a consumer
+        run: |
+          set -euo pipefail
+          mkdir -- "${EVIDENCE_DIR}/rebuild-consumer"
+          date -u +'%Y-%m-%dT%H:%M:%SZ' \
+            > "${EVIDENCE_DIR}/consumer-rebuild-observed-at.txt"
+          uv build --verbose --wheel \
+            "${EVIDENCE_DIR}/dist/localql-1.0.2.tar.gz" \
+            --python "${ARTIFACT_PYTHON}" \
+            --out-dir "${EVIDENCE_DIR}/rebuild-consumer" \
+            2>&1 | tee "${EVIDENCE_DIR}/rebuild-consumer.log"
+          grep -Eo 'hatchling==[0-9]+(\.[0-9]+)+' \
+            "${EVIDENCE_DIR}/rebuild-consumer.log" | sort -u \
+            > "${EVIDENCE_DIR}/rebuild-consumer-backend.txt"
+          test -s "${EVIDENCE_DIR}/rebuild-consumer-backend.txt"
+      - name: Verify release artifacts and immutable manifest
+        run: |
+          set -euo pipefail
+          uv run --frozen --no-sync python scripts/verify_release_artifacts.py \
+            "${EVIDENCE_DIR}/dist" --expected-version "${EXPECTED_VERSION}" \
+            --rebuilt-wheel "${EVIDENCE_DIR}/rebuild-constrained/localql-1.0.2-py3-none-any.whl" \
+            --rebuilt-wheel "${EVIDENCE_DIR}/rebuild-consumer/localql-1.0.2-py3-none-any.whl" \
+            --manifest "${EVIDENCE_DIR}/dist/artifact-manifest.json"
           (
-            cd "${smoke_root}"
-            unset PYTHONPATH
-            "${smoke_root}/venv/bin/csvql" --version
-            "${smoke_root}/venv/bin/csvql" query "${smoke_root}/orders.csv" \
-              "SELECT COUNT(*) AS order_count FROM orders" --output json
+            cd "${EVIDENCE_DIR}/dist"
+            shasum -a 256 \
+              localql-1.0.2-py3-none-any.whl \
+              localql-1.0.2.tar.gz \
+              > SHA256SUMS.txt
           )
-      - name: Upload distribution artifacts
+      - name: Capture immutable publication bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: localql-1.0.1-dist
-          path: |
-            dist/*.whl
-            dist/*.tar.gz
-            dist/SHA256SUMS.txt
+          name: localql-1.0.2-publish-bundle
+          path: dist
+          if-no-files-found: error
+
+  verify-captured-artifacts:
+    needs: build-and-capture
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      ARTIFACT_PYTHON: "3.12.11"
+      VERIFICATION_DIR: ${{ github.workspace }}/verification-evidence
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Download immutable publication bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: localql-1.0.2-publish-bundle
+          path: captured-artifacts
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+        with:
+          version: "0.11.28"
+          enable-cache: false
+      - name: Set up Python
+        run: uv python install "${ARTIFACT_PYTHON}"
+      - name: Install verification dependencies
+        run: uv sync --all-extras --all-groups --frozen
+      - name: Verify captured artifact hashes
+        run: |
+          set -euo pipefail
+          mkdir -- "${VERIFICATION_DIR}"
+          (
+            cd captured-artifacts/dist
+            shasum -a 256 -c SHA256SUMS.txt
+          )
+          shasum -a 256 scripts/release-audit-tool-requirements.txt \
+            > "${VERIFICATION_DIR}/audit-tool-requirements.sha256"
+      - name: Check captured distribution metadata
+        run: |
+          set -euo pipefail
+          uvx --from twine==6.2.0 twine check \
+            captured-artifacts/dist/localql-1.0.2-py3-none-any.whl \
+            captured-artifacts/dist/localql-1.0.2.tar.gz
+      - name: Audit locked dependency paths
+        run: |
+          set -euo pipefail
+          uv run --frozen --no-sync python scripts/verify_dependency_audit.py \
+            --evidence-dir "${VERIFICATION_DIR}/dependency-audit"
+      - name: Verify installed captured release artifacts
+        run: |
+          set -euo pipefail
+          uv run --frozen --no-sync python scripts/verify_installed_artifacts.py \
+            --wheel captured-artifacts/dist/localql-1.0.2-py3-none-any.whl \
+            --core-requirements "${VERIFICATION_DIR}/dependency-audit/core-requirements.txt" \
+            --tui-requirements "${VERIFICATION_DIR}/dependency-audit/tui-requirements.txt" \
+            --work-dir "${VERIFICATION_DIR}/installed-smokes" \
+            --expected-version "${EXPECTED_VERSION}" \
+            --python "${ARTIFACT_PYTHON}" \
+            > "${VERIFICATION_DIR}/installed-smokes.json"
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: localql-1.0.2-verification-evidence
+          path: verification-evidence
           if-no-files-found: error
 
   publish:
-    needs: build-and-verify
+    needs: verify-captured-artifacts
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -149,16 +324,16 @@ jobs:
           test "${GITHUB_REF}" = "refs/tags/${EXPECTED_TAG}"
           test "${GITHUB_REF_TYPE}" = "tag"
           test "${GITHUB_REF_NAME}" = "${EXPECTED_TAG}"
-      - name: Download distribution artifacts
+      - name: Download immutable publication bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: localql-1.0.1-dist
+          name: localql-1.0.2-publish-bundle
           path: release-artifacts
       - name: Verify downloaded artifact hashes and metadata
         run: |
-          cd release-artifacts
+          cd release-artifacts/dist
           shasum -a 256 -c SHA256SUMS.txt
-          cd ..
+          cd ../..
           python - <<'PY'
           from __future__ import annotations
 
@@ -168,7 +343,7 @@ jobs:
           import zipfile
           from pathlib import Path
 
-          dist = Path("release-artifacts")
+          dist = Path("release-artifacts/dist")
           expected_version = os.environ["EXPECTED_VERSION"]
           wheels = sorted(dist.glob("localql-*.whl"))
           sdists = sorted(dist.glob("localql-*.tar.gz"))
@@ -203,7 +378,37 @@ jobs:
               raise SystemExit(f"artifact versions do not match {expected_version}: {versions}")
           PY
           mkdir -p dist
-          cp release-artifacts/*.whl release-artifacts/*.tar.gz dist/
+          cp release-artifacts/dist/*.whl release-artifacts/dist/*.tar.gz dist/
+      - name: Require version to be absent from PyPI
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import os
+          from urllib.error import HTTPError, URLError
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          version = os.environ["EXPECTED_VERSION"]
+          url = f"https://pypi.org/pypi/localql/{quote(version, safe='')}/json"
+          request = Request(
+              url,
+              headers={
+                  "Accept": "application/json",
+                  "X-Client-Name": "localql-release-check/1.0",
+              },
+          )
+          try:
+              with urlopen(request, timeout=15):
+                  pass
+          except HTTPError as exc:
+              if exc.code == 404:
+                  raise SystemExit(0) from None
+              raise SystemExit(f"PyPI version check failed with HTTP {exc.code}") from exc
+          except URLError as exc:
+              raise SystemExit(f"PyPI version check failed: {exc.reason}") from exc
+          raise SystemExit(f"localql {version} already exists; refusing publication")
+          PY
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
         with:
@@ -221,11 +426,22 @@ jobs:
       run:
         shell: bash
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - name: Download distribution artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: localql-1.0.1-dist
+          name: localql-1.0.2-publish-bundle
           path: release-artifacts
+      - name: Install uv without caching
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+        with:
+          version: "0.11.28"
+          enable-cache: false
+      - name: Prepare frozen verification environment
+        run: |
+          set -euo pipefail
+          uv python install 3.12.11
+          uv sync --all-extras --all-groups --frozen
       - name: Verify published artifacts and capture provenance
         id: verify_pypi_release
         timeout-minutes: 7
@@ -246,7 +462,7 @@ jobs:
 
           PROJECT = "localql"
           VERSION = os.environ["EXPECTED_VERSION"]
-          ARTIFACT_DIR = Path("release-artifacts")
+          ARTIFACT_DIR = Path("release-artifacts/dist")
           VERIFICATION_DIR = Path("pypi-verification")
           MAX_ATTEMPTS = 8
           POLL_SECONDS = 10
@@ -301,7 +517,7 @@ jobs:
                   url,
                   headers={
                       "Accept": accept,
-                      "User-Agent": "localql-post-publish-verification/1.0",
+                      "X-Client-Name": "localql-post-publish-verification/1.0",
                   },
               )
               try:
@@ -317,29 +533,43 @@ jobs:
                   raise SystemExit(f"expected a JSON object from {url}")
               return payload
 
-          def write_receipt(path: Path, payload: dict[str, object]) -> None:
+          def write_evidence(path: Path, payload: dict[str, object]) -> None:
               path.write_text(
                   json.dumps(payload, indent=2, sort_keys=True) + "\n",
                   encoding="utf-8",
               )
 
-          def published_digests(entries: object) -> dict[str, str]:
+          def published_file_records(entries: object) -> dict[str, dict[str, str]]:
               if not isinstance(entries, list):
-                  return {}
-              digests: dict[str, str] = {}
+                  raise SystemExit("release JSON urls field is not a list")
+              records: dict[str, dict[str, str]] = {}
               for entry in entries:
                   if not isinstance(entry, dict):
-                      continue
+                      raise SystemExit("release JSON contains a non-object file entry")
                   filename = entry.get("filename")
-                  hashes = entry.get("digests")
-                  if not isinstance(filename, str) or not isinstance(hashes, dict):
-                      continue
-                  sha256 = hashes.get("sha256")
-                  if isinstance(sha256, str):
-                      digests[filename] = sha256
-              return digests
+                  url = entry.get("url")
+                  digests = entry.get("digests")
+                  sha256 = digests.get("sha256") if isinstance(digests, dict) else None
+                  if not isinstance(filename, str) or Path(filename).name != filename:
+                      raise SystemExit("release JSON contains an invalid filename")
+                  if not isinstance(url, str) or not url.startswith(
+                      "https://files.pythonhosted.org/"
+                  ):
+                      raise SystemExit(f"release JSON contains an invalid file URL for {filename}")
+                  if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+                      raise SystemExit(f"release JSON contains an invalid SHA-256 for {filename}")
+                  if filename in records:
+                      raise SystemExit(f"release JSON repeats filename {filename}")
+                  records[filename] = {"sha256": sha256, "url": url}
+              return records
 
           expected_digests = read_expected_digests()
+          expected_publisher = {
+              "kind": "GitHub",
+              "repository": "highlordleonas/csvql",
+              "workflow": "publish.yml",
+              "environment": "pypi",
+          }
           project = PROJECT
           version = VERSION
           project_url = f"https://pypi.org/pypi/{project}/json"
@@ -354,14 +584,17 @@ jobs:
               if project_metadata is None or release_metadata is None:
                   last_issue = "project or release JSON is not available"
               else:
-                  write_receipt(VERIFICATION_DIR / "pypi-project.json", project_metadata)
-                  write_receipt(
-                      VERIFICATION_DIR / "pypi-release-1.0.1.json",
+                  write_evidence(VERIFICATION_DIR / "pypi-project.json", project_metadata)
+                  write_evidence(
+                      VERIFICATION_DIR / "pypi-release-1.0.2.json",
                       release_metadata,
                   )
-                  release_digests = published_digests(release_metadata.get("urls"))
+                  published_files = published_file_records(release_metadata.get("urls"))
 
-                  if release_digests != expected_digests:
+                  if (
+                      {name: record["sha256"] for name, record in published_files.items()}
+                      != expected_digests
+                  ):
                       last_issue = "release JSON filenames or SHA-256 digests do not match"
                   else:
                       provenance_ready = True
@@ -375,7 +608,7 @@ jobs:
                               last_issue = f"provenance is not available for {filename}"
                               continue
 
-                          write_receipt(
+                          write_evidence(
                               VERIFICATION_DIR / f"provenance-{filename}.json",
                               provenance,
                           )
@@ -384,32 +617,49 @@ jobs:
                               provenance_ready = False
                               last_issue = f"attestation bundles are missing for {filename}"
                               continue
-                          if any(
-                              not isinstance(bundle, dict)
-                              or not isinstance(bundle.get("attestations"), list)
-                              or not bundle.get("attestations")
-                              for bundle in bundles
-                          ):
-                              provenance_ready = False
-                              last_issue = f"an attestation bundle is empty for {filename}"
+                          for bundle in bundles:
+                              if not isinstance(bundle, dict):
+                                  provenance_ready = False
+                                  last_issue = f"an attestation bundle is invalid for {filename}"
+                                  continue
+                              attestations = bundle.get("attestations")
+                              if not isinstance(attestations, list) or not attestations:
+                                  provenance_ready = False
+                                  last_issue = f"an attestation bundle is empty for {filename}"
+                                  continue
+                              publisher = bundle.get("publisher")
+                              if not isinstance(publisher, dict):
+                                  provenance_ready = False
+                                  last_issue = f"publisher identity is missing for {filename}"
+                                  continue
+                              observed_publisher = {
+                                  key: publisher.get(key) for key in expected_publisher
+                              }
+                              if observed_publisher != expected_publisher:
+                                  provenance_ready = False
+                                  last_issue = f"publisher identity does not match for {filename}"
+                                  continue
 
                       if provenance_ready:
                           summary = {
                               "project": PROJECT,
                               "version": VERSION,
                               "verified_at": datetime.now(UTC).isoformat(),
-                              "sha256": expected_digests,
+                              "published_files": published_files,
+                              "publisher_identity": expected_publisher,
+                              "publication_run_id": os.environ["GITHUB_RUN_ID"],
+                              "publication_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
                               "release_metadata_and_digests_verified": True,
-                              "provenance_and_non_empty_attestation_receipts_captured": True,
+                              "provenance_and_non_empty_attestation_evidence_captured": True,
                               "cryptographic_attestation_verification_performed": False,
                           }
-                          write_receipt(
+                          write_evidence(
                               VERIFICATION_DIR / "verification-summary.json",
                               summary,
                           )
                           status_path.write_text(
                               "PyPI release metadata and digests verified; "
-                              "provenance and non-empty attestation receipts captured. "
+                              "provenance and non-empty attestation evidence captured. "
                               "No cryptographic attestation verification was performed.\n",
                               encoding="utf-8",
                           )
@@ -430,22 +680,35 @@ jobs:
               )
               raise SystemExit(status_path.read_text(encoding="utf-8").strip())
           PY
-      - name: Record failed verification outcome
-        if: always() && steps.verify_pypi_release.outcome != 'success'
+      - name: Install exact public release and run core and TUI smoke
+        id: verify_public_index_smoke
         run: |
+          set -euo pipefail
+          uv run --frozen --no-sync python scripts/verify_installed_artifacts.py \
+            --work-dir post-publish-smoke \
+            --expected-version 1.0.2 \
+            --python 3.12.11 \
+            --public-index \
+            --allow-published-version-check
+      - name: Record failed verification outcome
+        if: always() && (steps.verify_pypi_release.outcome != 'success' || steps.verify_public_index_smoke.outcome != 'success')
+        env:
+          PROVENANCE_OUTCOME: ${{ steps.verify_pypi_release.outcome }}
+          PUBLIC_INDEX_SMOKE_OUTCOME: ${{ steps.verify_public_index_smoke.outcome }}
+        run: |
+          set -euo pipefail
           mkdir -p pypi-verification
           printf '%s\n' \
-            'PyPI post-publish verification failed, timed out, or skipped before completion. Release metadata and digest verification did not complete; inspect workflow logs and captured partial receipts. No cryptographic attestation verification was performed.' \
+            'PyPI post-publish verification failed, timed out, or skipped before completion. Inspect workflow logs and captured partial evidence. No cryptographic attestation verification was performed.' \
+            "Provenance verification outcome: ${PROVENANCE_OUTCOME}." \
+            "Public-index installed-artifact smoke outcome: ${PUBLIC_INDEX_SMOKE_OUTCOME}." \
             > pypi-verification/verification-outcome.txt
-          if test ! -s pypi-verification/verification-status.txt || \
-            grep -Fqx 'PyPI verification started.' pypi-verification/verification-status.txt; then
-            cp pypi-verification/verification-outcome.txt \
-              pypi-verification/verification-status.txt
-          fi
-      - name: Upload PyPI verification receipts
+          cp pypi-verification/verification-outcome.txt \
+            pypi-verification/verification-status.txt
+      - name: Upload PyPI verification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: localql-1.0.1-pypi-verification
+          name: localql-1.0.2-pypi-verification
           path: pypi-verification
           if-no-files-found: error
