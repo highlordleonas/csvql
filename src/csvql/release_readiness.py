@@ -1,4 +1,8 @@
-"""Helpers for repo-local release-readiness verification."""
+"""Helpers for local compatibility evidence only.
+
+This module verifies built package artifacts and installed-wheel smoke checks,
+but it does not authorize release custody or publication.
+"""
 
 from __future__ import annotations
 
@@ -20,7 +24,7 @@ class ReleaseReadinessCommandError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ReleaseReadinessResult:
-    """Successful release-readiness proof outputs."""
+    """Successful local compatibility evidence outputs."""
 
     distribution_name: str
     pyproject_version: str
@@ -34,11 +38,12 @@ class ReleaseReadinessResult:
 
 
 def format_release_readiness_summary(result: ReleaseReadinessResult) -> str:
-    """Return a human-readable summary for release-readiness proof output."""
+    """Return a human-readable summary for local compatibility evidence."""
 
     return "\n".join(
         (
-            "Release readiness proof passed.",
+            "Local compatibility evidence passed.",
+            "This helper does not authorize release custody or publication.",
             f"Distribution: {result.distribution_name}",
             (
                 "Versions: "
@@ -129,7 +134,7 @@ def verify_release_readiness(
     python_executable: str | Path,
     run_command: RunCommand = subprocess.run,
 ) -> ReleaseReadinessResult:
-    """Build, install, and smoke-test the package from a wheel."""
+    """Build, audit, install, and smoke-test local compatibility evidence."""
 
     dist_dir = work_dir / "dist"
     smoke_dir = work_dir / "smoke"
@@ -141,19 +146,40 @@ def verify_release_readiness(
     distribution_name = read_pyproject_name(pyproject_path)
     pyproject_version = read_pyproject_version(pyproject_path)
     package_version = read_package_version(repo_root / "src" / "csvql" / "__init__.py")
-    cli_version = run_release_command(
-        (python_executable, "-m", "csvql", "--version"),
+
+    run_release_command(
+        (
+            "uv",
+            "build",
+            "--sdist",
+            "--wheel",
+            "--no-create-gitignore",
+            "--out-dir",
+            dist_dir,
+        ),
         cwd=repo_root,
         run_command=run_command,
     )
-    if not version_strings_match(pyproject_version, package_version, cli_version):
-        raise ValueError(
-            f"Version mismatch: pyproject={pyproject_version} "
-            f"package={package_version} cli={cli_version}"
-        )
-
     run_release_command(
-        ("uv", "build", "--sdist", "--wheel", "--out-dir", dist_dir),
+        (
+            python_executable,
+            repo_root / "scripts" / "audit_package_contents.py",
+            dist_dir,
+            "--expected-version",
+            pyproject_version,
+        ),
+        cwd=repo_root,
+        run_command=run_command,
+    )
+    run_release_command(
+        (
+            python_executable,
+            repo_root / "scripts" / "verify_release_artifacts.py",
+            "inspect",
+            dist_dir,
+            "--expected-version",
+            pyproject_version,
+        ),
         cwd=repo_root,
         run_command=run_command,
     )
@@ -173,7 +199,14 @@ def verify_release_readiness(
 
     smoke_csv = smoke_dir / "orders.csv"
     smoke_csv.write_text("order_id,status\nORD-1,paid\n", encoding="utf-8")
-    run_release_command((csvql_path, "--version"), cwd=repo_root, run_command=run_command)
+    cli_version = run_release_command(
+        (csvql_path, "--version"), cwd=repo_root, run_command=run_command
+    )
+    if not version_strings_match(pyproject_version, package_version, cli_version):
+        raise ValueError(
+            f"Version mismatch: pyproject={pyproject_version} "
+            f"package={package_version} cli={cli_version}"
+        )
     inspect_output = run_release_command(
         (csvql_path, "inspect", smoke_csv, "--output", "json"),
         cwd=repo_root,

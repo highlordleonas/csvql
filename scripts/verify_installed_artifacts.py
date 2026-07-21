@@ -10,6 +10,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import textwrap
 from collections.abc import Callable, Mapping, Sequence
@@ -93,8 +94,38 @@ class SnapshottedInput:
     sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class SmokeFormatPaths:
+    """Per-format isolated paths for installed-artifact smoke execution."""
+
+    root: Path
+    tmp_dir: Path
+    uv_cache_dir: Path
+    uv_python_install_dir: Path
+    pip_core_venv: Path
+    pip_tui_venv: Path
+    uv_tool_core_dir: Path
+    uv_tool_core_bin_dir: Path
+    uv_tool_tui_dir: Path
+    uv_tool_tui_bin_dir: Path
+
+
 class InstalledArtifactVerificationError(RuntimeError):
     """Raised when isolated installed-artifact evidence is invalid."""
+
+
+SMOKE_CHECKS: dict[str, str] = {
+    "pip_core_api": "passed",
+    "pip_core_query": "passed",
+    "pip_core_version": "passed",
+    "pip_core_without_textual": "passed",
+    "pip_tui_import": "passed",
+    "pip_tui_menu_help": "passed",
+    "uv_tool_core_version": "passed",
+    "uv_tool_tui_import": "passed",
+    "uv_tool_tui_menu_help": "passed",
+    "uv_tool_tui_version": "passed",
+}
 
 
 def environment_executable_path(
@@ -151,6 +182,10 @@ def _validate_local_file(path: Path, *, exact_name: str, role: str) -> Path:
 
 def _prepare_work_dir(work_dir: Path) -> Path:
     candidate = _absolute_path(work_dir)
+    if candidate.is_relative_to(REPO_ROOT):
+        raise InstalledArtifactVerificationError(
+            "work directory must be outside the repository source tree"
+        )
     try:
         existing_metadata = candidate.lstat()
     except FileNotFoundError:
@@ -196,6 +231,7 @@ def _sanitized_environment(
     *,
     uv_cache_dir: Path,
     uv_python_install_dir: Path,
+    tmp_dir: Path | None = None,
 ) -> dict[str, str]:
     environment = {
         name: os.environ[name] for name in INHERITED_ENVIRONMENT_ALLOWLIST if name in os.environ
@@ -214,6 +250,14 @@ def _sanitized_environment(
             "UV_PYTHON_INSTALL_DIR": str(uv_python_install_dir),
         }
     )
+    if tmp_dir is not None:
+        environment.update(
+            {
+                "TEMP": str(tmp_dir),
+                "TMP": str(tmp_dir),
+                "TMPDIR": str(tmp_dir),
+            }
+        )
     return environment
 
 
@@ -334,10 +378,12 @@ def _snapshot_input(source: Path, *, destination_dir: Path, role: str) -> Snapsh
 def _snapshot_local_inputs(
     *,
     wheel: Path,
+    sdist: Path,
     core_requirements: Path,
     tui_requirements: Path,
     work_dir: Path,
 ) -> dict[str, SnapshottedInput]:
+    artifacts_dir = _make_isolated_directory(work_dir / "artifacts")
     inputs_dir = _make_isolated_directory(work_dir / "inputs")
     return {
         "core_requirements": _snapshot_input(
@@ -350,7 +396,8 @@ def _snapshot_local_inputs(
             destination_dir=inputs_dir,
             role="TUI requirements",
         ),
-        "wheel": _snapshot_input(wheel, destination_dir=inputs_dir, role="wheel"),
+        "sdist": _snapshot_input(sdist, destination_dir=artifacts_dir, role="sdist"),
+        "wheel": _snapshot_input(wheel, destination_dir=artifacts_dir, role="wheel"),
     }
 
 
@@ -361,6 +408,22 @@ def _input_evidence(
         role: {"filename": snapshot.filename, "sha256": snapshot.sha256}
         for role, snapshot in inputs.items()
     }
+
+
+def _format_smoke_paths(work_dir: Path, format_name: str) -> SmokeFormatPaths:
+    root = _make_isolated_directory(work_dir / format_name)
+    return SmokeFormatPaths(
+        root=root,
+        tmp_dir=_make_isolated_directory(root / "tmp"),
+        uv_cache_dir=_make_isolated_directory(root / "uv-cache"),
+        uv_python_install_dir=_make_isolated_directory(root / "uv-python"),
+        pip_core_venv=root / "pip-core",
+        pip_tui_venv=root / "pip-tui",
+        uv_tool_core_dir=root / "uv-tool-core",
+        uv_tool_core_bin_dir=root / "uv-tool-core-bin",
+        uv_tool_tui_dir=root / "uv-tool-tui",
+        uv_tool_tui_bin_dir=root / "uv-tool-tui-bin",
+    )
 
 
 def _run_checked(
@@ -452,10 +515,10 @@ def _write_smoke_project(project_dir: Path) -> None:
 
 def _run_pip_smokes(
     *,
-    wheel: Path | None,
+    artifact: Path | None,
     core_requirements: Path | None,
     tui_requirements: Path | None,
-    work_dir: Path,
+    format_paths: SmokeFormatPaths,
     project_dir: Path,
     expected_version: str,
     python_version: str,
@@ -463,7 +526,7 @@ def _run_pip_smokes(
     environment: Mapping[str, str],
     run_command: RunCommand,
 ) -> dict[str, str]:
-    core_venv = work_dir / "pip-core"
+    core_venv = format_paths.pip_core_venv
     core_python = environment_executable_path(core_venv, "python")
     core_csvql = environment_executable_path(core_venv, "csvql")
     _run_checked(
@@ -490,7 +553,7 @@ def _run_pip_smokes(
             run_command=run_command,
         )
     else:
-        assert wheel is not None
+        assert artifact is not None
         assert core_requirements is not None
         _run_checked(
             [
@@ -508,8 +571,8 @@ def _run_pip_smokes(
             run_command=run_command,
         )
         _run_checked(
-            [str(core_python), "-m", "pip", "install", "--no-deps", str(wheel)],
-            role="install local core wheel",
+            [str(core_python), "-m", "pip", "install", "--no-deps", str(artifact)],
+            role="install local core artifact",
             cwd=project_dir,
             environment=environment,
             run_command=run_command,
@@ -545,7 +608,7 @@ def _run_pip_smokes(
         run_command=run_command,
     )
 
-    tui_venv = work_dir / "pip-tui"
+    tui_venv = format_paths.pip_tui_venv
     tui_python = environment_executable_path(tui_venv, "python")
     tui_csvql = environment_executable_path(tui_venv, "csvql")
     _run_checked(
@@ -572,7 +635,7 @@ def _run_pip_smokes(
             run_command=run_command,
         )
     else:
-        assert wheel is not None
+        assert artifact is not None
         assert tui_requirements is not None
         _run_checked(
             [
@@ -589,10 +652,10 @@ def _run_pip_smokes(
             environment=environment,
             run_command=run_command,
         )
-        wheel_requirement = f"localql[tui] @ {wheel.as_uri()}"
+        wheel_requirement = f"localql[tui] @ {artifact.as_uri()}"
         _run_checked(
             [str(tui_python), "-m", "pip", "install", "--no-deps", wheel_requirement],
-            role="install local TUI wheel",
+            role="install local TUI artifact",
             cwd=project_dir,
             environment=environment,
             run_command=run_command,
@@ -633,10 +696,10 @@ def _tool_environment(
 
 def _run_uv_tool_smokes(
     *,
-    wheel: Path | None,
+    artifact: Path | None,
     core_requirements: Path | None,
     tui_requirements: Path | None,
-    work_dir: Path,
+    format_paths: SmokeFormatPaths,
     project_dir: Path,
     expected_version: str,
     python_version: str,
@@ -644,8 +707,8 @@ def _run_uv_tool_smokes(
     environment: Mapping[str, str],
     run_command: RunCommand,
 ) -> dict[str, str]:
-    core_tool_dir = work_dir / "uv-tool-core"
-    core_bin_dir = work_dir / "uv-tool-core-bin"
+    core_tool_dir = format_paths.uv_tool_core_dir
+    core_bin_dir = format_paths.uv_tool_core_bin_dir
     core_environment = _tool_environment(
         environment,
         tool_dir=core_tool_dir,
@@ -661,7 +724,7 @@ def _run_uv_tool_smokes(
             f"localql=={expected_version}",
         ]
     else:
-        assert wheel is not None
+        assert artifact is not None
         assert core_requirements is not None
         core_install_command = [
             "uv",
@@ -671,7 +734,7 @@ def _run_uv_tool_smokes(
             python_version,
             "--with-requirements",
             str(core_requirements),
-            str(wheel),
+            str(artifact),
         ]
     _run_checked(
         core_install_command,
@@ -699,8 +762,8 @@ def _run_uv_tool_smokes(
     )
     _require_version(completed, expected_version=expected_version, role="core uv-tool")
 
-    tui_tool_dir = work_dir / "uv-tool-tui"
-    tui_bin_dir = work_dir / "uv-tool-tui-bin"
+    tui_tool_dir = format_paths.uv_tool_tui_dir
+    tui_bin_dir = format_paths.uv_tool_tui_bin_dir
     tui_environment = _tool_environment(
         environment,
         tool_dir=tui_tool_dir,
@@ -716,9 +779,9 @@ def _run_uv_tool_smokes(
             f"localql[tui]=={expected_version}",
         ]
     else:
-        assert wheel is not None
+        assert artifact is not None
         assert tui_requirements is not None
-        wheel_requirement = f"localql[tui] @ {wheel.as_uri()}"
+        wheel_requirement = f"localql[tui] @ {artifact.as_uri()}"
         tui_install_command = [
             "uv",
             "tool",
@@ -777,6 +840,7 @@ def _run_uv_tool_smokes(
 def verify_installed_artifacts(
     *,
     wheel: Path | None,
+    sdist: Path | None,
     core_requirements: Path | None,
     tui_requirements: Path | None,
     work_dir: Path,
@@ -802,11 +866,12 @@ def verify_installed_artifacts(
             raise InstalledArtifactVerificationError(
                 "public-index mode requires --allow-published-version-check"
             )
-        if any(path is not None for path in (wheel, core_requirements, tui_requirements)):
+        if any(path is not None for path in (wheel, sdist, core_requirements, tui_requirements)):
             raise InstalledArtifactVerificationError(
                 "public-index mode rejects local artifact inputs"
             )
         resolved_wheel = None
+        resolved_sdist = None
         resolved_core_requirements = None
         resolved_tui_requirements = None
     else:
@@ -814,14 +879,19 @@ def verify_installed_artifacts(
             raise InstalledArtifactVerificationError(
                 "--allow-published-version-check is valid only with --public-index"
             )
-        if wheel is None or core_requirements is None or tui_requirements is None:
+        if wheel is None or sdist is None or core_requirements is None or tui_requirements is None:
             raise InstalledArtifactVerificationError(
-                "local mode requires wheel, core requirements, and TUI requirements"
+                "local mode requires wheel, sdist, core requirements, and TUI requirements"
             )
         resolved_wheel = _validate_local_file(
             wheel,
             exact_name=f"localql-{expected_version}-py3-none-any.whl",
             role="wheel",
+        )
+        resolved_sdist = _validate_local_file(
+            sdist,
+            exact_name=f"localql-{expected_version}.tar.gz",
+            role="sdist",
         )
         resolved_core_requirements = _validate_local_file(
             core_requirements,
@@ -835,90 +905,203 @@ def verify_installed_artifacts(
         )
 
     resolved_work_dir = _prepare_work_dir(work_dir)
-    uv_cache_dir = _make_isolated_directory(resolved_work_dir / "uv-cache")
-    uv_python_install_dir = _make_isolated_directory(resolved_work_dir / "uv-python")
     if public_index:
         snapshotted_inputs: dict[str, SnapshottedInput] = {}
     else:
         assert resolved_wheel is not None
+        assert resolved_sdist is not None
         assert resolved_core_requirements is not None
         assert resolved_tui_requirements is not None
         snapshotted_inputs = _snapshot_local_inputs(
             wheel=resolved_wheel,
+            sdist=resolved_sdist,
             core_requirements=resolved_core_requirements,
             tui_requirements=resolved_tui_requirements,
             work_dir=resolved_work_dir,
         )
         resolved_wheel = snapshotted_inputs["wheel"].path
+        resolved_sdist = snapshotted_inputs["sdist"].path
         resolved_core_requirements = snapshotted_inputs["core_requirements"].path
         resolved_tui_requirements = snapshotted_inputs["tui_requirements"].path
-    environment = _sanitized_environment(
-        uv_cache_dir=uv_cache_dir,
-        uv_python_install_dir=uv_python_install_dir,
+    trusted_python = str(Path(sys.executable).resolve())
+
+    if public_index:
+        format_paths = _format_smoke_paths(resolved_work_dir, "public-index")
+        environment = _sanitized_environment(
+            uv_cache_dir=format_paths.uv_cache_dir,
+            uv_python_install_dir=format_paths.uv_python_install_dir,
+            tmp_dir=format_paths.tmp_dir,
+        )
+        with tempfile.TemporaryDirectory(prefix="project-", dir=format_paths.root) as project_text:
+            project_dir = Path(project_text).resolve()
+            if project_dir.is_relative_to(REPO_ROOT):
+                raise InstalledArtifactVerificationError(
+                    "temporary smoke project must be outside the repository source tree"
+                )
+            _write_smoke_project(project_dir)
+            completed = _run_checked(
+                ["uv", "--version"],
+                role="verify selected uv",
+                cwd=project_dir,
+                environment=environment,
+                run_command=run_command,
+            )
+            identities = {"uv": _require_uv_identity(completed)}
+            identities.update(
+                _run_pip_smokes(
+                    artifact=None,
+                    core_requirements=None,
+                    tui_requirements=None,
+                    format_paths=format_paths,
+                    project_dir=project_dir,
+                    expected_version=expected_version,
+                    python_version=python_version,
+                    public_index=True,
+                    environment=environment,
+                    run_command=run_command,
+                )
+            )
+            identities.update(
+                _run_uv_tool_smokes(
+                    artifact=None,
+                    core_requirements=None,
+                    tui_requirements=None,
+                    format_paths=format_paths,
+                    project_dir=project_dir,
+                    expected_version=expected_version,
+                    python_version=python_version,
+                    public_index=True,
+                    environment=environment,
+                    run_command=run_command,
+                )
+            )
+        return {
+            "assurance": (
+                "public-index name-resolution check; not exact supplied-artifact evidence"
+            ),
+            "expected_version": expected_version,
+            "identities": {"public_index": identities},
+            "inputs": {},
+            "mode": "public-index",
+            "python": python_version,
+            "public_index": {"checks": dict(SMOKE_CHECKS)},
+            "schema_version": 2,
+        }
+
+    assert resolved_wheel is not None
+    assert resolved_sdist is not None
+    assert resolved_core_requirements is not None
+    assert resolved_tui_requirements is not None
+    preflight_paths = _format_smoke_paths(resolved_work_dir, "preflight")
+    preflight_environment = _sanitized_environment(
+        uv_cache_dir=preflight_paths.uv_cache_dir,
+        uv_python_install_dir=preflight_paths.uv_python_install_dir,
+        tmp_dir=preflight_paths.tmp_dir,
     )
-    with tempfile.TemporaryDirectory(prefix="localql-installed-smoke-") as project_text:
-        project_dir = Path(project_text).resolve()
-        if project_dir.is_relative_to(REPO_ROOT):
-            raise InstalledArtifactVerificationError(
-                "temporary smoke project must be outside the repository source tree"
-            )
-        _write_smoke_project(project_dir)
-        completed = _run_checked(
-            ["uv", "--version"],
-            role="verify selected uv",
-            cwd=project_dir,
-            environment=environment,
-            run_command=run_command,
+    artifact_dir = resolved_wheel.parent
+    _run_checked(
+        [
+            trusted_python,
+            str(REPO_ROOT / "scripts" / "audit_package_contents.py"),
+            str(artifact_dir),
+            "--expected-version",
+            expected_version,
+        ],
+        role="audit local artifact pair",
+        cwd=resolved_work_dir,
+        environment=preflight_environment,
+        run_command=run_command,
+    )
+    _run_checked(
+        [
+            trusted_python,
+            str(REPO_ROOT / "scripts" / "verify_release_artifacts.py"),
+            "inspect",
+            str(artifact_dir),
+            "--expected-version",
+            expected_version,
+        ],
+        role="inspect local artifact pair",
+        cwd=resolved_work_dir,
+        environment=preflight_environment,
+        run_command=run_command,
+    )
+
+    identities: dict[str, dict[str, str]] = {}
+    for format_name, artifact in (
+        ("wheel", resolved_wheel),
+        ("sdist", resolved_sdist),
+    ):
+        format_paths = _format_smoke_paths(resolved_work_dir, format_name)
+        environment = _sanitized_environment(
+            uv_cache_dir=format_paths.uv_cache_dir,
+            uv_python_install_dir=format_paths.uv_python_install_dir,
+            tmp_dir=format_paths.tmp_dir,
         )
-        identities = {"uv": _require_uv_identity(completed)}
-        identities.update(
-            _run_pip_smokes(
-                wheel=resolved_wheel,
-                core_requirements=resolved_core_requirements,
-                tui_requirements=resolved_tui_requirements,
-                work_dir=resolved_work_dir,
-                project_dir=project_dir,
-                expected_version=expected_version,
-                python_version=python_version,
-                public_index=public_index,
+        with tempfile.TemporaryDirectory(prefix="project-", dir=format_paths.root) as project_text:
+            project_dir = Path(project_text).resolve()
+            if project_dir.is_relative_to(REPO_ROOT):
+                raise InstalledArtifactVerificationError(
+                    "temporary smoke project must be outside the repository source tree"
+                )
+            _write_smoke_project(project_dir)
+            completed = _run_checked(
+                ["uv", "--version"],
+                role=f"verify selected uv for {format_name}",
+                cwd=project_dir,
                 environment=environment,
                 run_command=run_command,
             )
-        )
-        identities.update(
-            _run_uv_tool_smokes(
-                wheel=resolved_wheel,
-                core_requirements=resolved_core_requirements,
-                tui_requirements=resolved_tui_requirements,
-                work_dir=resolved_work_dir,
-                project_dir=project_dir,
-                expected_version=expected_version,
-                python_version=python_version,
-                public_index=public_index,
-                environment=environment,
-                run_command=run_command,
+            smoke_identities = {"uv": _require_uv_identity(completed)}
+            smoke_identities.update(
+                _run_pip_smokes(
+                    artifact=artifact,
+                    core_requirements=resolved_core_requirements,
+                    tui_requirements=resolved_tui_requirements,
+                    format_paths=format_paths,
+                    project_dir=project_dir,
+                    expected_version=expected_version,
+                    python_version=python_version,
+                    public_index=False,
+                    environment=environment,
+                    run_command=run_command,
+                )
             )
-        )
+            smoke_identities.update(
+                _run_uv_tool_smokes(
+                    artifact=artifact,
+                    core_requirements=resolved_core_requirements,
+                    tui_requirements=resolved_tui_requirements,
+                    format_paths=format_paths,
+                    project_dir=project_dir,
+                    expected_version=expected_version,
+                    python_version=python_version,
+                    public_index=False,
+                    environment=environment,
+                    run_command=run_command,
+                )
+            )
+        identities[format_name] = smoke_identities
 
     return {
+        "assurance": {
+            "sdist": "current-index consumer install; not reproducible build-custody evidence",
+            "wheel": "exact supplied artifact install",
+        },
         "checks": {
-            "pip_core_api": "passed",
-            "pip_core_query": "passed",
-            "pip_core_version": "passed",
-            "pip_core_without_textual": "passed",
-            "pip_tui_import": "passed",
-            "pip_tui_menu_help": "passed",
-            "uv_tool_core_version": "passed",
-            "uv_tool_tui_import": "passed",
-            "uv_tool_tui_menu_help": "passed",
-            "uv_tool_tui_version": "passed",
+            "preflight": {
+                "package_contents": "passed",
+                "release_pair_inspection": "passed",
+            },
+            "sdist": dict(SMOKE_CHECKS),
+            "wheel": dict(SMOKE_CHECKS),
         },
         "expected_version": expected_version,
         "identities": identities,
         "inputs": _input_evidence(snapshotted_inputs),
-        "mode": "public-index" if public_index else "local-artifact",
+        "mode": "local-artifacts",
         "python": python_version,
-        "schema_version": 1,
+        "schema_version": 2,
     }
 
 
@@ -927,6 +1110,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Verify LocalQL through isolated pip and uv-tool installations."
     )
     parser.add_argument("--wheel", type=Path)
+    parser.add_argument("--sdist", type=Path)
     parser.add_argument("--core-requirements", type=Path)
     parser.add_argument("--tui-requirements", type=Path)
     parser.add_argument("--work-dir", type=Path, required=True)
@@ -949,6 +1133,7 @@ def main(
     try:
         evidence = verify_installed_artifacts(
             wheel=args.wheel,
+            sdist=args.sdist,
             core_requirements=args.core_requirements,
             tui_requirements=args.tui_requirements,
             work_dir=args.work_dir,

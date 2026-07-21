@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Final
 
 import pytest
 
@@ -13,6 +14,23 @@ AUDIT_SCRIPT = REPO_ROOT / "scripts" / "audit_public_release.py"
 EXPECTED_REPOSITORY = "highlordleonas/csvql"
 EXPECTED_AUTHOR_NAME = "highlordleonas"
 EXPECTED_AUTHOR_EMAIL = "richarddemke@gmail.com"
+PROTECTED_PATHS: Final[tuple[str, ...]] = (
+    ".agents",
+    ".agents/instructions.md",
+    "docs/reference/.agents/instructions.md",
+    ".codex",
+    ".codex/session.json",
+    "docs/reference/.codex/session.json",
+    ".internal",
+    ".internal/release-proof.md",
+    "docs/.internal/release-proof.md",
+    "AGENTS.md",
+    "docs/AGENTS.override.md",
+    "docs/CODEX_CAPABILITY_REVIEW.md",
+    "docs/release-candidate-proof-2026-07-03.md",
+    "docs/superpowers",
+    "docs/superpowers/design.md",
+)
 
 
 @pytest.fixture(scope="module")
@@ -104,6 +122,15 @@ def test_current_tracked_paths_fit_positive_public_categories(audit_module: Modu
     assert sum(len(paths) for paths in categories.values()) == len(observed_paths)
 
 
+def test_public_allowlist_has_no_untracked_candidates(
+    audit_module: ModuleType,
+) -> None:
+    observed_paths = frozenset(tracked_paths(REPO_ROOT))
+    missing_public_paths = audit_module.PUBLIC_PATHS - observed_paths
+
+    assert missing_public_paths == frozenset()
+
+
 def test_each_allowed_public_path_has_a_positive_category(
     audit_module: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -122,6 +149,108 @@ def test_each_allowed_public_path_has_a_positive_category(
 def test_unmatched_tracked_path_is_rejected(audit_module: ModuleType) -> None:
     with pytest.raises(audit_module.AuditError, match="unclassified"):
         audit_module.classify_tracked_paths(["README.md", "unmatched/path.txt"])
+
+
+@pytest.mark.parametrize(
+    "lookalike_path",
+    [
+        "docs/.internalized/guide.md",
+        "docs/reference/.agents-guide/instructions.md",
+        "docs/reference/.codex-config/session.json",
+    ],
+)
+def test_immutable_protected_path_check_allows_nonmatching_directory_lookalikes(
+    audit_module: ModuleType,
+    lookalike_path: str,
+) -> None:
+    assert not audit_module.is_immutable_forbidden_path(lookalike_path)
+    with pytest.raises(audit_module.AuditError, match="unclassified"):
+        audit_module.classify_tracked_paths(["README.md", lookalike_path])
+
+
+def test_phantom_allowlist_entry_breaks_the_exact_public_set_contract(
+    audit_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed_paths = frozenset(tracked_paths(REPO_ROOT))
+    phantom_path = "PHANTOM.md"
+    monkeypatch.setattr(
+        audit_module,
+        "PUBLIC_ROOT_FILES",
+        audit_module.PUBLIC_ROOT_FILES | frozenset({phantom_path}),
+    )
+    monkeypatch.setattr(
+        audit_module,
+        "PUBLIC_PATH_CATEGORIES",
+        {
+            **audit_module.PUBLIC_PATH_CATEGORIES,
+            "root": audit_module.PUBLIC_ROOT_FILES | frozenset({phantom_path}),
+        },
+    )
+    monkeypatch.setattr(
+        audit_module,
+        "PUBLIC_PATHS",
+        frozenset().union(*audit_module.PUBLIC_PATH_CATEGORIES.values()),
+    )
+
+    missing_public_paths = audit_module.PUBLIC_PATHS - observed_paths
+
+    assert missing_public_paths == frozenset({phantom_path})
+    assert audit_module.PUBLIC_PATHS != observed_paths
+
+
+@pytest.mark.parametrize("protected_path", PROTECTED_PATHS)
+def test_immutable_protected_paths_cannot_be_allowlisted(
+    audit_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    protected_path: str,
+) -> None:
+    monkeypatch.setattr(
+        audit_module,
+        "PUBLIC_PATHS",
+        audit_module.PUBLIC_PATHS | frozenset({protected_path}),
+    )
+    monkeypatch.setattr(
+        audit_module,
+        "PUBLIC_PATH_CATEGORIES",
+        {
+            **audit_module.PUBLIC_PATH_CATEGORIES,
+            "attacker-controlled": frozenset({protected_path}),
+        },
+    )
+
+    with pytest.raises(audit_module.AuditError, match="protected") as error:
+        audit_module.classify_tracked_paths([protected_path])
+
+    assert protected_path not in str(error.value)
+
+
+@pytest.mark.parametrize("protected_path", PROTECTED_PATHS)
+def test_committed_protected_paths_are_rejected_without_echoing_their_names(
+    audit_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    protected_path: str,
+) -> None:
+    repo_root, base = initialize_repository(tmp_path)
+    commit_file(repo_root, protected_path, "Private release evidence.\n")
+    monkeypatch.setattr(
+        audit_module,
+        "PUBLIC_PATHS",
+        audit_module.PUBLIC_PATHS | frozenset({protected_path}),
+    )
+    monkeypatch.setattr(
+        audit_module,
+        "PUBLIC_PATH_CATEGORIES",
+        {
+            **audit_module.PUBLIC_PATH_CATEGORIES,
+            "attacker-controlled": frozenset({protected_path}),
+        },
+    )
+
+    with pytest.raises(audit_module.AuditError, match="protected") as error:
+        run_audit(audit_module, repo_root, base)
+
+    assert protected_path not in str(error.value)
 
 
 def test_clean_single_commit_with_expected_author_passes(

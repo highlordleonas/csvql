@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import re
 import tarfile
 import zipfile
+from collections.abc import Sequence
 from pathlib import Path
 
 WHEEL_SIZE_LIMIT = 1024 * 1024
@@ -24,16 +26,54 @@ FORBIDDEN_NAMES = {
     "keys.log",
     "csvql_project_pack",
     "csvql_project_pack.zip",
-    "AGENTS.md",
 }
 
 FORBIDDEN_PATH_PARTS = {
     "docs/superpowers",
     "docs/CODEX_CAPABILITY_REVIEW.md",
 }
+PROTECTED_PACKAGE_COMPONENTS = {".internal", ".agents", ".codex"}
+PROTECTED_PACKAGE_NAMES = {"AGENTS.md", "AGENTS.override.md"}
+PROTECTED_PACKAGE_PATHS = {("docs", "CODEX_CAPABILITY_REVIEW.md")}
+DRIVE_PREFIX_RE = re.compile(r"^[A-Za-z]:")
 
 
-def is_release_candidate_proof_entry(parts: list[str]) -> bool:
+def is_protected_package_path(parts: Sequence[str]) -> bool:
+    """Return whether canonical project-relative archive parts are never public."""
+
+    return bool(parts) and (
+        any(part in PROTECTED_PACKAGE_COMPONENTS for part in parts)
+        or tuple(parts[:2]) == ("docs", "superpowers")
+        or any(part in PROTECTED_PACKAGE_NAMES for part in parts)
+        or tuple(parts) in PROTECTED_PACKAGE_PATHS
+        or is_release_candidate_proof_entry(parts)
+    )
+
+
+def is_canonical_package_member_name(name: str) -> bool:
+    """Return whether a package-audit member name has a conservative canonical shape."""
+
+    if not name or name.startswith("/") or "\\" in name or "//" in name:
+        return False
+    canonical_name = name[:-1] if name.endswith("/") else name
+    if not canonical_name or any(not character.isprintable() for character in canonical_name):
+        return False
+    return all(
+        part and part not in {".", ".."} and DRIVE_PREFIX_RE.match(part) is None
+        for part in canonical_name.split("/")
+    )
+
+
+def package_relative_parts(name: str) -> tuple[str, ...]:
+    """Return project-relative parts for a canonical wheel or sdist member name."""
+
+    parts = tuple(name.strip("/").split("/"))
+    if len(parts) > 1 and parts[0].startswith("localql-"):
+        return parts[1:]
+    return parts
+
+
+def is_release_candidate_proof_entry(parts: Sequence[str]) -> bool:
     """Return whether an archive path points at an internal proof packet."""
 
     for index, part in enumerate(parts[:-1]):
@@ -66,12 +106,15 @@ def forbidden_entries(names: list[str]) -> list[str]:
 
     blocked: list[str] = []
     for name in names:
+        if not is_canonical_package_member_name(name):
+            blocked.append(name)
+            continue
         normalized = name.strip("/")
-        parts = normalized.split("/")
+        parts = package_relative_parts(name)
         if any(part in FORBIDDEN_NAMES for part in parts):
             blocked.append(name)
             continue
-        if is_release_candidate_proof_entry(parts):
+        if is_protected_package_path(parts):
             blocked.append(name)
             continue
         if any(forbidden in normalized for forbidden in FORBIDDEN_PATH_PARTS):

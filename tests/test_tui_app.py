@@ -208,6 +208,17 @@ async def _settled_operation_idle(
     pytest.fail("Timed out waiting for TUI operation status to settle.")
 
 
+async def _settled_query_idle(pilot: Pilot[None], app: CSVQLMenuApp) -> None:
+    for _ in range(1800):
+        await pilot.pause(0.05)
+        if app._run_editor_pending or app.state.query_run.is_running:
+            continue
+        await pilot.pause()
+        if not app._run_editor_pending and not app.state.query_run.is_running:
+            return
+    pytest.fail("Timed out waiting for TUI query to finish.")
+
+
 def _create_csv(tmp_path: Path, filename: str, content: str) -> Path:
     path = tmp_path / filename
     path.write_text(content, encoding="utf-8")
@@ -6042,7 +6053,7 @@ def test_successful_query_populates_results_datatable(tmp_path: Path) -> None:
             sql = app.query_one("#sql", TextArea)
             sql.load_text("SELECT * FROM customers ORDER BY customer_id")
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
             results = app.query_one("#results", DataTable)
             status = app.query_one("#status", Static).content
             return (
@@ -6430,7 +6441,7 @@ def test_starter_picker_adds_column_templates_after_columns_are_loaded(
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("c")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
             await pilot.press("x")
             await pilot.pause()
             table = app.screen.query_one("#sql-assist-options", DataTable)

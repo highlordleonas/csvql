@@ -84,18 +84,19 @@ jobs:
           set -euo pipefail
           uv python install "${ARTIFACT_PYTHON}"
           mkdir -p output/ci-release-dist
+          uv run --frozen --no-sync python scripts/audit_public_release.py --repo . --expected-repository "${GITHUB_REPOSITORY}" --candidate "${GITHUB_SHA}" --tree-only
           uv build --python "${ARTIFACT_PYTHON}" --sdist --wheel \
+            --no-create-gitignore \
             --out-dir output/ci-release-dist \
             --build-constraints scripts/release-build-constraints.txt \
             --require-hashes
           uv run --frozen --no-sync python scripts/audit_package_contents.py \
-            output/ci-release-dist --expected-version 1.0.4
+            output/ci-release-dist --expected-version 1.0.5
           uv run --frozen --no-sync python scripts/verify_release_artifacts.py \
-            output/ci-release-dist --expected-version 1.0.4 \
-            --manifest output/ci-release-artifact-manifest.json
+            inspect output/ci-release-dist --expected-version 1.0.5
           uvx --from twine==6.2.0 twine check \
-            output/ci-release-dist/localql-1.0.4-py3-none-any.whl \
-            output/ci-release-dist/localql-1.0.4.tar.gz
+            output/ci-release-dist/localql-1.0.5-py3-none-any.whl \
+            output/ci-release-dist/localql-1.0.5.tar.gz
           uv --version > output/ci-release-uv-version.txt
           uv run --python "${ARTIFACT_PYTHON}" --no-sync python --version \
             > output/ci-release-python-version.txt

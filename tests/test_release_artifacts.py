@@ -6,6 +6,7 @@ import importlib
 import io
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -22,10 +23,13 @@ import pytest
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "verify_release_artifacts.py"
 sys.path.insert(0, str(MODULE_PATH.parents[1]))
-EXPECTED_WHEEL = "localql-1.0.4-py3-none-any.whl"
-EXPECTED_SDIST = "localql-1.0.4.tar.gz"
-DIST_INFO = "localql-1.0.4.dist-info"
-SDIST_ROOT = "localql-1.0.4"
+EXPECTED_WHEEL = "localql-1.0.5-py3-none-any.whl"
+EXPECTED_SDIST = "localql-1.0.5.tar.gz"
+DIST_INFO = "localql-1.0.5.dist-info"
+SDIST_ROOT = "localql-1.0.5"
+SOURCE_COMMIT = "a" * 40
+TAG_OBJECT = "b" * 40
+CONSTRAINTS_DIGEST = "c" * 64
 
 EXPECTED_METADATA_KEYS = (
     "Name",
@@ -42,7 +46,7 @@ EXPECTED_METADATA_KEYS = (
 
 BASE_METADATA: dict[str, list[str]] = {
     "Name": ["localql"],
-    "Version": ["1.0.4"],
+    "Version": ["1.0.5"],
     "Summary": ["Local CSV analytics"],
     "Requires-Python": [">=3.11,<3.15"],
     "Requires-Dist": ["duckdb<2,>=1.5.0", "typer>=0.12.3"],
@@ -109,7 +113,7 @@ def wheel_entries(
     record: str = "record-one\n",
 ) -> list[tuple[str | zipfile.ZipInfo, bytes | str]]:
     entries: list[tuple[str | zipfile.ZipInfo, bytes | str]] = [
-        ("csvql/__init__.py", '__version__ = "1.0.4"\n'),
+        ("csvql/__init__.py", '__version__ = "1.0.5"\n'),
         (f"{DIST_INFO}/WHEEL", "Wheel-Version: 1.0\n"),
         (f"{DIST_INFO}/RECORD", record),
     ]
@@ -172,6 +176,74 @@ def write_artifact_pair(
     return wheel, sdist
 
 
+def write_custody_evidence(directory: Path) -> dict[str, Path]:
+    directory.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "python_identity_file": directory / "python-identity.txt",
+        "uv_identity_file": directory / "uv-identity.txt",
+        "build_constraints_digest_file": directory / "release-build-constraints.sha256",
+    }
+    paths["python_identity_file"].write_text("CPython 3.14.6\n", encoding="utf-8", newline="\n")
+    paths["uv_identity_file"].write_text("uv 0.8.22\n", encoding="utf-8", newline="\n")
+    paths["build_constraints_digest_file"].write_text(
+        f"{CONSTRAINTS_DIGEST}  scripts/release-build-constraints.txt\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return paths
+
+
+def custody_cli_arguments(
+    mode: str,
+    dist_dir: Path,
+    evidence: dict[str, Path],
+    manifest: Path,
+    sha256sums: Path,
+) -> list[str]:
+    return [
+        "verify_release_artifacts.py",
+        mode,
+        str(dist_dir),
+        "--expected-version",
+        "1.0.5",
+        "--manifest",
+        str(manifest),
+        "--sha256sums",
+        str(sha256sums),
+        "--source-commit",
+        SOURCE_COMMIT,
+        "--tag-name",
+        "v1.0.5",
+        "--tag-object",
+        TAG_OBJECT,
+        "--peeled-commit",
+        SOURCE_COMMIT,
+        "--python-identity-file",
+        str(evidence["python_identity_file"]),
+        "--uv-identity-file",
+        str(evidence["uv_identity_file"]),
+        "--build-constraints-digest-file",
+        str(evidence["build_constraints_digest_file"]),
+    ]
+
+
+def invoke_custody_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    dist_dir: Path,
+    evidence: dict[str, Path],
+    manifest: Path,
+    sha256sums: Path,
+) -> None:
+    module = release_module()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        custody_cli_arguments(mode, dist_dir, evidence, manifest, sha256sums),
+    )
+    assert module.main() is None
+
+
 def invoke_wheel_archive_interface(
     module: ModuleType,
     interface: str,
@@ -181,7 +253,7 @@ def invoke_wheel_archive_interface(
     if interface == "artifact-pair":
         sdist = wheel.parent / EXPECTED_SDIST
         write_sdist(sdist, metadata_bytes())
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.5")
         return
     if interface == "semantic-manifest":
         module.semantic_wheel_manifest(wheel)
@@ -245,11 +317,12 @@ def test_public_interfaces_and_constants_are_exact(tmp_path: Path) -> None:
     assert MODULE_PATH.is_file(), "release artifact verifier must exist"
     from scripts.verify_release_artifacts import (
         ArtifactSet,
+        create_custody_files,
         metadata_contract,
         semantic_wheel_manifest,
         verify_artifact_pair,
+        verify_custody_files,
         verify_rebuilt_wheel,
-        write_artifact_manifest,
     )
 
     wheel, sdist = write_artifact_pair(tmp_path)
@@ -263,7 +336,8 @@ def test_public_interfaces_and_constants_are_exact(tmp_path: Path) -> None:
     assert callable(semantic_wheel_manifest)
     assert callable(verify_artifact_pair)
     assert callable(verify_rebuilt_wheel)
-    assert callable(write_artifact_manifest)
+    assert callable(create_custody_files)
+    assert callable(verify_custody_files)
 
     module = release_module()
     assert module.METADATA_KEYS == EXPECTED_METADATA_KEYS
@@ -313,7 +387,7 @@ def test_artifact_pair_rejects_each_metadata_contract_mismatch(
     )
 
     with pytest.raises(ValueError, match="metadata"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.5")
 
 
 def test_artifact_pair_rejects_long_description_mismatch(tmp_path: Path) -> None:
@@ -324,14 +398,14 @@ def test_artifact_pair_rejects_long_description_mismatch(tmp_path: Path) -> None
     )
 
     with pytest.raises(ValueError, match="long description"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.5")
 
 
 def test_artifact_pair_accepts_exact_metadata_and_entry_point(tmp_path: Path) -> None:
     module = release_module()
     wheel, sdist = write_artifact_pair(tmp_path)
 
-    assert module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4") is None
+    assert module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.5") is None
 
 
 @pytest.mark.parametrize(
@@ -351,7 +425,7 @@ def test_artifact_pair_rejects_missing_wrong_or_duplicate_entry_point(
     wheel, sdist = write_artifact_pair(tmp_path, entry_points=entry_points)
 
     with pytest.raises(ValueError, match="entry point"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.5")
 
 
 @pytest.mark.parametrize("bad_kind", ["duplicate", "noncanonical", "special"])
@@ -383,7 +457,7 @@ def test_artifact_pair_rejects_ambiguous_or_unsafe_metadata_members(
     write_sdist(sdist, metadata_bytes())
 
     with pytest.raises(ValueError):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.5")
 
 
 def test_metadata_contract_rejects_duplicate_headers() -> None:
@@ -413,7 +487,7 @@ def test_sdist_requires_exactly_one_two_component_pkg_info(tmp_path: Path) -> No
     write_sdist(sdist, metadata_bytes(), extra_entries=[(extra, metadata_bytes())])
 
     with pytest.raises(ValueError, match="PKG-INFO"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.5")
 
 
 def test_semantic_manifest_ignores_timestamp_order_and_record(tmp_path: Path) -> None:
@@ -487,11 +561,98 @@ def test_semantic_manifest_rejects_duplicate_noncanonical_or_special_members(
         module.semantic_wheel_manifest(wheel)
 
 
-def test_artifact_manifest_is_exact_deterministic_json_with_final_newline(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "archive_kind, protected_member",
+    [
+        ("wheel", ".internal"),
+        ("wheel", ".internal/release-proof.md"),
+        ("wheel", "docs/superpowers"),
+        ("wheel", "docs/superpowers/design.md"),
+        ("wheel", "docs/CODEX_CAPABILITY_REVIEW.md"),
+        ("wheel", "docs/release-candidate-proof-2026-07-03.md"),
+        ("wheel", "AGENTS.md"),
+        ("wheel", "docs/AGENTS.override.md"),
+        ("wheel", ".agents/instructions.md"),
+        ("wheel", ".codex/session.json"),
+        ("wheel", "csvql/.internal/secret.py"),
+        ("wheel", "csvql/.agents/instructions.md"),
+        ("wheel", "csvql/.codex/session.json"),
+        ("sdist", ".internal"),
+        ("sdist", ".internal/release-proof.md"),
+        ("sdist", "docs/superpowers"),
+        ("sdist", "docs/superpowers/design.md"),
+        ("sdist", "docs/CODEX_CAPABILITY_REVIEW.md"),
+        ("sdist", "docs/release-candidate-proof-2026-07-03.md"),
+        ("sdist", "AGENTS.md"),
+        ("sdist", "docs/AGENTS.override.md"),
+        ("sdist", ".agents/instructions.md"),
+        ("sdist", ".codex/session.json"),
+        ("sdist", "docs/.internal/secret.md"),
+        ("sdist", "docs/reference/.agents/instructions.md"),
+        ("sdist", "examples/.codex/session.json"),
+    ],
+)
+def test_artifact_pair_rejects_canonical_protected_members(
+    tmp_path: Path,
+    archive_kind: str,
+    protected_member: str,
+) -> None:
     module = release_module()
+    wheel, sdist = write_artifact_pair(tmp_path)
+    if archive_kind == "wheel":
+        entries = wheel_entries(metadata_bytes())
+        entries.append((protected_member, "private\n"))
+        write_wheel(wheel, entries)
+    else:
+        extra_info = tarfile.TarInfo(f"{SDIST_ROOT}/{protected_member}")
+        write_sdist(sdist, metadata_bytes(), extra_entries=[(extra_info, b"private\n")])
+
+    with pytest.raises(ValueError, match="protected") as error:
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.5")
+
+    assert protected_member not in str(error.value)
+
+
+def test_inspect_creates_no_custody_files(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = release_module()
+    dist_dir = tmp_path / "dist"
+    write_artifact_pair(dist_dir)
+    manifest = tmp_path / "manifest.json"
+    sha256sums = tmp_path / "SHA256SUMS.txt"
+    before = tuple(sorted(path.name for path in dist_dir.iterdir()))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_release_artifacts.py",
+            "inspect",
+            str(dist_dir),
+            "--expected-version",
+            "1.0.5",
+        ],
+    )
+
+    assert module.main() is None
+    assert capsys.readouterr().out == (
+        "Release artifact inspection passed: 1 wheel(s), 1 sdist(s).\n"
+    )
+    assert tuple(sorted(path.name for path in dist_dir.iterdir())) == before
+    assert not manifest.exists()
+    assert not sha256sums.exists()
+
+
+def test_create_manifest_schema_and_derived_sums_are_exact_and_deterministic(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     wheel, sdist = write_artifact_pair(tmp_path / "dist")
-    destination = tmp_path / "artifact-manifest.json"
-    artifacts = module.ArtifactSet(wheel, sdist)
+    evidence = write_custody_evidence(tmp_path / "evidence")
+    manifest = tmp_path / "manifest.json"
+    sha256sums = tmp_path / "SHA256SUMS.txt"
     expected = {
         "artifacts": [
             {
@@ -506,14 +667,47 @@ def test_artifact_manifest_is_exact_deterministic_json_with_final_newline(tmp_pa
             },
         ],
         "distribution": "localql",
-        "version": "1.0.4",
+        "schema_version": 1,
+        "source": {
+            "commit": SOURCE_COMMIT,
+            "peeled_commit": SOURCE_COMMIT,
+            "tag": "v1.0.5",
+            "tag_object": TAG_OBJECT,
+        },
+        "toolchain": {
+            "build_constraints_sha256": CONSTRAINTS_DIGEST,
+            "python": "CPython 3.14.6",
+            "uv": "uv 0.8.22",
+        },
+        "version": "1.0.5",
     }
 
-    assert module.write_artifact_manifest(artifacts, destination) is None
+    invoke_custody_cli(
+        monkeypatch,
+        "create-manifest",
+        wheel.parent,
+        evidence,
+        manifest,
+        sha256sums,
+    )
     expected_text = json.dumps(expected, indent=2, sort_keys=True) + "\n"
-    assert destination.read_text(encoding="utf-8") == expected_text
-    module.write_artifact_manifest(artifacts, destination)
-    assert destination.read_text(encoding="utf-8") == expected_text
+    expected_sums = (
+        f"{expected['artifacts'][0]['sha256']}  {EXPECTED_WHEEL}\n"
+        f"{expected['artifacts'][1]['sha256']}  {EXPECTED_SDIST}\n"
+    )
+    assert manifest.read_text(encoding="utf-8") == expected_text
+    assert sha256sums.read_text(encoding="utf-8") == expected_sums
+
+    invoke_custody_cli(
+        monkeypatch,
+        "create-manifest",
+        wheel.parent,
+        evidence,
+        manifest,
+        sha256sums,
+    )
+    assert manifest.read_text(encoding="utf-8") == expected_text
+    assert sha256sums.read_text(encoding="utf-8") == expected_sums
 
 
 class TrackingReader(io.BytesIO):
@@ -545,40 +739,37 @@ def test_sha256_file_streams_in_one_mib_chunks() -> None:
     assert len(path.reader.read_sizes) == 3
 
 
-def test_cli_selects_exact_pair_repeated_rebuilds_and_manifest(
+def test_verify_accepts_untampered_transported_bundle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    module = release_module()
-    dist_dir = tmp_path / "dist"
-    wheel, _ = write_artifact_pair(dist_dir)
-    rebuilt_one = tmp_path / "rebuilt-one" / EXPECTED_WHEEL
-    rebuilt_two = tmp_path / "rebuilt-two" / EXPECTED_WHEEL
-    entries = wheel_entries(metadata_bytes())
-    write_wheel(rebuilt_one, entries, timestamp=(2025, 1, 1, 0, 0, 0))
-    write_wheel(rebuilt_two, list(reversed(entries)), timestamp=(2026, 1, 1, 0, 0, 0))
+    source_dist = tmp_path / "source-dist"
+    wheel, sdist = write_artifact_pair(source_dist)
+    source_evidence = write_custody_evidence(tmp_path / "source-evidence")
     manifest = tmp_path / "manifest.json"
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "verify_release_artifacts.py",
-            str(dist_dir),
-            "--expected-version",
-            "1.0.4",
-            "--rebuilt-wheel",
-            str(rebuilt_one),
-            "--rebuilt-wheel",
-            str(rebuilt_two),
-            "--manifest",
-            str(manifest),
-        ],
+    sha256sums = tmp_path / "SHA256SUMS.txt"
+    invoke_custody_cli(
+        monkeypatch,
+        "create-manifest",
+        source_dist,
+        source_evidence,
+        manifest,
+        sha256sums,
     )
 
-    assert module.main() is None
-    assert manifest.is_file()
-    assert (
-        json.loads(manifest.read_text(encoding="utf-8"))["artifacts"][0]["filename"] == wheel.name
+    transported_dist = tmp_path / "transported-dist"
+    transported_dist.mkdir()
+    shutil.copy2(wheel, transported_dist / wheel.name)
+    shutil.copy2(sdist, transported_dist / sdist.name)
+    transported_evidence = write_custody_evidence(tmp_path / "transported-evidence")
+
+    invoke_custody_cli(
+        monkeypatch,
+        "verify-manifest",
+        transported_dist,
+        transported_evidence,
+        manifest,
+        sha256sums,
     )
 
 
@@ -592,8 +783,10 @@ def test_cli_module_executes_as_a_standalone_script() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert "--rebuilt-wheel" in completed.stdout
-    assert "--manifest" in completed.stdout
+    assert "inspect" in completed.stdout
+    assert "create-manifest" in completed.stdout
+    assert "verify-manifest" in completed.stdout
+    assert "--rebuilt-wheel" not in completed.stdout
 
 
 def test_cli_rejects_extra_archive_in_exact_selection(
@@ -608,16 +801,487 @@ def test_cli_rejects_extra_archive_in_exact_selection(
         "argv",
         [
             "verify_release_artifacts.py",
+            "inspect",
             str(tmp_path),
             "--expected-version",
-            "1.0.4",
-            "--manifest",
-            str(tmp_path / "manifest.json"),
+            "1.0.5",
         ],
     )
 
-    with pytest.raises(SystemExit, match="exact release archives"):
+    with pytest.raises(SystemExit, match="exact release artifacts"):
         module.main()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing-top-key",
+        "extra-top-key",
+        "wrong-schema-type",
+        "extra-source-key",
+        "missing-toolchain-key",
+        "extra-artifact-key",
+        "reversed-artifacts",
+        "boolean-size",
+        "string-size",
+        "uppercase-digest",
+        "unexpected-filename",
+    ],
+)
+def test_verify_rejects_strict_manifest_schema_types_keys_and_order(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    write_artifact_pair(dist_dir)
+    evidence = write_custody_evidence(tmp_path / "evidence")
+    manifest = tmp_path / "manifest.json"
+    sha256sums = tmp_path / "SHA256SUMS.txt"
+    invoke_custody_cli(
+        monkeypatch,
+        "create-manifest",
+        dist_dir,
+        evidence,
+        manifest,
+        sha256sums,
+    )
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    if mutation == "missing-top-key":
+        del payload["distribution"]
+    elif mutation == "extra-top-key":
+        payload["unexpected"] = "rejected"
+    elif mutation == "wrong-schema-type":
+        payload["schema_version"] = True
+    elif mutation == "extra-source-key":
+        payload["source"]["unexpected"] = "rejected"
+    elif mutation == "missing-toolchain-key":
+        del payload["toolchain"]["uv"]
+    elif mutation == "extra-artifact-key":
+        payload["artifacts"][0]["unexpected"] = "rejected"
+    elif mutation == "reversed-artifacts":
+        payload["artifacts"].reverse()
+    elif mutation == "boolean-size":
+        payload["artifacts"][0]["size"] = True
+    elif mutation == "string-size":
+        payload["artifacts"][0]["size"] = str(payload["artifacts"][0]["size"])
+    elif mutation == "uppercase-digest":
+        payload["artifacts"][0]["sha256"] = payload["artifacts"][0]["sha256"].upper()
+    else:
+        payload["artifacts"][0]["filename"] = "localql-aliased.whl"
+    manifest.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="manifest"):
+        invoke_custody_cli(
+            monkeypatch,
+            "verify-manifest",
+            dist_dir,
+            evidence,
+            manifest,
+            sha256sums,
+        )
+
+
+@pytest.mark.parametrize(
+    "malformation", ["duplicate-key", "invalid-json", "invalid-utf8", "oversized"]
+)
+def test_verify_rejects_duplicate_malformed_invalid_utf8_or_oversized_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    malformation: str,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    write_artifact_pair(dist_dir)
+    evidence = write_custody_evidence(tmp_path / "evidence")
+    manifest = tmp_path / "manifest.json"
+    sha256sums = tmp_path / "SHA256SUMS.txt"
+    invoke_custody_cli(
+        monkeypatch,
+        "create-manifest",
+        dist_dir,
+        evidence,
+        manifest,
+        sha256sums,
+    )
+    if malformation == "duplicate-key":
+        original = manifest.read_text(encoding="utf-8")
+        manifest.write_text(
+            original.replace(
+                '  "distribution":', '  "distribution": "localql",\n  "distribution":', 1
+            ),
+            encoding="utf-8",
+        )
+    elif malformation == "invalid-json":
+        manifest.write_text('{"pypi-sensitive-token":', encoding="utf-8")
+    elif malformation == "invalid-utf8":
+        manifest.write_bytes(b"\xff\xfe")
+    else:
+        manifest.write_bytes(b"{" + b" " * (64 * 1024) + b"}")
+
+    with pytest.raises(SystemExit) as error_info:
+        invoke_custody_cli(
+            monkeypatch,
+            "verify-manifest",
+            dist_dir,
+            evidence,
+            manifest,
+            sha256sums,
+        )
+
+    assert "pypi-sensitive-token" not in str(error_info.value)
+
+
+@pytest.mark.parametrize(
+    "tamper_kind",
+    [
+        "source-context",
+        "tag-context",
+        "python-evidence",
+        "constraints-evidence",
+        "sums",
+        "manifest",
+        "artifact",
+    ],
+)
+def test_verify_rejects_context_evidence_sums_manifest_and_artifact_tampering(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    tamper_kind: str,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    wheel, _ = write_artifact_pair(dist_dir)
+    evidence = write_custody_evidence(tmp_path / "evidence")
+    manifest = tmp_path / "manifest.json"
+    sha256sums = tmp_path / "SHA256SUMS.txt"
+    invoke_custody_cli(
+        monkeypatch,
+        "create-manifest",
+        dist_dir,
+        evidence,
+        manifest,
+        sha256sums,
+    )
+    arguments = custody_cli_arguments(
+        "verify-manifest",
+        dist_dir,
+        evidence,
+        manifest,
+        sha256sums,
+    )
+    if tamper_kind == "source-context":
+        changed = "d" * 40
+        arguments[arguments.index("--source-commit") + 1] = changed
+        arguments[arguments.index("--peeled-commit") + 1] = changed
+    elif tamper_kind == "tag-context":
+        arguments[arguments.index("--tag-name") + 1] = "v9.9.9"
+    elif tamper_kind == "python-evidence":
+        evidence["python_identity_file"].write_text("CPython changed\n", encoding="utf-8")
+    elif tamper_kind == "constraints-evidence":
+        evidence["build_constraints_digest_file"].write_text(
+            f"{'d' * 64}  scripts/release-build-constraints.txt\n",
+            encoding="utf-8",
+        )
+    elif tamper_kind == "sums":
+        sha256sums.write_text(f"{'0' * 64}  {EXPECTED_WHEEL}\n", encoding="utf-8")
+    elif tamper_kind == "manifest":
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        payload["source"]["commit"] = "d" * 40
+        manifest.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    else:
+        wheel.write_bytes(wheel.read_bytes() + b"transport tamper")
+    monkeypatch.setattr(sys, "argv", arguments)
+
+    with pytest.raises(SystemExit):
+        release_module().main()
+
+
+@pytest.mark.parametrize(
+    "invalid_context",
+    ["uppercase-source", "source-peeled-disagreement", "tag-object-equals-commit"],
+)
+def test_create_rejects_invalid_custody_identity_relationships(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    invalid_context: str,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    write_artifact_pair(dist_dir)
+    evidence = write_custody_evidence(tmp_path / "evidence")
+    manifest = tmp_path / "manifest.json"
+    sha256sums = tmp_path / "SHA256SUMS.txt"
+    arguments = custody_cli_arguments(
+        "create-manifest",
+        dist_dir,
+        evidence,
+        manifest,
+        sha256sums,
+    )
+    if invalid_context == "uppercase-source":
+        arguments[arguments.index("--source-commit") + 1] = "A" * 40
+    elif invalid_context == "source-peeled-disagreement":
+        arguments[arguments.index("--peeled-commit") + 1] = "d" * 40
+    else:
+        arguments[arguments.index("--tag-object") + 1] = SOURCE_COMMIT
+    monkeypatch.setattr(sys, "argv", arguments)
+
+    with pytest.raises(SystemExit):
+        release_module().main()
+
+    assert not manifest.exists()
+    assert not sha256sums.exists()
+
+
+@pytest.mark.parametrize(
+    "invalid_evidence",
+    ["identity-empty", "identity-multiline", "identity-control", "constraints-format", "symlink"],
+)
+def test_create_rejects_malformed_or_nonregular_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    invalid_evidence: str,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    write_artifact_pair(dist_dir)
+    evidence = write_custody_evidence(tmp_path / "evidence")
+    python_identity = evidence["python_identity_file"]
+    if invalid_evidence == "identity-empty":
+        python_identity.write_text("", encoding="utf-8")
+    elif invalid_evidence == "identity-multiline":
+        python_identity.write_text("first\nsecond\n", encoding="utf-8")
+    elif invalid_evidence == "identity-control":
+        python_identity.write_bytes(b"python\x1bidentity\n")
+    elif invalid_evidence == "constraints-format":
+        evidence["build_constraints_digest_file"].write_text(
+            f"{CONSTRAINTS_DIGEST} scripts/release-build-constraints.txt\n",
+            encoding="utf-8",
+        )
+    else:
+        target = tmp_path / "python-target.txt"
+        target.write_text("CPython 3.14.6\n", encoding="utf-8")
+        python_identity.unlink()
+        python_identity.symlink_to(target)
+    manifest = tmp_path / "manifest.json"
+    sha256sums = tmp_path / "SHA256SUMS.txt"
+
+    with pytest.raises(SystemExit):
+        invoke_custody_cli(
+            monkeypatch,
+            "create-manifest",
+            dist_dir,
+            evidence,
+            manifest,
+            sha256sums,
+        )
+
+    assert not manifest.exists()
+    assert not sha256sums.exists()
+
+
+@pytest.mark.parametrize("mode", ["inspect", "create-manifest", "verify-manifest"])
+@pytest.mark.parametrize(
+    "directory_problem", ["extra", "missing", "symlink", "hardlink-alias", "directory"]
+)
+def test_all_modes_reject_extra_missing_aliased_or_nonregular_directory_entries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mode: str,
+    directory_problem: str,
+) -> None:
+    module = release_module()
+    dist_dir = tmp_path / "dist"
+    wheel, sdist = write_artifact_pair(dist_dir)
+    if directory_problem == "extra":
+        (dist_dir / "unexpected.txt").write_text("extra\n", encoding="utf-8")
+    elif directory_problem == "missing":
+        sdist.unlink()
+    elif directory_problem == "symlink":
+        target = tmp_path / EXPECTED_WHEEL
+        shutil.copy2(wheel, target)
+        wheel.unlink()
+        wheel.symlink_to(target)
+    elif directory_problem == "hardlink-alias":
+        sdist.unlink()
+        os.link(wheel, sdist)
+    else:
+        wheel.unlink()
+        wheel.mkdir()
+    if mode == "inspect":
+        arguments = [
+            "verify_release_artifacts.py",
+            mode,
+            str(dist_dir),
+            "--expected-version",
+            "1.0.5",
+        ]
+    else:
+        evidence = write_custody_evidence(tmp_path / "evidence")
+        arguments = custody_cli_arguments(
+            mode,
+            dist_dir,
+            evidence,
+            tmp_path / "manifest.json",
+            tmp_path / "SHA256SUMS.txt",
+        )
+    monkeypatch.setattr(sys, "argv", arguments)
+
+    with pytest.raises(SystemExit, match="exact release artifacts"):
+        module.main()
+
+
+@pytest.mark.parametrize("destination_kind", ["manifest", "sha256sums"])
+def test_create_rejects_symlink_destinations_without_touching_targets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    destination_kind: str,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    write_artifact_pair(dist_dir)
+    evidence = write_custody_evidence(tmp_path / "evidence")
+    manifest = tmp_path / "manifest.json"
+    sha256sums = tmp_path / "SHA256SUMS.txt"
+    destination = manifest if destination_kind == "manifest" else sha256sums
+    target = tmp_path / f"{destination_kind}-target.txt"
+    target.write_text("preserve me\n", encoding="utf-8")
+    destination.symlink_to(target)
+
+    with pytest.raises(SystemExit):
+        invoke_custody_cli(
+            monkeypatch,
+            "create-manifest",
+            dist_dir,
+            evidence,
+            manifest,
+            sha256sums,
+        )
+
+    assert target.read_text(encoding="utf-8") == "preserve me\n"
+    assert destination.is_symlink()
+
+
+def test_create_rejects_manifest_and_sums_destination_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    write_artifact_pair(dist_dir)
+    evidence = write_custody_evidence(tmp_path / "evidence")
+    destination = tmp_path / "custody.txt"
+
+    with pytest.raises(SystemExit):
+        invoke_custody_cli(
+            monkeypatch,
+            "create-manifest",
+            dist_dir,
+            evidence,
+            destination,
+            destination,
+        )
+
+    assert not destination.exists()
+
+
+def test_create_rejects_normalized_manifest_and_sums_destination_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    write_artifact_pair(dist_dir)
+    evidence = write_custody_evidence(tmp_path / "evidence")
+    (tmp_path / "nested").mkdir()
+    manifest = tmp_path / "nested" / ".." / "custody.txt"
+    sha256sums = tmp_path / "custody.txt"
+
+    with pytest.raises(SystemExit):
+        invoke_custody_cli(
+            monkeypatch,
+            "create-manifest",
+            dist_dir,
+            evidence,
+            manifest,
+            sha256sums,
+        )
+
+    assert not sha256sums.exists()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["inspect", "dist", "--expected-version", "1.0.5", "--manifest", "manifest.json"],
+        ["create-manifest", "dist", "--expected-version", "1.0.5"],
+        ["verify-manifest", "dist", "--expected-version", "1.0.5", "--rebuilt-wheel", "wheel"],
+        ["verify-rebuild", "dist", "--expected-version", "1.0.5"],
+    ],
+)
+def test_cli_requires_and_rejects_mode_specific_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: list[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["verify_release_artifacts.py", *arguments])
+
+    with pytest.raises(SystemExit) as error_info:
+        release_module().main()
+
+    assert error_info.value.code == 2
+
+
+def test_verify_rebuild_cli_accepts_only_a_semantically_identical_wheel(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    rebuilt_dir = tmp_path / "rebuilt"
+    write_artifact_pair(dist_dir)
+    rebuilt_wheel = rebuilt_dir / EXPECTED_WHEEL
+    write_wheel(rebuilt_wheel, wheel_entries(metadata_bytes()))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_release_artifacts.py",
+            "verify-rebuild",
+            str(dist_dir),
+            "--expected-version",
+            "1.0.5",
+            "--rebuilt-wheel",
+            str(rebuilt_wheel),
+        ],
+    )
+
+    assert release_module().main() is None
+    assert capsys.readouterr().out == (
+        "Release artifact rebuild verification passed: 1 wheel(s), 1 sdist(s).\n"
+    )
+
+
+def test_verify_rebuild_cli_rejects_divergent_executable_content(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    rebuilt_dir = tmp_path / "rebuilt"
+    write_artifact_pair(dist_dir)
+    rebuilt_wheel = rebuilt_dir / EXPECTED_WHEEL
+    divergent_entries = wheel_entries(metadata_bytes())
+    divergent_entries.append(("csvql/divergent.py", "DIVERGED = True\n"))
+    write_wheel(rebuilt_wheel, divergent_entries)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_release_artifacts.py",
+            "verify-rebuild",
+            str(dist_dir),
+            "--expected-version",
+            "1.0.5",
+            "--rebuilt-wheel",
+            str(rebuilt_wheel),
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="semantic member or content mismatch"):
+        release_module().main()
 
 
 def test_failures_do_not_expose_member_contents_or_terminal_controls(tmp_path: Path) -> None:
@@ -677,90 +1341,6 @@ def test_semantic_manifest_excludes_only_exact_canonical_record(tmp_path: Path) 
         module.semantic_wheel_manifest(wheel)
 
 
-@pytest.mark.parametrize("artifact_name", [EXPECTED_WHEEL, EXPECTED_SDIST])
-def test_manifest_rejects_direct_input_path_alias(
-    tmp_path: Path,
-    artifact_name: str,
-) -> None:
-    module = release_module()
-    wheel, sdist = write_artifact_pair(tmp_path)
-    artifacts = module.ArtifactSet(wheel, sdist)
-    destination = tmp_path / artifact_name
-    before = destination.read_bytes()
-
-    with pytest.raises(ValueError, match="alias of a release artifact"):
-        module.write_artifact_manifest(artifacts, destination)
-
-    assert destination.read_bytes() == before
-
-
-def test_manifest_rejects_symlink_destination_without_touching_target(tmp_path: Path) -> None:
-    module = release_module()
-    wheel, sdist = write_artifact_pair(tmp_path / "dist")
-    artifacts = module.ArtifactSet(wheel, sdist)
-    target = tmp_path / "existing-manifest.json"
-    target.write_text("preserve me\n", encoding="utf-8")
-    destination = tmp_path / "artifact-manifest.json"
-    destination.symlink_to(target)
-
-    with pytest.raises(ValueError, match="symlink"):
-        module.write_artifact_manifest(artifacts, destination)
-
-    assert target.read_text(encoding="utf-8") == "preserve me\n"
-    assert destination.is_symlink()
-
-
-@pytest.mark.skipif(not hasattr(os, "link"), reason="hardlinks are unavailable")
-def test_manifest_rejects_hardlink_alias_without_touching_artifact(tmp_path: Path) -> None:
-    module = release_module()
-    wheel, sdist = write_artifact_pair(tmp_path / "dist")
-    artifacts = module.ArtifactSet(wheel, sdist)
-    destination = tmp_path / "artifact-manifest.json"
-    before = wheel.read_bytes()
-    os.link(wheel, destination)
-
-    with pytest.raises(ValueError, match="alias of a release artifact"):
-        module.write_artifact_manifest(artifacts, destination)
-
-    assert wheel.read_bytes() == before
-    assert destination.read_bytes() == before
-
-
-def test_manifest_rejects_special_file_destination(tmp_path: Path) -> None:
-    module = release_module()
-    wheel, sdist = write_artifact_pair(tmp_path / "dist")
-    destination = tmp_path / "artifact-manifest.json"
-    destination.mkdir()
-
-    with pytest.raises(ValueError, match="non-symlink regular file"):
-        module.write_artifact_manifest(module.ArtifactSet(wheel, sdist), destination)
-
-
-def test_manifest_replace_failure_preserves_destination_and_removes_temporary_file(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    module = release_module()
-    wheel, sdist = write_artifact_pair(tmp_path / "dist")
-    destination = tmp_path / "artifact-manifest.json"
-    destination.write_text("previous complete manifest\n", encoding="utf-8")
-
-    def fail_replace(source: str | Path, target: str | Path) -> None:
-        source_path = Path(source)
-        assert source_path.parent == destination.parent
-        assert source_path.is_file()
-        assert Path(target) == destination
-        raise OSError("synthetic atomic replace failure")
-
-    monkeypatch.setattr(os, "replace", fail_replace)
-
-    with pytest.raises(ValueError, match="write the release artifact manifest"):
-        module.write_artifact_manifest(module.ArtifactSet(wheel, sdist), destination)
-
-    assert destination.read_text(encoding="utf-8") == "previous complete manifest\n"
-    assert list(tmp_path.glob(f".{destination.name}.*.tmp")) == []
-
-
 def test_archive_limits_reuse_artifact_compressed_size_constants() -> None:
     audit_module = importlib.import_module("scripts.audit_package_contents")
     module = release_module()
@@ -776,7 +1356,6 @@ def test_archive_limits_reuse_artifact_compressed_size_constants() -> None:
         "semantic-manifest",
         "rebuilt-original",
         "rebuilt-candidate",
-        "artifact-manifest",
     ],
 )
 def test_wheel_compressed_size_limit_applies_to_every_direct_interface(
@@ -789,22 +1368,10 @@ def test_wheel_compressed_size_limit_applies_to_every_direct_interface(
     hostile.write_bytes(b"x" * (1024 * 1024 + 1))
 
     with pytest.raises(ValueError, match="compressed size"):
-        if interface == "artifact-manifest":
-            sdist = hostile.parent / EXPECTED_SDIST
-            write_sdist(sdist, metadata_bytes())
-            module.write_artifact_manifest(
-                module.ArtifactSet(hostile, sdist),
-                tmp_path / "manifest.json",
-            )
-        else:
-            invoke_wheel_archive_interface(module, interface, hostile, tmp_path)
+        invoke_wheel_archive_interface(module, interface, hostile, tmp_path)
 
 
-@pytest.mark.parametrize("interface", ["artifact-pair", "artifact-manifest"])
-def test_sdist_compressed_size_limit_applies_to_every_direct_interface(
-    tmp_path: Path,
-    interface: str,
-) -> None:
+def test_sdist_compressed_size_limit_applies_to_artifact_pair(tmp_path: Path) -> None:
     module = release_module()
     wheel = tmp_path / EXPECTED_WHEEL
     sdist = tmp_path / EXPECTED_SDIST
@@ -812,11 +1379,7 @@ def test_sdist_compressed_size_limit_applies_to_every_direct_interface(
     sdist.write_bytes(b"x" * (5 * 1024 * 1024 + 1))
 
     with pytest.raises(ValueError, match="compressed size"):
-        artifacts = module.ArtifactSet(wheel, sdist)
-        if interface == "artifact-pair":
-            module.verify_artifact_pair(artifacts, "1.0.4")
-        else:
-            module.write_artifact_manifest(artifacts, tmp_path / "manifest.json")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.5")
 
 
 @pytest.mark.parametrize(
@@ -843,7 +1406,7 @@ def test_sdist_member_count_limit_is_fail_closed(tmp_path: Path) -> None:
     sdist_with_total_members(sdist, 4097)
 
     with pytest.raises(ValueError, match="member count"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.5")
 
 
 @pytest.mark.parametrize(
@@ -872,7 +1435,7 @@ def test_sdist_member_name_volume_limit_is_fail_closed(tmp_path: Path) -> None:
     sdist_with_name_volume(sdist, 1024 * 1024)
 
     with pytest.raises(ValueError, match="member-name bytes"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.5")
 
 
 class IncrementalTarArchive:
@@ -921,7 +1484,7 @@ def test_sdist_metadata_enumeration_stops_at_first_budget_failure(
     monkeypatch.setattr(module.tarfile, "open", lambda *_args, **_kwargs: archive)
 
     with pytest.raises(ValueError, match=budget):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.4")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.0.5")
 
     expected_yielded = 4097 if budget == "member count" else 1
     assert archive.yielded == expected_yielded
