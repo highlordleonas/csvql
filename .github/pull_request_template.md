@@ -18,6 +18,12 @@ What tests, checks, or manual steps did you run?
 
 What user-facing documentation changed, or why is no documentation update needed?
 
+## Roadmap impact
+
+Does this change planned direction or a roadmap status? If so, update
+`docs/ROADMAP.md` with the new status, any deferred or superseded direction,
+and the public product reason.
+
 ## Screenshots
 
 Add screenshots or terminal output when they clarify a user-visible change.
