@@ -204,6 +204,13 @@ PUBLIC_PATH_CATEGORIES: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
     }
 )
 PUBLIC_PATHS: Final[frozenset[str]] = frozenset().union(*PUBLIC_PATH_CATEGORIES.values())
+IMMUTABLE_FORBIDDEN_COMPONENTS: Final[frozenset[str]] = frozenset(
+    {".agents", ".codex", ".internal"}
+)
+IMMUTABLE_FORBIDDEN_PREFIXES: Final[frozenset[str]] = frozenset({"docs/superpowers"})
+IMMUTABLE_FORBIDDEN_NAMES: Final[frozenset[str]] = frozenset(
+    {"AGENTS.md", "AGENTS.override.md", "CODEX_CAPABILITY_REVIEW.md"}
+)
 REGULAR_FILE_MODES: Final[frozenset[str]] = frozenset({"100644", "100755"})
 
 
@@ -246,6 +253,8 @@ def classify_tracked_paths(paths: Iterable[str]) -> Mapping[str, frozenset[str]]
     """Classify tracked paths against the explicit public release contract."""
 
     tracked_paths = frozenset(paths)
+    if any(is_immutable_forbidden_path(path) for path in tracked_paths):
+        raise AuditError("committed tree contains protected paths")
     if tracked_paths - PUBLIC_PATHS:
         raise AuditError("committed tree contains an unclassified tracked path")
     categories = {
@@ -254,6 +263,27 @@ def classify_tracked_paths(paths: Iterable[str]) -> Mapping[str, frozenset[str]]
     if frozenset().union(*categories.values()) != tracked_paths:
         raise AuditError("committed tree contains an unclassified tracked path")
     return MappingProxyType(categories)
+
+
+def is_immutable_forbidden_path(path: str) -> bool:
+    """Return whether a tracked path is always excluded from a public release tree."""
+
+    parts = path.split("/")
+    is_release_candidate_proof = (
+        len(parts) == 2
+        and parts[0] == "docs"
+        and parts[1].startswith("release-candidate-proof-")
+        and parts[1].endswith(".md")
+    )
+    return (
+        any(part in IMMUTABLE_FORBIDDEN_NAMES for part in parts)
+        or any(part in IMMUTABLE_FORBIDDEN_COMPONENTS for part in parts)
+        or any(
+            path == prefix or path.startswith(f"{prefix}/")
+            for prefix in IMMUTABLE_FORBIDDEN_PREFIXES
+        )
+        or is_release_candidate_proof
+    )
 
 
 def committed_tree_entries(repo: Path, candidate: str) -> tuple[TreeEntry, ...]:

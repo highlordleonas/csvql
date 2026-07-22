@@ -145,6 +145,13 @@ EXPECTED_CHECKS = {
     "uv_tool_tui_menu_help": "passed",
     "uv_tool_tui_version": "passed",
 }
+EXPECTED_LOCAL_ASSURANCE = {
+    "sdist": "current-index consumer install; not reproducible build-custody evidence",
+    "wheel": "exact supplied artifact install",
+}
+EXPECTED_PUBLIC_INDEX_ASSURANCE = (
+    "public-index name-resolution check; not exact supplied-artifact evidence"
+)
 
 
 class RecordingRunner:
@@ -200,16 +207,25 @@ class RecordingRunner:
         return CompletedProcess(args=command, returncode=0, stdout=stdout, stderr="")
 
 
-def _write_local_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
+def _write_local_inputs_with_sdist(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, Path]:
     inputs = tmp_path / "inputs"
     inputs.mkdir()
     wheel = inputs / "localql-1.0.2-py3-none-any.whl"
+    sdist = inputs / "localql-1.0.2.tar.gz"
     core_requirements = inputs / "core-requirements.txt"
     tui_requirements = inputs / "tui-requirements.txt"
     wheel.write_bytes(b"synthetic unit-test wheel")
+    sdist.write_bytes(b"synthetic unit-test sdist")
     core_requirements.write_text("core==1.0 --hash=sha256:00\n", encoding="utf-8")
     tui_requirements.write_text("tui==1.0 --hash=sha256:11\n", encoding="utf-8")
-    return wheel.resolve(), core_requirements.resolve(), tui_requirements.resolve()
+    return (
+        wheel.resolve(),
+        sdist.resolve(),
+        core_requirements.resolve(),
+        tui_requirements.resolve(),
+    )
 
 
 def _sha256(path: Path) -> str:
@@ -228,6 +244,7 @@ def _expected_identities() -> dict[str, str]:
 
 def _expected_input_evidence(
     wheel: Path,
+    sdist: Path,
     core_requirements: Path,
     tui_requirements: Path,
 ) -> dict[str, dict[str, str]]:
@@ -240,6 +257,10 @@ def _expected_input_evidence(
             "filename": "tui-requirements.txt",
             "sha256": _sha256(tui_requirements),
         },
+        "sdist": {
+            "filename": "localql-1.0.2.tar.gz",
+            "sha256": _sha256(sdist),
+        },
         "wheel": {
             "filename": "localql-1.0.2-py3-none-any.whl",
             "sha256": _sha256(wheel),
@@ -247,11 +268,59 @@ def _expected_input_evidence(
     }
 
 
+def _expected_local_v2_checks() -> dict[str, object]:
+    return {
+        "preflight": {
+            "package_contents": "passed",
+            "release_pair_inspection": "passed",
+        },
+        "wheel": EXPECTED_CHECKS,
+        "sdist": EXPECTED_CHECKS,
+    }
+
+
+def _expected_local_v2_identities() -> dict[str, str]:
+    return {
+        "pip_core_python": EXPECTED_PYTHON_IDENTITY,
+        "pip_tui_python": EXPECTED_PYTHON_IDENTITY,
+        "uv": EXPECTED_UV_IDENTITY,
+        "uv_tool_core_python": EXPECTED_PYTHON_IDENTITY,
+        "uv_tool_tui_python": EXPECTED_PYTHON_IDENTITY,
+    }
+
+
+def _trusted_python() -> str:
+    return str(Path(sys.executable).resolve())
+
+
+def _expected_preflight_commands(work_dir: Path, expected_version: str) -> list[list[str]]:
+    artifact_dir = work_dir / "artifacts"
+    trusted_python = _trusted_python()
+    return [
+        [
+            trusted_python,
+            str(REPO_ROOT / "scripts" / "audit_package_contents.py"),
+            str(artifact_dir),
+            "--expected-version",
+            expected_version,
+        ],
+        [
+            trusted_python,
+            str(REPO_ROOT / "scripts" / "verify_release_artifacts.py"),
+            "inspect",
+            str(artifact_dir),
+            "--expected-version",
+            expected_version,
+        ],
+    ]
+
+
 def _verify_local(tmp_path: Path, runner: RecordingRunner) -> tuple[dict[str, object], Path]:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
     work_dir = tmp_path / "work"
     evidence = verifier.verify_installed_artifacts(
         wheel=wheel,
+        sdist=sdist,
         core_requirements=core_requirements,
         tui_requirements=tui_requirements,
         work_dir=work_dir,
@@ -304,35 +373,37 @@ def test_tool_bin_executable_path_uses_native_layout(
 def test_local_mode_composes_exact_pip_and_uv_tool_commands(tmp_path: Path) -> None:
     runner = RecordingRunner()
     evidence, work_dir = _verify_local(tmp_path, runner)
-    original_wheel, original_core_requirements, original_tui_requirements = (
-        (tmp_path / "inputs" / name).resolve()
-        for name in (
-            "localql-1.0.2-py3-none-any.whl",
-            "core-requirements.txt",
-            "tui-requirements.txt",
-        )
-    )
-    wheel = work_dir / "inputs" / original_wheel.name
+    original_wheel = (tmp_path / "inputs" / "localql-1.0.2-py3-none-any.whl").resolve()
+    original_sdist = (tmp_path / "inputs" / "localql-1.0.2.tar.gz").resolve()
+    original_core_requirements = (tmp_path / "inputs" / "core-requirements.txt").resolve()
+    original_tui_requirements = (tmp_path / "inputs" / "tui-requirements.txt").resolve()
     core_requirements = work_dir / "inputs" / original_core_requirements.name
     tui_requirements = work_dir / "inputs" / original_tui_requirements.name
-    core_venv = work_dir / "pip-core"
-    tui_venv = work_dir / "pip-tui"
-    core_python = verifier.environment_executable_path(core_venv, "python")
-    tui_python = verifier.environment_executable_path(tui_venv, "python")
-    core_csvql = verifier.environment_executable_path(core_venv, "csvql")
-    tui_csvql = verifier.environment_executable_path(tui_venv, "csvql")
-    tool_core_csvql = verifier.tool_bin_executable_path(
-        work_dir / "uv-tool-core-bin",
-        "csvql",
-    )
-    wheel_requirement = f"localql[tui] @ {wheel.as_uri()}"
     commands = [call["args"] for call in runner.calls]
 
-    assert commands[:6] == [
-        ["uv", "--version"],
-        ["uv", "venv", "--python", "3.12.11", "--seed", str(core_venv)],
-        [str(core_python), "--version"],
-        [
+    assert commands[:2] == _expected_preflight_commands(work_dir, "1.0.2")
+    for format_name, artifact_name in (
+        ("wheel", original_wheel.name),
+        ("sdist", original_sdist.name),
+    ):
+        format_root = work_dir / format_name
+        artifact = work_dir / "artifacts" / artifact_name
+        core_venv = format_root / "pip-core"
+        tui_venv = format_root / "pip-tui"
+        core_python = verifier.environment_executable_path(core_venv, "python")
+        tui_python = verifier.environment_executable_path(tui_venv, "python")
+        core_csvql = verifier.environment_executable_path(core_venv, "csvql")
+        tui_csvql = verifier.environment_executable_path(tui_venv, "csvql")
+        tool_core_csvql = verifier.tool_bin_executable_path(
+            format_root / "uv-tool-core-bin",
+            "csvql",
+        )
+        artifact_requirement = f"localql[tui] @ {artifact.as_uri()}"
+
+        assert ["uv", "--version"] in commands
+        assert ["uv", "venv", "--python", "3.12.11", "--seed", str(core_venv)] in commands
+        assert [str(core_python), "--version"] in commands
+        assert [
             str(core_python),
             "-m",
             "pip",
@@ -340,58 +411,50 @@ def test_local_mode_composes_exact_pip_and_uv_tool_commands(tmp_path: Path) -> N
             "--require-hashes",
             "-r",
             str(core_requirements),
-        ],
-        [str(core_python), "-m", "pip", "install", "--no-deps", str(wheel)],
-        [str(core_csvql), "--version"],
-    ]
-    assert [
-        "uv",
-        "venv",
-        "--python",
-        "3.12.11",
-        "--seed",
-        str(tui_venv),
-    ] in commands
-    assert [str(tui_python), "--version"] in commands
-    assert [
-        str(tui_python),
-        "-m",
-        "pip",
-        "install",
-        "--require-hashes",
-        "-r",
-        str(tui_requirements),
-    ] in commands
-    assert [
-        str(tui_python),
-        "-m",
-        "pip",
-        "install",
-        "--no-deps",
-        wheel_requirement,
-    ] in commands
-    assert [str(tui_csvql), "menu", "--help"] in commands
-    assert [str(tool_core_csvql), "--version"] in commands
-    assert [
-        "uv",
-        "tool",
-        "install",
-        "--python",
-        "3.12.11",
-        "--with-requirements",
-        str(core_requirements),
-        str(wheel),
-    ] in commands
-    assert [
-        "uv",
-        "tool",
-        "install",
-        "--python",
-        "3.12.11",
-        "--with-requirements",
-        str(tui_requirements),
-        wheel_requirement,
-    ] in commands
+        ] in commands
+        assert [str(core_python), "-m", "pip", "install", "--no-deps", str(artifact)] in commands
+        assert [str(core_csvql), "--version"] in commands
+        assert ["uv", "venv", "--python", "3.12.11", "--seed", str(tui_venv)] in commands
+        assert [str(tui_python), "--version"] in commands
+        assert [
+            str(tui_python),
+            "-m",
+            "pip",
+            "install",
+            "--require-hashes",
+            "-r",
+            str(tui_requirements),
+        ] in commands
+        assert [
+            str(tui_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            artifact_requirement,
+        ] in commands
+        assert [str(tui_csvql), "menu", "--help"] in commands
+        assert [str(tool_core_csvql), "--version"] in commands
+        assert [
+            "uv",
+            "tool",
+            "install",
+            "--python",
+            "3.12.11",
+            "--with-requirements",
+            str(core_requirements),
+            str(artifact),
+        ] in commands
+        assert [
+            "uv",
+            "tool",
+            "install",
+            "--python",
+            "3.12.11",
+            "--with-requirements",
+            str(tui_requirements),
+            artifact_requirement,
+        ] in commands
     assert all(command[:3] != ["uv", "pip", "install"] for command in commands)
     assert all(
         str(original_path) not in part
@@ -399,35 +462,50 @@ def test_local_mode_composes_exact_pip_and_uv_tool_commands(tmp_path: Path) -> N
         for part in command
         for original_path in (
             original_wheel,
+            original_sdist,
             original_core_requirements,
             original_tui_requirements,
         )
     )
     assert evidence == {
-        "checks": EXPECTED_CHECKS,
+        "assurance": EXPECTED_LOCAL_ASSURANCE,
+        "checks": _expected_local_v2_checks(),
         "expected_version": "1.0.2",
-        "identities": _expected_identities(),
+        "identities": {
+            "sdist": _expected_local_v2_identities(),
+            "wheel": _expected_local_v2_identities(),
+        },
         "inputs": _expected_input_evidence(
             original_wheel,
+            original_sdist,
             original_core_requirements,
             original_tui_requirements,
         ),
-        "mode": "local-artifact",
+        "mode": "local-artifacts",
         "python": "3.12.11",
-        "schema_version": 1,
+        "schema_version": 2,
     }
 
 
 def test_local_mode_runs_query_api_and_optional_dependency_smokes(tmp_path: Path) -> None:
     runner = RecordingRunner()
     _, work_dir = _verify_local(tmp_path, runner)
-    core_python = verifier.environment_executable_path(work_dir / "pip-core", "python")
-    core_csvql = verifier.environment_executable_path(work_dir / "pip-core", "csvql")
     commands = [call["args"] for call in runner.calls]
 
-    assert [str(core_csvql), "query", "orders.csv", EXPECTED_QUERY, "--output", "json"] in commands
-    assert [str(core_python), "-c", EXPECTED_API_SMOKE] in commands
-    assert [str(core_python), "-c", EXPECTED_CORE_WITHOUT_TEXTUAL_SMOKE] in commands
+    for format_name in ("wheel", "sdist"):
+        core_venv = work_dir / format_name / "pip-core"
+        core_python = verifier.environment_executable_path(core_venv, "python")
+        core_csvql = verifier.environment_executable_path(core_venv, "csvql")
+        assert [
+            str(core_csvql),
+            "query",
+            "orders.csv",
+            EXPECTED_QUERY,
+            "--output",
+            "json",
+        ] in commands
+        assert [str(core_python), "-c", EXPECTED_API_SMOKE] in commands
+        assert [str(core_python), "-c", EXPECTED_CORE_WITHOUT_TEXTUAL_SMOKE] in commands
     assert runner.project_catalog == "version: 1\ntables:\n  orders:\n    path: orders.csv\n"
     assert runner.project_csv == ("order_id,status\nORD-1,paid\nORD-2,pending\nORD-3,paid\n")
 
@@ -435,23 +513,25 @@ def test_local_mode_runs_query_api_and_optional_dependency_smokes(tmp_path: Path
 def test_tui_smokes_use_isolated_python_and_cli(tmp_path: Path) -> None:
     runner = RecordingRunner()
     _, work_dir = _verify_local(tmp_path, runner)
-    tui_python = verifier.environment_executable_path(work_dir / "pip-tui", "python")
-    tui_csvql = verifier.environment_executable_path(work_dir / "pip-tui", "csvql")
-    tool_tui_python = verifier.environment_executable_path(
-        work_dir / "uv-tool-tui" / "localql",
-        "python",
-    )
-    tool_tui_csvql = verifier.tool_bin_executable_path(
-        work_dir / "uv-tool-tui-bin",
-        "csvql",
-    )
     commands = [call["args"] for call in runner.calls]
 
-    assert [str(tui_python), "-c", EXPECTED_TUI_IMPORT_SMOKE] in commands
-    assert [str(tui_csvql), "menu", "--help"] in commands
-    assert [str(tool_tui_python), "-c", EXPECTED_TUI_IMPORT_SMOKE] in commands
-    assert [str(tool_tui_csvql), "--version"] in commands
-    assert [str(tool_tui_csvql), "menu", "--help"] in commands
+    for format_name in ("wheel", "sdist"):
+        format_root = work_dir / format_name
+        tui_python = verifier.environment_executable_path(format_root / "pip-tui", "python")
+        tui_csvql = verifier.environment_executable_path(format_root / "pip-tui", "csvql")
+        tool_tui_python = verifier.environment_executable_path(
+            format_root / "uv-tool-tui" / "localql",
+            "python",
+        )
+        tool_tui_csvql = verifier.tool_bin_executable_path(
+            format_root / "uv-tool-tui-bin",
+            "csvql",
+        )
+        assert [str(tui_python), "-c", EXPECTED_TUI_IMPORT_SMOKE] in commands
+        assert [str(tui_csvql), "menu", "--help"] in commands
+        assert [str(tool_tui_python), "-c", EXPECTED_TUI_IMPORT_SMOKE] in commands
+        assert [str(tool_tui_csvql), "--version"] in commands
+        assert [str(tool_tui_csvql), "menu", "--help"] in commands
 
 
 @pytest.mark.parametrize(
@@ -531,6 +611,9 @@ def test_subprocess_boundary_is_sanitized_bounded_and_outside_repo(
         environment = call["env"]
         for name, hostile_value in hostile_environment.items():
             if name in EXPECTED_EXPLICIT_ENVIRONMENT or name in {
+                "TEMP",
+                "TMP",
+                "TMPDIR",
                 "UV_CACHE_DIR",
                 "UV_PYTHON_INSTALL_DIR",
             }:
@@ -538,8 +621,17 @@ def test_subprocess_boundary_is_sanitized_bounded_and_outside_repo(
             elif name not in {"UV_TOOL_DIR", "UV_TOOL_BIN_DIR"}:
                 assert name not in environment
         assert environment | EXPECTED_EXPLICIT_ENVIRONMENT == environment
-        assert environment["UV_CACHE_DIR"] == str(work_dir / "uv-cache")
-        assert environment["UV_PYTHON_INSTALL_DIR"] == str(work_dir / "uv-python")
+        environment_root = Path(environment["UV_CACHE_DIR"]).parent
+        assert environment_root in {
+            work_dir / "preflight",
+            work_dir / "sdist",
+            work_dir / "wheel",
+        }
+        assert environment["UV_CACHE_DIR"] == str(environment_root / "uv-cache")
+        assert environment["UV_PYTHON_INSTALL_DIR"] == str(environment_root / "uv-python")
+        assert environment["TEMP"] == str(environment_root / "tmp")
+        assert environment["TMP"] == str(environment_root / "tmp")
+        assert environment["TMPDIR"] == str(environment_root / "tmp")
         assert set(environment) <= (
             EXPECTED_INHERITED_ENVIRONMENT_NAMES
             | set(EXPECTED_EXPLICIT_ENVIRONMENT)
@@ -552,17 +644,28 @@ def test_subprocess_boundary_is_sanitized_bounded_and_outside_repo(
         )
         assert not call["cwd"].is_relative_to(REPO_ROOT)
 
-    assert (work_dir / "uv-cache").is_dir()
-    assert (work_dir / "uv-python").is_dir()
+    for environment_name in ("preflight", "sdist", "wheel"):
+        assert (work_dir / environment_name / "uv-cache").is_dir()
+        assert (work_dir / environment_name / "uv-python").is_dir()
+        assert (work_dir / environment_name / "tmp").is_dir()
 
     tool_calls = [call for call in runner.calls if call["args"][:3] == ["uv", "tool", "install"]]
-    assert len(tool_calls) == 2
-    assert tool_calls[0]["env"]["UV_TOOL_DIR"] == str(work_dir / "uv-tool-core")
-    assert tool_calls[0]["env"]["UV_TOOL_BIN_DIR"] == str(work_dir / "uv-tool-core-bin")
-    assert tool_calls[1]["env"]["UV_TOOL_DIR"] == str(work_dir / "uv-tool-tui")
-    assert tool_calls[1]["env"]["UV_TOOL_BIN_DIR"] == str(work_dir / "uv-tool-tui-bin")
-    assert tool_calls[0]["env"]["UV_TOOL_DIR"] != tool_calls[1]["env"]["UV_TOOL_DIR"]
-    assert tool_calls[0]["env"]["UV_TOOL_BIN_DIR"] != tool_calls[1]["env"]["UV_TOOL_BIN_DIR"]
+    assert len(tool_calls) == 4
+    observed_tool_dirs = {call["env"]["UV_TOOL_DIR"] for call in tool_calls}
+    observed_tool_bin_dirs = {call["env"]["UV_TOOL_BIN_DIR"] for call in tool_calls}
+    assert observed_tool_dirs == {
+        str(work_dir / format_name / tool_name)
+        for format_name in ("sdist", "wheel")
+        for tool_name in ("uv-tool-core", "uv-tool-tui")
+    }
+    assert observed_tool_bin_dirs == {
+        str(work_dir / format_name / tool_name)
+        for format_name in ("sdist", "wheel")
+        for tool_name in ("uv-tool-core-bin", "uv-tool-tui-bin")
+    }
+    for call in runner.calls[2:]:
+        environment_root = Path(call["env"]["UV_CACHE_DIR"]).parent
+        assert call["cwd"].is_relative_to(environment_root)
 
 
 def test_public_index_mode_uses_only_exact_published_requirements(tmp_path: Path) -> None:
@@ -570,6 +673,7 @@ def test_public_index_mode_uses_only_exact_published_requirements(tmp_path: Path
     work_dir = tmp_path / "public-work"
     evidence = verifier.verify_installed_artifacts(
         wheel=None,
+        sdist=None,
         core_requirements=None,
         tui_requirements=None,
         work_dir=work_dir,
@@ -580,8 +684,9 @@ def test_public_index_mode_uses_only_exact_published_requirements(tmp_path: Path
         run_command=runner,
     )
     resolved_work_dir = work_dir.resolve()
-    core_python = verifier.environment_executable_path(resolved_work_dir / "pip-core", "python")
-    tui_python = verifier.environment_executable_path(resolved_work_dir / "pip-tui", "python")
+    public_root = resolved_work_dir / "public-index"
+    core_python = verifier.environment_executable_path(public_root / "pip-core", "python")
+    tui_python = verifier.environment_executable_path(public_root / "pip-tui", "python")
     commands = [call["args"] for call in runner.calls]
 
     assert [str(core_python), "-m", "pip", "install", "localql==1.0.2"] in commands
@@ -606,44 +711,174 @@ def test_public_index_mode_uses_only_exact_published_requirements(tmp_path: Path
     assert all("--no-deps" not in command for command in commands)
     assert all("file:" not in part for command in commands for part in command)
     assert evidence == {
-        "checks": EXPECTED_CHECKS,
+        "assurance": EXPECTED_PUBLIC_INDEX_ASSURANCE,
         "expected_version": "1.0.2",
-        "identities": _expected_identities(),
+        "identities": {"public_index": _expected_identities()},
         "inputs": {},
         "mode": "public-index",
         "python": "3.12.11",
-        "schema_version": 1,
+        "public_index": {"checks": EXPECTED_CHECKS},
+        "schema_version": 2,
     }
+
+
+def test_local_mode_requires_exact_sdist_input(tmp_path: Path) -> None:
+    wheel, _, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
+    runner = RecordingRunner()
+
+    with pytest.raises(verifier.InstalledArtifactVerificationError, match="requires"):
+        verifier.verify_installed_artifacts(
+            wheel=wheel,
+            sdist=None,
+            core_requirements=core_requirements,
+            tui_requirements=tui_requirements,
+            work_dir=tmp_path / "work",
+            expected_version="1.0.2",
+            python_version="3.12.11",
+            public_index=False,
+            allow_published_version_check=False,
+            run_command=runner,
+        )
+
+
+def test_public_index_rejects_sdist_input(tmp_path: Path) -> None:
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
+    runner = RecordingRunner()
+
+    with pytest.raises(verifier.InstalledArtifactVerificationError, match="rejects local"):
+        verifier.verify_installed_artifacts(
+            wheel=wheel,
+            sdist=sdist,
+            core_requirements=core_requirements,
+            tui_requirements=tui_requirements,
+            work_dir=tmp_path / "work",
+            expected_version="1.0.2",
+            python_version="3.12.11",
+            public_index=True,
+            allow_published_version_check=True,
+            run_command=runner,
+        )
+
+
+def test_local_mode_emits_schema_v2_for_both_formats(tmp_path: Path) -> None:
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
+    runner = RecordingRunner()
+
+    evidence = verifier.verify_installed_artifacts(
+        wheel=wheel,
+        sdist=sdist,
+        core_requirements=core_requirements,
+        tui_requirements=tui_requirements,
+        work_dir=tmp_path / "work",
+        expected_version="1.0.2",
+        python_version="3.12.11",
+        public_index=False,
+        allow_published_version_check=False,
+        run_command=runner,
+    )
+
+    assert evidence == {
+        "assurance": EXPECTED_LOCAL_ASSURANCE,
+        "checks": _expected_local_v2_checks(),
+        "expected_version": "1.0.2",
+        "identities": {
+            "sdist": _expected_local_v2_identities(),
+            "wheel": _expected_local_v2_identities(),
+        },
+        "inputs": _expected_input_evidence(
+            wheel,
+            sdist,
+            core_requirements,
+            tui_requirements,
+        ),
+        "mode": "local-artifacts",
+        "python": "3.12.11",
+        "schema_version": 2,
+    }
+
+
+@pytest.mark.parametrize(
+    ("failing_call_index", "expected_role"),
+    [
+        (0, "audit local artifact pair"),
+        (1, "inspect local artifact pair"),
+    ],
+)
+def test_local_preflight_failure_blocks_every_artifact_installer_command(
+    tmp_path: Path,
+    failing_call_index: int,
+    expected_role: str,
+) -> None:
+    class FailingPreflightRunner(RecordingRunner):
+        def __call__(self, args: Sequence[object], **kwargs: Any) -> CompletedProcess[str]:
+            if len(self.calls) == failing_call_index:
+                command = [str(part) for part in args]
+                self.calls.append(
+                    {
+                        "args": command,
+                        "cwd": Path(kwargs["cwd"]),
+                        "env": dict(kwargs["env"]),
+                        "check": kwargs["check"],
+                        "capture_output": kwargs["capture_output"],
+                        "text": kwargs["text"],
+                        "timeout": kwargs["timeout"],
+                        "shell": kwargs["shell"],
+                    }
+                )
+                raise CalledProcessError(returncode=23, cmd=command)
+            return super().__call__(args, **kwargs)
+
+    runner = FailingPreflightRunner()
+    work_dir = (tmp_path / "work").resolve()
+
+    with pytest.raises(verifier.InstalledArtifactVerificationError, match=expected_role):
+        _verify_local(tmp_path, runner)
+
+    assert [call["args"] for call in runner.calls] == _expected_preflight_commands(
+        work_dir, "1.0.2"
+    )[: failing_call_index + 1]
 
 
 def test_selected_uv_and_every_installed_python_identity_are_exact(tmp_path: Path) -> None:
     runner = RecordingRunner()
     _, work_dir = _verify_local(tmp_path, runner)
     commands = [call["args"] for call in runner.calls]
-    expected_python_commands = [
-        [str(verifier.environment_executable_path(work_dir / "pip-core", "python")), "--version"],
-        [str(verifier.environment_executable_path(work_dir / "pip-tui", "python")), "--version"],
-        [
-            str(
-                verifier.environment_executable_path(
-                    work_dir / "uv-tool-core" / "localql",
-                    "python",
-                )
-            ),
-            "--version",
-        ],
-        [
-            str(
-                verifier.environment_executable_path(
-                    work_dir / "uv-tool-tui" / "localql",
-                    "python",
-                )
-            ),
-            "--version",
-        ],
-    ]
+    expected_python_commands = []
+    for format_name in ("sdist", "wheel"):
+        format_root = work_dir / format_name
+        expected_python_commands.extend(
+            [
+                [
+                    str(verifier.environment_executable_path(format_root / "pip-core", "python")),
+                    "--version",
+                ],
+                [
+                    str(verifier.environment_executable_path(format_root / "pip-tui", "python")),
+                    "--version",
+                ],
+                [
+                    str(
+                        verifier.environment_executable_path(
+                            format_root / "uv-tool-core" / "localql",
+                            "python",
+                        )
+                    ),
+                    "--version",
+                ],
+                [
+                    str(
+                        verifier.environment_executable_path(
+                            format_root / "uv-tool-tui" / "localql",
+                            "python",
+                        )
+                    ),
+                    "--version",
+                ],
+            ]
+        )
 
-    assert commands[0] == ["uv", "--version"]
+    assert commands[:2] == _expected_preflight_commands(work_dir, "1.0.2")
+    assert commands.count(["uv", "--version"]) == 2
     assert all(command in commands for command in expected_python_commands)
 
 
@@ -689,6 +924,7 @@ def test_public_index_requires_explicit_post_publication_gate(tmp_path: Path) ->
     with pytest.raises(verifier.InstalledArtifactVerificationError, match="published-version"):
         verifier.verify_installed_artifacts(
             wheel=None,
+            sdist=None,
             core_requirements=None,
             tui_requirements=None,
             work_dir=tmp_path / "work",
@@ -703,12 +939,13 @@ def test_public_index_requires_explicit_post_publication_gate(tmp_path: Path) ->
     assert not (tmp_path / "work").exists()
 
 
-@pytest.mark.parametrize("local_input", ["wheel", "core", "tui"])
+@pytest.mark.parametrize("local_input", ["wheel", "sdist", "core", "tui"])
 def test_public_index_rejects_every_local_input(tmp_path: Path, local_input: str) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
-    values = {"wheel": None, "core": None, "tui": None}
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
+    values = {"wheel": None, "sdist": None, "core": None, "tui": None}
     values[local_input] = {
         "wheel": wheel,
+        "sdist": sdist,
         "core": core_requirements,
         "tui": tui_requirements,
     }[local_input]
@@ -717,6 +954,7 @@ def test_public_index_rejects_every_local_input(tmp_path: Path, local_input: str
     with pytest.raises(verifier.InstalledArtifactVerificationError, match="rejects local"):
         verifier.verify_installed_artifacts(
             wheel=values["wheel"],
+            sdist=values["sdist"],
             core_requirements=values["core"],
             tui_requirements=values["tui"],
             work_dir=tmp_path / "work",
@@ -730,11 +968,12 @@ def test_public_index_rejects_every_local_input(tmp_path: Path, local_input: str
     assert runner.calls == []
 
 
-@pytest.mark.parametrize("missing_input", ["wheel", "core", "tui"])
+@pytest.mark.parametrize("missing_input", ["wheel", "sdist", "core", "tui"])
 def test_local_mode_requires_every_exact_input(tmp_path: Path, missing_input: str) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
     values: dict[str, Path | None] = {
         "wheel": wheel,
+        "sdist": sdist,
         "core": core_requirements,
         "tui": tui_requirements,
     }
@@ -744,6 +983,7 @@ def test_local_mode_requires_every_exact_input(tmp_path: Path, missing_input: st
     with pytest.raises(verifier.InstalledArtifactVerificationError, match="requires"):
         verifier.verify_installed_artifacts(
             wheel=values["wheel"],
+            sdist=values["sdist"],
             core_requirements=values["core"],
             tui_requirements=values["tui"],
             work_dir=tmp_path / "work",
@@ -761,6 +1001,7 @@ def test_local_mode_requires_every_exact_input(tmp_path: Path, missing_input: st
     ("role", "wrong_name"),
     [
         ("wheel", "localql-1.0.4-py3-none-any.whl"),
+        ("sdist", "localql-1.0.4.tar.gz"),
         ("core", "requirements.txt"),
         ("tui", "requirements-tui.txt"),
     ],
@@ -770,15 +1011,21 @@ def test_local_mode_rejects_inexact_input_names(
     role: str,
     wrong_name: str,
 ) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
     wrong_path = tmp_path / wrong_name
     wrong_path.write_text("not the exact input\n", encoding="utf-8")
-    values = {"wheel": wheel, "core": core_requirements, "tui": tui_requirements}
+    values = {
+        "wheel": wheel,
+        "sdist": sdist,
+        "core": core_requirements,
+        "tui": tui_requirements,
+    }
     values[role] = wrong_path
 
     with pytest.raises(verifier.InstalledArtifactVerificationError, match="exact filename"):
         verifier.verify_installed_artifacts(
             wheel=values["wheel"],
+            sdist=values["sdist"],
             core_requirements=values["core"],
             tui_requirements=values["tui"],
             work_dir=tmp_path / "work",
@@ -790,10 +1037,15 @@ def test_local_mode_rejects_inexact_input_names(
         )
 
 
-@pytest.mark.parametrize("role", ["wheel", "core", "tui"])
+@pytest.mark.parametrize("role", ["wheel", "sdist", "core", "tui"])
 def test_local_mode_rejects_symlinked_input(tmp_path: Path, role: str) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
-    values = {"wheel": wheel, "core": core_requirements, "tui": tui_requirements}
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
+    values = {
+        "wheel": wheel,
+        "sdist": sdist,
+        "core": core_requirements,
+        "tui": tui_requirements,
+    }
     linked_input = tmp_path / values[role].name
     try:
         linked_input.symlink_to(values[role])
@@ -804,6 +1056,7 @@ def test_local_mode_rejects_symlinked_input(tmp_path: Path, role: str) -> None:
     with pytest.raises(verifier.InstalledArtifactVerificationError, match="regular file"):
         verifier.verify_installed_artifacts(
             wheel=values["wheel"],
+            sdist=values["sdist"],
             core_requirements=values["core"],
             tui_requirements=values["tui"],
             work_dir=tmp_path / "work",
@@ -815,10 +1068,15 @@ def test_local_mode_rejects_symlinked_input(tmp_path: Path, role: str) -> None:
         )
 
 
-@pytest.mark.parametrize("role", ["wheel", "core", "tui"])
+@pytest.mark.parametrize("role", ["wheel", "sdist", "core", "tui"])
 def test_local_mode_rejects_hardlinked_input(tmp_path: Path, role: str) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
-    values = {"wheel": wheel, "core": core_requirements, "tui": tui_requirements}
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
+    values = {
+        "wheel": wheel,
+        "sdist": sdist,
+        "core": core_requirements,
+        "tui": tui_requirements,
+    }
     linked_dir = tmp_path / "hardlinks"
     linked_dir.mkdir()
     linked_input = linked_dir / values[role].name
@@ -831,6 +1089,7 @@ def test_local_mode_rejects_hardlinked_input(tmp_path: Path, role: str) -> None:
     with pytest.raises(verifier.InstalledArtifactVerificationError, match="hardlink"):
         verifier.verify_installed_artifacts(
             wheel=values["wheel"],
+            sdist=values["sdist"],
             core_requirements=values["core"],
             tui_requirements=values["tui"],
             work_dir=tmp_path / "work",
@@ -842,10 +1101,15 @@ def test_local_mode_rejects_hardlinked_input(tmp_path: Path, role: str) -> None:
         )
 
 
-@pytest.mark.parametrize("role", ["wheel", "core", "tui"])
+@pytest.mark.parametrize("role", ["wheel", "sdist", "core", "tui"])
 def test_local_mode_rejects_nonregular_input(tmp_path: Path, role: str) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
-    values = {"wheel": wheel, "core": core_requirements, "tui": tui_requirements}
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
+    values = {
+        "wheel": wheel,
+        "sdist": sdist,
+        "core": core_requirements,
+        "tui": tui_requirements,
+    }
     nonregular_root = tmp_path / "nonregular"
     nonregular_root.mkdir()
     nonregular_input = nonregular_root / values[role].name
@@ -855,6 +1119,7 @@ def test_local_mode_rejects_nonregular_input(tmp_path: Path, role: str) -> None:
     with pytest.raises(verifier.InstalledArtifactVerificationError, match="regular file"):
         verifier.verify_installed_artifacts(
             wheel=values["wheel"],
+            sdist=values["sdist"],
             core_requirements=values["core"],
             tui_requirements=values["tui"],
             work_dir=tmp_path / "work",
@@ -866,14 +1131,19 @@ def test_local_mode_rejects_nonregular_input(tmp_path: Path, role: str) -> None:
         )
 
 
-@pytest.mark.parametrize("role", ["wheel", "core", "tui"])
+@pytest.mark.parametrize("role", ["wheel", "sdist", "core", "tui"])
 def test_source_replacement_between_lstat_and_open_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     role: str,
 ) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
-    values = {"wheel": wheel, "core": core_requirements, "tui": tui_requirements}
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
+    values = {
+        "wheel": wheel,
+        "sdist": sdist,
+        "core": core_requirements,
+        "tui": tui_requirements,
+    }
     source = values[role]
     original_open = os.open
     replaced = False
@@ -893,6 +1163,7 @@ def test_source_replacement_between_lstat_and_open_fails_closed(
     ):
         verifier.verify_installed_artifacts(
             wheel=wheel,
+            sdist=sdist,
             core_requirements=core_requirements,
             tui_requirements=tui_requirements,
             work_dir=tmp_path / "work",
@@ -906,14 +1177,19 @@ def test_source_replacement_between_lstat_and_open_fails_closed(
     assert replaced is True
 
 
-@pytest.mark.parametrize("role", ["wheel", "core", "tui"])
+@pytest.mark.parametrize("role", ["wheel", "sdist", "core", "tui"])
 def test_source_mutation_during_snapshot_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     role: str,
 ) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
-    values = {"wheel": wheel, "core": core_requirements, "tui": tui_requirements}
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
+    values = {
+        "wheel": wheel,
+        "sdist": sdist,
+        "core": core_requirements,
+        "tui": tui_requirements,
+    }
     source = values[role]
     source_identity = (source.stat().st_dev, source.stat().st_ino)
     original_read = os.read
@@ -940,6 +1216,7 @@ def test_source_mutation_during_snapshot_fails_closed(
     ):
         verifier.verify_installed_artifacts(
             wheel=wheel,
+            sdist=sdist,
             core_requirements=core_requirements,
             tui_requirements=tui_requirements,
             work_dir=tmp_path / "work",
@@ -957,12 +1234,13 @@ def test_snapshots_are_regular_single_link_files_with_posix_isolated_mode(tmp_pa
     runner = RecordingRunner()
     _, work_dir = _verify_local(tmp_path, runner)
 
-    for snapshot in (work_dir / "inputs").iterdir():
-        metadata = snapshot.lstat()
-        assert snapshot.is_file()
-        assert not snapshot.is_symlink()
-        assert metadata.st_nlink == 1
-        assert_posix_isolated_mode(metadata.st_mode)
+    for snapshot_dir in (work_dir / "artifacts", work_dir / "inputs"):
+        for snapshot in snapshot_dir.iterdir():
+            metadata = snapshot.lstat()
+            assert snapshot.is_file()
+            assert not snapshot.is_symlink()
+            assert metadata.st_nlink == 1
+            assert_posix_isolated_mode(metadata.st_mode)
 
 
 @pytest.mark.parametrize("existing_contents", [False, True])
@@ -970,7 +1248,7 @@ def test_work_dir_must_be_new_and_is_never_deleted(
     tmp_path: Path,
     existing_contents: bool,
 ) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
     work_dir = tmp_path / "work"
     work_dir.mkdir()
     marker = work_dir / "keep.txt"
@@ -980,6 +1258,7 @@ def test_work_dir_must_be_new_and_is_never_deleted(
     with pytest.raises(verifier.InstalledArtifactVerificationError, match="must not already exist"):
         verifier.verify_installed_artifacts(
             wheel=wheel,
+            sdist=sdist,
             core_requirements=core_requirements,
             tui_requirements=tui_requirements,
             work_dir=work_dir,
@@ -994,8 +1273,34 @@ def test_work_dir_must_be_new_and_is_never_deleted(
     assert marker.exists() is existing_contents
 
 
+def test_work_dir_must_be_outside_repository_source_tree(tmp_path: Path) -> None:
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
+    runner = RecordingRunner()
+    repo_scoped_work_dir = REPO_ROOT / "output" / "installed-smokes"
+
+    with pytest.raises(
+        verifier.InstalledArtifactVerificationError,
+        match="outside the repository source tree",
+    ):
+        verifier.verify_installed_artifacts(
+            wheel=wheel,
+            sdist=sdist,
+            core_requirements=core_requirements,
+            tui_requirements=tui_requirements,
+            work_dir=repo_scoped_work_dir,
+            expected_version="1.0.2",
+            python_version="3.12.11",
+            public_index=False,
+            allow_published_version_check=False,
+            run_command=runner,
+        )
+
+    assert runner.calls == []
+    assert not repo_scoped_work_dir.exists()
+
+
 def test_work_dir_leaf_symlink_is_rejected_without_creating_target(tmp_path: Path) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
     target = tmp_path / "symlink-target"
     work_dir = tmp_path / "work"
     try:
@@ -1006,6 +1311,7 @@ def test_work_dir_leaf_symlink_is_rejected_without_creating_target(tmp_path: Pat
     with pytest.raises(verifier.InstalledArtifactVerificationError, match="symlink"):
         verifier.verify_installed_artifacts(
             wheel=wheel,
+            sdist=sdist,
             core_requirements=core_requirements,
             tui_requirements=tui_requirements,
             work_dir=work_dir,
@@ -1021,7 +1327,7 @@ def test_work_dir_leaf_symlink_is_rejected_without_creating_target(tmp_path: Pat
 
 
 def test_work_dir_parent_must_not_be_a_symlink(tmp_path: Path) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
     real_parent = tmp_path / "real-parent"
     real_parent.mkdir()
     linked_parent = tmp_path / "linked-parent"
@@ -1033,6 +1339,7 @@ def test_work_dir_parent_must_not_be_a_symlink(tmp_path: Path) -> None:
     with pytest.raises(verifier.InstalledArtifactVerificationError, match="real existing parent"):
         verifier.verify_installed_artifacts(
             wheel=wheel,
+            sdist=sdist,
             core_requirements=core_requirements,
             tui_requirements=tui_requirements,
             work_dir=linked_parent / "work",
@@ -1047,11 +1354,12 @@ def test_work_dir_parent_must_not_be_a_symlink(tmp_path: Path) -> None:
 
 
 def test_python_version_is_exactly_3_12_11(tmp_path: Path) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
 
     with pytest.raises(verifier.InstalledArtifactVerificationError, match=r"3\.12\.11"):
         verifier.verify_installed_artifacts(
             wheel=wheel,
+            sdist=sdist,
             core_requirements=core_requirements,
             tui_requirements=tui_requirements,
             work_dir=tmp_path / "work",
@@ -1064,7 +1372,7 @@ def test_python_version_is_exactly_3_12_11(tmp_path: Path) -> None:
 
 
 def test_subprocess_failure_uses_controlled_context_without_hostile_output(tmp_path: Path) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
 
     def failing_runner(args: Sequence[object], **kwargs: object) -> CompletedProcess[str]:
         raise CalledProcessError(
@@ -1077,6 +1385,7 @@ def test_subprocess_failure_uses_controlled_context_without_hostile_output(tmp_p
     with pytest.raises(verifier.InstalledArtifactVerificationError) as excinfo:
         verifier.verify_installed_artifacts(
             wheel=wheel,
+            sdist=sdist,
             core_requirements=core_requirements,
             tui_requirements=tui_requirements,
             work_dir=tmp_path / "work",
@@ -1088,7 +1397,7 @@ def test_subprocess_failure_uses_controlled_context_without_hostile_output(tmp_p
         )
 
     message = str(excinfo.value)
-    assert "verify selected uv" in message
+    assert "audit local artifact pair" in message
     assert "exit status 17" in message
     assert "secret" not in message
     assert str(wheel) not in message
@@ -1100,7 +1409,7 @@ def test_subprocess_failure_uses_controlled_context_without_hostile_output(tmp_p
 
 
 def test_subprocess_timeout_uses_controlled_context(tmp_path: Path) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
 
     def timeout_runner(args: Sequence[object], **kwargs: object) -> CompletedProcess[str]:
         raise TimeoutExpired(cmd=args, timeout=1, output="secret-output")
@@ -1108,6 +1417,7 @@ def test_subprocess_timeout_uses_controlled_context(tmp_path: Path) -> None:
     with pytest.raises(verifier.InstalledArtifactVerificationError, match="timed out") as excinfo:
         verifier.verify_installed_artifacts(
             wheel=wheel,
+            sdist=sdist,
             core_requirements=core_requirements,
             tui_requirements=tui_requirements,
             work_dir=tmp_path / "work",
@@ -1127,7 +1437,7 @@ def test_subprocess_timeout_uses_controlled_context(tmp_path: Path) -> None:
 def test_subprocess_os_error_preserves_safe_errno_without_hostile_context(
     tmp_path: Path,
 ) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
 
     def os_error_runner(args: Sequence[object], **kwargs: object) -> CompletedProcess[str]:
         raise OSError(
@@ -1139,6 +1449,7 @@ def test_subprocess_os_error_preserves_safe_errno_without_hostile_context(
     with pytest.raises(verifier.InstalledArtifactVerificationError) as excinfo:
         verifier.verify_installed_artifacts(
             wheel=wheel,
+            sdist=sdist,
             core_requirements=core_requirements,
             tui_requirements=tui_requirements,
             work_dir=tmp_path / "work",
@@ -1150,7 +1461,7 @@ def test_subprocess_os_error_preserves_safe_errno_without_hostile_context(
         )
 
     message = str(excinfo.value)
-    assert "verify selected uv" in message
+    assert "audit local artifact pair" in message
     assert f"EAGAIN (errno {errno.EAGAIN})" in message
     assert "secret" not in message
     rendered_traceback = "".join(traceback.format_exception(excinfo.value))
@@ -1160,7 +1471,7 @@ def test_subprocess_os_error_preserves_safe_errno_without_hostile_context(
 
 
 def test_subprocess_os_error_rejects_hostile_non_numeric_errno(tmp_path: Path) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
 
     def os_error_runner(args: Sequence[object], **kwargs: object) -> CompletedProcess[str]:
         raise OSError(
@@ -1172,6 +1483,7 @@ def test_subprocess_os_error_rejects_hostile_non_numeric_errno(tmp_path: Path) -
     with pytest.raises(verifier.InstalledArtifactVerificationError) as excinfo:
         verifier.verify_installed_artifacts(
             wheel=wheel,
+            sdist=sdist,
             core_requirements=core_requirements,
             tui_requirements=tui_requirements,
             work_dir=tmp_path / "work",
@@ -1183,7 +1495,7 @@ def test_subprocess_os_error_rejects_hostile_non_numeric_errno(tmp_path: Path) -
         )
 
     message = str(excinfo.value)
-    assert "verify selected uv" in message
+    assert "audit local artifact pair" in message
     assert "UNKNOWN (errno unavailable)" in message
     assert "secret" not in message
     rendered_traceback = "".join(traceback.format_exception(excinfo.value))
@@ -1235,13 +1547,15 @@ def test_cli_prints_deterministic_json_evidence_without_running_real_commands(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    wheel, core_requirements, tui_requirements = _write_local_inputs(tmp_path)
+    wheel, sdist, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
     runner = RecordingRunner()
 
     exit_code = verifier.main(
         [
             "--wheel",
             str(wheel),
+            "--sdist",
+            str(sdist),
             "--core-requirements",
             str(core_requirements),
             "--tui-requirements",
@@ -1261,17 +1575,22 @@ def test_cli_prints_deterministic_json_evidence_without_running_real_commands(
         capsys.readouterr().out
         == json.dumps(
             {
-                "checks": EXPECTED_CHECKS,
+                "assurance": EXPECTED_LOCAL_ASSURANCE,
+                "checks": _expected_local_v2_checks(),
                 "expected_version": "1.0.2",
-                "identities": _expected_identities(),
+                "identities": {
+                    "sdist": _expected_local_v2_identities(),
+                    "wheel": _expected_local_v2_identities(),
+                },
                 "inputs": _expected_input_evidence(
                     wheel,
+                    sdist,
                     core_requirements,
                     tui_requirements,
                 ),
-                "mode": "local-artifact",
+                "mode": "local-artifacts",
                 "python": "3.12.11",
-                "schema_version": 1,
+                "schema_version": 2,
             },
             indent=2,
             sort_keys=True,

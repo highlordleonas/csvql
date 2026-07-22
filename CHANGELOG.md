@@ -3,6 +3,15 @@
 This page records user-visible changes in each LocalQL release. For a guided
 overview of the v1 feature set, see the [v1 release notes](docs/release-notes/v1.md).
 
+## [1.0.5] - 2026-07-21
+
+### Changed
+
+- Package and release verification now checks the wheel and source distribution
+  as one exact release bundle before publication.
+- Version-reporting surfaces now report 1.0.5. Query behavior, supported
+  formats, and the SQL safety boundary remain unchanged.
+
 ## [1.0.4] - 2026-07-15
 
 ### Changed

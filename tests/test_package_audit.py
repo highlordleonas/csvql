@@ -28,6 +28,7 @@ audit_module = load_audit_module()
 audit_archives = audit_module.audit_archives
 find_archives = audit_module.find_archives
 forbidden_entries = audit_module.forbidden_entries
+is_protected_package_path = audit_module.is_protected_package_path
 
 
 def write_wheel(path: Path, names: list[str]) -> None:
@@ -44,26 +45,96 @@ def write_sdist(path: Path, names: list[str]) -> None:
             archive.add(file_path, arcname=name)
 
 
-def test_forbidden_entries_detects_internal_and_ignored_paths() -> None:
+def test_forbidden_entries_detects_protected_and_ignored_paths() -> None:
     names = [
         "localql-1.0.0/README.md",
+        "localql-1.0.0/.internal/release-proof.md",
         "localql-1.0.0/docs/superpowers/specs/design.md",
+        "localql-1.0.0/docs/CODEX_CAPABILITY_REVIEW.md",
         "localql-1.0.0/docs/release-candidate-proof-2026-07-03.md",
         "localql-1.0.0/.DS_Store",
         "localql-1.0.0/output/proof.json",
         "localql-1.0.0/csvql_project_pack.zip",
+        "localql-1.0.0/AGENTS.md",
+        "localql-1.0.0/docs/AGENTS.override.md",
+        "localql-1.0.0/.agents/instructions.md",
+        "localql-1.0.0/.codex/session.json",
+        "localql-1.0.0/docs/reference/.agents/instructions.md",
+        "localql-1.0.0/docs/reference/.codex/session.json",
+        "localql-1.0.0/docs/.internal/release-proof.md",
     ]
 
     assert forbidden_entries(names) == [
+        "localql-1.0.0/.internal/release-proof.md",
         "localql-1.0.0/docs/superpowers/specs/design.md",
+        "localql-1.0.0/docs/CODEX_CAPABILITY_REVIEW.md",
         "localql-1.0.0/docs/release-candidate-proof-2026-07-03.md",
         "localql-1.0.0/.DS_Store",
         "localql-1.0.0/output/proof.json",
         "localql-1.0.0/csvql_project_pack.zip",
+        "localql-1.0.0/AGENTS.md",
+        "localql-1.0.0/docs/AGENTS.override.md",
+        "localql-1.0.0/.agents/instructions.md",
+        "localql-1.0.0/.codex/session.json",
+        "localql-1.0.0/docs/reference/.agents/instructions.md",
+        "localql-1.0.0/docs/reference/.codex/session.json",
+        "localql-1.0.0/docs/.internal/release-proof.md",
     ]
 
 
-def test_sdist_build_config_excludes_internal_proof_paths() -> None:
+@pytest.mark.parametrize(
+    "noncanonical_name",
+    [
+        "./.internal/release-proof.md",
+        "localql-1.0.4/docs/./superpowers/design.md",
+        "./.agents/instructions.md",
+        "./.codex/session.json",
+        "C:/.internal/release-proof.md",
+        "localql-1.0.4/D:/.agents/instructions.md",
+        "E:/.codex/session.json",
+    ],
+)
+def test_forbidden_entries_rejects_noncanonical_names_before_protected_predicate(
+    monkeypatch: pytest.MonkeyPatch,
+    noncanonical_name: str,
+) -> None:
+    def predicate_must_not_run(_parts: object) -> bool:
+        raise AssertionError("protected predicate must receive canonical names only")
+
+    monkeypatch.setattr(audit_module, "is_protected_package_path", predicate_must_not_run)
+
+    assert forbidden_entries([noncanonical_name]) == [noncanonical_name]
+
+
+def test_shared_protected_predicate_rejects_private_engineering_artifacts() -> None:
+    assert "AGENTS.md" not in audit_module.FORBIDDEN_NAMES
+    assert "AGENTS.override.md" not in audit_module.FORBIDDEN_NAMES
+    assert is_protected_package_path(("AGENTS.md",))
+    assert is_protected_package_path(("docs", "AGENTS.md"))
+    assert is_protected_package_path(("docs", "AGENTS.override.md"))
+    assert is_protected_package_path(("docs", "CODEX_CAPABILITY_REVIEW.md"))
+    assert is_protected_package_path(("docs", "release-candidate-proof-2026-07-03.md"))
+    assert is_protected_package_path(("docs", ".internal", "release-proof.md"))
+    assert is_protected_package_path(("docs", "reference", ".agents", "instructions.md"))
+    assert is_protected_package_path(("docs", "reference", ".codex", "session.json"))
+    assert forbidden_entries(["localql-1.0.4/docs/AGENTS.md"]) == ["localql-1.0.4/docs/AGENTS.md"]
+
+
+@pytest.mark.parametrize(
+    "lookalike_parts",
+    [
+        ("docs", ".internalized", "guide.md"),
+        ("docs", "reference", ".agents-guide", "instructions.md"),
+        ("docs", "reference", ".codex-config", "session.json"),
+    ],
+)
+def test_protected_predicate_allows_nonmatching_directory_lookalikes(
+    lookalike_parts: tuple[str, ...],
+) -> None:
+    assert not is_protected_package_path(lookalike_parts)
+
+
+def test_sdist_build_config_explicitly_includes_only_public_package_inputs() -> None:
     payload = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     sdist_target = (
         payload.get("tool", {})
@@ -73,10 +144,27 @@ def test_sdist_build_config_excludes_internal_proof_paths() -> None:
         .get("sdist", {})
     )
 
-    excluded_paths = sdist_target.get("exclude", [])
+    assert sdist_target.get("include") == [
+        "/README.md",
+        "/LICENSE",
+        "/CHANGELOG.md",
+        "/docs",
+        "/examples",
+        "/pyproject.toml",
+        "/scripts/release-build-constraints.txt",
+        "/src",
+    ]
 
-    assert "/docs/superpowers" in excluded_paths
-    assert "/output" in excluded_paths
+    excluded_paths = set(sdist_target.get("exclude", []))
+    assert {
+        "/.internal",
+        "/docs/superpowers",
+        "/AGENTS.md",
+        "/AGENTS.override.md",
+        "/.agents",
+        "/.codex",
+        "/output",
+    } <= excluded_paths
 
 
 def test_find_archives_requires_wheel_and_sdist(tmp_path: Path) -> None:

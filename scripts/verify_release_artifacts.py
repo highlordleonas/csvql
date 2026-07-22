@@ -28,7 +28,7 @@ try:
         SDIST_SIZE_LIMIT,
         WHEEL_EXPANDED_SIZE_LIMIT,
         WHEEL_SIZE_LIMIT,
-        find_archives,
+        is_protected_package_path,
     )
 except ModuleNotFoundError:
     from audit_package_contents import (  # type: ignore[no-redef]
@@ -37,16 +37,16 @@ except ModuleNotFoundError:
         SDIST_SIZE_LIMIT,
         WHEEL_EXPANDED_SIZE_LIMIT,
         WHEEL_SIZE_LIMIT,
-        find_archives,
+        is_protected_package_path,
     )
 
-EXPECTED_VERSION = "1.0.4"
-EXPECTED_WHEEL = "localql-1.0.4-py3-none-any.whl"
-EXPECTED_SDIST = "localql-1.0.4.tar.gz"
+EXPECTED_VERSION = "1.0.5"
+EXPECTED_WHEEL = "localql-1.0.5-py3-none-any.whl"
+EXPECTED_SDIST = "localql-1.0.5.tar.gz"
 EXPECTED_ENTRY_POINT = "csvql = csvql.cli:main"
-EXPECTED_DIST_INFO = "localql-1.0.4.dist-info"
-EXPECTED_SDIST_ROOT = "localql-1.0.4"
-EXPECTED_RECORD = "localql-1.0.4.dist-info/RECORD"
+EXPECTED_DIST_INFO = "localql-1.0.5.dist-info"
+EXPECTED_SDIST_ROOT = "localql-1.0.5"
+EXPECTED_RECORD = "localql-1.0.5.dist-info/RECORD"
 
 METADATA_KEYS = (
     "Name",
@@ -71,6 +71,11 @@ MAX_ARCHIVE_MEMBERS = 4096
 MAX_MEMBER_NAME_BYTES = 1024 * 1024
 HASH_CHUNK_SIZE = 1024 * 1024
 READ_CHUNK_SIZE = 64 * 1024
+CUSTODY_INPUT_SIZE_LIMIT = 64 * 1024
+IDENTITY_INPUT_SIZE_LIMIT = 4 * 1024
+LOWER_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
+LOWER_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+CONSTRAINTS_DIGEST_RE = re.compile(r"([0-9a-f]{64})  scripts/release-build-constraints\.txt\n")
 
 
 class ArtifactVerificationError(ValueError):
@@ -83,6 +88,19 @@ class ArtifactSet:
 
     wheel: Path
     sdist: Path
+
+
+@dataclass(frozen=True, slots=True)
+class CustodyContext:
+    """Validated immutable source and build-tool identity for one artifact pair."""
+
+    source_commit: str
+    tag_name: str
+    tag_object: str
+    peeled_commit: str
+    python_identity: str
+    uv_identity: str
+    build_constraints_sha256: str
 
 
 def _fail(message: str) -> ArtifactVerificationError:
@@ -168,6 +186,22 @@ def _reject_duplicate_or_ambiguous_names(
         raise _fail(f"{role} contains ambiguous normalized archive members.")
 
 
+def _reject_protected_package_members(
+    names: list[str],
+    *,
+    role: str,
+    project_root: str | None = None,
+) -> None:
+    """Reject protected project paths after canonical archive-name validation."""
+
+    for name in names:
+        parts = tuple(name.rstrip("/").split("/"))
+        if project_root is not None and parts and parts[0] == project_root:
+            parts = parts[1:]
+        if is_protected_package_path(parts):
+            raise _fail(f"{role} contains a protected package member.")
+
+
 def _member_name_size(name: str, *, role: str) -> int:
     try:
         return len(name.encode("utf-8"))
@@ -246,6 +280,10 @@ def _validated_zip_infos(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
     if total_size > WHEEL_EXPANDED_SIZE_LIMIT:
         raise _fail("Wheel archive exceeds the expanded total size limit.")
     _validate_dist_info_namespace(infos, kinds)
+    _reject_protected_package_members(
+        [info.filename for info in infos],
+        role="Wheel archive",
+    )
     return infos
 
 
@@ -276,6 +314,11 @@ def _validated_tar_infos(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
         total_size += info.size
     if total_size > SDIST_EXPANDED_SIZE_LIMIT:
         raise _fail("Sdist archive exceeds the expanded total size limit.")
+    _reject_protected_package_members(
+        [info.name for info in infos],
+        role="Sdist archive",
+        project_root=EXPECTED_SDIST_ROOT,
+    )
     return infos
 
 
@@ -528,48 +571,240 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _validate_manifest_destination(artifacts: ArtifactSet, destination: Path) -> None:
+def _select_exact_artifact_pair(dist_dir: Path, expected_version: str) -> ArtifactSet:
+    _validate_expected_version(expected_version)
+    try:
+        directory_stat = dist_dir.lstat()
+        entries = list(dist_dir.iterdir())
+    except OSError:
+        raise _fail("Unable to inspect the exact release artifact directory.") from None
+    if stat.S_ISLNK(directory_stat.st_mode) or not stat.S_ISDIR(directory_stat.st_mode):
+        raise _fail("Expected an accessible non-symlink release artifact directory.")
+    expected_names = {EXPECTED_WHEEL, EXPECTED_SDIST}
+    if len(entries) != 2 or {entry.name for entry in entries} != expected_names:
+        raise _fail("Expected exact release artifacts: one wheel and one sdist.")
+
+    wheel = dist_dir / EXPECTED_WHEEL
+    sdist = dist_dir / EXPECTED_SDIST
+    try:
+        entry_stats = [wheel.lstat(), sdist.lstat()]
+        aliases = os.path.samefile(wheel, sdist)
+    except OSError:
+        raise _fail("Expected exact release artifacts as accessible regular files.") from None
+    if aliases or any(
+        stat.S_ISLNK(entry_stat.st_mode) or not stat.S_ISREG(entry_stat.st_mode)
+        for entry_stat in entry_stats
+    ):
+        raise _fail("Expected exact release artifacts as distinct non-symlink regular files.")
+    return ArtifactSet(wheel, sdist)
+
+
+def _read_bounded_regular_file(path: Path, *, size_limit: int, role: str) -> bytes:
+    try:
+        path_stat = path.lstat()
+        if (
+            stat.S_ISLNK(path_stat.st_mode)
+            or not stat.S_ISREG(path_stat.st_mode)
+            or path_stat.st_size > size_limit
+        ):
+            raise _fail(f"{role} must be a bounded non-symlink regular file.")
+        with path.open("rb") as input_file:
+            opened_stat = os.fstat(input_file.fileno())
+            if (opened_stat.st_dev, opened_stat.st_ino) != (
+                path_stat.st_dev,
+                path_stat.st_ino,
+            ) or not stat.S_ISREG(opened_stat.st_mode):
+                raise _fail(f"{role} must be a stable non-symlink regular file.")
+            content = input_file.read(size_limit + 1)
+            final_stat = os.fstat(input_file.fileno())
+    except ArtifactVerificationError:
+        raise
+    except OSError:
+        raise _fail(f"Unable to read the bounded {role.lower()}.") from None
+    if (
+        len(content) > size_limit
+        or final_stat.st_size != len(content)
+        or path_stat.st_size != len(content)
+    ):
+        raise _fail(f"{role} must remain within its bounded input size.")
+    return content
+
+
+def _identity_line(path: Path, *, role: str) -> str:
+    content = _read_bounded_regular_file(
+        path,
+        size_limit=IDENTITY_INPUT_SIZE_LIMIT,
+        role=role,
+    )
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise _fail(f"{role} is not a valid identity line.") from None
+    line = text[:-1] if text.endswith("\n") else text
+    if not line or "\n" in line or "\r" in line or not line.isprintable():
+        raise _fail(f"{role} is not a valid identity line.")
+    return line
+
+
+def _constraints_digest(path: Path) -> str:
+    content = _read_bounded_regular_file(
+        path,
+        size_limit=IDENTITY_INPUT_SIZE_LIMIT,
+        role="Build constraints digest evidence",
+    )
+    try:
+        text = content.decode("ascii")
+    except UnicodeDecodeError:
+        raise _fail("Build constraints digest evidence is invalid.") from None
+    match = CONSTRAINTS_DIGEST_RE.fullmatch(text)
+    if match is None:
+        raise _fail("Build constraints digest evidence is invalid.")
+    return match.group(1)
+
+
+def _load_custody_context(
+    expected_version: str,
+    *,
+    source_commit: str,
+    tag_name: str,
+    tag_object: str,
+    peeled_commit: str,
+    python_identity_file: Path,
+    uv_identity_file: Path,
+    build_constraints_digest_file: Path,
+) -> CustodyContext:
+    expected_tag = f"v{expected_version}"
+    if (
+        LOWER_COMMIT_RE.fullmatch(source_commit) is None
+        or LOWER_COMMIT_RE.fullmatch(tag_object) is None
+        or LOWER_COMMIT_RE.fullmatch(peeled_commit) is None
+        or tag_name != expected_tag
+        or peeled_commit != source_commit
+        or tag_object == peeled_commit
+    ):
+        raise _fail("Release custody source identity is invalid.")
+    return CustodyContext(
+        source_commit=source_commit,
+        tag_name=tag_name,
+        tag_object=tag_object,
+        peeled_commit=peeled_commit,
+        python_identity=_identity_line(python_identity_file, role="Python identity evidence"),
+        uv_identity=_identity_line(uv_identity_file, role="uv identity evidence"),
+        build_constraints_sha256=_constraints_digest(build_constraints_digest_file),
+    )
+
+
+def _stable_artifact_record(path: Path) -> dict[str, object]:
+    try:
+        before = path.lstat()
+        digest = sha256_file(path)
+        after = path.lstat()
+    except OSError:
+        raise _fail("Unable to recompute release artifact custody metadata.") from None
+    stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns")
+    if before.st_size <= 0 or any(
+        getattr(before, field) != getattr(after, field) for field in stable_fields
+    ):
+        raise _fail("Release artifact changed during custody metadata calculation.")
+    return {"filename": path.name, "sha256": digest, "size": before.st_size}
+
+
+def _custody_manifest_payload(
+    artifacts: ArtifactSet,
+    expected_version: str,
+    context: CustodyContext,
+) -> dict[str, object]:
+    return {
+        "artifacts": [
+            _stable_artifact_record(artifacts.wheel),
+            _stable_artifact_record(artifacts.sdist),
+        ],
+        "distribution": "localql",
+        "schema_version": 1,
+        "source": {
+            "commit": context.source_commit,
+            "peeled_commit": context.peeled_commit,
+            "tag": context.tag_name,
+            "tag_object": context.tag_object,
+        },
+        "toolchain": {
+            "build_constraints_sha256": context.build_constraints_sha256,
+            "python": context.python_identity,
+            "uv": context.uv_identity,
+        },
+        "version": expected_version,
+    }
+
+
+def _manifest_text(payload: dict[str, object]) -> str:
+    return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+
+def _sha256sums_text(payload: dict[str, object]) -> str:
+    artifacts = payload["artifacts"]
+    assert isinstance(artifacts, list)
+    return "".join(
+        f"{artifact['sha256']}  {artifact['filename']}\n"
+        for artifact in artifacts
+        if isinstance(artifact, dict)
+    )
+
+
+def _paths_alias(left: Path, right: Path) -> bool:
+    try:
+        normalized_left = left.resolve(strict=False)
+        normalized_right = right.resolve(strict=False)
+    except OSError:
+        raise _fail("Unable to normalize release custody paths safely.") from None
+    if normalized_left == normalized_right:
+        return True
+    try:
+        return os.path.samefile(left, right)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        raise _fail("Unable to compare release custody paths safely.") from None
+
+
+def _validate_atomic_destination(destination: Path, protected_paths: tuple[Path, ...]) -> None:
+    try:
+        parent_stat = destination.parent.lstat()
+    except OSError:
+        raise _fail("Release custody destination parent is not accessible.") from None
+    if stat.S_ISLNK(parent_stat.st_mode) or not stat.S_ISDIR(parent_stat.st_mode):
+        raise _fail("Release custody destination parent must be a non-symlink directory.")
     try:
         destination_stat = destination.lstat()
     except FileNotFoundError:
-        return
+        destination_stat = None
     except OSError:
-        raise _fail("Unable to inspect the release artifact manifest destination.") from None
-
-    if stat.S_ISLNK(destination_stat.st_mode):
-        raise _fail("Release artifact manifest destination must not be a symlink.")
-    if not stat.S_ISREG(destination_stat.st_mode):
-        raise _fail(
-            "Release artifact manifest destination must be absent or a non-symlink regular file."
-        )
-    try:
-        aliases_input = any(
-            os.path.samefile(destination, artifact)
-            for artifact in (artifacts.wheel, artifacts.sdist)
-        )
-    except OSError:
-        raise _fail("Unable to compare the release artifact manifest destination.") from None
-    if aliases_input:
-        raise _fail("Release artifact manifest destination is an alias of a release artifact.")
+        raise _fail("Unable to inspect a release custody destination.") from None
+    if destination_stat is not None and (
+        stat.S_ISLNK(destination_stat.st_mode) or not stat.S_ISREG(destination_stat.st_mode)
+    ):
+        raise _fail("Release custody destination must be absent or a non-symlink regular file.")
+    if any(_paths_alias(destination, protected_path) for protected_path in protected_paths):
+        raise _fail("Release custody destination aliases a protected input.")
 
 
-def _remove_temporary_manifest(path: Path) -> None:
+def _remove_temporary_file(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
     except OSError:
-        raise _fail("Unable to clean up the temporary release artifact manifest.") from None
+        raise _fail("Unable to clean up a temporary release custody file.") from None
 
 
-def _write_manifest_atomically(
-    artifacts: ArtifactSet,
+def _write_text_atomically(
     destination: Path,
     content: str,
+    protected_paths: tuple[Path, ...],
 ) -> None:
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
+            newline="\n",
             dir=destination.parent,
             prefix=f".{destination.name}.",
             suffix=".tmp",
@@ -579,72 +814,286 @@ def _write_manifest_atomically(
             temporary_file.write(content)
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
-        _validate_manifest_destination(artifacts, destination)
+        _validate_atomic_destination(destination, protected_paths)
         os.replace(temporary_path, destination)
     except ArtifactVerificationError:
         if temporary_path is not None:
-            _remove_temporary_manifest(temporary_path)
+            _remove_temporary_file(temporary_path)
         raise
     except OSError:
         if temporary_path is not None:
-            _remove_temporary_manifest(temporary_path)
-        raise _fail("Unable to write the release artifact manifest.") from None
-    else:
-        if temporary_path is not None:
-            _remove_temporary_manifest(temporary_path)
+            _remove_temporary_file(temporary_path)
+        raise _fail("Unable to write a release custody file atomically.") from None
 
 
-def write_artifact_manifest(artifacts: ArtifactSet, destination: Path) -> None:
-    """Write the deterministic SHA-256 and size manifest for the exact artifact pair."""
+def create_custody_files(
+    artifacts: ArtifactSet,
+    expected_version: str,
+    *,
+    manifest: Path,
+    sha256sums: Path,
+    source_commit: str,
+    tag_name: str,
+    tag_object: str,
+    peeled_commit: str,
+    python_identity_file: Path,
+    uv_identity_file: Path,
+    build_constraints_digest_file: Path,
+) -> None:
+    """Verify artifacts and atomically create their strict custody files."""
 
-    _validate_artifact_paths(artifacts)
-    _validate_manifest_destination(artifacts, destination)
+    verify_artifact_pair(artifacts, expected_version)
+    context = _load_custody_context(
+        expected_version,
+        source_commit=source_commit,
+        tag_name=tag_name,
+        tag_object=tag_object,
+        peeled_commit=peeled_commit,
+        python_identity_file=python_identity_file,
+        uv_identity_file=uv_identity_file,
+        build_constraints_digest_file=build_constraints_digest_file,
+    )
+    protected_paths = (
+        artifacts.wheel,
+        artifacts.sdist,
+        python_identity_file,
+        uv_identity_file,
+        build_constraints_digest_file,
+    )
+    _validate_atomic_destination(manifest, protected_paths)
+    _validate_atomic_destination(sha256sums, protected_paths)
+    if _paths_alias(manifest, sha256sums):
+        raise _fail("Release custody destinations must be distinct.")
     try:
-        payload = {
-            "artifacts": [
-                {
-                    "filename": artifacts.wheel.name,
-                    "sha256": sha256_file(artifacts.wheel),
-                    "size": artifacts.wheel.stat().st_size,
-                },
-                {
-                    "filename": artifacts.sdist.name,
-                    "sha256": sha256_file(artifacts.sdist),
-                    "size": artifacts.sdist.stat().st_size,
-                },
-            ],
-            "distribution": "localql",
-            "version": "1.0.4",
-        }
-        content = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        artifact_directory = artifacts.wheel.parent.resolve(strict=True)
+        destination_directories = [
+            destination.parent.resolve(strict=True) for destination in (manifest, sha256sums)
+        ]
     except OSError:
-        raise _fail("Unable to write the release artifact manifest.") from None
-    _write_manifest_atomically(artifacts, destination, content)
+        raise _fail("Unable to resolve release custody destination directories.") from None
+    if artifact_directory in destination_directories:
+        raise _fail("Release custody files must be outside the exact artifact directory.")
+
+    payload = _custody_manifest_payload(artifacts, expected_version, context)
+    _write_text_atomically(manifest, _manifest_text(payload), protected_paths)
+    _write_text_atomically(sha256sums, _sha256sums_text(payload), protected_paths)
+
+
+def _object_without_duplicate_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _fail("Release custody manifest contains duplicate keys.")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise _fail("Release custody manifest contains an invalid JSON value.")
+
+
+def _exact_dict(value: object, keys: set[str]) -> dict[str, object]:
+    if type(value) is not dict or set(value) != keys:
+        raise _fail("Release custody manifest has an invalid object schema.")
+    return value
+
+
+def _validate_custody_manifest_schema(
+    payload: object,
+    expected_version: str,
+) -> dict[str, object]:
+    manifest = _exact_dict(
+        payload,
+        {"artifacts", "distribution", "schema_version", "source", "toolchain", "version"},
+    )
+    if (
+        manifest["distribution"] != "localql"
+        or type(manifest["schema_version"]) is not int
+        or manifest["schema_version"] != 1
+        or manifest["version"] != expected_version
+    ):
+        raise _fail("Release custody manifest identity is invalid.")
+
+    artifacts = manifest["artifacts"]
+    if type(artifacts) is not list or len(artifacts) != 2:
+        raise _fail("Release custody manifest artifact schema is invalid.")
+    for value, expected_name in zip(artifacts, (EXPECTED_WHEEL, EXPECTED_SDIST), strict=True):
+        artifact = _exact_dict(value, {"filename", "sha256", "size"})
+        if (
+            artifact["filename"] != expected_name
+            or type(artifact["sha256"]) is not str
+            or LOWER_SHA256_RE.fullmatch(artifact["sha256"]) is None
+            or type(artifact["size"]) is not int
+            or artifact["size"] <= 0
+        ):
+            raise _fail("Release custody manifest artifact entry is invalid.")
+
+    source = _exact_dict(manifest["source"], {"commit", "peeled_commit", "tag", "tag_object"})
+    if (
+        type(source["commit"]) is not str
+        or type(source["peeled_commit"]) is not str
+        or type(source["tag"]) is not str
+        or type(source["tag_object"]) is not str
+        or LOWER_COMMIT_RE.fullmatch(source["commit"]) is None
+        or LOWER_COMMIT_RE.fullmatch(source["peeled_commit"]) is None
+        or LOWER_COMMIT_RE.fullmatch(source["tag_object"]) is None
+        or source["commit"] != source["peeled_commit"]
+        or source["tag"] != f"v{expected_version}"
+        or source["tag_object"] == source["peeled_commit"]
+    ):
+        raise _fail("Release custody manifest source identity is invalid.")
+
+    toolchain = _exact_dict(
+        manifest["toolchain"],
+        {"build_constraints_sha256", "python", "uv"},
+    )
+    if (
+        type(toolchain["build_constraints_sha256"]) is not str
+        or LOWER_SHA256_RE.fullmatch(toolchain["build_constraints_sha256"]) is None
+        or type(toolchain["python"]) is not str
+        or not toolchain["python"]
+        or not toolchain["python"].isprintable()
+        or type(toolchain["uv"]) is not str
+        or not toolchain["uv"]
+        or not toolchain["uv"].isprintable()
+    ):
+        raise _fail("Release custody manifest toolchain identity is invalid.")
+    return manifest
+
+
+def _parse_custody_manifest(path: Path, expected_version: str) -> dict[str, object]:
+    content = _read_bounded_regular_file(
+        path,
+        size_limit=CUSTODY_INPUT_SIZE_LIMIT,
+        role="Release custody manifest",
+    )
+    try:
+        text = content.decode("utf-8")
+        payload = json.loads(
+            text,
+            object_pairs_hook=_object_without_duplicate_keys,
+            parse_constant=_reject_json_constant,
+        )
+    except ArtifactVerificationError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise _fail("Release custody manifest is malformed.") from None
+    manifest = _validate_custody_manifest_schema(payload, expected_version)
+    if content != _manifest_text(manifest).encode("utf-8"):
+        raise _fail("Release custody manifest is not canonical.")
+    return manifest
+
+
+def verify_custody_files(
+    artifacts: ArtifactSet,
+    expected_version: str,
+    *,
+    manifest: Path,
+    sha256sums: Path,
+    source_commit: str,
+    tag_name: str,
+    tag_object: str,
+    peeled_commit: str,
+    python_identity_file: Path,
+    uv_identity_file: Path,
+    build_constraints_digest_file: Path,
+) -> None:
+    """Strictly verify transported custody files against independently supplied evidence."""
+
+    verify_artifact_pair(artifacts, expected_version)
+    context = _load_custody_context(
+        expected_version,
+        source_commit=source_commit,
+        tag_name=tag_name,
+        tag_object=tag_object,
+        peeled_commit=peeled_commit,
+        python_identity_file=python_identity_file,
+        uv_identity_file=uv_identity_file,
+        build_constraints_digest_file=build_constraints_digest_file,
+    )
+    transported_manifest = _parse_custody_manifest(manifest, expected_version)
+    expected_manifest = _custody_manifest_payload(artifacts, expected_version, context)
+    if transported_manifest != expected_manifest:
+        raise _fail("Release custody manifest does not match recomputed evidence.")
+    transported_sums = _read_bounded_regular_file(
+        sha256sums,
+        size_limit=CUSTODY_INPUT_SIZE_LIMIT,
+        role="Release custody SHA256SUMS",
+    )
+    if transported_sums != _sha256sums_text(expected_manifest).encode("ascii"):
+        raise _fail("Release custody SHA256SUMS does not match the strict manifest.")
+
+
+def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("dist_dir", type=Path)
+    parser.add_argument("--expected-version", required=True)
+
+
+def _add_custody_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--sha256sums", type=Path, required=True)
+    parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--tag-name", required=True)
+    parser.add_argument("--tag-object", required=True)
+    parser.add_argument("--peeled-commit", required=True)
+    parser.add_argument("--python-identity-file", type=Path, required=True)
+    parser.add_argument("--uv-identity-file", type=Path, required=True)
+    parser.add_argument("--build-constraints-digest-file", type=Path, required=True)
 
 
 def main() -> None:
-    """Verify exact artifacts, optional rebuilds, and write the release manifest."""
+    """Inspect artifacts, verify a rebuild, or create/verify the custody contract."""
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("dist_dir", type=Path)
-    parser.add_argument("--expected-version", required=True)
-    parser.add_argument("--rebuilt-wheel", action="append", type=Path, default=[])
-    parser.add_argument("--manifest", type=Path, required=True)
+    subparsers = parser.add_subparsers(dest="mode", required=True)
+    inspect_parser = subparsers.add_parser("inspect")
+    _add_common_arguments(inspect_parser)
+    rebuild_parser = subparsers.add_parser("verify-rebuild")
+    _add_common_arguments(rebuild_parser)
+    rebuild_parser.add_argument("--rebuilt-wheel", type=Path, required=True)
+    for mode in ("create-manifest", "verify-manifest"):
+        custody_parser = subparsers.add_parser(mode)
+        _add_common_arguments(custody_parser)
+        _add_custody_arguments(custody_parser)
     args = parser.parse_args()
 
-    wheel, sdist = find_archives(args.dist_dir, args.expected_version)
-    artifacts = ArtifactSet(wheel=wheel, sdist=sdist)
     try:
-        verify_artifact_pair(artifacts, args.expected_version)
-        for rebuilt_wheel in args.rebuilt_wheel:
-            verify_rebuilt_wheel(artifacts.wheel, rebuilt_wheel)
-        write_artifact_manifest(artifacts, args.manifest)
+        artifacts = _select_exact_artifact_pair(args.dist_dir, args.expected_version)
+        if args.mode == "inspect":
+            verify_artifact_pair(artifacts, args.expected_version)
+        elif args.mode == "verify-rebuild":
+            verify_artifact_pair(artifacts, args.expected_version)
+            verify_rebuilt_wheel(artifacts.wheel, args.rebuilt_wheel)
+        else:
+            operation = (
+                create_custody_files if args.mode == "create-manifest" else verify_custody_files
+            )
+            operation(
+                artifacts,
+                args.expected_version,
+                manifest=args.manifest,
+                sha256sums=args.sha256sums,
+                source_commit=args.source_commit,
+                tag_name=args.tag_name,
+                tag_object=args.tag_object,
+                peeled_commit=args.peeled_commit,
+                python_identity_file=args.python_identity_file,
+                uv_identity_file=args.uv_identity_file,
+                build_constraints_digest_file=args.build_constraints_digest_file,
+            )
     except ArtifactVerificationError as error:
         raise SystemExit(str(error)) from None
-    print(
-        "Release artifact verification passed: "
-        f"1 wheel(s), 1 sdist(s), {len(args.rebuilt_wheel)} rebuilt wheel(s)."
-    )
+    success_messages = {
+        "inspect": "Release artifact inspection passed: 1 wheel(s), 1 sdist(s).",
+        "verify-rebuild": ("Release artifact rebuild verification passed: 1 wheel(s), 1 sdist(s)."),
+        "create-manifest": "Release artifact custody files created: 1 wheel(s), 1 sdist(s).",
+        "verify-manifest": (
+            "Release artifact custody verification passed: 1 wheel(s), 1 sdist(s)."
+        ),
+    }
+    print(success_messages[args.mode])
 
 
 if __name__ == "__main__":

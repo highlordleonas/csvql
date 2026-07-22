@@ -1,4 +1,8 @@
-"""Verify version consistency, build outputs, and installed-wheel smoke behavior."""
+"""Verify local compatibility evidence for built artifacts and installed-wheel smoke checks.
+
+On success, it prints "Local compatibility evidence passed."
+It does not authorize release custody or publication.
+"""
 
 from __future__ import annotations
 
@@ -14,9 +18,14 @@ from csvql.release_readiness import (
 
 
 def main() -> None:
-    """Run the repo-local release-readiness proof and print a proof summary."""
+    """Run the local compatibility evidence helper and print its summary."""
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run local compatibility evidence for the built wheel and installed smoke checks. "
+            "This wrapper does not authorize release custody or publication."
+        )
+    )
     parser.add_argument("--work-dir", default="output/release-readiness")
     args = parser.parse_args()
 

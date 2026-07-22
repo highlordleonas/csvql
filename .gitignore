@@ -21,3 +21,13 @@ keys.log
 
 csvql_project_pack/
 csvql_project_pack.zip
+
+# Local/private engineering artifacts
+/AGENTS.md
+/AGENTS.override.md
+/.agents/
+/.codex/
+/.internal/
+/docs/superpowers/
+/docs/CODEX_CAPABILITY_REVIEW.md
+/docs/release-candidate-proof-*.md
