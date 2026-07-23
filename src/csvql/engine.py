@@ -11,6 +11,7 @@ from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
 from csvql.exceptions import CSVQLError, QueryExecutionError, SourceError
 from csvql.models import QueryResult, TableSource
 from csvql.operation import OperationCancelled, OperationContext, OperationToken
+from csvql.result_stream import ResultStream
 from csvql.source import ResolvedSource, SourceSpec, source_alias_collision_key
 from csvql.source_adapter import (
     PreparedBinding,
@@ -21,6 +22,7 @@ from csvql.source_adapter import (
 
 _SOURCE_ALIAS_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RESERVED_ALIAS_PREFIX = "__localql_"
+_QUERY_FETCH_ROWS = 1000
 
 
 class CSVQLEngine:
@@ -37,6 +39,8 @@ class CSVQLEngine:
         self._connection: duckdb.DuckDBPyConnection | None = None
         self._bindings: list[PreparedBinding] = []
         self._alias_keys: set[str] = set()
+        self._active_stream: ResultStream | None = None
+        self._active_cursor: duckdb.DuckDBPyConnection | None = None
         self._closed = False
         self._lifecycle_lock = RLock()
 
@@ -149,21 +153,68 @@ class CSVQLEngine:
     def query(self, sql: str, params: Sequence[object] | None = None) -> QueryResult:
         """Execute SQL and return all result rows."""
 
+        stream = self.stream(sql, params)
+        rows: list[tuple[object, ...]] = []
+        primary: BaseException | None = None
+        try:
+            while True:
+                batch = stream.fetch_rows(_QUERY_FETCH_ROWS)
+                rows.extend(batch.rows)
+                if batch.exhausted:
+                    break
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            try:
+                stream.close()
+            except BaseException:
+                if primary is None:
+                    raise
+                primary.add_note(
+                    "Cleanup uncertainty: the active result cursor could not be closed."
+                )
+        return QueryResult(columns=stream.columns, rows=tuple(rows), elapsed_ms=stream.elapsed_ms)
+
+    def stream(self, sql: str, params: Sequence[object] | None = None) -> ResultStream:
+        """Execute SQL and return a private single-consumer result stream."""
+
         with self._lifecycle_lock:
             self._raise_if_closed(query=True)
+            if self._active_stream is not None:
+                raise QueryExecutionError(
+                    "LocalQL engine already has an active result stream.",
+                    suggestion="Close the current result stream before starting another query.",
+                )
             started_at = perf_counter()
+            connection: duckdb.DuckDBPyConnection | None = None
+            cursor: duckdb.DuckDBPyConnection | None = None
             try:
                 self._operation.checkpoint()
                 connection = self._ensure_connection()
+                cursor = connection.cursor()
                 self._operation.checkpoint()
-                cursor = connection.execute(sql, params or [])
-                rows = tuple(tuple(row) for row in cursor.fetchall())
-                columns = tuple(column[0] for column in cursor.description or ())
+                cursor.execute(sql, params or [])
                 self._operation.checkpoint()
+                stream = ResultStream(
+                    cursor=cursor,
+                    operation=self._operation,
+                    started_at=started_at,
+                    close_owner=self._close_active_stream,
+                    request_interrupt=self.interrupt,
+                    now=perf_counter,
+                )
+                self._active_cursor = cursor
+                self._active_stream = stream
+                return stream
             except OperationCancelled as exc:
+                if cursor is not None and cursor is not connection:
+                    self._close_cursor(cursor)
                 self._release_resources(primary=exc)
                 raise
             except duckdb.Error as exc:
+                if cursor is not None and cursor is not connection:
+                    self._close_cursor(cursor)
                 if self._operation.token.is_cancelled:
                     cancelled = OperationCancelled("Operation cancelled.")
                     self._release_resources(primary=cancelled)
@@ -173,11 +224,10 @@ class CSVQLEngine:
                     suggestion="Check table names, column names, and SQL syntax.",
                 ) from exc
             except BaseException as exc:
+                if cursor is not None and cursor is not connection:
+                    self._close_cursor(cursor)
                 self._release_resources(primary=exc)
                 raise
-
-        elapsed_ms = (perf_counter() - started_at) * 1000
-        return QueryResult(columns=columns, rows=rows, elapsed_ms=elapsed_ms)
 
     def _preflight_sources(
         self,
@@ -304,13 +354,21 @@ class CSVQLEngine:
             if self._closed:
                 return 0
             connection = self._connection
+            active_stream = self._active_stream
+            self._active_stream = None
+            self._active_cursor = None
             bindings = tuple(reversed(self._bindings))
             self._bindings.clear()
             self._alias_keys.clear()
             self._connection = None
             self._closed = True
-            self._operation.detach_interrupt()
 
+        cursor_failures = 0
+        if active_stream is not None:
+            try:
+                active_stream.close()
+            except BaseException:
+                cursor_failures = 1
         binding_failures = 0
         for binding in bindings:
             try:
@@ -324,12 +382,31 @@ class CSVQLEngine:
                 connection.close()
             except BaseException:
                 connection_failures = 1
+        self._operation.detach_interrupt()
 
         if primary is not None:
+            if cursor_failures:
+                primary.add_note(
+                    "Cleanup uncertainty: the active result cursor could not be closed."
+                )
             if binding_failures:
                 primary.add_note(
                     "Cleanup uncertainty: one or more source bindings could not be closed."
                 )
             if connection_failures:
                 primary.add_note("Cleanup uncertainty: the engine connection could not be closed.")
-        return binding_failures + connection_failures
+        return cursor_failures + binding_failures + connection_failures
+
+    def _close_active_stream(self) -> None:
+        with self._lifecycle_lock:
+            self._active_stream = None
+            self._active_cursor = None
+
+    def _close_cursor(self, cursor: duckdb.DuckDBPyConnection | None) -> int:
+        if cursor is None:
+            return 0
+        try:
+            cursor.close()
+        except BaseException:
+            return 1
+        return 0

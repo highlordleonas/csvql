@@ -20,6 +20,7 @@ from csvql.project_config import (
     load_project,
     project_tables_to_source_specs,
 )
+from csvql.result_stream import ResultStream
 from csvql.source import (
     ResolvedSource,
     SourceFingerprint,
@@ -151,6 +152,36 @@ def execute_query_request(
     *,
     operation: OperationContext,
 ) -> QueryResult:
+    """Prepare immutable sources, stream the query, and materialize complete rows."""
+
+    stream = execute_query_request_stream(engine, request, operation=operation)
+    rows: list[tuple[object, ...]] = []
+    primary: BaseException | None = None
+    try:
+        while True:
+            batch = stream.fetch_rows(1000)
+            rows.extend(batch.rows)
+            if batch.exhausted:
+                break
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        try:
+            stream.close()
+        except BaseException:
+            if primary is None:
+                raise
+            primary.add_note("Cleanup uncertainty: the active result cursor could not be closed.")
+    return QueryResult(columns=stream.columns, rows=tuple(rows), elapsed_ms=stream.elapsed_ms)
+
+
+def execute_query_request_stream(
+    engine: CSVQLEngine,
+    request: QueryRequest,
+    *,
+    operation: OperationContext,
+) -> ResultStream:
     """Prepare immutable sources and execute with bounded lazy fallback."""
 
     _require_matching_operation_context(engine, operation)
@@ -160,7 +191,7 @@ def execute_query_request(
     while True:
         operation.checkpoint()
         try:
-            return engine.query(request.sql)
+            return engine.stream(request.sql)
         except QueryExecutionError as exc:
             missing_name = _missing_duckdb_table_name(exc)
             if missing_name is None:

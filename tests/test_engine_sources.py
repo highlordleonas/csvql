@@ -49,6 +49,10 @@ class RecordingConnection:
         self.on_execute = on_execute
         self.interrupt_error = interrupt_error
         self.description: tuple[tuple[str], ...] = (("answer",),)
+        self._fetchmany_pending = True
+
+    def cursor(self) -> "RecordingCursorHandle":
+        return RecordingCursorHandle(self)
 
     def execute(
         self,
@@ -67,6 +71,13 @@ class RecordingConnection:
         self.events.append("fetchall")
         return [(42,)]
 
+    def fetchmany(self, size: int) -> list[tuple[int]]:
+        self.events.append(f"fetchmany:{size}")
+        if self._fetchmany_pending:
+            self._fetchmany_pending = False
+            return [(42,)]
+        return []
+
     def interrupt(self) -> None:
         self.events.append("interrupt")
         if self.interrupt_error is not None:
@@ -76,6 +87,29 @@ class RecordingConnection:
         self.events.append("connection-close")
         if self.close_error is not None:
             raise self.close_error
+
+
+class RecordingCursorHandle:
+    """Dedicated cursor double so cursor and connection cleanup are distinct."""
+
+    def __init__(self, connection: RecordingConnection) -> None:
+        self._connection = connection
+        self.description = connection.description
+
+    def execute(
+        self,
+        sql: str,
+        params: list[object] | None = None,
+    ) -> "RecordingCursorHandle":
+        self._connection.execute(sql, params)
+        self.description = self._connection.description
+        return self
+
+    def fetchmany(self, size: int) -> list[tuple[int]]:
+        return self._connection.fetchmany(size)
+
+    def close(self) -> None:
+        self._connection.events.append("cursor-close")
 
 
 class RecordingBinding:
@@ -942,7 +976,7 @@ def test_source_free_query_opens_immediately_before_execute(
 
     assert result.columns == ("answer",)
     assert result.rows == ((42,),)
-    assert events[:3] == ["connect", "execute", "fetchall"]
+    assert events[:3] == ["connect", "execute", "fetchmany:1000"]
     engine.close()
 
 
@@ -980,7 +1014,79 @@ def test_close_detaches_interrupt_before_connection_owner_close(
     assert "interrupt" not in events
 
 
-@pytest.mark.parametrize("operation_kind", ["query", "prepare"])
+def test_stream_close_cleans_cursor_then_bindings_then_connection_then_interrupt_detach(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    operation = OperationContext(token=OperationToken())
+    adapter = RecordingAdapter(events)
+    connection = RecordingConnection(events)
+    _install_connection(monkeypatch, events, connection)
+    engine = CSVQLEngine(registry=_registry(adapter), operation=operation)
+    engine.prepare_sources((_resolved("first"), _resolved("second")))
+
+    stream = engine.stream("SELECT 42 AS answer")
+    engine.close()
+    operation.request_cancel()
+
+    del stream
+    assert [event for event in events if event.startswith(("execute", "cursor-close", "close:"))] == [
+        "execute",
+        "cursor-close",
+        "close:second",
+        "close:first",
+    ]
+    assert events[-1] == "connection-close"
+    assert "interrupt" not in events
+
+
+def test_engine_rejects_second_active_stream_until_first_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    _install_connection(monkeypatch, events)
+    engine = CSVQLEngine()
+
+    first = engine.stream("SELECT 1 AS value")
+
+    with pytest.raises(QueryExecutionError, match="active result stream"):
+        engine.stream("SELECT 2 AS value")
+
+    first.close()
+    second = engine.stream("SELECT 2 AS value")
+    second.close()
+
+
+def test_query_consumes_stream_to_complete_rows_without_fetchall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class StreamOnlyConnection(RecordingConnection):
+        def __init__(self, events: list[str]) -> None:
+            super().__init__(events)
+            self._remaining = [[(42,)], []]
+
+        def fetchall(self) -> list[tuple[int]]:
+            raise AssertionError("query() must consume the result stream, not fetchall()")
+
+        def fetchmany(self, size: int) -> list[tuple[int]]:
+            self.events.append(f"fetchmany:{size}")
+            return self._remaining.pop(0)
+
+    connection = StreamOnlyConnection(events)
+    _install_connection(monkeypatch, events, connection)
+    engine = CSVQLEngine()
+
+    result = engine.query("SELECT 42 AS answer")
+
+    assert result.columns == ("answer",)
+    assert result.rows == ((42,),)
+    assert "fetchall" not in events
+    assert "fetchmany" in ",".join(events)
+
+
+@pytest.mark.parametrize("operation_kind", ["query", "prepare", "stream"])
 def test_cancellation_during_connect_stops_work_after_interrupt_attachment(
     monkeypatch: pytest.MonkeyPatch,
     operation_kind: str,
@@ -1002,6 +1108,8 @@ def test_cancellation_during_connect_stops_work_after_interrupt_attachment(
     with pytest.raises(OperationCancelled):
         if operation_kind == "query":
             engine.query("SELECT 42")
+        elif operation_kind == "stream":
+            engine.stream("SELECT 42")
         else:
             engine.prepare_sources((_resolved("orders"),))
 
