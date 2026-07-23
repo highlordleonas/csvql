@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from csvql.result_codec import encode_row_payload
+from csvql.result_stream import CURSOR_CLEANUP_UNCERTAINTY_NOTE, ResultStream
+
 DEFAULT_INTERACTIVE_ROW_LIMIT = 1_000
 MAX_PREVIEW_PAYLOAD_BYTES = 16 * 1024 * 1024
 TruncationReason = Literal["row_limit", "byte_limit"]
@@ -71,3 +74,67 @@ class PreviewAccumulator:
         if self._truncation_reason is None:
             self._truncation_reason = reason
         self._has_more_rows = True
+
+
+def collect_bounded_preview(
+    stream: ResultStream,
+    *,
+    policy: PreviewPolicy,
+    fetch_batch_size: int = 256,
+) -> BoundedQueryResult:
+    """Collect a bounded CLI preview without recounting or rerunning the query."""
+
+    if fetch_batch_size <= 0:
+        raise ValueError("fetch_batch_size must be positive")
+
+    accumulator = PreviewAccumulator(
+        columns=stream.columns,
+        elapsed_ms=stream.elapsed_ms,
+        policy=policy,
+    )
+    remaining_row_budget = policy.row_limit + 1
+    primary: BaseException | None = None
+    result: BoundedQueryResult | None = None
+
+    try:
+        while remaining_row_budget > 0:
+            batch = stream.fetch_rows(min(fetch_batch_size, remaining_row_budget))
+            remaining_row_budget -= len(batch.rows)
+
+            for raw_row in batch.rows:
+                row = tuple(raw_row)
+                if not accumulator.consider(row, encode_row_payload(row)):
+                    break
+            if accumulator._truncation_reason is not None:
+                break
+            if batch.exhausted:
+                break
+
+        accumulator.elapsed_ms = stream.elapsed_ms
+        result = accumulator.finish()
+    except BaseException as exc:
+        primary = exc
+    finally:
+        if accumulator._truncation_reason is not None:
+            try:
+                stream.request_interrupt()
+            except BaseException as exc:
+                if primary is None:
+                    primary = exc
+        try:
+            stream.close()
+        except BaseException:
+            if primary is None:
+                raise
+            _add_cleanup_note(primary)
+    if primary is not None:
+        raise primary
+    if result is None:
+        raise AssertionError("Bounded preview collection did not produce a result.")
+    return result
+
+
+def _add_cleanup_note(primary: BaseException) -> None:
+    notes = getattr(primary, "__notes__", ())
+    if CURSOR_CLEANUP_UNCERTAINTY_NOTE not in notes:
+        primary.add_note(CURSOR_CLEANUP_UNCERTAINTY_NOTE)

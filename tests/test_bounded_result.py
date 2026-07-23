@@ -112,3 +112,21 @@ def test_preview_accumulator_records_first_truncation_reason() -> None:
     assert result.preview_payload_bytes == 1
     assert result.has_more_rows is True
     assert result.truncation_reason == "row_limit"
+
+
+def test_preview_accumulator_keeps_first_byte_limit_truncation_reason() -> None:
+    accumulator = PreviewAccumulator(
+        columns=("id",),
+        elapsed_ms=4.0,
+        policy=PreviewPolicy(row_limit=5, payload_limit_bytes=3),
+    )
+
+    assert accumulator.consider((1,), b"abcd") is False
+    assert accumulator.consider((2,), b"b") is False
+
+    result = accumulator.finish()
+
+    assert result.rows == ()
+    assert result.preview_payload_bytes == 0
+    assert result.has_more_rows is True
+    assert result.truncation_reason == "byte_limit"
