@@ -5,7 +5,9 @@ import pytest
 from typer.testing import CliRunner
 
 import csvql.cli as cli_module
+from csvql.bounded_result import BoundedQueryResult, PreviewPolicy
 from csvql.cli import app
+from csvql.exceptions import CSVQLError
 from csvql.models import QueryResult
 
 runner = CliRunner()
@@ -700,3 +702,277 @@ def test_query_single_file_shortcut_rejects_table_mappings(tmp_path: Path) -> No
 
     assert result.exit_code == 6
     assert "Single-file shortcut mode cannot be combined with --table mappings" in result.output
+
+
+def test_query_table_output_uses_default_preview_limit_when_omitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    seen: dict[str, object] = {}
+
+    class FakeEngine:
+        def __init__(self, *, operation: object) -> None:
+            seen["engine_operation"] = operation
+
+        def __enter__(self) -> "FakeEngine":
+            return self
+
+        def __exit__(self, *exc_info: object) -> None:
+            return None
+
+    class FakeStream:
+        columns = ("value",)
+        elapsed_ms = 4.0
+
+    def fake_build_inline_query_request(*args: object, **kwargs: object) -> object:
+        seen["build_operation"] = kwargs["operation"]
+        return object()
+
+    def fake_execute_query_request_stream(
+        engine: object,
+        request: object,
+        *,
+        operation: object,
+    ) -> FakeStream:
+        seen["stream_operation"] = operation
+        seen["request"] = request
+        return FakeStream()
+
+    def fake_collect_bounded_preview(
+        stream: object,
+        *,
+        policy: PreviewPolicy,
+        fetch_batch_size: int = 256,
+    ) -> BoundedQueryResult:
+        seen["stream"] = stream
+        seen["policy"] = policy
+        seen["fetch_batch_size"] = fetch_batch_size
+        return BoundedQueryResult(
+            columns=("value",),
+            rows=((1,), (2,)),
+            elapsed_ms=4.0,
+            preview_payload_bytes=8,
+            has_more_rows=False,
+            truncation_reason=None,
+        )
+
+    monkeypatch.setattr("csvql.cli.CSVQLEngine", FakeEngine)
+    monkeypatch.setattr("csvql.cli.build_inline_query_request", fake_build_inline_query_request)
+    monkeypatch.setattr(
+        "csvql.cli.execute_query_request_stream",
+        fake_execute_query_request_stream,
+    )
+    monkeypatch.setattr("csvql.cli.collect_bounded_preview", fake_collect_bounded_preview)
+
+    result = runner.invoke(app, ["query", "SELECT 1 AS value"])
+
+    assert result.exit_code == 0, result.output
+    assert "2 row(s) in 4.00 ms" in result.output
+    assert "more rows exist" not in result.output
+    assert seen["engine_operation"] is seen["build_operation"] is seen["stream_operation"]
+    assert seen["stream"] is not None
+    assert seen["request"] is not None
+    assert seen["policy"] == PreviewPolicy(row_limit=1_000)
+    assert seen["fetch_batch_size"] == 256
+
+
+def test_query_table_output_uses_explicit_preview_limit_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    seen: dict[str, object] = {}
+
+    class FakeEngine:
+        def __init__(self, *, operation: object) -> None:
+            seen["operation"] = operation
+
+        def __enter__(self) -> "FakeEngine":
+            return self
+
+        def __exit__(self, *exc_info: object) -> None:
+            return None
+
+    class FakeStream:
+        columns = ("value",)
+        elapsed_ms = 5.0
+
+    def fake_collect_bounded_preview(
+        stream: object,
+        *,
+        policy: PreviewPolicy,
+        fetch_batch_size: int = 256,
+    ) -> BoundedQueryResult:
+        seen["policy"] = policy
+        return BoundedQueryResult(
+            columns=("value",),
+            rows=((1,), (2,)),
+            elapsed_ms=5.0,
+            preview_payload_bytes=16,
+            has_more_rows=True,
+            truncation_reason="row_limit",
+        )
+
+    monkeypatch.setattr("csvql.cli.CSVQLEngine", FakeEngine)
+    monkeypatch.setattr("csvql.cli.build_inline_query_request", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        "csvql.cli.execute_query_request_stream",
+        lambda *args, **kwargs: FakeStream(),
+    )
+    monkeypatch.setattr("csvql.cli.collect_bounded_preview", fake_collect_bounded_preview)
+
+    result = runner.invoke(app, ["query", "--limit", "7", "SELECT 1 AS value"])
+
+    assert result.exit_code == 0, result.output
+    assert "more rows exist" in result.output
+    assert "2-row limit" in result.output
+    assert seen["policy"] == PreviewPolicy(row_limit=7)
+
+
+@pytest.mark.parametrize("bad_limit", ["0", "-1"])
+def test_query_limit_rejects_non_positive_values_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bad_limit: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    def fail(*args: object, **kwargs: object) -> object:
+        raise AssertionError("CLI should reject invalid --limit before execution.")
+
+    monkeypatch.setattr("csvql.cli.CSVQLEngine", fail)
+    monkeypatch.setattr("csvql.cli.build_inline_query_request", fail)
+
+    result = runner.invoke(app, ["query", "--limit", bad_limit, "SELECT 1 AS value"])
+
+    assert result.exit_code != 0
+    assert "--limit" in result.output
+
+
+def test_query_json_limit_rejects_before_request_construction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    def fail(*args: object, **kwargs: object) -> object:
+        raise AssertionError("JSON + --limit must fail before request construction.")
+
+    monkeypatch.setattr("csvql.cli.build_inline_query_request", fail)
+    monkeypatch.setattr("csvql.cli.CSVQLEngine", fail)
+
+    result = runner.invoke(
+        app,
+        ["query", "--output", "json", "--limit", "3", "SELECT 1 AS value"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == CSVQLError.exit_code
+    assert "JSON output remains" in result.output
+    assert "complete in v1.1" in result.output
+    assert "--limit" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_query_json_without_limit_keeps_full_materialization_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    seen: dict[str, object] = {}
+
+    class FakeEngine:
+        def __init__(self, *, operation: object) -> None:
+            seen["operation"] = operation
+
+        def __enter__(self) -> "FakeEngine":
+            return self
+
+        def __exit__(self, *exc_info: object) -> None:
+            return None
+
+    def fake_build_inline_query_request(*args: object, **kwargs: object) -> object:
+        seen["build_operation"] = kwargs["operation"]
+        return object()
+
+    def fake_execute_query_request(
+        engine: object,
+        request: object,
+        *,
+        operation: object,
+    ) -> QueryResult:
+        seen["execute_operation"] = operation
+        return QueryResult(columns=("value",), rows=((1,), (2,)), elapsed_ms=1.0)
+
+    def fail(*args: object, **kwargs: object) -> object:
+        raise AssertionError("JSON without --limit must not use preview streaming.")
+
+    monkeypatch.setattr("csvql.cli.CSVQLEngine", FakeEngine)
+    monkeypatch.setattr("csvql.cli.build_inline_query_request", fake_build_inline_query_request)
+    monkeypatch.setattr("csvql.cli.execute_query_request", fake_execute_query_request)
+    monkeypatch.setattr("csvql.cli.execute_query_request_stream", fail)
+    monkeypatch.setattr("csvql.cli.collect_bounded_preview", fail)
+
+    result = runner.invoke(app, ["query", "--output", "json", "SELECT 1 AS value"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["rows"] == [{"value": 1}, {"value": 2}]
+    assert seen["operation"] is seen["build_operation"] is seen["execute_operation"]
+
+
+def test_query_table_keyboard_interrupt_closes_engine_and_reports_public_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    events: list[str] = []
+
+    class FakeEngine:
+        def __init__(self, *, operation: object) -> None:
+            events.append("init")
+
+        def __enter__(self) -> "FakeEngine":
+            events.append("enter")
+            return self
+
+        def __exit__(self, *exc_info: object) -> None:
+            events.append("exit")
+            return None
+
+    class FakeStream:
+        columns = ("value",)
+        elapsed_ms = 0.0
+
+        def fetch_rows(self, max_rows: int) -> object:
+            events.append("fetch")
+            raise KeyboardInterrupt()
+
+        def close(self) -> None:
+            events.append("stream.close")
+
+        def request_interrupt(self) -> None:
+            events.append("stream.interrupt")
+
+    monkeypatch.setattr("csvql.cli.CSVQLEngine", FakeEngine)
+    monkeypatch.setattr("csvql.cli.build_inline_query_request", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        "csvql.cli.execute_query_request_stream",
+        lambda *args, **kwargs: FakeStream(),
+    )
+
+    result = runner.invoke(app, ["query", "SELECT 1 AS value"], catch_exceptions=False)
+
+    assert result.exit_code == CSVQLError.exit_code
+    assert events == ["init", "enter", "fetch", "stream.close", "exit"]
+    assert "Traceback" not in result.output
+    assert "Cleanup uncertainty" not in result.output
+
+
+def test_query_help_describes_limit_as_table_output_only() -> None:
+    result = runner.invoke(app, ["query", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "Maximum rows to display" in result.output
+    assert "display in table" in result.output
+    assert "output." in result.output

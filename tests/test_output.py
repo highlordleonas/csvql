@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from csvql.bounded_result import BoundedQueryResult
 from csvql.doctor import DoctorProbeResult, DoctorRunResult
 from csvql.models import (
     ColumnInfo,
@@ -15,6 +16,7 @@ from csvql.models import (
     SampleResult,
 )
 from csvql.output import (
+    format_bounded_table_result,
     format_check_result_json,
     format_check_result_table,
     format_doctor_result_json,
@@ -208,6 +210,62 @@ def test_format_table_result_renders_headers_and_cells_as_control_safe_literal_t
     assert "\x07" not in output
     assert r"\x1b]0;spoof\x07[red]header[/red]" in output
     assert r"\x1b[31m[link=https://example.invalid]cell[/link]\x1b[0m" in output
+
+
+def test_format_bounded_table_result_reports_complete_preview_at_exact_limit() -> None:
+    result = BoundedQueryResult(
+        columns=("value",),
+        rows=((1,), (2,)),
+        elapsed_ms=1.234,
+        preview_payload_bytes=10,
+        has_more_rows=False,
+        truncation_reason=None,
+    )
+
+    output = format_bounded_table_result(result)
+
+    assert "1" in output
+    assert "2" in output
+    assert "2 row(s) in 1.23 ms" in output
+    assert "more rows exist" not in output
+
+
+def test_format_bounded_table_result_reports_row_limit_truncation_truthfully() -> None:
+    result = BoundedQueryResult(
+        columns=("value",),
+        rows=((1,), (2,)),
+        elapsed_ms=2.0,
+        preview_payload_bytes=10,
+        has_more_rows=True,
+        truncation_reason="row_limit",
+    )
+
+    output = format_bounded_table_result(result)
+
+    assert "2 row(s) shown in 2.00 ms" in output
+    assert "more rows exist" in output
+    assert "2-row limit" in output
+    assert "16 MiB" not in output
+    assert "of " not in output
+
+
+def test_format_bounded_table_result_reports_byte_limit_truncation_truthfully() -> None:
+    result = BoundedQueryResult(
+        columns=("value",),
+        rows=(("abc",),),
+        elapsed_ms=3.0,
+        preview_payload_bytes=3,
+        has_more_rows=True,
+        truncation_reason="byte_limit",
+    )
+
+    output = format_bounded_table_result(result)
+
+    assert "1 row(s) shown in 3.00 ms" in output
+    assert "more rows exist" in output
+    assert "16 MiB preview payload ceiling" in output
+    assert "row limit" not in output
+    assert "of " not in output
 
 
 def test_format_inspect_result_renders_metadata_as_control_safe_literal_text() -> None:

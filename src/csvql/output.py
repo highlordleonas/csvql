@@ -9,8 +9,15 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from csvql.bounded_result import MAX_PREVIEW_PAYLOAD_BYTES, BoundedQueryResult
 from csvql.doctor import DoctorProbeResult, DoctorRunResult
-from csvql.models import InspectResult, ProfileResult, QueryResult, RowCountInfo, SampleResult
+from csvql.models import (
+    InspectResult,
+    ProfileResult,
+    QueryResult,
+    RowCountInfo,
+    SampleResult,
+)
 from csvql.project_config import ProjectTablesResult
 from csvql.quality import CheckRunResult
 from csvql.terminal_text import literal_terminal_text, terminal_safe_text
@@ -92,13 +99,17 @@ def format_table_result(result: QueryResult) -> str:
     """Format a query result as a Rich table exported to plain text."""
 
     console = _recording_console(width=120)
-    table = Table(show_header=True)
-    for column in result.columns:
-        table.add_column(_format_cell(column))
-    for row in result.rows:
-        table.add_row(*(_format_cell(value) for value in row))
-    console.print(table)
+    _print_result_table(console, columns=result.columns, rows=result.rows)
     console.print(f"{result.row_count} row(s) in {result.elapsed_ms:.2f} ms")
+    return console.export_text(clear=True)
+
+
+def format_bounded_table_result(result: BoundedQueryResult) -> str:
+    """Format a bounded query preview as a Rich table exported to plain text."""
+
+    console = _recording_console(width=120)
+    _print_result_table(console, columns=result.columns, rows=result.rows)
+    console.print(_format_bounded_footer(result))
     return console.export_text(clear=True)
 
 
@@ -285,8 +296,39 @@ def _recording_console(*, width: int) -> Console:
     )
 
 
+def _print_result_table(
+    console: Console,
+    *,
+    columns: tuple[str, ...],
+    rows: tuple[tuple[object, ...], ...],
+) -> None:
+    table = Table(show_header=True)
+    for column in columns:
+        table.add_column(_format_cell(column))
+    for row in rows:
+        table.add_row(*(_format_cell(value) for value in row))
+    console.print(table)
+
+
 def _format_cell(value: object) -> Text:
     return literal_terminal_text(value)
+
+
+def _format_bounded_footer(result: BoundedQueryResult) -> str:
+    row_count = len(result.rows)
+    elapsed = f"{result.elapsed_ms:.2f} ms"
+    if not result.has_more_rows or result.truncation_reason is None:
+        return f"{row_count} row(s) in {elapsed}"
+    if result.truncation_reason == "row_limit":
+        return (
+            f"{row_count} row(s) shown in {elapsed}; more rows exist beyond the "
+            f"{row_count}-row limit."
+        )
+    ceiling_mib = MAX_PREVIEW_PAYLOAD_BYTES // (1024 * 1024)
+    return (
+        f"{row_count} row(s) shown in {elapsed}; more rows exist beyond the "
+        f"{ceiling_mib} MiB preview payload ceiling."
+    )
 
 
 def _format_row_count(row_count: RowCountInfo) -> str:
