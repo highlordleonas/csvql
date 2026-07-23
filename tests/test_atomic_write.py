@@ -356,6 +356,7 @@ def test_atomic_text_output_no_overwrite_suppresses_temp_cleanup_failure_after_p
     linked_temp: Path | None = None
     real_link = os.link
     real_unlink = Path.unlink
+    cleanup_attempts = 0
 
     def record_link(source: Path, target: Path) -> None:
         nonlocal linked_temp
@@ -363,8 +364,11 @@ def test_atomic_text_output_no_overwrite_suppresses_temp_cleanup_failure_after_p
         real_link(source, target)
 
     def fail_temp_cleanup(self: Path, *, missing_ok: bool = False) -> None:
+        nonlocal cleanup_attempts
         if linked_temp is not None and self == linked_temp:
-            raise OSError("cleanup failed")
+            cleanup_attempts += 1
+            if cleanup_attempts == 1:
+                raise OSError("cleanup failed")
         real_unlink(self, missing_ok=missing_ok)
 
     monkeypatch.setattr("csvql.atomic_write.os.link", record_link)
@@ -375,7 +379,8 @@ def test_atomic_text_output_no_overwrite_suppresses_temp_cleanup_failure_after_p
 
     assert output_path.read_text(encoding="utf-8") == "hello\n"
     assert linked_temp is not None
-    assert linked_temp.exists()
+    assert cleanup_attempts == 2
+    assert not linked_temp.exists()
 
 
 def test_atomic_text_output_manual_close_is_idempotent_for_context_cleanup(
@@ -398,6 +403,32 @@ def test_atomic_text_output_manual_close_is_idempotent_for_context_cleanup(
 
     assert output_path.read_text(encoding="utf-8") == "hello\n"
     assert len(fsync_calls) == 1
+    assert not tuple(tmp_path.glob(".result.txt.*.tmp"))
+
+
+def test_atomic_text_output_manual_close_preserves_fsync_failure_if_sync_close_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_path = tmp_path / "result.txt"
+    real_os_close = os.close
+
+    def fail_fsync(_fd: int) -> None:
+        raise RuntimeError("fsync failed")
+
+    def fail_close_after_closing(fd: int) -> None:
+        real_os_close(fd)
+        raise OSError("close failed")
+
+    monkeypatch.setattr("csvql.atomic_write.os.fsync", fail_fsync)
+    monkeypatch.setattr("csvql.atomic_write.os.close", fail_close_after_closing)
+
+    with pytest.raises(RuntimeError, match="fsync failed"):
+        with atomic_text_output(output_path) as output:
+            output.write("hello\n")
+            output.close()
+
+    assert not output_path.exists()
     assert not tuple(tmp_path.glob(".result.txt.*.tmp"))
 
 

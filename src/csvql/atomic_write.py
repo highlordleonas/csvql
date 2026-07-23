@@ -40,6 +40,7 @@ def atomic_text_output(
     temp_path = Path(temp_name)
     file: TextIO | None = None
     committed = False
+    needs_post_publish_cleanup = False
     try:
         try:
             file = os.fdopen(fd, "w", encoding=encoding, newline=newline)
@@ -60,7 +61,10 @@ def atomic_text_output(
                 try:
                     os.fsync(sync_fd)
                 finally:
-                    os.close(sync_fd)
+                    try:
+                        os.close(sync_fd)
+                    except Exception:
+                        pass
             else:
                 file.flush()
                 os.fsync(file.fileno())
@@ -75,8 +79,10 @@ def atomic_text_output(
             else:
                 os.link(temp_path, path)
                 committed = True
+                needs_post_publish_cleanup = True
                 try:
                     temp_path.unlink(missing_ok=True)
+                    needs_post_publish_cleanup = False
                 except OSError:
                     pass
     except BaseException:
@@ -87,7 +93,7 @@ def atomic_text_output(
                 file.close()
             except Exception:
                 pass
-        if not committed:
+        if not committed or needs_post_publish_cleanup:
             try:
                 temp_path.unlink(missing_ok=True)
             except OSError:
