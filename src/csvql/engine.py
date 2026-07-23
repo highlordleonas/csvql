@@ -11,7 +11,11 @@ from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
 from csvql.exceptions import CSVQLError, QueryExecutionError, SourceError
 from csvql.models import QueryResult, TableSource
 from csvql.operation import OperationCancelled, OperationContext, OperationToken
-from csvql.result_stream import CURSOR_CLEANUP_UNCERTAINTY_NOTE, ResultStream
+from csvql.result_stream import (
+    CURSOR_CLEANUP_UNCERTAINTY_NOTE,
+    ResultCursor,
+    ResultStream,
+)
 from csvql.source import ResolvedSource, SourceSpec, source_alias_collision_key
 from csvql.source_adapter import (
     PreparedBinding,
@@ -23,6 +27,31 @@ from csvql.source_adapter import (
 _SOURCE_ALIAS_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RESERVED_ALIAS_PREFIX = "__localql_"
 _QUERY_FETCH_ROWS = 1000
+
+
+class _ConnectionResultCursor:
+    """Logical cursor wrapper that keeps execution on one DuckDB session."""
+
+    def __init__(self, connection: duckdb.DuckDBPyConnection) -> None:
+        self._connection = connection
+
+    @property
+    def description(self) -> Sequence[Sequence[object]] | None:
+        return self._connection.description
+
+    def execute(
+        self,
+        sql: str,
+        params: Sequence[object] | None = None,
+    ) -> "_ConnectionResultCursor":
+        self._connection.execute(sql, params or [])
+        return self
+
+    def fetchmany(self, size: int) -> Sequence[Sequence[object]]:
+        return self._connection.fetchmany(size)
+
+    def close(self) -> None:
+        return
 
 
 class CSVQLEngine:
@@ -40,7 +69,7 @@ class CSVQLEngine:
         self._bindings: list[PreparedBinding] = []
         self._alias_keys: set[str] = set()
         self._active_stream: ResultStream | None = None
-        self._active_cursor: duckdb.DuckDBPyConnection | None = None
+        self._active_cursor: ResultCursor | None = None
         self._closed = False
         self._lifecycle_lock = RLock()
 
@@ -186,11 +215,11 @@ class CSVQLEngine:
                 )
             started_at = perf_counter()
             connection: duckdb.DuckDBPyConnection | None = None
-            cursor: duckdb.DuckDBPyConnection | None = None
+            cursor: ResultCursor | None = None
             try:
                 self._operation.checkpoint()
                 connection = self._ensure_connection()
-                cursor = connection.cursor()
+                cursor = _open_result_cursor(connection)
                 self._operation.checkpoint()
                 cursor.execute(sql, params or [])
                 self._operation.checkpoint()
@@ -206,26 +235,18 @@ class CSVQLEngine:
                 self._active_stream = stream
                 return stream
             except OperationCancelled as exc:
-                if cursor is not None and cursor is not connection and self._close_cursor(cursor):
+                if cursor is not None and self._close_cursor(cursor):
                     self._fail_closed_start_cleanup(primary=exc, cursor=cursor)
                 self._release_resources(primary=exc)
                 raise
             except duckdb.Error as exc:
                 if self._operation.token.is_cancelled:
                     cancelled = OperationCancelled("Operation cancelled.")
-                    if (
-                        cursor is not None
-                        and cursor is not connection
-                        and self._close_cursor(cursor)
-                    ):
+                    if cursor is not None and self._close_cursor(cursor):
                         self._fail_closed_start_cleanup(primary=cancelled, cursor=cursor)
                     self._release_resources(primary=cancelled)
                     raise cancelled from exc
-                if (
-                    cursor is not None
-                    and cursor is not connection
-                    and self._close_cursor(cursor)
-                ):
+                if cursor is not None and self._close_cursor(cursor):
                     public_error = QueryExecutionError(
                         f"DuckDB query failed: {exc}",
                         suggestion="Check table names, column names, and SQL syntax.",
@@ -237,7 +258,7 @@ class CSVQLEngine:
                     suggestion="Check table names, column names, and SQL syntax.",
                 ) from exc
             except BaseException as exc:
-                if cursor is not None and cursor is not connection and self._close_cursor(cursor):
+                if cursor is not None and self._close_cursor(cursor):
                     self._fail_closed_start_cleanup(primary=exc, cursor=cursor)
                 self._release_resources(primary=exc)
                 raise
@@ -417,7 +438,7 @@ class CSVQLEngine:
             self._active_stream = None
             self._active_cursor = None
 
-    def _close_cursor(self, cursor: duckdb.DuckDBPyConnection | None) -> int:
+    def _close_cursor(self, cursor: ResultCursor | None) -> int:
         if cursor is None:
             return 0
         try:
@@ -430,7 +451,7 @@ class CSVQLEngine:
         self,
         *,
         primary: BaseException,
-        cursor: duckdb.DuckDBPyConnection,
+        cursor: ResultCursor,
     ) -> None:
         _add_cleanup_note(primary)
         with self._lifecycle_lock:
@@ -443,3 +464,7 @@ def _add_cleanup_note(primary: BaseException) -> None:
     notes = getattr(primary, "__notes__", ())
     if CURSOR_CLEANUP_UNCERTAINTY_NOTE not in notes:
         primary.add_note(CURSOR_CLEANUP_UNCERTAINTY_NOTE)
+
+
+def _open_result_cursor(connection: duckdb.DuckDBPyConnection) -> ResultCursor:
+    return _ConnectionResultCursor(connection)

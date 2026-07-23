@@ -354,6 +354,7 @@ def _install_connection(
         return cast(duckdb.DuckDBPyConnection, selected)
 
     monkeypatch.setattr("csvql.engine.duckdb.connect", connect)
+    monkeypatch.setattr("csvql.engine._open_result_cursor", lambda connection: connection.cursor())
     return selected
 
 
@@ -1138,6 +1139,25 @@ def test_query_consumes_stream_to_complete_rows_without_fetchall(
     assert result.rows == ((42,),)
     assert "fetchall" not in events
     assert "fetchmany" in ",".join(events)
+
+
+def test_query_preserves_real_duckdb_temp_tables_across_sequential_streams(
+    tmp_path: Path,
+) -> None:
+    orders_path = tmp_path / "orders.csv"
+    orders_path.write_text("id,value\n1,alpha\n", encoding="utf-8")
+    engine = CSVQLEngine()
+    engine.register_tables((TableSource(name="orders", path=orders_path),))
+
+    try:
+        create_result = engine.query("CREATE TEMP TABLE scratch AS SELECT * FROM orders")
+        count_result = engine.query("SELECT COUNT(*) AS row_count FROM scratch")
+    finally:
+        engine.close()
+
+    assert create_result.columns == ("Count",)
+    assert count_result.columns == ("row_count",)
+    assert count_result.rows == ((1,),)
 
 
 def test_fetch_path_cancellation_interrupts_active_stream_and_releases_slot(

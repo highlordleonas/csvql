@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
 import duckdb
 
@@ -23,13 +24,30 @@ class ResultBatch:
     exhausted: bool
 
 
+class ResultCursor(Protocol):
+    """Cursor contract needed by the private result stream wrapper."""
+
+    @property
+    def description(self) -> Sequence[Sequence[object]] | None: ...
+
+    def execute(
+        self,
+        sql: str,
+        params: Sequence[object] | None = None,
+    ) -> object: ...
+
+    def fetchmany(self, size: int) -> Sequence[Sequence[object]]: ...
+
+    def close(self) -> None: ...
+
+
 class ResultStream:
     """Single-consumer wrapper around one live DuckDB cursor."""
 
     def __init__(
         self,
         *,
-        cursor: duckdb.DuckDBPyConnection,
+        cursor: ResultCursor,
         operation: OperationContext,
         started_at: float,
         close_owner: Callable[[], None],
@@ -42,7 +60,7 @@ class ResultStream:
         self._close_owner = close_owner
         self._request_interrupt = request_interrupt
         self._now = now
-        self._columns = tuple(column[0] for column in cursor.description or ())
+        self._columns = tuple(str(column[0]) for column in cursor.description or ())
         self._elapsed_ms = 0.0
         self._closed = False
         self._close_failure: BaseException | None = None
