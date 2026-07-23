@@ -139,6 +139,22 @@ def test_result_stream_request_interrupt_and_close_are_idempotent() -> None:
     assert events == ["interrupt", "cursor-close", "owner-close"]
 
 
+def test_result_stream_close_failure_does_not_release_owner_and_repeats_failure() -> None:
+    events: list[str] = []
+    stream = _stream(
+        RecordingCursor(events=events, close_error=RuntimeError("private close detail")),
+        events=events,
+    )
+
+    with pytest.raises(RuntimeError, match="private close detail"):
+        stream.close()
+
+    with pytest.raises(RuntimeError, match="private close detail"):
+        stream.close()
+
+    assert events == ["cursor-close"]
+
+
 def test_result_stream_close_runs_cursor_before_owner_and_tracks_elapsed_time() -> None:
     events: list[str] = []
     cursor = RecordingCursor(

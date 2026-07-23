@@ -40,18 +40,22 @@ class RecordingConnection:
         *,
         execute_error: BaseException | None = None,
         close_error: BaseException | None = None,
+        cursor_close_error: BaseException | None = None,
         on_execute: Callable[[], None] | None = None,
+        on_fetchmany: Callable[[], None] | None = None,
         interrupt_error: BaseException | None = None,
     ) -> None:
         self.events = events
         self.execute_error = execute_error
         self.close_error = close_error
+        self.cursor_close_error = cursor_close_error
         self.on_execute = on_execute
+        self.on_fetchmany = on_fetchmany
         self.interrupt_error = interrupt_error
         self.description: tuple[tuple[str], ...] = (("answer",),)
         self._fetchmany_pending = True
 
-    def cursor(self) -> "RecordingCursorHandle":
+    def cursor(self) -> RecordingCursorHandle:
         return RecordingCursorHandle(self)
 
     def execute(
@@ -73,6 +77,8 @@ class RecordingConnection:
 
     def fetchmany(self, size: int) -> list[tuple[int]]:
         self.events.append(f"fetchmany:{size}")
+        if self.on_fetchmany is not None:
+            self.on_fetchmany()
         if self._fetchmany_pending:
             self._fetchmany_pending = False
             return [(42,)]
@@ -100,7 +106,7 @@ class RecordingCursorHandle:
         self,
         sql: str,
         params: list[object] | None = None,
-    ) -> "RecordingCursorHandle":
+    ) -> RecordingCursorHandle:
         self._connection.execute(sql, params)
         self.description = self._connection.description
         return self
@@ -110,6 +116,8 @@ class RecordingCursorHandle:
 
     def close(self) -> None:
         self._connection.events.append("cursor-close")
+        if self._connection.cursor_close_error is not None:
+            raise self._connection.cursor_close_error
 
 
 class RecordingBinding:
@@ -277,6 +285,18 @@ class CoordinatedOperationContext(OperationContext):
         if not self._allow_attach_event.wait(timeout=2):
             raise AssertionError("Timed out waiting to release interrupt attachment.")
         super().attach_interrupt(callback)
+
+
+class DetachRecordingOperationContext(OperationContext):
+    """Operation context that records exactly when detach occurs."""
+
+    def __init__(self, *, token: OperationToken, events: list[str]) -> None:
+        super().__init__(token=token)
+        self._events = events
+
+    def detach_interrupt(self) -> None:
+        self._events.append("detach-interrupt")
+        super().detach_interrupt()
 
 
 def _fingerprint() -> SourceFingerprint:
@@ -999,11 +1019,11 @@ def test_interrupt_is_best_effort_and_close_still_cleans_everything(
     assert events[-3:] == ["interrupt", "close:orders", "connection-close"]
 
 
-def test_close_detaches_interrupt_before_connection_owner_close(
+def test_close_detaches_interrupt_after_cursor_bindings_and_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
-    operation = OperationContext(token=OperationToken())
+    operation = DetachRecordingOperationContext(token=OperationToken(), events=events)
     _install_connection(monkeypatch, events)
     engine = CSVQLEngine(operation=operation)
     engine.query("SELECT 42")
@@ -1011,6 +1031,7 @@ def test_close_detaches_interrupt_before_connection_owner_close(
     engine.close()
     operation.request_cancel()
 
+    assert events[-2:] == ["connection-close", "detach-interrupt"]
     assert "interrupt" not in events
 
 
@@ -1018,7 +1039,7 @@ def test_stream_close_cleans_cursor_then_bindings_then_connection_then_interrupt
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
-    operation = OperationContext(token=OperationToken())
+    operation = DetachRecordingOperationContext(token=OperationToken(), events=events)
     adapter = RecordingAdapter(events)
     connection = RecordingConnection(events)
     _install_connection(monkeypatch, events, connection)
@@ -1030,13 +1051,21 @@ def test_stream_close_cleans_cursor_then_bindings_then_connection_then_interrupt
     operation.request_cancel()
 
     del stream
-    assert [event for event in events if event.startswith(("execute", "cursor-close", "close:"))] == [
+    relevant_events = [
+        event
+        for event in events
+        if event.startswith(
+            ("execute", "cursor-close", "close:", "connection-close", "detach-interrupt")
+        )
+    ]
+    assert relevant_events == [
         "execute",
         "cursor-close",
         "close:second",
         "close:first",
+        "connection-close",
+        "detach-interrupt",
     ]
-    assert events[-1] == "connection-close"
     assert "interrupt" not in events
 
 
@@ -1055,6 +1084,31 @@ def test_engine_rejects_second_active_stream_until_first_closes(
     first.close()
     second = engine.stream("SELECT 2 AS value")
     second.close()
+
+
+def test_stream_close_failure_keeps_engine_active_slot_until_full_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    connection = RecordingConnection(
+        events,
+        cursor_close_error=RuntimeError("private close detail"),
+    )
+    _install_connection(monkeypatch, events, connection)
+    engine = CSVQLEngine()
+
+    stream = engine.stream("SELECT 1 AS value")
+    with pytest.raises(RuntimeError, match="private close detail"):
+        stream.close()
+
+    with pytest.raises(QueryExecutionError, match="active result stream"):
+        engine.stream("SELECT 2 AS value")
+
+    with pytest.raises(CSVQLError, match="cleanup did not complete with certainty"):
+        engine.close()
+
+    with pytest.raises(QueryExecutionError, match="closed"):
+        engine.query("SELECT 3 AS value")
 
 
 def test_query_consumes_stream_to_complete_rows_without_fetchall(
@@ -1084,6 +1138,55 @@ def test_query_consumes_stream_to_complete_rows_without_fetchall(
     assert result.rows == ((42,),)
     assert "fetchall" not in events
     assert "fetchmany" in ",".join(events)
+
+
+def test_fetch_path_cancellation_interrupts_active_stream_and_releases_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    operation = OperationContext(token=OperationToken())
+    fetch_started = threading.Event()
+    allow_fetch_error = threading.Event()
+    connection = RecordingConnection(events)
+
+    def blocking_fetchmany(size: int) -> list[tuple[int]]:
+        events.append(f"fetchmany:{size}")
+        fetch_started.set()
+        if not allow_fetch_error.wait(timeout=2):
+            raise AssertionError("Timed out waiting to release fetchmany.")
+        raise duckdb.Error("interrupted")
+
+    connection.fetchmany = blocking_fetchmany  # type: ignore[method-assign]
+    _install_connection(monkeypatch, events, connection)
+    engine = CSVQLEngine(operation=operation)
+    stream = engine.stream("SELECT 42 AS answer")
+    failures: list[BaseException] = []
+
+    def fetch_rows() -> None:
+        try:
+            stream.fetch_rows(1)
+        except BaseException as exc:
+            failures.append(exc)
+
+    fetch_thread = threading.Thread(target=fetch_rows)
+    fetch_thread.start()
+    assert fetch_started.wait(timeout=2)
+    operation.request_cancel()
+    allow_fetch_error.set()
+    fetch_thread.join(timeout=2)
+
+    assert not fetch_thread.is_alive()
+    assert len(failures) == 1
+    assert isinstance(failures[0], OperationCancelled)
+    assert events == ["connect", "execute", "fetchmany:1", "interrupt", "cursor-close"]
+    assert engine._active_stream is None
+    with pytest.raises(OperationCancelled):
+        engine.stream("SELECT 7 AS answer")
+    engine.close()
+    if "detach-interrupt" in events:
+        assert events[-2:] == ["connection-close", "detach-interrupt"]
+    else:
+        assert events[-2:] == ["cursor-close", "connection-close"]
 
 
 @pytest.mark.parametrize("operation_kind", ["query", "prepare", "stream"])
@@ -1172,6 +1275,29 @@ def test_interrupt_attach_and_close_are_linearized_without_stale_callback(
     assert "interrupt" not in events
     with pytest.raises(QueryExecutionError, match="closed"):
         engine.query("SELECT 42")
+
+
+def test_stream_start_failure_with_cursor_close_uncertainty_preserves_primary_and_closes_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    connection = RecordingConnection(
+        events,
+        execute_error=duckdb.Error("private execute detail"),
+        cursor_close_error=RuntimeError("private close detail"),
+    )
+    _install_connection(monkeypatch, events, connection)
+    engine = CSVQLEngine()
+
+    with pytest.raises(QueryExecutionError, match="private execute detail") as captured:
+        engine.stream("SELECT * FROM missing")
+
+    notes = "\n".join(getattr(captured.value, "__notes__", ()))
+    assert "cursor could not be closed" in notes
+    assert "private close detail" not in notes
+    assert events == ["connect", "execute", "cursor-close", "cursor-close", "connection-close"]
+    with pytest.raises(QueryExecutionError, match="closed"):
+        engine.stream("SELECT 42")
 
 
 def test_primary_prepare_failure_keeps_sanitized_cleanup_notes(

@@ -20,7 +20,7 @@ from csvql.project_config import (
     load_project,
     project_tables_to_source_specs,
 )
-from csvql.result_stream import ResultStream
+from csvql.result_stream import CURSOR_CLEANUP_UNCERTAINTY_NOTE, ResultStream
 from csvql.source import (
     ResolvedSource,
     SourceFingerprint,
@@ -172,7 +172,7 @@ def execute_query_request(
         except BaseException:
             if primary is None:
                 raise
-            primary.add_note("Cleanup uncertainty: the active result cursor could not be closed.")
+            _add_cleanup_note(primary)
     return QueryResult(columns=stream.columns, rows=tuple(rows), elapsed_ms=stream.elapsed_ms)
 
 
@@ -193,6 +193,8 @@ def execute_query_request_stream(
         try:
             return engine.stream(request.sql)
         except QueryExecutionError as exc:
+            if CURSOR_CLEANUP_UNCERTAINTY_NOTE in getattr(exc, "__notes__", ()):
+                raise
             missing_name = _missing_duckdb_table_name(exc)
             if missing_name is None:
                 raise
@@ -360,6 +362,12 @@ def _require_matching_operation_context(
             "Create one operation context and pass it to both the request builder and engine."
         ),
     )
+
+
+def _add_cleanup_note(primary: BaseException) -> None:
+    notes = getattr(primary, "__notes__", ())
+    if CURSOR_CLEANUP_UNCERTAINTY_NOTE not in notes:
+        primary.add_note(CURSOR_CLEANUP_UNCERTAINTY_NOTE)
 
 
 def _source_spec_from_table_mapping(

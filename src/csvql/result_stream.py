@@ -10,6 +10,10 @@ import duckdb
 from csvql.exceptions import QueryExecutionError
 from csvql.operation import OperationCancelled, OperationContext
 
+CURSOR_CLEANUP_UNCERTAINTY_NOTE = (
+    "Cleanup uncertainty: the active result cursor could not be closed."
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ResultBatch:
@@ -41,6 +45,7 @@ class ResultStream:
         self._columns = tuple(column[0] for column in cursor.description or ())
         self._elapsed_ms = 0.0
         self._closed = False
+        self._close_failure: BaseException | None = None
         self._exhausted = False
 
     @property
@@ -54,6 +59,8 @@ class ResultStream:
     def fetch_rows(self, max_rows: int) -> ResultBatch:
         if max_rows <= 0:
             raise ValueError("Result stream fetch size must be positive.")
+        if self._close_failure is not None:
+            raise self._close_failure
         if self._closed:
             return ResultBatch(rows=(), exhausted=True)
         if self._exhausted:
@@ -93,25 +100,32 @@ class ResultStream:
         self._request_interrupt()
 
     def close(self) -> None:
+        if self._close_failure is not None:
+            raise self._close_failure
         if self._closed:
             return
         self._close_preserving(primary=None)
 
     def _close_preserving(self, primary: BaseException | None) -> None:
+        if self._close_failure is not None:
+            if primary is not None:
+                _add_cleanup_note(primary)
+                return
+            raise self._close_failure
         if self._closed:
             return
-        self._closed = True
         close_error: BaseException | None = None
         try:
             self._cursor.close()
         except BaseException as exc:
             close_error = exc
-        finally:
-            self._close_owner()
         if close_error is None:
+            self._closed = True
+            self._close_owner()
             return
+        self._close_failure = close_error
         if primary is not None:
-            primary.add_note("Cleanup uncertainty: the active result cursor could not be closed.")
+            _add_cleanup_note(primary)
             return
         raise close_error
 
@@ -125,3 +139,9 @@ def _normalize_row(row: Sequence[object]) -> tuple[object, ...]:
 
 def _is_exhausted(*, rows: tuple[tuple[object, ...], ...]) -> bool:
     return len(rows) == 0
+
+
+def _add_cleanup_note(primary: BaseException) -> None:
+    notes = getattr(primary, "__notes__", ())
+    if CURSOR_CLEANUP_UNCERTAINTY_NOTE not in notes:
+        primary.add_note(CURSOR_CLEANUP_UNCERTAINTY_NOTE)

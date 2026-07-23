@@ -257,3 +257,52 @@ def test_execute_query_request_does_not_retry_after_stream_fetch_failure(
     assert calls == 1
     notes = "\n".join(getattr(captured.value, "__notes__", ()))
     assert "cursor could not be closed" in notes
+
+
+def test_execute_query_request_stream_start_failure_with_cleanup_uncertainty_never_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orders = tmp_path / "orders.csv"
+    customers = tmp_path / "customers.csv"
+    _write_csv(orders, "order_id,customer_id\nORD-001,CUST-001\n")
+    _write_csv(customers, "customer_id,email\nCUST-001,alex@example.com\n")
+    (tmp_path / ".csvql.yml").write_text(
+        "version: 1\ntables:\n  customers:\n    path: customers.csv\n",
+        encoding="utf-8",
+    )
+    operation = OperationContext(token=OperationToken())
+    request = build_inline_query_request(
+        "SELECT c.email FROM orders o JOIN customers c USING (customer_id)",
+        None,
+        [f"orders={orders}"],
+        base_dir=tmp_path,
+        operation=operation,
+    )
+    calls = 0
+
+    def failing_stream(self: CSVQLEngine, sql: str, params=None):
+        del params
+        nonlocal calls
+        calls += 1
+        error = QueryExecutionError(
+            (
+                "DuckDB query failed: Catalog Error: Table with name customers does not exist!\n"
+                f"while starting {sql}"
+            ),
+            suggestion="Check table names, column names, and SQL syntax.",
+        )
+        error.add_note("Cleanup uncertainty: the active result cursor could not be closed.")
+        raise error
+
+    monkeypatch.setattr(CSVQLEngine, "stream", failing_stream)
+
+    with CSVQLEngine(operation=operation) as engine, pytest.raises(
+        QueryExecutionError,
+        match="Table with name customers does not exist",
+    ) as captured:
+        execute_query_request_stream(engine, request, operation=operation)
+
+    assert calls == 1
+    notes = "\n".join(getattr(captured.value, "__notes__", ()))
+    assert "cursor could not be closed" in notes

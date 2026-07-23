@@ -11,7 +11,7 @@ from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
 from csvql.exceptions import CSVQLError, QueryExecutionError, SourceError
 from csvql.models import QueryResult, TableSource
 from csvql.operation import OperationCancelled, OperationContext, OperationToken
-from csvql.result_stream import ResultStream
+from csvql.result_stream import CURSOR_CLEANUP_UNCERTAINTY_NOTE, ResultStream
 from csvql.source import ResolvedSource, SourceSpec, source_alias_collision_key
 from csvql.source_adapter import (
     PreparedBinding,
@@ -171,9 +171,7 @@ class CSVQLEngine:
             except BaseException:
                 if primary is None:
                     raise
-                primary.add_note(
-                    "Cleanup uncertainty: the active result cursor could not be closed."
-                )
+                _add_cleanup_note(primary)
         return QueryResult(columns=stream.columns, rows=tuple(rows), elapsed_ms=stream.elapsed_ms)
 
     def stream(self, sql: str, params: Sequence[object] | None = None) -> ResultStream:
@@ -208,24 +206,39 @@ class CSVQLEngine:
                 self._active_stream = stream
                 return stream
             except OperationCancelled as exc:
-                if cursor is not None and cursor is not connection:
-                    self._close_cursor(cursor)
+                if cursor is not None and cursor is not connection and self._close_cursor(cursor):
+                    self._fail_closed_start_cleanup(primary=exc, cursor=cursor)
                 self._release_resources(primary=exc)
                 raise
             except duckdb.Error as exc:
-                if cursor is not None and cursor is not connection:
-                    self._close_cursor(cursor)
                 if self._operation.token.is_cancelled:
                     cancelled = OperationCancelled("Operation cancelled.")
+                    if (
+                        cursor is not None
+                        and cursor is not connection
+                        and self._close_cursor(cursor)
+                    ):
+                        self._fail_closed_start_cleanup(primary=cancelled, cursor=cursor)
                     self._release_resources(primary=cancelled)
                     raise cancelled from exc
+                if (
+                    cursor is not None
+                    and cursor is not connection
+                    and self._close_cursor(cursor)
+                ):
+                    public_error = QueryExecutionError(
+                        f"DuckDB query failed: {exc}",
+                        suggestion="Check table names, column names, and SQL syntax.",
+                    )
+                    self._fail_closed_start_cleanup(primary=public_error, cursor=cursor)
+                    raise public_error from exc
                 raise QueryExecutionError(
                     f"DuckDB query failed: {exc}",
                     suggestion="Check table names, column names, and SQL syntax.",
                 ) from exc
             except BaseException as exc:
-                if cursor is not None and cursor is not connection:
-                    self._close_cursor(cursor)
+                if cursor is not None and cursor is not connection and self._close_cursor(cursor):
+                    self._fail_closed_start_cleanup(primary=exc, cursor=cursor)
                 self._release_resources(primary=exc)
                 raise
 
@@ -355,8 +368,7 @@ class CSVQLEngine:
                 return 0
             connection = self._connection
             active_stream = self._active_stream
-            self._active_stream = None
-            self._active_cursor = None
+            active_cursor = self._active_cursor
             bindings = tuple(reversed(self._bindings))
             self._bindings.clear()
             self._alias_keys.clear()
@@ -369,6 +381,8 @@ class CSVQLEngine:
                 active_stream.close()
             except BaseException:
                 cursor_failures = 1
+        elif active_cursor is not None:
+            cursor_failures = self._close_cursor(active_cursor)
         binding_failures = 0
         for binding in bindings:
             try:
@@ -383,12 +397,13 @@ class CSVQLEngine:
             except BaseException:
                 connection_failures = 1
         self._operation.detach_interrupt()
+        with self._lifecycle_lock:
+            self._active_stream = None
+            self._active_cursor = None
 
         if primary is not None:
             if cursor_failures:
-                primary.add_note(
-                    "Cleanup uncertainty: the active result cursor could not be closed."
-                )
+                _add_cleanup_note(primary)
             if binding_failures:
                 primary.add_note(
                     "Cleanup uncertainty: one or more source bindings could not be closed."
@@ -410,3 +425,21 @@ class CSVQLEngine:
         except BaseException:
             return 1
         return 0
+
+    def _fail_closed_start_cleanup(
+        self,
+        *,
+        primary: BaseException,
+        cursor: duckdb.DuckDBPyConnection,
+    ) -> None:
+        _add_cleanup_note(primary)
+        with self._lifecycle_lock:
+            self._active_cursor = cursor
+            self._active_stream = None
+        self._release_resources(primary=primary)
+
+
+def _add_cleanup_note(primary: BaseException) -> None:
+    notes = getattr(primary, "__notes__", ())
+    if CURSOR_CLEANUP_UNCERTAINTY_NOTE not in notes:
+        primary.add_note(CURSOR_CLEANUP_UNCERTAINTY_NOTE)
