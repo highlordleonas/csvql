@@ -719,6 +719,27 @@ def test_recovery_removes_only_exact_files_from_valid_old_candidate(tmp_path: Pa
     assert summary.workspaces_failed == 0
 
 
+def test_recovery_recognizes_exact_preview_and_preview_staging_names(
+    tmp_path: Path,
+) -> None:
+    workspace = _write_candidate(tmp_path, created_at=_OLD_CREATED_AT)
+    preview_path = workspace / "preview-2.result"
+    staging_path = workspace / ".preview-3-abcdef0123456789.result.tmp"
+    preview_path.write_bytes(b"bounded preview")
+    staging_path.write_bytes(b"partial preview")
+    if os.name != "nt":
+        os.chmod(preview_path, 0o600)
+        os.chmod(staging_path, 0o600)
+    _age_workspace(workspace)
+
+    summary = recover_abandoned_result_workspaces(temp_root=tmp_path, now=_NOW)
+
+    assert not workspace.exists()
+    assert summary.files_removed == 5
+    assert summary.files_failed == 0
+    assert summary.workspaces_removed == 1
+
+
 def test_recovery_removes_abandoned_workspace_without_deserializing_spill_contents(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1327,7 +1348,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from csvql.models import QueryResult
+from csvql.result_codec import encode_row_payload
 from csvql.tui_result_store import TUIResultStore
 
 temp_root = Path(sys.argv[1])
@@ -1335,7 +1356,10 @@ ready_path = Path(sys.argv[2])
 old_now = datetime.now(timezone.utc) - timedelta(hours=25)
 store = TUIResultStore(temp_root=temp_root, now=old_now)
 rows = tuple((index,) for index in range(10_001))
-store.put(QueryResult(columns=("id",), rows=rows, elapsed_ms=1.0), sequence=1)
+writer = store.begin_complete(sequence=1, columns=("id",))
+for row in rows:
+    writer.append_payload(encode_row_payload(row))
+writer.commit(elapsed_ms=1.0)
 assert store.workspace_path is not None
 ready_path.write_text(str(store.workspace_path), encoding="utf-8")
 while True:
