@@ -5,7 +5,6 @@ from __future__ import annotations
 import errno
 import json
 import os
-import pickle
 import re
 import secrets
 import stat
@@ -17,6 +16,8 @@ from pathlib import Path
 from typing import BinaryIO, Literal
 
 from csvql.models import QueryResult
+from csvql.result_codec import encode_row_payload
+from csvql.result_spool import ResultSpoolError, ResultSpoolReader, ResultSpoolWriter
 
 TUI_RESULT_SPILL_ROW_THRESHOLD = 10_000
 TUI_RESULT_SPILL_CELL_THRESHOLD = 250_000
@@ -33,8 +34,10 @@ TUI_RESULT_ABANDONED_AFTER = timedelta(hours=24)
 _TUI_RESULT_DIRECTORY_PATTERN = re.compile(
     rf"{re.escape(TUI_RESULT_SESSION_PREFIX)}(?P<session_id>[0-9a-f]{{32}})"
 )
-_TUI_RESULT_COMPLETED_SPILL_PATTERN = re.compile(r"query-[1-9][0-9]*\.pickle")
-_TUI_RESULT_STAGING_SPILL_PATTERN = re.compile(r"\.query-[1-9][0-9]*-[0-9a-f]{16}\.tmp")
+_TUI_RESULT_COMPLETED_SPILL_PATTERN = re.compile(r"query-[1-9][0-9]*\.result")
+_TUI_RESULT_STAGING_SPILL_PATTERN = re.compile(
+    r"\.query-[1-9][0-9]*-[0-9a-f]{16}\.result\.tmp"
+)
 _TUI_RESULT_TIMESTAMP_PATTERN = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{6})?Z"
 )
@@ -325,11 +328,13 @@ class TUIResultStore:
         self._created_at = now or datetime.now(UTC)
         self._memory_results: dict[int, QueryResult] = {}
         self._spill_paths: dict[int, Path] = {}
+        self._spill_elapsed_ms: dict[int, float] = {}
         self._issued_handles: dict[int, TUIResultHandle] = {}
         self._workspace_path: Path | None = None
         self._workspace_identity: tuple[int, int] | None = None
         self._invalidated_sequences: set[int] = set()
         self._pending_cleanup_paths: set[Path] = set()
+        self._pending_cleanup_identities: dict[Path, tuple[int, int]] = {}
         self._pending_cleanup_workspaces: dict[Path, _PendingWorkspaceCleanup] = {}
         self._lease: _PlatformLease | None = None
         self._cleanup_uncertainties = 0
@@ -430,27 +435,49 @@ class TUIResultStore:
             raise _results_unavailable_error(invalidated or (handle.sequence,)) from exc
 
         try:
-            file = registered_path.open("rb")
+            pre_stat = registered_path.lstat()
+            if (
+                not stat.S_ISREG(pre_stat.st_mode)
+                or _is_reparse_point(pre_stat)
+                or not _file_mode_is_private(pre_stat)
+                or not _stat_has_current_owner(pre_stat)
+            ):
+                raise FileNotFoundError(registered_path)
+            with registered_path.open("rb") as file:
+                post_stat = os.fstat(file.fileno())
+                if (
+                    not stat.S_ISREG(post_stat.st_mode)
+                    or _is_reparse_point(post_stat)
+                    or not _file_mode_is_private(post_stat)
+                    or not _stat_has_current_owner(post_stat)
+                    or not _same_opened_file(pre_stat, post_stat)
+                ):
+                    raise FileNotFoundError(registered_path)
+                self._ensure_workspace()
+                reader = ResultSpoolReader.from_file(file)
+                try:
+                    loaded = QueryResult(
+                        columns=reader.columns,
+                        rows=tuple(reader.iter_rows()),
+                        elapsed_ms=self._spill_elapsed_ms[handle.sequence],
+                    )
+                finally:
+                    reader.close()
+        except TUIResultStorageError as exc:
+            invalidated = self._abandon_lost_workspace()
+            raise _results_unavailable_error(invalidated or (handle.sequence,)) from exc
         except OSError as exc:
             if exc.errno in {errno.ENOENT, errno.ENOTDIR}:
                 invalidated = self._abandon_lost_workspace()
                 raise _results_unavailable_error(invalidated or (handle.sequence,)) from exc
             self._invalidate_handle(handle.sequence)
             raise _result_unavailable_error(handle.sequence) from exc
-
-        try:
-            with file:
-                loaded = pickle.load(file)
+        except ResultSpoolError as exc:
+            self._invalidate_handle(handle.sequence)
+            raise _result_unavailable_error(handle.sequence) from exc
         except Exception as exc:
             self._invalidate_handle(handle.sequence)
             raise _result_unavailable_error(handle.sequence) from exc
-        if not isinstance(loaded, QueryResult):
-            self._invalidate_handle(handle.sequence)
-            raise TUIResultStorageError(
-                "The stored result has an unexpected format.",
-                kind="result_unavailable",
-                invalidated_sequences=(handle.sequence,),
-            )
         return loaded
 
     def cleanup(self) -> TUIResultCleanupSummary:
@@ -525,8 +552,10 @@ class TUIResultStore:
 
         self._memory_results.clear()
         self._spill_paths.clear()
+        self._spill_elapsed_ms.clear()
         self._issued_handles.clear()
         self._pending_cleanup_paths.clear()
+        self._pending_cleanup_identities.clear()
         self._pending_cleanup_workspaces.clear()
         self._workspace_path = None
         self._workspace_identity = None
@@ -649,23 +678,22 @@ class TUIResultStore:
     def _write_spilled_result(self, result: QueryResult, *, sequence: int) -> TUIResultHandle:
         workspace = self._ensure_workspace()
         token = secrets.token_hex(8)
-        staging_path = workspace / f".query-{sequence}-{token}.tmp"
-        final_path = workspace / f"query-{sequence}.pickle"
+        staging_path = workspace / f".query-{sequence}-{token}.result.tmp"
+        final_path = workspace / f"query-{sequence}.result"
         try:
-            staging_fd = os.open(
-                staging_path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                0o600,
+            writer = ResultSpoolWriter(
+                staging_path=staging_path,
+                final_path=final_path,
+                columns=result.columns,
+                workspace_identity=self._workspace_identity,
             )
             self._pending_cleanup_paths.add(staging_path)
-            try:
-                _set_and_verify_posix_mode(staging_path, 0o600)
-            except BaseException:
-                _close_file_descriptor(staging_fd)
-                raise
-            with _open_spill_file(staging_fd) as file:
-                pickle.dump(result, file, protocol=pickle.HIGHEST_PROTOCOL)
-            os.replace(staging_path, final_path)
+            if writer.staging_identity is not None:
+                self._pending_cleanup_identities[staging_path] = writer.staging_identity
+            _set_and_verify_posix_mode(staging_path, 0o600)
+            for row in result.rows:
+                writer.append_payload(encode_row_payload(row))
+            writer.commit()
         except OSError as exc:
             self._remove_staging_file(staging_path)
             raise self._storage_error_from_os_error(exc) from exc
@@ -677,6 +705,7 @@ class TUIResultStore:
             ) from exc
         self._pending_cleanup_paths.discard(staging_path)
         self._spill_paths[sequence] = final_path
+        self._spill_elapsed_ms[sequence] = result.elapsed_ms
         handle = TUIResultHandle(sequence=sequence, is_spilled=True, temp_path=final_path)
         self._issued_handles[sequence] = handle
         return handle
@@ -713,7 +742,9 @@ class TUIResultStore:
         for sequence in invalidated:
             self._issued_handles.pop(sequence, None)
         self._spill_paths.clear()
+        self._spill_elapsed_ms.clear()
         self._pending_cleanup_paths.clear()
+        self._pending_cleanup_identities.clear()
         self._workspace_path = None
         self._workspace_identity = None
         self._session_id = None
@@ -739,18 +770,22 @@ class TUIResultStore:
         identity = self._workspace_identity
         if workspace is None or identity is None:
             return
+        expected_identity = self._pending_cleanup_identities.get(staging_path)
         _, failed = _unlink_owned_workspace_entry(
             workspace,
             identity=identity,
             path=staging_path,
+            expected_identity=expected_identity,
         )
         if failed:
             return
         self._pending_cleanup_paths.discard(staging_path)
+        self._pending_cleanup_identities.pop(staging_path, None)
 
     def _invalidate_handle(self, sequence: int) -> None:
         self._invalidated_sequences.add(sequence)
         self._issued_handles.pop(sequence, None)
+        self._spill_elapsed_ms.pop(sequence, None)
 
     @staticmethod
     def _workspace_metadata_paths(workspace: Path) -> tuple[Path, Path]:
@@ -894,6 +929,7 @@ def _unlink_owned_workspace_entry(
     *,
     identity: tuple[int, int],
     path: Path,
+    expected_identity: tuple[int, int] | None = None,
 ) -> tuple[int, int]:
     if path.parent != workspace or not _is_owned_workspace(workspace, identity=identity):
         return (0, 1)
@@ -904,6 +940,8 @@ def _unlink_owned_workspace_entry(
     except OSError:
         return (0, 1)
     if not stat.S_ISREG(result.st_mode) or _is_reparse_point(result):
+        return (0, 1)
+    if expected_identity is not None and _usable_stat_identity(result) != expected_identity:
         return (0, 1)
     if not _is_owned_workspace(workspace, identity=identity):
         return (0, 1)

@@ -2,7 +2,6 @@ import errno
 import json
 import multiprocessing
 import os
-import pickle
 import shutil
 import stat
 from collections.abc import Callable
@@ -14,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from csvql.models import QueryResult
+from csvql.result_spool import ResultSpoolReader
 from csvql.tui_result_store import (
     TUI_RESULT_LEASE_NAME,
     TUI_RESULT_MARKER_NAME,
@@ -152,11 +152,11 @@ def test_spill_uses_exact_workspace_grammar_and_atomic_final_name(tmp_path: Path
 
     workspace = tmp_path / f"{TUI_RESULT_SESSION_PREFIX}{'a' * 32}"
     assert store.workspace_path == workspace
-    assert outcome.handle.temp_path == workspace / "query-1.pickle"
+    assert outcome.handle.temp_path == workspace / "query-1.result"
     assert sorted(path.name for path in workspace.iterdir()) == [
         TUI_RESULT_LEASE_NAME,
         TUI_RESULT_MARKER_NAME,
-        "query-1.pickle",
+        "query-1.result",
     ]
     assert json.loads((workspace / TUI_RESULT_MARKER_NAME).read_text(encoding="utf-8")) == {
         "created_at_utc": "2026-07-12T12:34:56Z",
@@ -215,7 +215,7 @@ def test_staging_file_permission_mode_is_verified(
 
     def leave_staging_insecure(path: os.PathLike[str] | str, mode: int) -> None:
         requested_path = Path(path)
-        insecure_mode = 0o644 if requested_path.name.endswith(".tmp") else mode
+        insecure_mode = 0o644 if requested_path.name.endswith(".result.tmp") else mode
         real_chmod(path, insecure_mode)
 
     monkeypatch.setattr("csvql.tui_result_store.os.chmod", leave_staging_insecure)
@@ -264,11 +264,11 @@ def test_serialization_failure_registers_no_handle_or_partial_file(
 ) -> None:
     store = TUIResultStore(temp_root=tmp_path, session_id="b" * 32)
 
-    def fail_dump(result: object, file: object, *, protocol: int) -> None:
-        del result, file, protocol
+    def fail_append(self: object, payload: bytes) -> None:
+        del self, payload
         raise TypeError("sensitive serializer detail")
 
-    monkeypatch.setattr("csvql.tui_result_store.pickle.dump", fail_dump)
+    monkeypatch.setattr("csvql.tui_result_store.ResultSpoolWriter.append_payload", fail_append)
 
     with pytest.raises(TUIResultStorageError) as error:
         store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
@@ -276,8 +276,8 @@ def test_serialization_failure_registers_no_handle_or_partial_file(
     assert error.value.kind == "serialization"
     assert "sensitive serializer detail" not in error.value.user_message
     assert str(tmp_path) not in error.value.user_message
-    assert list((store.workspace_path or tmp_path).glob("query-1.pickle")) == []
-    assert list((store.workspace_path or tmp_path).glob(".query-1-*.tmp")) == []
+    assert list((store.workspace_path or tmp_path).glob("query-1.result")) == []
+    assert list((store.workspace_path or tmp_path).glob(".query-1-*.result.tmp")) == []
 
 
 def test_atomic_replace_failure_removes_staging_and_registers_no_handle(
@@ -317,7 +317,7 @@ def test_serialization_failure_does_not_unlink_foreign_staging_through_parent_sy
     workspace = tmp_path / f"{TUI_RESULT_SESSION_PREFIX}{session_id}"
     moved_workspace = tmp_path / "moved-owned-staging-workspace"
     foreign_workspace = tmp_path / "foreign-staging-workspace"
-    staging_name = f".query-1-{token}.tmp"
+    staging_name = f".query-1-{token}.result.tmp"
     foreign_staging = foreign_workspace / staging_name
     store = TUIResultStore(temp_root=tmp_path, session_id=session_id)
 
@@ -325,13 +325,8 @@ def test_serialization_failure_does_not_unlink_foreign_staging_through_parent_sy
         assert nbytes == 8
         return token
 
-    def replace_parent_with_symlink(
-        result: object,
-        file: object,
-        *,
-        protocol: int,
-    ) -> None:
-        del result, file, protocol
+    def replace_parent_with_symlink(self: object, payload: bytes) -> None:
+        del self, payload
         workspace.rename(moved_workspace)
         foreign_workspace.mkdir()
         foreign_staging.write_bytes(b"foreign staging content")
@@ -340,7 +335,7 @@ def test_serialization_failure_does_not_unlink_foreign_staging_through_parent_sy
 
     monkeypatch.setattr("csvql.tui_result_store.secrets.token_hex", staging_token_hex)
     monkeypatch.setattr(
-        "csvql.tui_result_store.pickle.dump",
+        "csvql.tui_result_store.ResultSpoolWriter.append_payload",
         replace_parent_with_symlink,
     )
 
@@ -372,7 +367,7 @@ def test_serialization_failure_does_not_unlink_foreign_staging_in_replaced_paren
     session_id = "d" * 32
     workspace = tmp_path / f"{TUI_RESULT_SESSION_PREFIX}{session_id}"
     moved_workspace = tmp_path / "moved-owned-staging-workspace"
-    staging_name = f".query-1-{token}.tmp"
+    staging_name = f".query-1-{token}.result.tmp"
     foreign_staging = workspace / staging_name
     store = TUIResultStore(temp_root=tmp_path, session_id=session_id)
 
@@ -380,13 +375,8 @@ def test_serialization_failure_does_not_unlink_foreign_staging_in_replaced_paren
         assert nbytes == 8
         return token
 
-    def replace_parent_with_directory(
-        result: object,
-        file: object,
-        *,
-        protocol: int,
-    ) -> None:
-        del result, file, protocol
+    def replace_parent_with_directory(self: object, payload: bytes) -> None:
+        del self, payload
         workspace.rename(moved_workspace)
         workspace.mkdir()
         foreign_staging.write_bytes(b"foreign staging content")
@@ -394,7 +384,7 @@ def test_serialization_failure_does_not_unlink_foreign_staging_in_replaced_paren
 
     monkeypatch.setattr("csvql.tui_result_store.secrets.token_hex", staging_token_hex)
     monkeypatch.setattr(
-        "csvql.tui_result_store.pickle.dump",
+        "csvql.tui_result_store.ResultSpoolWriter.append_payload",
         replace_parent_with_directory,
     )
 
@@ -434,7 +424,7 @@ def test_spill_permission_setup_failure_closes_raw_file_descriptor(
         raise OSError(errno.EIO, "sensitive descriptor detail")
 
     monkeypatch.setattr("csvql.tui_result_store.os.open", record_open)
-    monkeypatch.setattr("csvql.tui_result_store.os.fchmod", fail_fchmod)
+    monkeypatch.setattr("csvql.result_spool.os.fchmod", fail_fchmod)
 
     with pytest.raises(TUIResultStorageError) as error:
         store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
@@ -589,13 +579,13 @@ def test_non_workspace_storage_failure_is_not_retried(
     store = TUIResultStore(temp_root=tmp_path, session_id="a" * 32)
     dump_attempts = 0
 
-    def fail_dump(result: object, file: object, *, protocol: int) -> None:
+    def fail_append(self: object, payload: bytes) -> None:
         nonlocal dump_attempts
-        del result, file, protocol
+        del self, payload
         dump_attempts += 1
         raise TypeError("private value")
 
-    monkeypatch.setattr("csvql.tui_result_store.pickle.dump", fail_dump)
+    monkeypatch.setattr("csvql.tui_result_store.ResultSpoolWriter.append_payload", fail_append)
 
     with pytest.raises(TUIResultStorageError) as error:
         store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
@@ -631,14 +621,14 @@ def test_result_store_rejects_foreign_spilled_paths_without_unpickling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = TUIResultStore(temp_root=tmp_path)
-    foreign_path = tmp_path / "foreign-result.pickle"
-    foreign_path.write_bytes(pickle.dumps(_result(1)))
+    foreign_path = tmp_path / "foreign-result.result"
+    foreign_path.write_bytes(b"foreign")
     handle = TUIResultHandle(sequence=99, is_spilled=True, temp_path=foreign_path)
 
     def fail_on_load(*args: object, **kwargs: object) -> object:
         raise AssertionError("foreign spilled paths must not be unpickled")
 
-    monkeypatch.setattr("csvql.tui_result_store.pickle.load", fail_on_load)
+    monkeypatch.setattr("csvql.tui_result_store.ResultSpoolReader.from_file", fail_on_load)
 
     with pytest.raises(TUIResultStorageError) as error:
         store.get(handle)
@@ -652,12 +642,12 @@ def test_result_store_rejects_handle_with_registered_sequence_but_foreign_path(
 ) -> None:
     store = TUIResultStore(temp_root=tmp_path, session_id="a" * 32)
     stored = store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
-    forged = TUIResultHandle(sequence=1, is_spilled=True, temp_path=tmp_path / "foreign.pickle")
+    forged = TUIResultHandle(sequence=1, is_spilled=True, temp_path=tmp_path / "foreign.result")
 
     def fail_on_load(*args: object, **kwargs: object) -> object:
         raise AssertionError("a mismatched registered path must not be unpickled")
 
-    monkeypatch.setattr("csvql.tui_result_store.pickle.load", fail_on_load)
+    monkeypatch.setattr("csvql.tui_result_store.ResultSpoolReader.from_file", fail_on_load)
 
     with pytest.raises(TUIResultStorageError, match="no longer available"):
         store.get(forged)
@@ -696,7 +686,7 @@ def test_result_store_rejects_copied_spill_handle_before_unpickling(
     def fail_on_load(*args: object, **kwargs: object) -> object:
         raise AssertionError("a copied handle must be rejected before unpickling")
 
-    monkeypatch.setattr("csvql.tui_result_store.pickle.load", fail_on_load)
+    monkeypatch.setattr("csvql.tui_result_store.ResultSpoolReader.from_file", fail_on_load)
 
     with pytest.raises(TUIResultStorageError, match="no longer available"):
         store.get(replace(stored.handle))
@@ -761,11 +751,53 @@ def test_spill_open_missing_race_invalidates_all_registered_spills(
     assert str(tmp_path) not in error.value.user_message
 
 
+@pytest.mark.skipif(os.name == "nt", reason="workspace identity races are POSIX-focused here")
+def test_spill_workspace_replacement_after_open_is_rejected_before_decode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = TUIResultStore(temp_root=tmp_path, session_id="a" * 32)
+    stored = store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
+    second = store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=2)
+    assert stored.handle.temp_path is not None
+    assert second.handle.temp_path is not None
+    workspace = store.workspace_path
+    assert workspace is not None
+    moved_workspace = tmp_path / "moved-owned-workspace"
+    real_open = Path.open
+
+    def replace_workspace_after_open(
+        path: Path,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ):
+        opened = real_open(path, mode, buffering, encoding, errors, newline)
+        if path == stored.handle.temp_path:
+            workspace.rename(moved_workspace)
+        return opened
+
+    def fail_decode(*args: object, **kwargs: object) -> object:
+        raise AssertionError("row decode must not run after workspace replacement")
+
+    monkeypatch.setattr(Path, "open", replace_workspace_after_open)
+    monkeypatch.setattr("csvql.tui_result_store.ResultSpoolReader.from_file", fail_decode)
+
+    with pytest.raises(TUIResultStorageError, match="no longer available") as error:
+        store.get(stored.handle)
+
+    assert error.value.kind == "result_unavailable"
+    assert error.value.invalidated_sequences == (1, 2)
+    assert moved_workspace.is_dir()
+
+
 def test_missing_module_pickle_is_sanitized_as_result_unavailable(tmp_path: Path) -> None:
     store = TUIResultStore(temp_root=tmp_path, session_id="a" * 32)
     stored = store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
     assert stored.handle.temp_path is not None
-    stored.handle.temp_path.write_bytes(b"cno_such_localql_module\nMissing\n.")
+    stored.handle.temp_path.write_bytes(b"bad-spool")
 
     with pytest.raises(TUIResultStorageError) as error:
         store.get(stored.handle)
@@ -776,18 +808,18 @@ def test_missing_module_pickle_is_sanitized_as_result_unavailable(tmp_path: Path
     assert str(tmp_path) not in error.value.user_message
 
 
-def test_unpickle_base_exception_is_not_normalized(
+def test_spool_open_base_exception_is_not_normalized(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = TUIResultStore(temp_root=tmp_path, session_id="a" * 32)
     stored = store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
 
-    def interrupt_load(file: object) -> object:
+    def interrupt_open(file: object) -> object:
         del file
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("csvql.tui_result_store.pickle.load", interrupt_load)
+    monkeypatch.setattr("csvql.tui_result_store.ResultSpoolReader.from_file", interrupt_open)
 
     with pytest.raises(KeyboardInterrupt):
         store.get(stored.handle)
@@ -808,7 +840,7 @@ def test_invalid_registered_payload_is_rejected_with_sanitized_error(tmp_path: P
     store = TUIResultStore(temp_root=tmp_path, session_id="a" * 32)
     outcome = store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
     assert outcome.handle.temp_path is not None
-    outcome.handle.temp_path.write_bytes(pickle.dumps({"private": "row value"}))
+    outcome.handle.temp_path.write_bytes(b"not-a-valid-spool")
 
     with pytest.raises(TUIResultStorageError) as error:
         store.get(outcome.handle)
@@ -995,7 +1027,7 @@ def test_cleanup_rejects_active_workspace_replaced_by_symlink(tmp_path: Path) ->
     foreign_workspace.mkdir()
     foreign_paths = tuple(
         foreign_workspace / name
-        for name in (TUI_RESULT_MARKER_NAME, TUI_RESULT_LEASE_NAME, "query-1.pickle")
+        for name in (TUI_RESULT_MARKER_NAME, TUI_RESULT_LEASE_NAME, "query-1.result")
     )
     for foreign_path in foreign_paths:
         foreign_path.write_bytes(b"foreign")
@@ -1007,7 +1039,7 @@ def test_cleanup_rejects_active_workspace_replaced_by_symlink(tmp_path: Path) ->
     assert all(path.read_bytes() == b"foreign" for path in foreign_paths)
     assert (owned_workspace / TUI_RESULT_MARKER_NAME).is_file()
     assert (owned_workspace / TUI_RESULT_LEASE_NAME).is_file()
-    assert (owned_workspace / "query-1.pickle").is_file()
+    assert (owned_workspace / "query-1.result").is_file()
     assert workspace.is_symlink()
     assert first == TUIResultCleanupSummary(workspaces_failed=1)
     assert second == TUIResultCleanupSummary()
@@ -1131,7 +1163,7 @@ def test_cleanup_rejects_replaced_workspace_identity(tmp_path: Path) -> None:
     workspace.mkdir()
     replacement_paths = tuple(
         workspace / name
-        for name in (TUI_RESULT_MARKER_NAME, TUI_RESULT_LEASE_NAME, "query-1.pickle")
+        for name in (TUI_RESULT_MARKER_NAME, TUI_RESULT_LEASE_NAME, "query-1.result")
     )
     for replacement_path in replacement_paths:
         replacement_path.write_bytes(b"replacement")
@@ -1141,7 +1173,7 @@ def test_cleanup_rejects_replaced_workspace_identity(tmp_path: Path) -> None:
     assert all(path.read_bytes() == b"replacement" for path in replacement_paths)
     assert (owned_workspace / TUI_RESULT_MARKER_NAME).is_file()
     assert (owned_workspace / TUI_RESULT_LEASE_NAME).is_file()
-    assert (owned_workspace / "query-1.pickle").is_file()
+    assert (owned_workspace / "query-1.result").is_file()
     assert summary == TUIResultCleanupSummary(workspaces_failed=1)
 
 
@@ -1371,7 +1403,7 @@ def test_staging_open_collision_is_never_registered_or_deleted(
     store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
     workspace = store.workspace_path
     assert workspace is not None
-    staging_path = workspace / f".query-2-{'f' * 16}.tmp"
+    staging_path = workspace / f".query-2-{'f' * 16}.result.tmp"
     real_open = os.open
 
     def staging_token(nbytes: int) -> str:

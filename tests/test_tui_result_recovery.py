@@ -1,6 +1,5 @@
 import json
 import os
-import pickle
 import socket
 import subprocess
 import sys
@@ -43,11 +42,11 @@ def _write_candidate(
         encoding="utf-8",
     )
     (workspace / TUI_RESULT_LEASE_NAME).write_bytes(b"0")
-    (workspace / "query-1.pickle").write_bytes(b"disposable")
+    (workspace / "query-1.result").write_bytes(b"disposable")
     if os.name != "nt":
         os.chmod(workspace / TUI_RESULT_MARKER_NAME, 0o600)
         os.chmod(workspace / TUI_RESULT_LEASE_NAME, 0o600)
-        os.chmod(workspace / "query-1.pickle", 0o600)
+        os.chmod(workspace / "query-1.result", 0o600)
     _age_workspace(workspace, created_at)
     return workspace
 
@@ -248,12 +247,12 @@ def test_recovery_rejects_lease_that_is_not_exactly_one_byte(
     "unexpected_name",
     [
         "notes.txt",
-        "query-0.pickle",
-        "query-01.pickle",
-        "query-1.PICKLE",
-        ".query-0-abcdef0123456789.tmp",
-        ".query-1-ABCDEF0123456789.tmp",
-        ".query-1-abcdef012345678.tmp",
+        "query-0.result",
+        "query-01.result",
+        "query-1.RESULT",
+        ".query-0-abcdef0123456789.result.tmp",
+        ".query-1-ABCDEF0123456789.result.tmp",
+        ".query-1-abcdef012345678.result.tmp",
     ],
 )
 def test_recovery_rejects_unexpected_entry_name(
@@ -261,8 +260,8 @@ def test_recovery_rejects_unexpected_entry_name(
     unexpected_name: str,
 ) -> None:
     workspace = _write_candidate(tmp_path, created_at=_OLD_CREATED_AT)
-    if unexpected_name == "query-1.PICKLE":
-        (workspace / "query-1.pickle").unlink()
+    if unexpected_name == "query-1.RESULT":
+        (workspace / "query-1.result").unlink()
     unexpected_path = workspace / unexpected_name
     unexpected_path.write_bytes(b"unexpected")
     if os.name != "nt":
@@ -274,7 +273,7 @@ def test_recovery_rejects_unexpected_entry_name(
 
 def test_recovery_rejects_nested_directory(tmp_path: Path) -> None:
     workspace = _write_candidate(tmp_path, created_at=_OLD_CREATED_AT)
-    (workspace / "query-2.pickle").mkdir()
+    (workspace / "query-2.result").mkdir()
     _age_workspace(workspace)
 
     _assert_rejected(workspace)
@@ -283,9 +282,9 @@ def test_recovery_rejects_nested_directory(tmp_path: Path) -> None:
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink creation is portable")
 def test_recovery_rejects_linked_candidate_entry(tmp_path: Path) -> None:
     workspace = _write_candidate(tmp_path, created_at=_OLD_CREATED_AT)
-    foreign_file = tmp_path / "foreign.pickle"
+    foreign_file = tmp_path / "foreign.result"
     foreign_file.write_bytes(b"retain")
-    linked_spill = workspace / "query-2.pickle"
+    linked_spill = workspace / "query-2.result"
     linked_spill.symlink_to(foreign_file)
     _age_workspace(workspace)
 
@@ -416,7 +415,7 @@ def test_recovery_rejects_lease_path_replaced_after_lock_acquisition(
     assert sorted(os.listdir(workspace)) == [
         TUI_RESULT_LEASE_NAME,
         TUI_RESULT_MARKER_NAME,
-        "query-1.pickle",
+        "query-1.result",
     ]
 
 
@@ -447,7 +446,7 @@ def test_recovery_revalidates_complete_candidate_content_after_lock_acquisition(
 
     assert summary.workspaces_removed == 0
     assert unexpected_path.read_bytes() == b"retain"
-    assert (workspace / "query-1.pickle").read_bytes() == b"disposable"
+    assert (workspace / "query-1.result").read_bytes() == b"disposable"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permits renaming a locked workspace")
@@ -477,8 +476,8 @@ def test_recovery_revalidates_candidate_identity_after_lock_acquisition(
     assert summary.workspaces_removed == 0
     assert workspace.is_dir()
     assert moved_workspace.is_dir()
-    assert (workspace / "query-1.pickle").read_bytes() == b"disposable"
-    assert (moved_workspace / "query-1.pickle").read_bytes() == b"disposable"
+    assert (workspace / "query-1.result").read_bytes() == b"disposable"
+    assert (moved_workspace / "query-1.result").read_bytes() == b"disposable"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permits replacing a locked lease path")
@@ -489,7 +488,7 @@ def test_recovery_checks_locked_lease_immediately_before_each_content_unlink(
     replacement_seam: str,
 ) -> None:
     workspace = _write_candidate(tmp_path, created_at=_OLD_CREATED_AT)
-    second_spill = workspace / "query-2.pickle"
+    second_spill = workspace / "query-2.result"
     if replacement_seam == "between_spills":
         second_spill.write_bytes(b"disposable-2")
         os.chmod(second_spill, 0o600)
@@ -501,8 +500,8 @@ def test_recovery_checks_locked_lease_immediately_before_each_content_unlink(
         nonlocal replaced
         path = args[1]
         should_replace = (
-            (replacement_seam == "first_spill" and path.name == "query-1.pickle")
-            or (replacement_seam == "between_spills" and path.name == "query-2.pickle")
+            (replacement_seam == "first_spill" and path.name == "query-1.result")
+            or (replacement_seam == "between_spills" and path.name == "query-2.result")
             or (replacement_seam == "marker" and path.name == TUI_RESULT_MARKER_NAME)
         )
         if should_replace and not replaced:
@@ -518,21 +517,21 @@ def test_recovery_checks_locked_lease_immediately_before_each_content_unlink(
     assert replaced
     assert (workspace / TUI_RESULT_MARKER_NAME).exists()
     if replacement_seam == "first_spill":
-        assert (workspace / "query-1.pickle").read_bytes() == b"disposable"
+        assert (workspace / "query-1.result").read_bytes() == b"disposable"
         assert summary.files_removed == 0
     elif replacement_seam == "between_spills":
-        assert not (workspace / "query-1.pickle").exists()
+        assert not (workspace / "query-1.result").exists()
         assert second_spill.read_bytes() == b"disposable-2"
         assert summary.files_removed == 1
     else:
-        assert not (workspace / "query-1.pickle").exists()
+        assert not (workspace / "query-1.result").exists()
         assert summary.files_removed == 1
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO creation is unavailable")
 def test_recovery_rejects_fifo_entry(tmp_path: Path) -> None:
     workspace = _write_candidate(tmp_path, created_at=_OLD_CREATED_AT)
-    os.mkfifo(workspace / "query-2.pickle", mode=0o600)
+    os.mkfifo(workspace / "query-2.result", mode=0o600)
     _age_workspace(workspace)
 
     _assert_rejected(workspace)
@@ -546,7 +545,7 @@ def test_recovery_rejects_socket_entry() -> None:
     with tempfile.TemporaryDirectory(prefix="lq-", dir="/tmp") as short_temp_root:
         temp_root = Path(short_temp_root)
         workspace = _write_candidate(temp_root, created_at=_OLD_CREATED_AT)
-        socket_path = workspace / "query-2.pickle"
+        socket_path = workspace / "query-2.result"
         unix_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             try:
@@ -567,7 +566,7 @@ def test_recovery_rejects_socket_entry() -> None:
         (Path("."), 0o755),
         (Path(TUI_RESULT_MARKER_NAME), 0o640),
         (Path(TUI_RESULT_LEASE_NAME), 0o604),
-        (Path("query-1.pickle"), 0o606),
+        (Path("query-1.result"), 0o606),
     ],
 )
 def test_recovery_rejects_insecure_posix_mode(
@@ -631,7 +630,7 @@ def test_recovery_rejects_windows_entry_junction(tmp_path: Path) -> None:
     workspace = _write_candidate(tmp_path, created_at=_OLD_CREATED_AT)
     target = tmp_path / "entry-junction-target"
     target.mkdir()
-    junction = workspace / "query-2.pickle"
+    junction = workspace / "query-2.result"
     completed = subprocess.run(
         ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
         check=False,
@@ -702,7 +701,7 @@ def test_recovery_rejects_directory_timestamp_before_marker(tmp_path: Path) -> N
 
 def test_recovery_removes_only_exact_files_from_valid_old_candidate(tmp_path: Path) -> None:
     workspace = _write_candidate(tmp_path, created_at=_OLD_CREATED_AT)
-    staging_path = workspace / ".query-2-abcdef0123456789.tmp"
+    staging_path = workspace / ".query-2-abcdef0123456789.result.tmp"
     staging_path.write_bytes(b"partial")
     if os.name != "nt":
         os.chmod(staging_path, 0o600)
@@ -725,19 +724,8 @@ def test_recovery_removes_abandoned_workspace_without_deserializing_spill_conten
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = _write_candidate(tmp_path, created_at=_OLD_CREATED_AT)
-    (workspace / "query-1.pickle").write_bytes(b"not-a-pickle")
+    (workspace / "query-1.result").write_bytes(b"not-a-spool")
     _age_workspace(workspace)
-
-    monkeypatch.setattr(
-        pickle,
-        "load",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError),
-    )
-    monkeypatch.setattr(
-        pickle,
-        "loads",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError),
-    )
 
     summary = recover_abandoned_result_workspaces(temp_root=tmp_path, now=_NOW)
 
@@ -819,7 +807,7 @@ def test_recovery_rejects_candidate_not_fully_enumerated_within_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = _write_candidate(tmp_path, created_at=_OLD_CREATED_AT)
-    extra_spill = workspace / "query-2.pickle"
+    extra_spill = workspace / "query-2.result"
     extra_spill.write_bytes(b"disposable")
     if os.name != "nt":
         os.chmod(extra_spill, 0o600)
@@ -847,7 +835,7 @@ def test_recovery_rejects_limit_plus_one_without_lstat_on_extra_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = _write_candidate(tmp_path, created_at=_OLD_CREATED_AT)
-    extra_spill = workspace / "query-2.pickle"
+    extra_spill = workspace / "query-2.result"
     extra_spill.write_bytes(b"disposable")
     if os.name != "nt":
         os.chmod(extra_spill, 0o600)
@@ -860,7 +848,7 @@ def test_recovery_rejects_limit_plus_one_without_lstat_on_extra_entry(
     candidate_order = (
         TUI_RESULT_MARKER_NAME,
         TUI_RESULT_LEASE_NAME,
-        "query-1.pickle",
+        "query-1.result",
         extra_spill.name,
     )
 
@@ -962,7 +950,7 @@ def test_recovery_attempt_budget_bounds_partial_failures(
         assert sorted(os.listdir(workspace)) == [
             TUI_RESULT_LEASE_NAME,
             TUI_RESULT_MARKER_NAME,
-            "query-1.pickle",
+            "query-1.result",
         ]
 
 
@@ -979,7 +967,7 @@ def test_recovery_fails_closed_when_locked_file_identity_is_unavailable(
     assert sorted(os.listdir(workspace)) == [
         TUI_RESULT_LEASE_NAME,
         TUI_RESULT_MARKER_NAME,
-        "query-1.pickle",
+        "query-1.result",
     ]
 
 
@@ -1061,7 +1049,7 @@ def test_recovery_revalidates_entry_identity_and_marker_content_after_lock(
 ) -> None:
     workspace = _write_candidate(tmp_path, created_at=_OLD_CREATED_AT)
     marker_path = workspace / TUI_RESULT_MARKER_NAME
-    spill_path = workspace / "query-1.pickle"
+    spill_path = workspace / "query-1.result"
     marker_content = marker_path.read_bytes()
     marker_stat = marker_path.stat()
     spill_stat = spill_path.stat()
@@ -1108,7 +1096,7 @@ def test_recovery_revalidates_entry_identity_and_marker_content_after_lock(
     assert sorted(os.listdir(workspace)) == [
         TUI_RESULT_LEASE_NAME,
         TUI_RESULT_MARKER_NAME,
-        "query-1.pickle",
+        "query-1.result",
     ]
     assert (workspace / TUI_RESULT_LEASE_NAME).read_bytes() == b"0"
     expected_marker = (
@@ -1139,7 +1127,7 @@ def test_recovery_treats_exact_concurrent_disappearance_as_safe(
         nonlocal disappeared
         path = args[1]
         before_target = (
-            (disappearance_seam == "spill" and path.name == "query-1.pickle")
+            (disappearance_seam == "spill" and path.name == "query-1.result")
             or (disappearance_seam == "marker" and path.name == TUI_RESULT_MARKER_NAME)
             or (disappearance_seam == "lease" and path.name == TUI_RESULT_LEASE_NAME)
         )
@@ -1298,7 +1286,7 @@ def test_recovery_treats_disappearance_between_missing_entry_checks_as_safe(
     def remove_spill_before_entry_check(*args, **kwargs):  # type: ignore[no-untyped-def]
         nonlocal entry_removed
         path = args[1]
-        if path.name == "query-1.pickle" and not entry_removed:
+        if path.name == "query-1.result" and not entry_removed:
             path.unlink()
             entry_removed = True
         return real_unlink(*args, **kwargs)
