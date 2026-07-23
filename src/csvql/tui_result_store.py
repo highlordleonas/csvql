@@ -516,6 +516,7 @@ class TUIResultStore:
                         workspace,
                         identity=identity,
                         path=path,
+                        expected_identity=self._pending_cleanup_identities.get(path),
                     )
                     removed += path_removed
                     failed += path_failed
@@ -717,7 +718,9 @@ class TUIResultStore:
                 "Unable to serialize the query result for temporary storage.",
                 kind="serialization",
             ) from exc
-        self._pending_cleanup_paths.discard(staging_path)
+        if not writer.staging_cleanup_pending:
+            self._pending_cleanup_paths.discard(staging_path)
+            self._pending_cleanup_identities.pop(staging_path, None)
         self._spill_paths[sequence] = final_path
         spill_identity = writer.staging_identity
         if spill_identity is None:

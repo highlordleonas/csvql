@@ -142,6 +142,7 @@ class ResultSpoolWriter:
         self._closed = False
         self._owns_staging = False
         self._staging_identity: tuple[int, int] | None = None
+        self._cleanup_pending = False
         self._file: BinaryIO | None = None
         try:
             staging_fd = os.open(staging_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -182,7 +183,8 @@ class ResultSpoolWriter:
             self._file.close()
             self._closed = True
             self._assert_active_workspace()
-            os.replace(self._staging_path, self._final_path)
+            self._assert_original_staging_path()
+            self._publish_staging_file()
         except Exception:
             self.rollback()
             raise
@@ -196,6 +198,10 @@ class ResultSpoolWriter:
     @property
     def staging_identity(self) -> tuple[int, int] | None:
         return self._staging_identity
+
+    @property
+    def staging_cleanup_pending(self) -> bool:
+        return self._cleanup_pending
 
     def rollback(self) -> None:
         if self._committed:
@@ -229,6 +235,27 @@ class ResultSpoolWriter:
             raise OSError(errno.ENOENT, "Temporary result storage disappeared before commit.")
         if not self._path_matches_original(self._final_path.parent, self._workspace_identity):
             raise OSError(errno.ENOENT, "Temporary result storage disappeared before commit.")
+
+    def _assert_original_staging_path(self) -> None:
+        if not self._path_matches_original(self._staging_path, self._staging_identity):
+            raise OSError(errno.ENOENT, "Temporary result storage disappeared before commit.")
+
+    def _publish_staging_file(self) -> None:
+        if os.link in os.supports_follow_symlinks:
+            os.link(self._staging_path, self._final_path, follow_symlinks=False)
+        else:
+            os.link(self._staging_path, self._final_path)
+        if not self._path_matches_original(self._final_path, self._staging_identity):
+            raise OSError(errno.EIO, "Temporary result storage committed with unexpected identity.")
+        if not self._path_matches_original(self._staging_path, self._staging_identity):
+            self._cleanup_pending = True
+            return
+        try:
+            self._staging_path.unlink()
+        except FileNotFoundError:
+            return
+        except OSError:
+            self._cleanup_pending = True
 
     @staticmethod
     def _path_matches_original(

@@ -301,3 +301,23 @@ def test_result_spool_writer_rollback_deletes_only_staging_file(tmp_path: Path) 
     assert not staging_path.exists()
     assert not final_path.exists()
     assert foreign_path.read_text(encoding="utf-8") == "retain"
+
+
+def test_result_spool_writer_rejects_foreign_final_without_overwrite(tmp_path: Path) -> None:
+    staging_path = tmp_path / ".query-9-aaaaaaaaaaaaaaaa.result.tmp"
+    final_path = tmp_path / "query-9.result"
+    foreign_bytes = b"foreign-final"
+    final_path.write_bytes(foreign_bytes)
+    writer = ResultSpoolWriter(
+        staging_path=staging_path,
+        final_path=final_path,
+        columns=("id",),
+    )
+
+    writer.append_payload(encode_row_payload((1,)))
+
+    with pytest.raises(FileExistsError):
+        writer.commit()
+
+    assert final_path.read_bytes() == foreign_bytes
+    assert not staging_path.exists()

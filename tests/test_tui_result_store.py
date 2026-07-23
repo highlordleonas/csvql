@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 
 from csvql.models import QueryResult
-from csvql.result_spool import ResultSpoolReader
 from csvql.tui_result_store import (
     TUI_RESULT_LEASE_NAME,
     TUI_RESULT_MARKER_NAME,
@@ -280,17 +279,17 @@ def test_serialization_failure_registers_no_handle_or_partial_file(
     assert list((store.workspace_path or tmp_path).glob(".query-1-*.result.tmp")) == []
 
 
-def test_atomic_replace_failure_removes_staging_and_registers_no_handle(
+def test_atomic_publication_failure_removes_staging_and_registers_no_handle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = TUIResultStore(temp_root=tmp_path, session_id="b" * 32)
 
-    def fail_replace(source: object, destination: object) -> None:
-        del source, destination
+    def fail_link(source: object, destination: object, *, follow_symlinks: bool = True) -> None:
+        del source, destination, follow_symlinks
         raise OSError(errno.EIO, f"sensitive path: {tmp_path}")
 
-    monkeypatch.setattr("csvql.tui_result_store.os.replace", fail_replace)
+    monkeypatch.setattr("csvql.result_spool.os.link", fail_link)
 
     with pytest.raises(TUIResultStorageError) as error:
         store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
@@ -302,6 +301,117 @@ def test_atomic_replace_failure_removes_staging_and_registers_no_handle(
         TUI_RESULT_LEASE_NAME,
         TUI_RESULT_MARKER_NAME,
     ]
+
+
+def test_foreign_final_injected_before_commit_is_preserved_and_not_registered(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = TUIResultStore(temp_root=tmp_path, session_id="a" * 32)
+    foreign_bytes = b"foreign-final"
+    real_link = os.link
+
+    def inject_foreign_final(
+        source: os.PathLike[str] | str,
+        destination: os.PathLike[str] | str,
+        *,
+        follow_symlinks: bool = True,
+    ) -> None:
+        destination_path = Path(destination)
+        if not destination_path.exists():
+            destination_path.write_bytes(foreign_bytes)
+        real_link(source, destination, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr("csvql.result_spool.os.link", inject_foreign_final)
+
+    with pytest.raises(TUIResultStorageError) as error:
+        store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
+
+    assert error.value.kind == "io"
+    assert store.workspace_path is not None
+    final_path = store.workspace_path / "query-1.result"
+    assert final_path.read_bytes() == foreign_bytes
+    assert 1 not in store._issued_handles
+    assert 1 not in store._spill_paths
+
+    summary = store.cleanup()
+
+    assert final_path.read_bytes() == foreign_bytes
+    assert summary.workspaces_failed == 1
+
+
+def test_successful_publication_retains_original_staging_for_cleanup_when_unlink_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = TUIResultStore(temp_root=tmp_path, session_id="a" * 32)
+    real_unlink = Path.unlink
+    saw_original_staging = False
+
+    def fail_original_staging_unlink(path: Path, missing_ok: bool = False) -> None:
+        nonlocal saw_original_staging
+        if path.name.endswith(".result.tmp"):
+            saw_original_staging = True
+            raise OSError(errno.EBUSY, "staging busy")
+        real_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", fail_original_staging_unlink)
+
+    outcome = store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
+
+    assert saw_original_staging is True
+    assert outcome.handle.temp_path is not None
+    staging_paths = tuple(store._pending_cleanup_paths)
+    assert len(staging_paths) == 1
+    staging_path = staging_paths[0]
+    assert staging_path.exists()
+    assert store._pending_cleanup_identities[staging_path] is not None
+    assert store.get(outcome.handle).row_count == TUI_RESULT_SPILL_ROW_THRESHOLD + 1
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    summary = store.cleanup()
+
+    assert summary == TUIResultCleanupSummary(
+        files_removed=4,
+        workspaces_removed=1,
+    )
+
+
+def test_cleanup_preserves_foreign_replacement_at_staging_name_after_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = TUIResultStore(temp_root=tmp_path, session_id="a" * 32)
+    real_unlink = Path.unlink
+    replaced_staging = False
+
+    def replace_staging_during_unlink(path: Path, missing_ok: bool = False) -> None:
+        nonlocal replaced_staging
+        if path.name.endswith(".result.tmp") and not replaced_staging:
+            replaced_staging = True
+            real_unlink(path, missing_ok=missing_ok)
+            path.write_text("foreign staging", encoding="utf-8")
+            raise OSError(errno.EBUSY, "foreign replacement")
+        real_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", replace_staging_during_unlink)
+
+    outcome = store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
+
+    assert replaced_staging is True
+    assert outcome.handle.temp_path is not None
+    staging_paths = tuple(store._pending_cleanup_paths)
+    assert len(staging_paths) == 1
+    staging_path = staging_paths[0]
+    assert staging_path.read_text(encoding="utf-8") == "foreign staging"
+    assert store.get(outcome.handle).row_count == TUI_RESULT_SPILL_ROW_THRESHOLD + 1
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    summary = store.cleanup()
+
+    assert staging_path.read_text(encoding="utf-8") == "foreign staging"
+    assert summary.files_failed == 1
+    assert summary.workspaces_failed == 1
 
 
 @pytest.mark.skipif(
