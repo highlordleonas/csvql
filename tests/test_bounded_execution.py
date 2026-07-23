@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 
@@ -40,6 +41,10 @@ class _RecordingStream:
         self.interrupt_calls = 0
         self.close_calls = 0
 
+    @property
+    def remaining_steps(self) -> int:
+        return len(self._steps)
+
     def fetch_rows(self, max_rows: int) -> ResultBatch:
         self.fetch_sizes.append(max_rows)
         self.events.append(f"fetch:{max_rows}")
@@ -64,6 +69,46 @@ class _RecordingStream:
         self.events.append("close")
         if self._close_error is not None:
             raise self._close_error
+
+
+class _UninspectableRow(Sequence[object]):
+    def __len__(self) -> int:
+        return 1
+
+    def __getitem__(self, index: int) -> object:
+        raise AssertionError(f"Row should not be inspected: {index}")
+
+
+def test_collect_bounded_preview_rejects_zero_fetch_batch_size_before_stream_use() -> None:
+    stream = _RecordingStream((_FetchStep(rows=((1,),)),), columns=("id",))
+
+    with pytest.raises(ValueError, match="fetch_batch_size must be positive"):
+        collect_bounded_preview(
+            stream,
+            policy=PreviewPolicy(row_limit=2, payload_limit_bytes=100),
+            fetch_batch_size=0,
+        )
+
+    assert stream.fetch_sizes == []
+    assert stream.interrupt_calls == 0
+    assert stream.close_calls == 0
+    assert stream.events == []
+
+
+def test_collect_bounded_preview_rejects_negative_fetch_batch_size_before_stream_use() -> None:
+    stream = _RecordingStream((_FetchStep(rows=((1,),)),), columns=("id",))
+
+    with pytest.raises(ValueError, match="fetch_batch_size must be positive"):
+        collect_bounded_preview(
+            stream,
+            policy=PreviewPolicy(row_limit=2, payload_limit_bytes=100),
+            fetch_batch_size=-1,
+        )
+
+    assert stream.fetch_sizes == []
+    assert stream.interrupt_calls == 0
+    assert stream.close_calls == 0
+    assert stream.events == []
 
 
 def test_collect_bounded_preview_returns_zero_rows_without_truncation() -> None:
@@ -148,7 +193,12 @@ def test_collect_bounded_preview_accepts_exact_row_limit_when_batch_is_marked_ex
 
 
 def test_collect_bounded_preview_detects_limit_plus_one_without_extra_fetch() -> None:
-    stream = _RecordingStream((_FetchStep(rows=((1, "one"), (2, "two"), (3, "three"))),))
+    stream = _RecordingStream(
+        (
+            _FetchStep(rows=((1, "one"), (2, "two"), (3, "three"))),
+            _FetchStep(rows=((4, "four"),)),
+        )
+    )
 
     result = collect_bounded_preview(
         stream,
@@ -164,6 +214,7 @@ def test_collect_bounded_preview_detects_limit_plus_one_without_extra_fetch() ->
     assert stream.interrupt_calls == 1
     assert stream.close_calls == 1
     assert stream.events == ["fetch:3", "interrupt", "close"]
+    assert stream.remaining_steps == 1
 
 
 def test_collect_bounded_preview_caps_row_limit_budget_across_multiple_fetches() -> None:
@@ -253,6 +304,51 @@ def test_collect_bounded_preview_preserves_fetch_failure_when_close_also_fails()
     assert stream.close_calls == 1
 
 
+def test_collect_bounded_preview_preserves_base_exception_primary_when_close_fails() -> None:
+    primary = KeyboardInterrupt()
+    stream = _RecordingStream(
+        (_FetchStep(error=primary),),
+        close_error=RuntimeError("private close detail"),
+    )
+
+    with pytest.raises(KeyboardInterrupt) as captured:
+        collect_bounded_preview(
+            stream,
+            policy=PreviewPolicy(row_limit=3, payload_limit_bytes=100),
+            fetch_batch_size=2,
+        )
+
+    assert captured.value is primary
+    notes = "\n".join(getattr(captured.value, "__notes__", ()))
+    assert CURSOR_CLEANUP_UNCERTAINTY_NOTE in notes
+    assert "private close detail" not in notes
+    assert stream.events == ["fetch:2", "close"]
+
+
+def test_collect_bounded_preview_preserves_encode_primary_when_close_fails() -> None:
+    primary = SystemExit(3)
+    stream = _RecordingStream(
+        (_FetchStep(rows=((1,),)),),
+        close_error=RuntimeError("private close detail"),
+    )
+
+    with (
+        patch("csvql.bounded_result.encode_row_payload", side_effect=primary),
+        pytest.raises(SystemExit) as captured,
+    ):
+        collect_bounded_preview(
+            stream,
+            policy=PreviewPolicy(row_limit=3, payload_limit_bytes=100),
+            fetch_batch_size=2,
+        )
+
+    assert captured.value is primary
+    notes = "\n".join(getattr(captured.value, "__notes__", ()))
+    assert CURSOR_CLEANUP_UNCERTAINTY_NOTE in notes
+    assert "private close detail" not in notes
+    assert stream.events == ["fetch:2", "close"]
+
+
 def test_collect_bounded_preview_raises_interrupt_failure_after_successful_close() -> None:
     stream = _RecordingStream(
         (_FetchStep(rows=((1,), (2,), (3,))),),
@@ -290,3 +386,81 @@ def test_collect_bounded_preview_preserves_interrupt_failure_when_close_also_fai
     assert CURSOR_CLEANUP_UNCERTAINTY_NOTE in notes
     assert "private close detail" not in notes
     assert stream.events == ["fetch:3", "interrupt", "close"]
+
+
+def test_collect_bounded_preview_rejects_over_returned_batch_before_row_inspection() -> None:
+    stream = _RecordingStream(
+        (
+            _FetchStep(
+                rows=(
+                    _UninspectableRow(),
+                    _UninspectableRow(),
+                    _UninspectableRow(),
+                )
+            ),
+            _FetchStep(rows=((4,),)),
+        ),
+        columns=("id",),
+    )
+
+    with pytest.raises(QueryExecutionError, match="invalid result stream batch") as captured:
+        collect_bounded_preview(
+            stream,
+            policy=PreviewPolicy(row_limit=5, payload_limit_bytes=100),
+            fetch_batch_size=2,
+        )
+
+    assert captured.value.suggestion == (
+        "Retry the query. If the problem persists, report this as a bug."
+    )
+    assert stream.fetch_sizes == [2]
+    assert stream.returned_row_total == 3
+    assert stream.interrupt_calls == 0
+    assert stream.close_calls == 1
+    assert stream.events == ["fetch:2", "close"]
+    assert stream.remaining_steps == 1
+
+
+def test_collect_bounded_preview_rejects_empty_non_exhausted_batch_without_retry() -> None:
+    stream = _RecordingStream(
+        (
+            _FetchStep(rows=(), exhausted=False),
+            _FetchStep(rows=((1,),), exhausted=True),
+        ),
+        columns=("id",),
+    )
+
+    with pytest.raises(QueryExecutionError, match="invalid result stream batch") as captured:
+        collect_bounded_preview(
+            stream,
+            policy=PreviewPolicy(row_limit=5, payload_limit_bytes=100),
+            fetch_batch_size=2,
+        )
+
+    assert captured.value.suggestion == (
+        "Retry the query. If the problem persists, report this as a bug."
+    )
+    assert stream.fetch_sizes == [2]
+    assert stream.interrupt_calls == 0
+    assert stream.close_calls == 1
+    assert stream.events == ["fetch:2", "close"]
+    assert stream.remaining_steps == 1
+
+
+def test_collect_bounded_preview_preserves_invalid_batch_primary_when_close_also_fails() -> None:
+    stream = _RecordingStream(
+        (_FetchStep(rows=(), exhausted=False),),
+        close_error=RuntimeError("private close detail"),
+        columns=("id",),
+    )
+
+    with pytest.raises(QueryExecutionError, match="invalid result stream batch") as captured:
+        collect_bounded_preview(
+            stream,
+            policy=PreviewPolicy(row_limit=5, payload_limit_bytes=100),
+            fetch_batch_size=2,
+        )
+
+    notes = "\n".join(getattr(captured.value, "__notes__", ()))
+    assert CURSOR_CLEANUP_UNCERTAINTY_NOTE in notes
+    assert "private close detail" not in notes

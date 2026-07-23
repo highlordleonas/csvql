@@ -5,12 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from csvql.exceptions import QueryExecutionError
 from csvql.result_codec import encode_row_payload
-from csvql.result_stream import CURSOR_CLEANUP_UNCERTAINTY_NOTE, ResultStream
+from csvql.result_stream import CURSOR_CLEANUP_UNCERTAINTY_NOTE, ResultBatch, ResultStream
 
 DEFAULT_INTERACTIVE_ROW_LIMIT = 1_000
 MAX_PREVIEW_PAYLOAD_BYTES = 16 * 1024 * 1024
 TruncationReason = Literal["row_limit", "byte_limit"]
+_INVALID_BATCH_MESSAGE = "LocalQL internal error: invalid result stream batch."
+_INVALID_BATCH_SUGGESTION = "Retry the query. If the problem persists, report this as a bug."
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,44 +96,48 @@ def collect_bounded_preview(
         policy=policy,
     )
     remaining_row_budget = policy.row_limit + 1
-    primary: BaseException | None = None
-    result: BoundedQueryResult | None = None
 
-    try:
-        while remaining_row_budget > 0:
-            batch = stream.fetch_rows(min(fetch_batch_size, remaining_row_budget))
-            remaining_row_budget -= len(batch.rows)
+    while remaining_row_budget > 0:
+        requested_rows = min(fetch_batch_size, remaining_row_budget)
+        try:
+            batch = stream.fetch_rows(requested_rows)
+        except BaseException as exc:
+            _close_preserving_primary(stream, exc)
+            raise
+        try:
+            _validate_batch(batch=batch, requested_rows=requested_rows)
+        except BaseException as exc:
+            _close_preserving_primary(stream, exc)
+            raise
 
+        remaining_row_budget -= len(batch.rows)
+        try:
             for raw_row in batch.rows:
                 row = tuple(raw_row)
                 if not accumulator.consider(row, encode_row_payload(row)):
                     break
-            if accumulator._truncation_reason is not None:
-                break
-            if batch.exhausted:
-                break
+        except BaseException as exc:
+            _close_preserving_primary(stream, exc)
+            raise
+        if accumulator._truncation_reason is not None:
+            try:
+                accumulator.elapsed_ms = stream.elapsed_ms
+                result = accumulator.finish()
+            except BaseException as exc:
+                _close_preserving_primary(stream, exc)
+                raise
+            _interrupt_then_close(stream)
+            return result
+        if batch.exhausted:
+            break
 
+    try:
         accumulator.elapsed_ms = stream.elapsed_ms
         result = accumulator.finish()
     except BaseException as exc:
-        primary = exc
-    finally:
-        if accumulator._truncation_reason is not None:
-            try:
-                stream.request_interrupt()
-            except BaseException as exc:
-                if primary is None:
-                    primary = exc
-        try:
-            stream.close()
-        except BaseException:
-            if primary is None:
-                raise
-            _add_cleanup_note(primary)
-    if primary is not None:
-        raise primary
-    if result is None:
-        raise AssertionError("Bounded preview collection did not produce a result.")
+        _close_preserving_primary(stream, exc)
+        raise
+    stream.close()
     return result
 
 
@@ -138,3 +145,27 @@ def _add_cleanup_note(primary: BaseException) -> None:
     notes = getattr(primary, "__notes__", ())
     if CURSOR_CLEANUP_UNCERTAINTY_NOTE not in notes:
         primary.add_note(CURSOR_CLEANUP_UNCERTAINTY_NOTE)
+
+
+def _close_preserving_primary(stream: ResultStream, primary: BaseException) -> None:
+    try:
+        stream.close()
+    except BaseException:
+        _add_cleanup_note(primary)
+
+
+def _interrupt_then_close(stream: ResultStream) -> None:
+    try:
+        stream.request_interrupt()
+    except BaseException as exc:
+        _close_preserving_primary(stream, exc)
+        raise
+    stream.close()
+
+
+def _validate_batch(*, batch: ResultBatch, requested_rows: int) -> None:
+    if len(batch.rows) > requested_rows or (not batch.rows and not batch.exhausted):
+        raise QueryExecutionError(
+            _INVALID_BATCH_MESSAGE,
+            suggestion=_INVALID_BATCH_SUGGESTION,
+        )
