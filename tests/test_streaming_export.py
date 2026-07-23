@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from rich.cells import cell_len
 
-from csvql.atomic_write import OperationCancelled, OperationToken
+from csvql.atomic_write import OperationCancelled, OperationToken, atomic_text_output
 from csvql.exceptions import ExportError
 from csvql.export import ExportFormat
 from csvql.streaming_export import write_streaming_export
@@ -233,7 +233,7 @@ def test_streaming_text_export_uses_sidecar_second_pass_without_rerunning_source
     assert source._iterator.close_calls == 1
     assert "line\\x0abreak" in output
     assert "\\x1b[31mred\\x1b[0m" in output
-    assert max(len(line) for line in output.splitlines()) <= 120
+    assert all(cell_len(line) <= 120 for line in output.splitlines())
     assert output.endswith("2 row(s) in 1.23 ms\n")
     assert sorted(path.name for path in tmp_path.iterdir()) == ["keep.txt", "result.txt"]
 
@@ -474,7 +474,7 @@ def test_streaming_text_export_large_lazy_generator_emits_each_row_exactly_once(
     assert len(extracted) == 500
     assert extracted[2] == "value-2"
     assert extracted[20] == "value-20"
-    assert max(len(line) for line in output.splitlines()) <= 120
+    assert all(cell_len(line) <= 120 for line in output.splitlines())
 
 
 def test_streaming_text_export_caps_terminal_width_for_wide_unicode_cells(tmp_path: Path) -> None:
@@ -505,3 +505,97 @@ def test_streaming_text_export_caps_terminal_width_for_wide_unicode_cells(tmp_pa
     assert all(cell_len(line) <= 120 for line in lines)
     assert "".join(wrapped_segments) == terminal_safe_text(wide_value)
     assert output.endswith("1 row(s) in 2.50 ms\n")
+
+
+def test_streaming_text_export_wraps_long_header_without_loss(tmp_path: Path) -> None:
+    output_path = tmp_path / "result.txt"
+    header = ("表" * 40) + "\n" + "\x1b[31mHDR\x1b[0m" + ("表" * 40)
+    source = _OneShotSource(
+        (header, "short"),
+        [("value", "ok")],
+    )
+
+    write_streaming_export(
+        source,
+        output_path,
+        export_format=ExportFormat.text,
+        overwrite=False,
+    )
+
+    lines = output_path.read_text(encoding="utf-8").splitlines()
+    header_lines: list[str] = []
+    for line in lines[1:]:
+        if line.startswith("┡"):
+            break
+        if line.startswith("┃"):
+            header_lines.append(line)
+
+    reconstructed_header = "".join(part.split("┃")[1].strip() for part in header_lines)
+
+    assert all(cell_len(line) <= 120 for line in lines)
+    assert reconstructed_header == terminal_safe_text(header)
+
+
+def test_streaming_text_export_long_form_fallback_cleans_sidecar_pre_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_path = tmp_path / "result.txt"
+    columns = tuple(f"col_{index:02d}" for index in range(41))
+    row = tuple(f"value_{index:02d}" for index in range(41))
+    source = _OneShotSource(columns, [row], elapsed_ms=4.25)
+    stage_absent_on_exit: list[bool] = []
+
+    @contextmanager
+    def recording_atomic_output(*args: Any, **kwargs: Any) -> Iterator[Any]:
+        with atomic_text_output(*args, **kwargs) as output:
+            try:
+                yield output
+            finally:
+                stage_absent_on_exit.append(not any(tmp_path.glob(".result.txt.*.stream.tmp")))
+
+    monkeypatch.setattr("csvql.streaming_export.atomic_text_output", recording_atomic_output)
+
+    summary = write_streaming_export(
+        source,
+        output_path,
+        export_format=ExportFormat.text,
+        overwrite=False,
+    )
+
+    output = output_path.read_text(encoding="utf-8")
+    lines = output.splitlines()
+
+    assert summary.row_count == 1
+    assert source.iter_calls == 1
+    assert source._iterator.close_calls == 1
+    assert stage_absent_on_exit == [True]
+    assert all(cell_len(line) <= 120 for line in lines)
+    assert "row" in output and "column" in output and "value" in output
+    for token in columns + row:
+        assert token in output
+    assert not any(tmp_path.glob(".result.txt.*.stream.tmp"))
+
+
+def test_streaming_text_export_long_form_zero_rows_preserves_schema(tmp_path: Path) -> None:
+    output_path = tmp_path / "result.txt"
+    columns = tuple(f"col_{index:02d}" for index in range(41))
+    source = _OneShotSource(columns, [], elapsed_ms=3.0)
+
+    summary = write_streaming_export(
+        source,
+        output_path,
+        export_format=ExportFormat.text,
+        overwrite=False,
+    )
+
+    output = output_path.read_text(encoding="utf-8")
+    lines = output.splitlines()
+
+    assert summary.row_count == 0
+    assert source.iter_calls == 1
+    assert source._iterator.close_calls == 1
+    assert all(cell_len(line) <= 120 for line in lines)
+    for column in columns:
+        assert column in output
+    assert output.endswith("0 row(s) in 3.00 ms\n")

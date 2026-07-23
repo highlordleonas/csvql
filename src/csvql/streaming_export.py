@@ -283,13 +283,24 @@ def _render_staged_text_table(
         output.write(f"{row_count} row(s) in {elapsed_ms:.2f} ms\n")
         return
 
+    if _minimum_grid_width(len(columns)) > 120:
+        _render_staged_long_form_table(
+            output,
+            stage_path,
+            columns=columns,
+            widths=widths,
+            row_count=row_count,
+            elapsed_ms=elapsed_ms,
+            token=token,
+        )
+        return
+
     table_widths = _fit_table_widths(columns, widths, max_width=120)
     header_cells = [terminal_safe_text(column) for column in columns]
 
     output.write(_border_line("┏", "┳", "┓", "━", table_widths))
     output.write("\n")
-    output.write(_row_line("┃", "┃", "┃", header_cells, table_widths))
-    output.write("\n")
+    _write_wrapped_row(output, header_cells, table_widths, left="┃", separator="┃", right="┃")
     output.write(_border_line("┡", "╇", "┩", "━", table_widths))
     output.write("\n")
 
@@ -303,9 +314,95 @@ def _render_staged_text_table(
             cells = _json_loads(line)
             if not isinstance(cells, list) or len(cells) != len(columns):
                 raise RuntimeError("Invalid LocalQL text export staging row.")
-            _write_wrapped_row(output, [str(cell) for cell in cells], table_widths)
+            _write_wrapped_row(
+                output,
+                [str(cell) for cell in cells],
+                table_widths,
+                left="│",
+                separator="│",
+                right="│",
+            )
 
     output.write(_border_line("└", "┴", "┘", "─", table_widths))
+    output.write("\n")
+    output.write(f"{row_count} row(s) in {elapsed_ms:.2f} ms\n")
+
+
+def _render_staged_long_form_table(
+    output: TextIO,
+    stage_path: Path,
+    *,
+    columns: tuple[str, ...],
+    widths: tuple[int, ...],
+    row_count: int,
+    elapsed_ms: float,
+    token: OperationToken | None,
+) -> None:
+    max_column_width = max(
+        (cell_len(terminal_safe_text(column)) for column in columns),
+        default=0,
+    )
+    max_value_width = max(widths, default=0)
+    layout_columns = ("row", "column", "value")
+    layout_widths = _fit_table_widths(
+        layout_columns,
+        (
+            max(cell_len("row"), len(str(max(row_count, 1)))),
+            max(cell_len("column"), max_column_width),
+            max(cell_len("value"), max_value_width),
+        ),
+        max_width=120,
+    )
+
+    output.write(_border_line("┏", "┳", "┓", "━", layout_widths))
+    output.write("\n")
+    _write_wrapped_row(
+        output,
+        [terminal_safe_text(column) for column in layout_columns],
+        layout_widths,
+        left="┃",
+        separator="┃",
+        right="┃",
+    )
+    output.write(_border_line("┡", "╇", "┩", "━", layout_widths))
+    output.write("\n")
+
+    with stage_path.open("r", encoding="utf-8", newline="") as stage:
+        marker = stage.readline()
+        if _json_loads(marker) != _TEXT_STAGE_MARKER:
+            raise RuntimeError("Invalid LocalQL text export staging marker.")
+
+        if row_count == 0:
+            for column in columns:
+                if token is not None:
+                    token.raise_if_cancelled()
+                _write_wrapped_row(
+                    output,
+                    ["", terminal_safe_text(column), ""],
+                    layout_widths,
+                    left="│",
+                    separator="│",
+                    right="│",
+                )
+        else:
+            for row_index, line in enumerate(stage, start=1):
+                if token is not None:
+                    token.raise_if_cancelled()
+                cells = _json_loads(line)
+                if not isinstance(cells, list) or len(cells) != len(columns):
+                    raise RuntimeError("Invalid LocalQL text export staging row.")
+                row_label = str(row_index)
+                for column_name, value in zip(columns, cells, strict=True):
+                    _write_wrapped_row(
+                        output,
+                        [row_label, terminal_safe_text(column_name), str(value)],
+                        layout_widths,
+                        left="│",
+                        separator="│",
+                        right="│",
+                    )
+
+    output.write(_border_line("└", "┴", "┘", "─", layout_widths))
     output.write("\n")
     output.write(f"{row_count} row(s) in {elapsed_ms:.2f} ms\n")
 
@@ -336,6 +433,10 @@ def _fit_table_widths(
     return tuple(fitted)
 
 
+def _minimum_grid_width(column_count: int) -> int:
+    return 4 * column_count + 1
+
+
 def _border_line(left: str, join: str, right: str, fill: str, widths: tuple[int, ...]) -> str:
     return left + join.join(fill * (width + 2) for width in widths) + right
 
@@ -351,7 +452,15 @@ def _row_line(
     return left + separator.join(padded) + right
 
 
-def _write_wrapped_row(output: TextIO, cells: list[str], widths: tuple[int, ...]) -> None:
+def _write_wrapped_row(
+    output: TextIO,
+    cells: list[str],
+    widths: tuple[int, ...],
+    *,
+    left: str,
+    separator: str,
+    right: str,
+) -> None:
     chunks = [
         chop_cells(cell, width) or [""]
         for cell, width in zip(cells, widths, strict=True)
@@ -360,9 +469,9 @@ def _write_wrapped_row(output: TextIO, cells: list[str], widths: tuple[int, ...]
     for line_index in range(line_count):
         output.write(
             _row_line(
-                "│",
-                "│",
-                "│",
+                left,
+                separator,
+                right,
                 [parts[line_index] if line_index < len(parts) else "" for parts in chunks],
                 widths,
             )
