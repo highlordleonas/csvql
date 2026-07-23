@@ -12,7 +12,7 @@ from csvql.exceptions import CSVQLError
 from csvql.models import QueryResult
 from csvql.tui_launcher import run_menu_command
 from csvql.tui_result_store import TUIResultCleanupSummary, TUIResultHandle
-from csvql.tui_state import TUISessionState, TUISource
+from csvql.tui_state import TUIBufferResultTab, TUISessionState, TUISource
 from csvql.tui_workflows import (
     build_initial_state,
     inspect_source,
@@ -88,6 +88,64 @@ def _assert_run_modes_and_history_recall(
     assert state.restore_query_result(sequence) is True
     assert state.active_result.kind == "history"
     assert state.active_result.sequence == sequence
+
+
+def _assert_buffer_tabs_order_and_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del monkeypatch
+    state = TUISessionState()
+    state.add_source(_compat_source(tmp_path))
+
+    first_sequence = state.begin_query_run("SELECT 1 AS first")
+    first_view = state.result_view
+    state.record_query_success(
+        first_sequence,
+        "SELECT 1 AS first",
+        handle=TUIResultHandle(sequence=first_sequence, is_spilled=False),
+        result_view=first_view,
+        elapsed_ms=1.0,
+        run_mode="buffer",
+        buffer_result_index=1,
+    )
+    second_sequence = state.begin_query_run("SELECT 2 AS second")
+    second_view = state.result_view
+    state.record_query_success(
+        second_sequence,
+        "SELECT 2 AS second",
+        handle=TUIResultHandle(sequence=second_sequence, is_spilled=False),
+        result_view=second_view,
+        elapsed_ms=1.0,
+        run_mode="buffer",
+        buffer_result_index=2,
+    )
+    state.set_buffer_result_tabs(
+        (
+            TUIBufferResultTab(
+                sequence=first_sequence,
+                index=1,
+                label="query 1",
+            ),
+            TUIBufferResultTab(
+                sequence=second_sequence,
+                index=2,
+                label="query 2",
+            ),
+        ),
+        selected_sequence=first_sequence,
+    )
+
+    assert tuple(tab.sequence for tab in state.buffer_result_tabs) == (
+        first_sequence,
+        second_sequence,
+    )
+    assert state.active_result.sequence == first_sequence
+    assert state.active_result.buffer_result_index == 1
+    assert state.select_buffer_result(second_sequence) is True
+    assert state.active_result.sequence == second_sequence
+    assert state.active_result.buffer_result_index == 2
+    assert state.result_view is second_view
 
 
 def _assert_source_introspection_surface(
@@ -206,6 +264,7 @@ def _assert_final_cleanup_summary(
     [
         _assert_source_preload_and_order,
         _assert_run_modes_and_history_recall,
+        _assert_buffer_tabs_order_and_selection,
         _assert_source_introspection_surface,
         _assert_derived_csv_and_catalog_save,
         _assert_optional_textual_import_behavior,
@@ -215,6 +274,7 @@ def _assert_final_cleanup_summary(
     ids=[
         "source-preload-order",
         "run-modes-and-history-recall",
+        "buffer-tabs-order-selection",
         "source-inspect-sample-profile",
         "derived-csv-and-project-catalog",
         "optional-textual-import",

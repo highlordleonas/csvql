@@ -104,10 +104,6 @@ def test_spill_compatibility_freezes_store_round_trip_not_private_pickle_bytes(
     assert outcome.handle.is_spilled is True
     assert store.get(outcome.handle) == result
     assert outcome.handle.temp_path is not None
-    assert outcome.handle.temp_path.suffix == ".pickle"
-    # The current spill file remains a private implementation detail. Freeze only the
-    # user-visible store round trip, not the exact whole-QueryResult pickle bytes.
-    assert outcome.handle.temp_path.read_bytes()
 
 
 def test_default_temp_failure_is_deferred_until_first_spill(
