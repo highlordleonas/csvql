@@ -4,10 +4,24 @@ from pathlib import Path
 import pytest
 
 from csvql import tui_workflows
-from csvql.exceptions import ExportError, ProjectConfigError, TableMappingError
+from csvql.csv_adapter import CSV_CAPABILITIES, CSVSourceAdapter
+from csvql.exceptions import (
+    CSVQLError,
+    ExportError,
+    ProjectConfigError,
+    SourceError,
+    TableMappingError,
+)
 from csvql.export import ExportFormat
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
 from csvql.project_config import CONFIG_FILENAME, initialize_project, load_project
+from csvql.source import (
+    SourceCapabilities,
+    SourceCapabilityStatus,
+    source_spec_from_tui_source,
+)
+from csvql.source_adapter import PreparedBinding
+from csvql.tui_result_store import TUIResultHandle
 from csvql.tui_state import TUISessionState, TUISource, TUISourceColumn
 from csvql.tui_workflows import (
     build_initial_state,
@@ -91,6 +105,19 @@ def test_build_initial_state_loads_single_csv_argument_with_derived_alias(
     assert state.selected_alias == "sales_2026"
 
 
+def test_build_initial_state_loads_leading_underscore_csv_argument_with_normalized_alias(
+    tmp_path: Path,
+) -> None:
+    csv_path = _write_csv(tmp_path / "__localql_orders.csv")
+
+    state = build_initial_state(csv_path=str(csv_path), table_mappings=(), start_dir=tmp_path)
+
+    assert state.sources == (
+        TUISource(name="localql_orders", path=csv_path.resolve(), origin="argument"),
+    )
+    assert state.selected_alias == "localql_orders"
+
+
 def test_build_initial_state_loads_table_mappings_in_argument_order(
     tmp_path: Path,
 ) -> None:
@@ -142,6 +169,22 @@ def test_sources_from_csv_path_text_adds_pasted_paths_with_derived_aliases(
     assert sources == (
         TUISource(name="new_customers", path=customers_csv.resolve(), origin="session"),
         TUISource(name="orders", path=orders_csv.resolve(), origin="session"),
+    )
+
+
+def test_sources_from_csv_path_text_normalizes_leading_underscore_filenames(
+    tmp_path: Path,
+) -> None:
+    orders_csv = _write_csv(tmp_path / "__localql_orders.csv")
+
+    sources = sources_from_csv_path_text(
+        str(orders_csv),
+        existing_sources=(),
+        start_dir=tmp_path,
+    )
+
+    assert sources == (
+        TUISource(name="localql_orders", path=orders_csv.resolve(), origin="session"),
     )
 
 
@@ -406,14 +449,14 @@ def test_run_buffer_for_tui_returns_no_result_for_empty_columns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeCSVQLEngine:
+        def __init__(self, *, operation: object) -> None:
+            self.operation = operation
+
         def __enter__(self) -> "FakeCSVQLEngine":
             return self
 
         def __exit__(self, *exc_info: object) -> None:
             return None
-
-        def register_tables(self, table_sources: object) -> None:
-            del table_sources
 
         def query(self, sql: str) -> QueryResult:
             del sql
@@ -554,6 +597,100 @@ def test_save_sources_to_project_catalog_missing_project_does_not_create_catalog
     assert not (project_root / CONFIG_FILENAME).exists()
 
 
+def test_save_sources_to_project_catalog_rejects_case_variant_batch_collision(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_csv(project_root / "Orders.csv")
+    _write_csv(project_root / "orders.csv")
+
+    first = TUISource(name="Orders", path=(project_root / "Orders.csv").resolve(), origin="session")
+    duplicate = TUISource(
+        name="orders",
+        path=(project_root / "orders.csv").resolve(),
+        origin="session",
+    )
+
+    with pytest.raises(ProjectConfigError, match=r"Duplicate project catalog table 'orders'"):
+        save_sources_to_project_catalog((first, duplicate), start_dir=project_root, replace=False)
+
+    assert not (project_root / CONFIG_FILENAME).exists()
+
+
+def test_save_sources_to_project_catalog_rejects_case_variant_existing_alias_without_mutation(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_csv(project_root / "data" / "Orders.csv")
+    _write_csv(project_root / "data" / "orders.csv")
+    initialize_project(project_root)
+    config_path = project_root / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\ntables:\n  Orders:\n    path: data/Orders.csv\n",
+        encoding="utf-8",
+    )
+    original_config = config_path.read_text(encoding="utf-8")
+    source = TUISource(
+        name="orders",
+        path=(project_root / "data" / "orders.csv").resolve(),
+        origin="session",
+    )
+
+    with pytest.raises(ProjectConfigError, match=r"Project catalog table 'orders' already exists"):
+        save_sources_to_project_catalog((source,), start_dir=project_root, replace=False)
+
+    assert config_path.read_text(encoding="utf-8") == original_config
+
+
+def test_save_sources_to_project_catalog_replace_true_updates_casefolded_entry_once(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    original_csv = _write_csv(project_root / "data" / "Orders.csv")
+    replacement_csv = _write_csv(project_root / "data" / "orders-replacement.csv")
+    initialize_project(project_root)
+    config_path = project_root / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\ntables:\n  Orders:\n    path: data/Orders.csv\n",
+        encoding="utf-8",
+    )
+    source = TUISource(name="orders", path=replacement_csv.resolve(), origin="session")
+
+    context = save_sources_to_project_catalog((source,), start_dir=project_root, replace=True)
+
+    assert len(context.config.tables) == 1
+    assert context.config.tables[0].name == "orders"
+    assert context.config.tables[0].path == "data/orders-replacement.csv"
+    assert load_project(project_root).config.tables == context.config.tables
+    assert original_csv.read_text(encoding="utf-8") == "id,value\n1,alpha\n"
+
+
+def test_save_sources_to_project_catalog_rejects_invalid_staged_config_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    csv_path = _write_csv(project_root / "data" / "orders.csv")
+    initialize_project(project_root)
+    config_path = project_root / CONFIG_FILENAME
+    original_config = config_path.read_text(encoding="utf-8")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="session")
+
+    monkeypatch.setattr("csvql.tui_workflows._project_catalog_path_value", lambda *_args: "")
+
+    with pytest.raises(
+        ProjectConfigError,
+        match=r"Missing CSV path for project catalog table 'orders'",
+    ):
+        save_sources_to_project_catalog((source,), start_dir=project_root, replace=False)
+
+    assert config_path.read_text(encoding="utf-8") == original_config
+
+
 def test_export_last_result_refuses_overwrite_without_force(tmp_path: Path) -> None:
     csv_path = _write_csv(tmp_path / "orders.csv", "order_id,status\nORD-1,paid\n")
     source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
@@ -603,9 +740,254 @@ def test_save_derived_result_source_writes_project_local_csv_and_returns_source(
     assert source == TUISource(
         name="order_names",
         path=output_path.resolve(),
-        origin="session",
-        kind="derived",
+        origin="derived",
+        kind="csv",
     )
+
+
+def test_private_spill_handle_cannot_enter_catalog_but_committed_csv_can(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    private_spool = tmp_path / "localql-private-spool" / "query-1.pickle"
+    private_spool.parent.mkdir()
+    private_spool.write_bytes(b"private result bytes")
+    handle = TUIResultHandle(sequence=1, is_spilled=True, temp_path=private_spool)
+
+    with pytest.raises(AttributeError):
+        source_spec_from_tui_source(handle)  # type: ignore[arg-type]
+    with pytest.raises(AttributeError):
+        save_sources_to_project_catalog(  # type: ignore[arg-type]
+            (handle,),
+            start_dir=project_root,
+            replace=False,
+        )
+    assert not (project_root / CONFIG_FILENAME).exists()
+
+    committed = save_derived_result_source(
+        QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0),
+        "committed_ids",
+        existing_sources=(),
+        start_dir=project_root,
+    )
+    context = save_sources_to_project_catalog(
+        (committed,),
+        start_dir=project_root,
+        replace=False,
+    )
+
+    assert committed.path != private_spool
+    assert committed.kind == "csv"
+    assert committed.origin == "derived"
+    assert len(context.config.tables) == 1
+    assert context.config.tables[0].name == "committed_ids"
+    assert Path(context.config.tables[0].path).suffix == ".csv"
+    assert "pickle" not in context.config.tables[0].path
+    assert private_spool.read_bytes() == b"private result bytes"
+
+
+def test_query_sources_does_not_use_legacy_table_source_conversion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    csv_path = _write_csv(tmp_path / "orders.csv")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
+
+    def reject_legacy_conversion(self: TUISource) -> object:
+        del self
+        raise AssertionError("legacy TableSource conversion used")
+
+    monkeypatch.setattr(TUISource, "as_table_source", reject_legacy_conversion)
+
+    result = query_sources((source,), "SELECT count(*) FROM orders")
+
+    assert result.rows == ((1,),)
+
+
+@pytest.mark.parametrize("workflow_name", ["query_sources", "run_buffer_for_tui"])
+def test_tui_query_route_shares_context_from_resolve_through_bind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workflow_name: str,
+) -> None:
+    csv_path = _write_csv(tmp_path / "orders.csv")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
+    resolve_operations: list[object] = []
+    bind_operations: list[object] = []
+    real_resolve = CSVSourceAdapter.resolve
+    real_bind = CSVSourceAdapter.bind
+
+    def recording_resolve(self, spec, operation):
+        resolve_operations.append(operation)
+        return real_resolve(self, spec, operation)
+
+    def recording_bind(self, connection, resolved_source, operation):
+        bind_operations.append(operation)
+        return real_bind(self, connection, resolved_source, operation)
+
+    monkeypatch.setattr(CSVSourceAdapter, "resolve", recording_resolve)
+    monkeypatch.setattr(CSVSourceAdapter, "bind", recording_bind)
+
+    workflow = getattr(tui_workflows, workflow_name)
+    if workflow_name == "run_buffer_for_tui":
+        workflow((source,), ("SELECT count(*) FROM orders",), sequences=(1,))
+    else:
+        workflow((source,), "SELECT count(*) FROM orders")
+
+    assert len(resolve_operations) == 1
+    assert bind_operations == resolve_operations
+
+
+def test_catalog_save_rejects_source_that_cannot_be_bound_without_mutating_catalog(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    initialize_project(project_root)
+    config_path = project_root / CONFIG_FILENAME
+    original_config = config_path.read_text(encoding="utf-8")
+    csv_path = project_root / "unreadable.csv"
+    csv_path.write_bytes(b"id\n\xff\n")
+    source = TUISource(name="unreadable", path=csv_path.resolve(), origin="session")
+
+    with pytest.raises(SourceError, match="bind"):
+        save_sources_to_project_catalog((source,), start_dir=project_root, replace=False)
+
+    assert config_path.read_text(encoding="utf-8") == original_config
+
+
+def test_catalog_save_rejects_effective_query_capability_without_mutating_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    initialize_project(project_root)
+    config_path = project_root / CONFIG_FILENAME
+    original_config = config_path.read_text(encoding="utf-8")
+    csv_path = _write_csv(project_root / "orders.csv")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="session")
+    real_bind = CSVSourceAdapter.bind
+    effective_capabilities = SourceCapabilities(
+        statuses=tuple(
+            SourceCapabilityStatus(
+                operation=status.operation,
+                state="unsupported",
+                reason_code="effective_query_unavailable",
+                remediation="Use a source binding with effective query support.",
+            )
+            if status.operation == "query"
+            else status
+            for status in CSV_CAPABILITIES.statuses
+        )
+    )
+
+    class QueryUnavailableBinding:
+        def __init__(self, binding: PreparedBinding) -> None:
+            self._binding = binding
+
+        @property
+        def alias(self) -> str:
+            return self._binding.alias
+
+        @property
+        def source(self):
+            return self._binding.source
+
+        @property
+        def capabilities(self) -> SourceCapabilities:
+            return effective_capabilities
+
+        def close(self) -> None:
+            self._binding.close()
+
+    def bind_without_effective_query(self, connection, resolved, operation):
+        return QueryUnavailableBinding(real_bind(self, connection, resolved, operation))
+
+    monkeypatch.setattr(CSVSourceAdapter, "bind", bind_without_effective_query)
+
+    with pytest.raises(SourceError) as exc_info:
+        save_sources_to_project_catalog((source,), start_dir=project_root, replace=False)
+
+    assert "effective_query_unavailable" in exc_info.value.message
+    assert exc_info.value.suggestion == ("Use a source binding with effective query support.")
+    assert config_path.read_text(encoding="utf-8") == original_config
+
+
+def test_catalog_save_cleanup_uncertainty_does_not_mutate_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    initialize_project(project_root)
+    config_path = project_root / CONFIG_FILENAME
+    original_config = config_path.read_text(encoding="utf-8")
+    csv_path = _write_csv(project_root / "orders.csv")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="session")
+    real_bind = CSVSourceAdapter.bind
+
+    class CleanupFailingBinding:
+        def __init__(self, binding: PreparedBinding) -> None:
+            self._binding = binding
+
+        @property
+        def alias(self) -> str:
+            return self._binding.alias
+
+        @property
+        def source(self):
+            return self._binding.source
+
+        @property
+        def capabilities(self):
+            return self._binding.capabilities
+
+        def close(self) -> None:
+            self._binding.close()
+            raise RuntimeError("private cleanup detail")
+
+    def bind_with_cleanup_uncertainty(self, connection, resolved, operation):
+        return CleanupFailingBinding(real_bind(self, connection, resolved, operation))
+
+    monkeypatch.setattr(CSVSourceAdapter, "bind", bind_with_cleanup_uncertainty)
+
+    with pytest.raises(CSVQLError, match="cleanup did not complete with certainty"):
+        save_sources_to_project_catalog((source,), start_dir=project_root, replace=False)
+
+    assert config_path.read_text(encoding="utf-8") == original_config
+
+
+def test_tui_source_operations_do_not_use_legacy_csv_facades(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    csv_path = _write_csv(tmp_path / "orders.csv")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
+
+    monkeypatch.setattr(
+        tui_workflows,
+        "inspect_csv_source",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy inspect facade used")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tui_workflows,
+        "sample_csv_source",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy sample facade used")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tui_workflows,
+        "profile_csv_source",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy profile facade used")),
+        raising=False,
+    )
+
+    assert inspect_source(source).columns[0].name == "id"
+    assert sample_source(source, limit=1).rows == ((1, "alpha"),)
+    assert profile_source(source).row_count == 1
 
 
 def test_save_derived_result_source_uses_start_dir_without_project_catalog(
@@ -623,7 +1005,8 @@ def test_save_derived_result_source_uses_start_dir_without_project_catalog(
     output_path = tmp_path / ".csvql" / "results" / "scratch_ids.csv"
     assert output_path.exists()
     assert source.path == output_path.resolve()
-    assert source.kind == "derived"
+    assert source.kind == "csv"
+    assert source.origin == "derived"
 
 
 def test_save_derived_result_source_preserves_empty_result_headers(tmp_path: Path) -> None:
@@ -636,7 +1019,8 @@ def test_save_derived_result_source_preserves_empty_result_headers(tmp_path: Pat
         start_dir=tmp_path,
     )
 
-    assert source.kind == "derived"
+    assert source.kind == "csv"
+    assert source.origin == "derived"
     assert (tmp_path / ".csvql" / "results" / "empty_names.csv").read_text(
         encoding="utf-8"
     ) == "id,name\n"

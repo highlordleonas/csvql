@@ -16,10 +16,11 @@ from textual.widgets import DataTable, Footer, Input, Static, TextArea
 from textual.widgets._footer import FooterKey
 from textual.worker import Worker, WorkerState
 
-from csvql.atomic_write import OperationCancelled, OperationToken
 from csvql.exceptions import CSVQLError
 from csvql.export import ExportFormat
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
+from csvql.operation import OperationCancelled, OperationContext, OperationToken
+from csvql.source import SourceCapability
 from csvql.table_mapping import parse_table_mapping
 from csvql.terminal_text import literal_terminal_text, terminal_safe_text
 from csvql.tui_editor import all_sql_statements, selected_or_current_sql
@@ -73,6 +74,7 @@ from csvql.tui_workflows import (
     sample_source,
     save_derived_result_source,
     save_sources_to_project_catalog,
+    source_capability_status,
     sources_from_csv_path_text,
 )
 
@@ -472,6 +474,7 @@ class CSVQLMenuApp(App[None]):
         self._terminal_size_warning_initialized = False
         self._terminal_size_warning_active = False
         self._active_operation_worker: Worker[object] | None = None
+        self._active_operation_context: OperationContext | None = None
         self._active_operation_token: OperationToken | None = None
         self._active_operation_worker_name: str | None = None
         self._cancelled_operation_names: set[str] = set()
@@ -668,11 +671,13 @@ class CSVQLMenuApp(App[None]):
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
+        if self._reject_unavailable_source_action(source, "inspect"):
+            return
 
         self._start_operation_worker(
             kind="inspect",
             label=f"Inspecting {source.name}",
-            work=lambda _token: _inspect_source_outcome(source),
+            work=lambda operation: _inspect_source_outcome(source, operation=operation),
         )
 
     def action_profile_source(self) -> None:
@@ -684,13 +689,15 @@ class CSVQLMenuApp(App[None]):
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
+        if self._reject_unavailable_source_action(source, "profile"):
+            return
 
         self._start_operation_worker(
             kind="profile",
             label=f"Profiling {source.name}",
-            work=lambda _token: _SourceProfileOutcome(
+            work=lambda operation: _SourceProfileOutcome(
                 source_name=source.name,
-                result=profile_source(source),
+                result=profile_source(source, operation=operation),
             ),
         )
 
@@ -703,13 +710,15 @@ class CSVQLMenuApp(App[None]):
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
+        if self._reject_unavailable_source_action(source, "sample"):
+            return
 
         self._start_operation_worker(
             kind="sample",
             label=f"Sampling {source.name}",
-            work=lambda _token: _SourceSampleOutcome(
+            work=lambda operation: _SourceSampleOutcome(
                 source_name=source.name,
-                result=sample_source(source),
+                result=sample_source(source, operation=operation),
             ),
         )
 
@@ -723,15 +732,33 @@ class CSVQLMenuApp(App[None]):
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
+        if self._reject_unavailable_source_action(source, "inspect"):
+            return
 
         self._start_operation_worker(
             kind="columns",
             label=f"Loading columns for {source.name}",
-            work=lambda _token: _SourceColumnsOutcome(
+            work=lambda operation: _SourceColumnsOutcome(
                 source_name=source.name,
-                columns=inspect_source_columns(source),
+                columns=inspect_source_columns(source, operation=operation),
             ),
         )
+
+    def _reject_unavailable_source_action(
+        self,
+        source: TUISource,
+        operation: SourceCapability,
+    ) -> bool:
+        status = source_capability_status(source, operation)
+        if status.state == "available":
+            return False
+        self._show_error(
+            CSVQLError(
+                (f"Source capability '{operation}' is {status.state} ({status.reason_code})."),
+                suggestion=status.remediation,
+            )
+        )
+        return True
 
     def action_insert_source_alias(self) -> None:
         source = self.state.selected_source()
@@ -1073,7 +1100,7 @@ class CSVQLMenuApp(App[None]):
         *,
         kind: TUIOperationKind,
         label: str,
-        work: Callable[[OperationToken], object],
+        work: Callable[[OperationContext], object],
     ) -> None:
         if self._operation_running():
             self._set_status(f"{self.state.operation_run.label} already running.")
@@ -1081,13 +1108,15 @@ class CSVQLMenuApp(App[None]):
 
         self.state.operation_run = TUIOperationRunState(is_running=True, kind=kind, label=label)
         self._set_status(f"{label}...")
-        token = OperationToken()
+        operation = OperationContext(OperationToken())
+        token = operation.token
+        self._active_operation_context = operation
         self._active_operation_token = token
         worker_name = f"operation-{kind}-{self._next_operation_worker_id}"
         self._active_operation_worker_name = worker_name
         self._next_operation_worker_id += 1
         worker = self.run_worker(
-            lambda: work(token),
+            lambda: work(operation),
             name=worker_name,
             group="operation",
             thread=True,
@@ -1100,12 +1129,12 @@ class CSVQLMenuApp(App[None]):
         if worker is None or worker.is_finished:
             return
 
-        token = self._active_operation_token
+        operation = self._active_operation_context
         label = self.state.operation_run.label
         worker_name = worker.name or ""
         self._cancelled_operation_names.add(worker_name)
-        if token is not None:
-            token.cancel()
+        if operation is not None:
+            operation.request_cancel()
         worker.cancel()
         self.state.operation_run = TUIOperationRunState()
         self._active_operation_worker = None
@@ -1124,6 +1153,7 @@ class CSVQLMenuApp(App[None]):
             self._cancelled_operation_names.discard(worker_name)
             if self._active_operation_worker_name == worker_name:
                 self._active_operation_worker_name = None
+                self._active_operation_context = None
                 self._active_operation_token = None
             if self._active_operation_worker is worker:
                 self._active_operation_worker = None
@@ -1138,6 +1168,7 @@ class CSVQLMenuApp(App[None]):
         self.state.operation_run = TUIOperationRunState()
         if self._active_operation_worker_name == worker_name:
             self._active_operation_worker_name = None
+            self._active_operation_context = None
             self._active_operation_token = None
 
         if state == WorkerState.CANCELLED:
@@ -1755,14 +1786,14 @@ class CSVQLMenuApp(App[None]):
                 lambda: self._start_operation_worker(
                     kind="export",
                     label="Exporting active result",
-                    work=lambda token: _ExportOutcome(
+                    work=lambda operation: _ExportOutcome(
                         path=export_last_result(
                             result,
                             export_path_value,
                             export_format=export_format,
                             base_dir=self.start_dir,
                             force=False,
-                            token=token,
+                            token=operation.token,
                         )
                     ),
                 )
@@ -1823,13 +1854,13 @@ class CSVQLMenuApp(App[None]):
                 lambda: self._start_operation_worker(
                     kind="save_result",
                     label="Saving active result as source",
-                    work=lambda token: _SaveResultSourceOutcome(
+                    work=lambda operation: _SaveResultSourceOutcome(
                         source=save_derived_result_source(
                             result,
                             alias,
                             existing_sources=self.state.sources,
                             start_dir=self.start_dir,
-                            token=token,
+                            token=operation.token,
                         )
                     ),
                 )
@@ -2633,8 +2664,12 @@ def _text_location_from_index(text: str, index: int) -> tuple[int, int]:
     return (len(lines) - 1, len(lines[-1].removesuffix("\n").removesuffix("\r")))
 
 
-def _inspect_source_outcome(source: TUISource) -> _SourceInspectOutcome:
-    result = inspect_source(source)
+def _inspect_source_outcome(
+    source: TUISource,
+    *,
+    operation: OperationContext,
+) -> _SourceInspectOutcome:
+    result = inspect_source(source, operation=operation)
     return _SourceInspectOutcome(
         source_name=source.name,
         result=result,

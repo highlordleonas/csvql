@@ -4,36 +4,14 @@ from __future__ import annotations
 
 import os
 import tempfile
-import threading
 from pathlib import Path
 
-
-class OperationCancelled(Exception):
-    """Raised when a cancellable local operation is cancelled before commit."""
-
-
-class OperationToken:
-    """Thread-safe cancellation token for local TUI/file operations."""
-
-    def __init__(self) -> None:
-        self._cancelled = threading.Event()
-
-    def cancel(self) -> None:
-        """Mark the operation as cancelled."""
-
-        self._cancelled.set()
-
-    @property
-    def is_cancelled(self) -> bool:
-        """Return whether cancellation has been requested."""
-
-        return self._cancelled.is_set()
-
-    def raise_if_cancelled(self) -> None:
-        """Raise :class:`OperationCancelled` when the token is cancelled."""
-
-        if self.is_cancelled:
-            raise OperationCancelled("Operation cancelled.")
+from csvql.operation import (
+    OperationCancelled as OperationCancelled,
+)
+from csvql.operation import (
+    OperationToken as OperationToken,
+)
 
 
 def write_text_atomic(

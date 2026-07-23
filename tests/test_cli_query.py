@@ -4,7 +4,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+import csvql.cli as cli_module
 from csvql.cli import app
+from csvql.models import QueryResult
 
 runner = CliRunner()
 
@@ -80,11 +82,37 @@ def test_query_json_contract_includes_query_result_fields(tmp_path: Path) -> Non
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert set(payload) == {"columns", "rows", "row_count", "elapsed_ms"}
+    assert list(payload) == ["columns", "elapsed_ms", "row_count", "rows"]
     assert payload["columns"] == ["order_count"]
     assert payload["rows"] == [{"order_count": 2}]
     assert payload["row_count"] == 1
     assert isinstance(payload["elapsed_ms"], float)
+
+
+def test_query_explicit_table_mapping_resolves_relative_path_from_invocation_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invocation_dir = tmp_path / "invocation"
+    orders = invocation_dir / "data" / "orders.csv"
+    _write_csv(orders, "order_id,total_amount\nORD-001,20.00\n")
+    monkeypatch.chdir(invocation_dir)
+
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "--table",
+            "orders=data/orders.csv",
+            "--output",
+            "json",
+            "SELECT order_id, total_amount FROM orders",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["rows"] == [{"order_id": "ORD-001", "total_amount": 20.0}]
 
 
 def test_query_inline_sql_uses_catalog_tables_from_project_root(
@@ -341,6 +369,107 @@ def test_query_inline_sql_explicit_table_ignores_unrelated_missing_catalog_table
     assert payload["rows"][0]["total_amount"] == 20.0
 
 
+def test_query_inline_sql_explicit_table_selected_missing_catalog_table_returns_public_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / ".csvql.yml"
+    config_path.write_text(
+        "version: 1\ntables:\n  customers:\n    path: private/location/missing_customers.csv\n",
+        encoding="utf-8",
+    )
+    explicit_orders = tmp_path / "orders.csv"
+    _write_csv(
+        explicit_orders,
+        "order_id,customer_id,total_amount\nORD-001,CUST-001,20.00\n",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "--table",
+            f"orders={explicit_orders}",
+            "--output",
+            "json",
+            (
+                "SELECT c.email, SUM(o.total_amount) AS total_amount "
+                "FROM orders o JOIN customers c USING (customer_id) "
+                "GROUP BY c.email"
+            ),
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 4
+    assert "Error: CSV file not found for project catalog table 'customers':" in result.output
+    assert "private/location/missing_customers.csv" in result.output
+    assert (
+        "Suggestion: Update .csvql.yml, run csvql add customers <path> --replace," in result.output
+    )
+    assert "restore the CSV file." in result.output
+    assert "SourceError" not in result.output
+    assert "Traceback" not in result.output
+
+
+def test_query_inline_sql_deleted_catalog_fallback_returns_public_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / ".csvql.yml"
+    config_path.write_text(
+        "version: 1\ntables:\n  customers:\n    path: customers.csv\n",
+        encoding="utf-8",
+    )
+    explicit_orders = tmp_path / "orders.csv"
+    customers = tmp_path / "customers.csv"
+    _write_csv(
+        explicit_orders,
+        "order_id,customer_id,total_amount\nORD-001,CUST-001,20.00\n",
+    )
+    _write_csv(
+        customers,
+        "customer_id,email\nCUST-001,alex@example.com\n",
+    )
+    real_build_inline_query_request = cli_module.build_inline_query_request
+
+    def build_then_delete(*args: object, **kwargs: object) -> object:
+        request = real_build_inline_query_request(*args, **kwargs)
+        customers.unlink()
+        return request
+
+    monkeypatch.setattr(cli_module, "build_inline_query_request", build_then_delete)
+
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "--table",
+            f"orders={explicit_orders}",
+            "--output",
+            "json",
+            (
+                "SELECT c.email, SUM(o.total_amount) AS total_amount "
+                "FROM orders o JOIN customers c USING (customer_id) "
+                "GROUP BY c.email"
+            ),
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 4
+    assert "Error: CSV file not found for project catalog table 'customers':" in result.output
+    assert "customers.csv" in result.output
+    assert (
+        "Suggestion: Update .csvql.yml, run csvql add customers <path> --replace," in result.output
+    )
+    assert "restore the CSV file." in result.output
+    assert "SourceError" not in result.output
+    assert "Traceback" not in result.output
+
+
 def test_query_inline_sql_explicit_table_ignores_malformed_catalog_when_unused(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -467,6 +596,86 @@ def test_query_single_file_shortcut_outputs_table(tmp_path: Path) -> None:
     assert "paid" in result.output
     assert "pending" in result.output
     assert "2 row(s)" in result.output
+
+
+def test_query_single_file_shortcut_accepts_leading_underscore_filename(
+    tmp_path: Path,
+) -> None:
+    orders = tmp_path / "__localql_orders.csv"
+    orders.write_text(
+        "order_id,status,total_amount\nORD-001,paid,120.50\nORD-002,pending,80.00\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            str(orders),
+            (
+                "SELECT status, COUNT(*) AS order_count "
+                "FROM localql_orders GROUP BY status ORDER BY status"
+            ),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "paid" in result.output
+
+
+def test_query_cli_uses_one_operation_context_for_builder_engine_and_executor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    seen: dict[str, object] = {}
+
+    class FakeEngine:
+        def __init__(self, *, operation: object) -> None:
+            seen["engine"] = operation
+
+        def __enter__(self) -> "FakeEngine":
+            return self
+
+        def __exit__(self, *exc_info: object) -> None:
+            return None
+
+    def fake_build_inline_query_request(
+        sql_or_csv: str,
+        sql: str | None,
+        table: list[str],
+        *,
+        base_dir: Path | None = None,
+        operation: object,
+    ) -> object:
+        assert sql_or_csv == "SELECT 1 AS one"
+        assert sql is None
+        assert table == []
+        assert base_dir == tmp_path
+        seen["builder"] = operation
+        return object()
+
+    def fake_execute_query_request(
+        engine: object,
+        request: object,
+        *,
+        operation: object,
+    ) -> QueryResult:
+        seen["executor"] = operation
+        assert engine is not None
+        assert request is not None
+        return QueryResult(columns=("one",), rows=((1,),), elapsed_ms=1.0)
+
+    monkeypatch.setattr("csvql.cli.CSVQLEngine", FakeEngine)
+    monkeypatch.setattr("csvql.cli.build_inline_query_request", fake_build_inline_query_request)
+    monkeypatch.setattr("csvql.cli.execute_query_request", fake_execute_query_request)
+
+    result = runner.invoke(app, ["query", "--output", "json", "SELECT 1 AS one"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["rows"] == [{"one": 1}]
+    assert seen["builder"] is seen["engine"] is seen["executor"]
 
 
 def test_query_single_file_shortcut_rejects_table_mappings(tmp_path: Path) -> None:

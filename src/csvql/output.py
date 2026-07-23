@@ -254,11 +254,13 @@ def format_project_tables_table(result: ProjectTablesResult) -> str:
     console = _recording_console(width=120)
     table = Table(show_header=True)
     table.add_column("name")
+    table.add_column("kind")
     table.add_column("path")
     table.add_column("resolved_path")
     for listing in result.tables:
         table.add_row(
             _format_cell(listing.name),
+            _format_cell("csv"),
             _format_cell(listing.path),
             _format_cell(_format_path(listing.resolved_path)),
         )

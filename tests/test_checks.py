@@ -1,9 +1,12 @@
+import ast
 from pathlib import Path
 
+import duckdb
 import pytest
 
 from csvql.checks import run_configured_checks
-from csvql.exceptions import FileMissingError, ProjectConfigError
+from csvql.csv_adapter import CSVSourceAdapter
+from csvql.exceptions import CSVInspectionError, FileMissingError, ProjectConfigError
 from csvql.project_config import (
     CONFIG_FILENAME,
     ProjectConfig,
@@ -12,6 +15,19 @@ from csvql.project_config import (
     load_project,
 )
 from csvql.quality import ConfiguredCheck, ForeignKeyReference
+from csvql.source_adapter import PreparedBinding
+
+
+def test_checks_module_has_no_managed_direct_csv_read() -> None:
+    module_path = Path(__file__).resolve().parents[1] / "src" / "csvql" / "checks.py"
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "read_csv"
+        for node in ast.walk(tree)
+    )
 
 
 def _context(project_root: Path, tables: tuple[ProjectTable, ...]) -> ProjectContext:
@@ -57,6 +73,44 @@ def test_run_configured_checks_returns_global_warning_for_zero_checks(tmp_path: 
     assert result.status == "passed"
     assert result.check_count == 0
     assert result.warnings == ("No data quality checks configured.",)
+
+
+def test_checks_share_one_operation_context_from_resolve_through_bind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orders = tmp_path / "orders.csv"
+    orders.write_text("order_id\nORD-1\n", encoding="utf-8")
+    context = _context(
+        tmp_path,
+        (
+            ProjectTable(
+                "orders",
+                "orders.csv",
+                checks=(_check("required", "orders", "not_null", column="order_id"),),
+            ),
+        ),
+    )
+    resolve_operations: list[object] = []
+    bind_operations: list[object] = []
+    real_resolve = CSVSourceAdapter.resolve
+    real_bind = CSVSourceAdapter.bind
+
+    def recording_resolve(self, spec, operation):
+        resolve_operations.append(operation)
+        return real_resolve(self, spec, operation)
+
+    def recording_bind(self, connection, source, operation):
+        bind_operations.append(operation)
+        return real_bind(self, connection, source, operation)
+
+    monkeypatch.setattr(CSVSourceAdapter, "resolve", recording_resolve)
+    monkeypatch.setattr(CSVSourceAdapter, "bind", recording_bind)
+
+    run_configured_checks(context, table_name=None, show_failures=False, failure_limit=5)
+
+    assert len(resolve_operations) == 1
+    assert bind_operations == resolve_operations
 
 
 def test_run_configured_checks_returns_table_specific_warning_for_zero_checks(
@@ -574,4 +628,143 @@ def test_run_configured_checks_wraps_missing_csv_for_catalog_table(tmp_path: Pat
     )
 
     with pytest.raises(FileMissingError):
+        run_configured_checks(context, table_name=None, show_failures=False, failure_limit=5)
+
+
+def test_required_source_failure_happens_before_any_check_sql(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(
+        tmp_path,
+        (
+            ProjectTable(
+                "orders",
+                "missing.csv",
+                checks=(_check("order_id_required", "orders", "not_null", column="order_id"),),
+            ),
+        ),
+    )
+    executed_sql: list[str] = []
+
+    def unexpected_query(self: object, sql: str, params: object = None) -> object:
+        del self, params
+        executed_sql.append(sql)
+        raise AssertionError("check SQL ran before required-source preflight")
+
+    monkeypatch.setattr("csvql.engine.CSVQLEngine.query", unexpected_query)
+
+    with pytest.raises(FileMissingError):
+        run_configured_checks(context, table_name=None, show_failures=False, failure_limit=5)
+
+    assert executed_sql == []
+
+
+@pytest.mark.parametrize(
+    ("failing_alias", "expected_bind_attempts", "expected_cleanup"),
+    [
+        ("customers", ["customers"], []),
+        ("orders", ["customers", "orders"], ["customers"]),
+    ],
+)
+def test_required_bind_failure_prevents_all_check_sql_and_cleans_reverse_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failing_alias: str,
+    expected_bind_attempts: list[str],
+    expected_cleanup: list[str],
+) -> None:
+    for alias in ("customers", "orders"):
+        path = tmp_path / f"{alias}.csv"
+        if alias == failing_alias:
+            path.write_bytes(b"id\n\xff\n")
+        else:
+            path.write_text("id\n1\n", encoding="utf-8")
+    context = _context(
+        tmp_path,
+        (
+            ProjectTable(
+                "orders",
+                "orders.csv",
+                checks=(
+                    _check(
+                        "customer_exists",
+                        "orders",
+                        "foreign_key",
+                        column="id",
+                        references=ForeignKeyReference("customers", "id"),
+                    ),
+                ),
+            ),
+            ProjectTable("customers", "customers.csv"),
+        ),
+    )
+    bind_attempts: list[str] = []
+    cleanup_order: list[str] = []
+    check_sql: list[str] = []
+    real_bind = CSVSourceAdapter.bind
+
+    class RecordingBinding:
+        def __init__(self, binding: PreparedBinding) -> None:
+            self._binding = binding
+
+        @property
+        def alias(self) -> str:
+            return self._binding.alias
+
+        @property
+        def source(self):
+            return self._binding.source
+
+        @property
+        def capabilities(self):
+            return self._binding.capabilities
+
+        def close(self) -> None:
+            cleanup_order.append(self.alias)
+            self._binding.close()
+
+    def recording_bind(self, connection, source, operation):
+        bind_attempts.append(source.spec.alias)
+        binding = real_bind(self, connection, source, operation)
+        return RecordingBinding(binding)
+
+    def unexpected_query(self, sql: str, params: object = None):
+        del self, params
+        check_sql.append(sql)
+        raise AssertionError("check SQL ran after required-source bind failure")
+
+    monkeypatch.setattr(CSVSourceAdapter, "bind", recording_bind)
+    monkeypatch.setattr("csvql.engine.CSVQLEngine.query", unexpected_query)
+
+    with pytest.raises(CSVInspectionError, match="Failed to run data quality checks"):
+        run_configured_checks(context, table_name=None, show_failures=False, failure_limit=5)
+
+    assert bind_attempts == expected_bind_attempts
+    assert cleanup_order == expected_cleanup
+    assert check_sql == []
+
+
+def test_checks_preserve_csv_inspection_error_for_duckdb_connection_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "orders.csv").write_text("order_id\nORD-1\n", encoding="utf-8")
+    context = _context(
+        tmp_path,
+        (
+            ProjectTable(
+                "orders",
+                "orders.csv",
+                checks=(_check("order_id_required", "orders", "not_null", column="order_id"),),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        duckdb,
+        "connect",
+        lambda **kwargs: (_ for _ in ()).throw(duckdb.IOException("simulated connection failure")),
+    )
+
+    with pytest.raises(CSVInspectionError, match="Failed to run data quality checks"):
         run_configured_checks(context, table_name=None, show_failures=False, failure_limit=5)

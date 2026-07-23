@@ -2,32 +2,38 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from csvql.checks import run_configured_checks
+from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
 from csvql.engine import CSVQLEngine
-from csvql.exceptions import ExportError, ProjectConfigError
+from csvql.exceptions import (
+    CSVInspectionError,
+    CSVQLError,
+    ExportError,
+    FileMissingError,
+    ProjectConfigError,
+    SourceError,
+)
 from csvql.export import (
     ExportFormat,
     format_query_result_for_export,
     resolve_export_path,
     write_export_file,
 )
-from csvql.inspection import inspect_csv_source, sample_csv_source
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
-from csvql.profiling import profile_csv_source
+from csvql.operation import OperationContext, OperationToken
 from csvql.project_config import (
     ProjectContext,
     ProjectTable,
     ProjectTablesResult,
     build_project_tables_result,
     load_project,
-    project_tables_to_sources,
-    resolve_catalog_path,
 )
 from csvql.quality import CheckRunResult
-from csvql.source import CSVSource, source_from_path
+from csvql.source import ResolvedSource, source_spec_from_catalog_table
+from csvql.source_operations import SourceOperations
 from csvql.sql_file import load_sql_file
 
 
@@ -51,9 +57,26 @@ class CSVQLSession:
     def query(self, sql: str) -> QueryResult:
         """Run trusted local SQL against the configured project tables."""
 
-        with CSVQLEngine() as engine:
-            engine.register_tables(project_tables_to_sources(self._context))
-            return engine.query(sql)
+        operation = OperationContext(OperationToken())
+        sources = tuple(
+            _resolve_catalog_source(self._context, table, operation=operation)
+            for table in self._context.config.tables
+        )
+        try:
+            with CSVQLEngine(operation=operation) as engine:
+                engine.prepare_sources(sources)
+                return engine.query(sql)
+        except SourceError as exc:
+            source = next(
+                (candidate for candidate in sources if candidate.spec.alias == exc.alias),
+                None,
+            )
+            alias = exc.alias or "source"
+            source_path = source.canonical_locator if source is not None else "<unavailable>"
+            raise CSVQLError(
+                f"Failed to register CSV table '{alias}' from {source_path}.",
+                suggestion="Check that the file is a readable CSV with a header row.",
+            ) from exc
 
     def run_file(self, path: str | Path) -> QueryResult:
         """Load and run a saved SQL file resolved from the project root."""
@@ -64,17 +87,47 @@ class CSVQLSession:
     def inspect(self, table: str, *, exact: bool = False) -> InspectResult:
         """Inspect a configured table alias."""
 
-        return inspect_csv_source(_catalog_source(self._context, table), exact=exact)
+        operation = OperationContext(OperationToken())
+        source = _resolved_catalog_source(self._context, table, operation=operation)
+        try:
+            with CSVQLEngine(operation=operation) as engine:
+                result = SourceOperations(engine, source).inspect(exact=exact)
+            return replace(result, source={**result.source, "display_path": table})
+        except CSVQLError as exc:
+            raise CSVInspectionError(
+                f"Failed to inspect CSV file: {table}",
+                suggestion="Check that the file is a readable CSV with a header row.",
+            ) from exc
 
     def sample(self, table: str, *, limit: int = 10) -> SampleResult:
         """Return a bounded sample from a configured table alias."""
 
-        return sample_csv_source(_catalog_source(self._context, table), limit=limit)
+        operation = OperationContext(OperationToken())
+        source = _resolved_catalog_source(self._context, table, operation=operation)
+        try:
+            with CSVQLEngine(operation=operation) as engine:
+                result = SourceOperations(engine, source).sample(limit=limit)
+            return replace(result, source={**result.source, "display_path": table})
+        except CSVQLError as exc:
+            raise CSVInspectionError(
+                f"Failed to sample CSV file: {table}",
+                suggestion="Check that the file is a readable CSV with a header row.",
+            ) from exc
 
     def profile(self, table: str) -> ProfileResult:
         """Profile a configured table alias."""
 
-        return profile_csv_source(_catalog_source(self._context, table))
+        operation = OperationContext(OperationToken())
+        source = _resolved_catalog_source(self._context, table, operation=operation)
+        try:
+            with CSVQLEngine(operation=operation) as engine:
+                result = SourceOperations(engine, source).profile()
+            return replace(result, source={**result.source, "display_path": table})
+        except CSVQLError as exc:
+            raise CSVInspectionError(
+                f"Failed to profile CSV file: {table}",
+                suggestion="Check that the file is a readable CSV with a header row.",
+            ) from exc
 
     def check(
         self,
@@ -114,18 +167,40 @@ class CSVQLSession:
         return output_path
 
 
-def _catalog_source(context: ProjectContext, table_name: str) -> CSVSource:
-    project_table = _project_table(context, table_name)
-    resolved_path = resolve_catalog_path(project_table, context)
-    resolved_source = source_from_path(
-        str(resolved_path),
-        base_dir=context.project_root,
+def _resolved_catalog_source(
+    context: ProjectContext,
+    table_name: str,
+    *,
+    operation: OperationContext,
+) -> ResolvedSource:
+    return _resolve_catalog_source(
+        context,
+        _project_table(context, table_name),
+        operation=operation,
     )
-    return CSVSource(
-        path=resolved_source.path,
-        display_path=table_name,
-        fingerprint=resolved_source.fingerprint,
-    )
+
+
+def _resolve_catalog_source(
+    context: ProjectContext,
+    table: ProjectTable,
+    *,
+    operation: OperationContext,
+) -> ResolvedSource:
+    spec = source_spec_from_catalog_table(table, project_root=context.project_root)
+    try:
+        adapter = DEFAULT_SOURCE_ADAPTER_REGISTRY.create(spec.kind, capability="query")
+        adapter.validate_options(spec)
+        return adapter.resolve(spec, operation)
+    except SourceError as exc:
+        if exc.code == "source_missing":
+            raise FileMissingError(
+                f"CSV file not found for project catalog table '{table.name}': {table.path}",
+                suggestion=(
+                    "Update .csvql.yml, run csvql add "
+                    f"{table.name} <path> --replace, or restore the CSV file."
+                ),
+            ) from exc
+        raise
 
 
 def _project_table(context: ProjectContext, table_name: str) -> ProjectTable:

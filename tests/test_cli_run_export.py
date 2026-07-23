@@ -5,6 +5,7 @@ import pytest
 from typer.testing import CliRunner
 
 from csvql.cli import app
+from csvql.models import QueryResult
 
 runner = CliRunner()
 
@@ -55,7 +56,7 @@ def test_run_json_contract_matches_query_result_shape(
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert set(payload) == {"columns", "rows", "row_count", "elapsed_ms"}
+    assert list(payload) == ["columns", "elapsed_ms", "row_count", "rows"]
     assert payload["columns"] == ["order_count"]
     assert payload["rows"] == [{"order_count": 2}]
     assert payload["row_count"] == 1
@@ -212,7 +213,7 @@ def test_export_json_contract_matches_query_result_shape_on_disk(
 
     assert result.exit_code == 0, result.output
     payload = json.loads(output_path.read_text(encoding="utf-8"))
-    assert set(payload) == {"columns", "rows", "row_count", "elapsed_ms"}
+    assert list(payload) == ["columns", "elapsed_ms", "row_count", "rows"]
     assert payload["columns"] == ["order_count"]
     assert payload["rows"] == [{"order_count": 1}]
     assert payload["row_count"] == 1
@@ -303,3 +304,88 @@ def test_export_force_overwrites_existing_file(tmp_path: Path, monkeypatch) -> N
 
     assert result.exit_code == 0, result.output
     assert output_path.read_bytes() == b"order_count\r\n1\r\n"
+
+
+def test_run_and_export_cli_use_one_operation_context_across_builder_engine_and_executor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    sql_file = tmp_path / "count_orders.sql"
+    sql_file.write_text("SELECT 1 AS one", encoding="utf-8")
+    seen: list[object] = []
+    write_calls: list[tuple[Path, str, bool]] = []
+
+    class FakeEngine:
+        def __init__(self, *, operation: object) -> None:
+            seen.append(operation)
+
+        def __enter__(self) -> "FakeEngine":
+            return self
+
+        def __exit__(self, *exc_info: object) -> None:
+            return None
+
+    def fake_load_sql_file(path: str, *, base_dir: Path | None = None):
+        assert path == "count_orders.sql"
+        assert base_dir == tmp_path
+        return type("LoadedSQL", (), {"sql": "SELECT 1 AS one"})()
+
+    def fake_build_saved_sql_query_request(
+        sql: str,
+        table: list[str],
+        *,
+        base_dir: Path | None = None,
+        operation: object,
+    ) -> object:
+        assert sql == "SELECT 1 AS one"
+        assert table == []
+        assert base_dir == tmp_path
+        seen.append(operation)
+        return object()
+
+    def fake_execute_query_request(
+        engine: object,
+        request: object,
+        *,
+        operation: object,
+    ) -> QueryResult:
+        seen.append(operation)
+        assert engine is not None
+        assert request is not None
+        return QueryResult(columns=("one",), rows=((1,),), elapsed_ms=1.0)
+
+    def fake_write_export_file(path: Path, content: str, *, overwrite: bool) -> None:
+        write_calls.append((path, content, overwrite))
+
+    monkeypatch.setattr("csvql.cli.CSVQLEngine", FakeEngine)
+    monkeypatch.setattr("csvql.cli.load_sql_file", fake_load_sql_file)
+    monkeypatch.setattr(
+        "csvql.cli.build_saved_sql_query_request",
+        fake_build_saved_sql_query_request,
+    )
+    monkeypatch.setattr("csvql.cli.execute_query_request", fake_execute_query_request)
+    monkeypatch.setattr("csvql.cli.write_export_file", fake_write_export_file)
+
+    run_result = runner.invoke(app, ["run", "count_orders.sql", "--output", "json"])
+    assert run_result.exit_code == 0, run_result.output
+    assert json.loads(run_result.output)["rows"] == [{"one": 1}]
+    assert seen[0] is seen[1] is seen[2]
+
+    seen.clear()
+    export_result = runner.invoke(
+        app,
+        ["export", "count_orders.sql", "--format", "json", "--out", "result.json"],
+    )
+    assert export_result.exit_code == 0, export_result.output
+    assert seen[0] is seen[1] is seen[2]
+    assert len(write_calls) == 1
+    path, content, overwrite = write_calls[0]
+    assert path == tmp_path / "result.json"
+    assert overwrite is False
+    assert json.loads(content) == {
+        "columns": ["one"],
+        "rows": [{"one": 1}],
+        "row_count": 1,
+        "elapsed_ms": 1.0,
+    }

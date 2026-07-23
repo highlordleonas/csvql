@@ -7,20 +7,23 @@ from typing import Literal
 import duckdb
 
 from csvql.checks import resolve_configured_column_name, validate_table_aliases
-from csvql.exceptions import FileMissingError, ProjectConfigError
+from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
+from csvql.engine import CSVQLEngine
+from csvql.exceptions import CSVQLError, FileMissingError, ProjectConfigError, SourceError
+from csvql.operation import OperationContext, OperationToken
 from csvql.project_config import (
     ProjectContext,
     ProjectTable,
     discover_project,
     load_project,
-    resolve_catalog_path,
 )
-from csvql.sql_utils import quote_identifier
+from csvql.source import source_spec_from_catalog_table
+from csvql.source_operations import SourceOperations
 
 DoctorScope = Literal["project", "table", "check"]
 DoctorStatus = Literal["passed", "warning", "failed"]
-DOCTOR_VIEW_PREFIX = "__csvql_doctor_"
 EXPECTED_TABLE_READINESS_ERRORS = (
+    CSVQLError,
     FileMissingError,
     OSError,
     duckdb.IOException,
@@ -230,51 +233,110 @@ def _run_table_readiness_probes(
 ) -> tuple[tuple[DoctorProbeResult, ...], dict[str, tuple[str, ...]]]:
     probes: list[DoctorProbeResult] = []
     column_names_by_table: dict[str, tuple[str, ...]] = {}
-    connection: duckdb.DuckDBPyConnection | None = None
-    try:
-        connection = duckdb.connect(database=":memory:")
-        for table in tables:
-            try:
-                resolved_path = resolve_catalog_path(table, context)
-                relation = connection.read_csv(
-                    str(resolved_path),
-                    auto_detect=True,
-                    header=True,
-                )
-                relation.create_view(_doctor_view_name(table.name), replace=True)
-                discovered_columns = tuple(str(column) for column in relation.columns)
-                connection.execute(
-                    f"SELECT * FROM {quote_identifier(_doctor_view_name(table.name))} LIMIT 1"
-                ).fetchall()
-                column_names_by_table[table.name.lower()] = discovered_columns
-            except EXPECTED_TABLE_READINESS_ERRORS as exc:
-                probes.append(
-                    DoctorProbeResult(
-                        name="table_readiness",
-                        scope="table",
-                        status="failed",
-                        message=str(exc),
-                        table=table.name,
-                    )
-                )
-                continue
+    for table in tables:
+        operation = OperationContext(OperationToken())
+        spec = source_spec_from_catalog_table(table, project_root=context.project_root)
+        resolved = None
+        readiness_error: BaseException | None = None
+        try:
+            adapter = DEFAULT_SOURCE_ADAPTER_REGISTRY.create(spec.kind, capability="sample")
+            adapter.validate_options(spec)
+            resolved = adapter.resolve(spec, operation)
+            with CSVQLEngine(operation=operation) as engine:
+                sample = SourceOperations(engine, resolved).sample(limit=1)
+            column_names_by_table[table.name.lower()] = sample.columns
+        except AttributeError as exc:
+            if not _is_engine_interrupt_attachment_error(exc):
+                raise
+            readiness_error = exc
+        except EXPECTED_TABLE_READINESS_ERRORS as exc:
+            internal_failure = _exception_in_chain(exc, duckdb.InternalException)
+            if internal_failure is not None:
+                raise internal_failure from exc
+            readiness_error = exc
 
+        if readiness_error is not None:
+            column_names_by_table.pop(table.name.lower(), None)
             probes.append(
                 DoctorProbeResult(
                     name="table_readiness",
                     scope="table",
-                    status="passed",
-                    message="Registered and read configured CSV through DuckDB.",
+                    status="failed",
+                    message=_table_readiness_error_message(readiness_error, table),
                     table=table.name,
-                    path=Path(table.path),
-                    resolved_path=resolved_path,
                 )
             )
-    finally:
-        if connection is not None:
-            connection.close()
+            continue
+
+        if resolved is None:
+            raise RuntimeError("Table readiness completed without a resolved source.")
+
+        probes.append(
+            DoctorProbeResult(
+                name="table_readiness",
+                scope="table",
+                status="passed",
+                message="Registered and read configured CSV through DuckDB.",
+                table=table.name,
+                path=Path(table.path),
+                resolved_path=Path(resolved.canonical_locator),
+            )
+        )
 
     return tuple(probes), column_names_by_table
+
+
+def _table_readiness_error_message(
+    error: BaseException,
+    table: ProjectTable,
+) -> str:
+    message: str
+    if isinstance(error, SourceError):
+        if error.code == "source_missing":
+            message = f"CSV file not found for project catalog table '{table.name}': {table.path}"
+            return _with_cleanup_uncertainty(message, error)
+        if error.code == "source_bind_failed" and error.__cause__ is not None:
+            message = str(error.__cause__)
+            return _with_cleanup_uncertainty(message, error)
+    return _with_cleanup_uncertainty(str(error), error)
+
+
+def _with_cleanup_uncertainty(message: str, error: BaseException) -> str:
+    notes = tuple(
+        note
+        for note in getattr(error, "__notes__", ())
+        if isinstance(note, str) and note.startswith("Cleanup uncertainty:")
+    )
+    if not notes:
+        return message
+    return f"{message} {' '.join(notes)}"
+
+
+def _exception_in_chain(
+    error: BaseException,
+    expected_type: type[BaseException],
+) -> BaseException | None:
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        if isinstance(current, expected_type):
+            return current
+        seen.add(id(current))
+        current = current.__cause__
+    return None
+
+
+def _is_engine_interrupt_attachment_error(error: AttributeError) -> bool:
+    if error.name != "interrupt":
+        return False
+
+    expected_code = CSVQLEngine._ensure_connection.__code__
+    traceback = error.__traceback__
+    while traceback is not None:
+        if traceback.tb_frame.f_code is expected_code:
+            return True
+        traceback = traceback.tb_next
+    return False
 
 
 def _run_check_schema_probes(
@@ -332,7 +394,3 @@ def _run_check_schema_probes(
                 )
             )
     return tuple(probes)
-
-
-def _doctor_view_name(table_name: str) -> str:
-    return f"{DOCTOR_VIEW_PREFIX}{table_name.lower()}"

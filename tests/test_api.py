@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,15 @@ from csvql import (
     QueryResult,
     SampleResult,
 )
-from csvql.exceptions import ExportError, ProjectConfigError, QueryExecutionError, SQLFileError
+from csvql.csv_adapter import CSVSourceAdapter
+from csvql.engine import CSVQLEngine
+from csvql.exceptions import (
+    CSVQLError,
+    ExportError,
+    ProjectConfigError,
+    QueryExecutionError,
+    SQLFileError,
+)
 from csvql.quality import CheckRunResult
 
 
@@ -62,6 +71,84 @@ def test_session_query_uses_nearest_project_context(tmp_path: Path) -> None:
     assert isinstance(result, QueryResult)
     assert result.columns == ("order_count",)
     assert result.rows == ((2,),)
+
+
+@pytest.mark.parametrize("operation_name", ["inspect", "sample", "profile"])
+def test_session_source_operation_shares_context_from_resolve_through_bind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_project(project_root)
+    session = CSVQLSession.from_config(project_root)
+    resolve_operations: list[object] = []
+    bind_operations: list[object] = []
+    real_resolve = CSVSourceAdapter.resolve
+    real_bind = CSVSourceAdapter.bind
+
+    def recording_resolve(self, spec, operation):
+        resolve_operations.append(operation)
+        return real_resolve(self, spec, operation)
+
+    def recording_bind(self, connection, source, operation):
+        bind_operations.append(operation)
+        return real_bind(self, connection, source, operation)
+
+    monkeypatch.setattr(CSVSourceAdapter, "resolve", recording_resolve)
+    monkeypatch.setattr(CSVSourceAdapter, "bind", recording_bind)
+
+    method = getattr(session, operation_name)
+    method("orders")
+
+    assert len(resolve_operations) == 1
+    assert bind_operations == resolve_operations
+
+
+def test_session_query_does_not_use_legacy_table_registration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_project(project_root)
+    session = CSVQLSession.from_config(project_root)
+
+    def reject_legacy_registration(self: CSVQLEngine, sources: object) -> None:
+        del self, sources
+        raise AssertionError("legacy register_tables path used")
+
+    monkeypatch.setattr(CSVQLEngine, "register_tables", reject_legacy_registration)
+
+    result = session.query("SELECT COUNT(*) AS order_count FROM orders")
+
+    assert result.rows == ((2,),)
+
+
+def test_session_query_preserves_public_registration_error_for_unreadable_csv(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_project(project_root)
+    csv_path = project_root / "data" / "orders.csv"
+    csv_path.write_bytes(b"order_id,status\n\xff,paid\n")
+    session = CSVQLSession.from_config(project_root)
+
+    with pytest.raises(CSVQLError) as exc_info:
+        session.query("SELECT * FROM orders")
+
+    assert type(exc_info.value) is CSVQLError
+    assert exc_info.value.message == (
+        f"Failed to register CSV table 'orders' from {csv_path.resolve()}."
+    )
+
+
+def test_zero_argument_engine_preserves_complete_query_result() -> None:
+    with CSVQLEngine() as engine:
+        result = engine.query("SELECT 1 AS first, DATE '2026-07-22' AS observed_on")
+
+    assert result.columns == ("first", "observed_on")
+    assert result.rows == ((1, date(2026, 7, 22)),)
+    assert result.row_count == 1
 
 
 def test_session_run_file_resolves_paths_from_project_root(
@@ -184,7 +271,7 @@ def test_session_export_writes_json_with_query_result_shape(tmp_path: Path) -> N
     )
 
     payload = json.loads(output_path.read_text(encoding="utf-8"))
-    assert set(payload) == {"columns", "rows", "row_count", "elapsed_ms"}
+    assert list(payload) == ["columns", "elapsed_ms", "row_count", "rows"]
     assert payload["columns"] == ["order_count"]
     assert payload["rows"] == [{"order_count": 2}]
     assert payload["row_count"] == 1

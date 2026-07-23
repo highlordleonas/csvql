@@ -575,5 +575,31 @@ def test_format_project_tables_table_contains_catalog_paths() -> None:
     output = format_project_tables_table(result)
 
     assert "orders" in output
+    assert "kind" in output
+    assert "csv" in output
     assert "data/orders.csv" in output
     assert "/path/to/project/data/orders.csv" in output
+
+
+def test_format_project_tables_json_does_not_add_source_kind() -> None:
+    result = ProjectTablesResult(
+        project_root=Path("/path/to/project"),
+        config_path=Path("/path/to/project/.csvql.yml"),
+        tables=(
+            ProjectTableListing(
+                name="orders",
+                path="data/orders.csv",
+                resolved_path=Path("/path/to/project/data/orders.csv"),
+            ),
+        ),
+    )
+
+    payload = json.loads(format_project_tables_json(result))
+
+    assert payload["tables"] == [
+        {
+            "name": "orders",
+            "path": "data/orders.csv",
+            "resolved_path": "/path/to/project/data/orders.csv",
+        }
+    ]

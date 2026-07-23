@@ -3,6 +3,13 @@ from pathlib import Path
 import pytest
 
 from csvql.atomic_write import OperationCancelled, OperationToken, write_text_atomic
+from csvql.operation import OperationCancelled as SharedOperationCancelled
+from csvql.operation import OperationToken as SharedOperationToken
+
+
+def test_atomic_write_reexports_shared_cancellation_types() -> None:
+    assert OperationCancelled is SharedOperationCancelled
+    assert OperationToken is SharedOperationToken
 
 
 def test_write_text_atomic_writes_final_content(tmp_path: Path) -> None:

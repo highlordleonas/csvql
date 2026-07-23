@@ -1,10 +1,16 @@
+from collections.abc import Callable
 from pathlib import Path
 
+import duckdb
 import pytest
 
+import csvql.csv_adapter as csv_adapter_module
+import csvql.engine as engine_module
+from csvql.csv_adapter import SNIFF_BYTES, CSVSourceAdapter
 from csvql.exceptions import CSVInspectionError
-from csvql.inspection import SNIFF_BYTES, _detect_dialect, inspect_csv_source, sample_csv_source
-from csvql.source import source_from_path
+from csvql.inspection import inspect_csv_source, sample_csv_source
+from csvql.operation import OperationContext, OperationToken
+from csvql.source import SourceSpec, source_from_path
 
 
 def test_inspect_csv_source_returns_columns_without_counting_rows(tmp_path: Path) -> None:
@@ -112,6 +118,57 @@ def test_sample_csv_source_wraps_missing_file_after_source_resolution(
     assert exc_info.value.suggestion == ("Check that the file is a readable CSV with a header row.")
 
 
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    [
+        (lambda source: inspect_csv_source(source), "Failed to inspect CSV file"),
+        (lambda source: sample_csv_source(source), "Failed to sample CSV file"),
+    ],
+)
+def test_inspection_facades_translate_raw_duckdb_connect_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: Callable[[object], object],
+    message: str,
+) -> None:
+    csv_path = tmp_path / "orders.csv"
+    csv_path.write_text("order_id,status\nORD-1,paid\n", encoding="utf-8")
+    source = source_from_path(str(csv_path))
+
+    def fail_connect(*args: object, **kwargs: object) -> None:
+        raise duckdb.IOException("injected connection failure")
+
+    monkeypatch.setattr(engine_module.duckdb, "connect", fail_connect)
+
+    with pytest.raises(CSVInspectionError) as exc_info:
+        operation(source)
+
+    assert str(exc_info.value) == f"{message}: {csv_path}"
+    assert exc_info.value.suggestion == ("Check that the file is a readable CSV with a header row.")
+
+
+def test_sample_facade_translates_success_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    csv_path = tmp_path / "orders.csv"
+    csv_path.write_text("order_id,status\nORD-1,paid\n", encoding="utf-8")
+    source = source_from_path(str(csv_path))
+    original_close = csv_adapter_module._CSVPreparedBinding.close
+
+    def fail_after_close(binding: object) -> None:
+        original_close(binding)
+        raise RuntimeError("injected cleanup failure")
+
+    monkeypatch.setattr(csv_adapter_module._CSVPreparedBinding, "close", fail_after_close)
+
+    with pytest.raises(CSVInspectionError) as exc_info:
+        sample_csv_source(source)
+
+    assert str(exc_info.value) == f"Failed to sample CSV file: {csv_path}"
+    assert exc_info.value.suggestion == ("Check that the file is a readable CSV with a header row.")
+
+
 def test_sample_csv_source_rejects_non_positive_limit(tmp_path: Path) -> None:
     csv_path = tmp_path / "orders.csv"
     csv_path.write_text("order_id,status\nORD-1,paid\n", encoding="utf-8")
@@ -125,7 +182,7 @@ def test_sample_csv_source_rejects_non_positive_limit(tmp_path: Path) -> None:
         raise AssertionError("sample_csv_source accepted a non-positive limit")
 
 
-def test_detect_dialect_reads_only_sniff_bytes(
+def test_csv_adapter_detects_dialect_from_only_sniff_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -150,8 +207,16 @@ def test_detect_dialect_reads_only_sniff_bytes(
 
     monkeypatch.setattr(Path, "open", fake_open, raising=True)
 
-    dialect = _detect_dialect(csv_path, warnings=[])
+    adapter = CSVSourceAdapter()
+    resolved = adapter.resolve(
+        SourceSpec(alias="orders", kind="csv", locator=str(csv_path), anchor=tmp_path),
+        OperationContext(token=OperationToken()),
+    )
+    metadata = adapter.inspect_metadata(
+        resolved,
+        OperationContext(token=OperationToken()),
+    )
 
     assert read_sizes == [SNIFF_BYTES]
-    assert dialect.delimiter == ","
-    assert dialect.header is True
+    assert metadata.dialect.delimiter == ","
+    assert metadata.dialect.header is True

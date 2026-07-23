@@ -2,9 +2,14 @@
 
 from pathlib import Path
 
-from csvql.exceptions import ProjectConfigError
-from csvql.project_config import load_project, resolve_catalog_path
-from csvql.source import CSVSource, source_from_path
+from csvql.exceptions import FileMissingError, ProjectConfigError
+from csvql.project_config import load_project
+from csvql.source import (
+    CSVSource,
+    csv_source_from_spec,
+    source_from_path,
+    source_spec_from_catalog_table,
+)
 
 
 def resolve_path_or_catalog_source(
@@ -36,13 +41,29 @@ def resolve_path_or_catalog_source(
     if table is None:
         return source_from_path(path_or_alias, base_dir=base_dir)
 
-    resolved_path = resolve_catalog_path(table, context)
-    source = source_from_path(str(resolved_path), base_dir=base_dir)
-    return CSVSource(
-        path=source.path,
-        display_path=path_or_alias,
-        fingerprint=source.fingerprint,
-    )
+    try:
+        spec = source_spec_from_catalog_table(table, project_root=context.project_root)
+    except ValueError as exc:
+        if table.name.casefold().startswith("__localql_"):
+            suggestion = (
+                "Rename the table; aliases beginning with '__localql_' are reserved for LocalQL."
+            )
+        else:
+            suggestion = "Use letters, numbers, and underscores; start with a letter or underscore."
+        raise ProjectConfigError(
+            f"Invalid project catalog table alias '{table.name}'.",
+            suggestion=suggestion,
+        ) from exc
+    try:
+        return csv_source_from_spec(spec, display_path=path_or_alias)
+    except FileMissingError as exc:
+        raise FileMissingError(
+            f"CSV file not found for project catalog table '{table.name}': {table.path}",
+            suggestion=(
+                "Update .csvql.yml, run csvql add "
+                f"{table.name} <path> --replace, or restore the CSV file."
+            ),
+        ) from exc
 
 
 def _looks_like_path(value: str) -> bool:

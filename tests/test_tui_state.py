@@ -49,19 +49,26 @@ def test_tui_source_defaults_to_csv_kind(tmp_path: Path) -> None:
     assert source.as_table_source() == TableSource(name="orders", path=tmp_path / "orders.csv")
 
 
-def test_tui_source_accepts_derived_kind(tmp_path: Path) -> None:
+def test_tui_source_uses_csv_kind_for_derived_provenance(tmp_path: Path) -> None:
     source = TUISource(
         name="order_names",
         path=tmp_path / ".csvql" / "results" / "order_names.csv",
-        origin="session",
-        kind="derived",
+        origin="derived",
     )
 
-    assert source.kind == "derived"
+    assert source.kind == "csv"
+    assert source.origin == "derived"
     assert source.as_table_source() == TableSource(
         name="order_names",
         path=tmp_path / ".csvql" / "results" / "order_names.csv",
     )
+
+
+def test_private_result_handle_is_not_convertible_to_a_tui_source() -> None:
+    handle = TUIResultHandle(sequence=1, is_spilled=True)
+
+    assert not isinstance(handle, TUISource)
+    assert not hasattr(handle, "as_table_source")
 
 
 def test_session_add_source_preserves_order_and_selects_first_by_default(

@@ -17,9 +17,12 @@ from textual.pilot import Pilot
 from textual.widgets import DataTable, Input, Static, TextArea
 from textual.widgets._footer import FooterKey
 
+from csvql import tui_app as tui_app_module
 from csvql.atomic_write import OperationToken
 from csvql.exceptions import CSVQLError
 from csvql.models import QueryResult
+from csvql.operation import OperationContext
+from csvql.source import SourceCapabilityStatus
 from csvql.tui_app import CSVQLMenuApp
 from csvql.tui_result_store import (
     TUI_RESULT_MARKER_NAME,
@@ -66,6 +69,100 @@ def _make_source_state(tmp_path: Path, *, alias: str = "customers") -> TUISessio
     state = TUISessionState()
     state.add_source(TUISource(name=alias, path=csv_path, origin="argument"))
     return state
+
+
+def test_unavailable_source_action_reports_exact_capability_guidance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    unavailable = SourceCapabilityStatus(
+        operation="sample",
+        state="unavailable",
+        reason_code="missing_driver",
+        remediation="Install the csv-driver extra.",
+    )
+    monkeypatch.setattr(
+        tui_app_module,
+        "source_capability_status",
+        lambda source, operation: unavailable,
+        raising=False,
+    )
+
+    async def _inner() -> tuple[str, bool]:
+        app = CSVQLMenuApp(start_dir=tmp_path, initial_state=state)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            app.action_sample_source()
+            await pilot.pause()
+            return (
+                app.query_one("#status", Static).content,
+                app.state.operation_run.is_running,
+            )
+
+    status, is_running = asyncio.run(_inner())
+
+    assert "missing_driver" in status
+    assert "Install the csv-driver extra." in status
+    assert is_running is False
+
+
+@pytest.mark.parametrize(
+    ("action_name", "operation"),
+    [
+        ("action_inspect_source", "inspect"),
+        ("action_sample_source", "sample"),
+        ("action_profile_source", "profile"),
+        ("action_show_source_columns", "inspect"),
+    ],
+)
+@pytest.mark.parametrize("capability_state", ["unavailable", "unsupported"])
+def test_contextual_source_actions_reject_exact_capability_without_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action_name: str,
+    operation: str,
+    capability_state: str,
+) -> None:
+    state = _make_source_state(tmp_path)
+    reason_code = f"{capability_state}_test_reason"
+    remediation = f"Remediate {capability_state} {operation}."
+    worker_calls: list[object] = []
+    monkeypatch.setattr(
+        tui_app_module,
+        "source_capability_status",
+        lambda source, requested_operation: SourceCapabilityStatus(
+            operation=requested_operation,
+            state=capability_state,
+            reason_code=reason_code,
+            remediation=remediation,
+        ),
+    )
+    monkeypatch.setattr(
+        CSVQLMenuApp,
+        "_start_operation_worker",
+        lambda self, **kwargs: worker_calls.append((self, kwargs)),
+    )
+
+    async def _inner() -> tuple[str, bool]:
+        app = CSVQLMenuApp(start_dir=tmp_path, initial_state=state)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            getattr(app, action_name)()
+            await pilot.pause()
+            return (
+                app.query_one("#status", Static).content,
+                app.state.operation_run.is_running,
+            )
+
+    status, is_running = asyncio.run(_inner())
+
+    assert f"'{operation}' is {capability_state} ({reason_code})" in status
+    assert remediation in status
+    assert worker_calls == []
+    assert is_running is False
 
 
 def _result_grid_snapshot(app: CSVQLMenuApp) -> tuple[tuple[str, ...], int, str]:
@@ -3257,7 +3354,12 @@ def test_source_intelligence_action_uses_operation_worker(
     started = threading.Event()
     release = threading.Event()
 
-    def slow_inspect_source(source: TUISource):
+    def slow_inspect_source(
+        source: TUISource,
+        *,
+        operation: OperationContext,
+    ):
+        del operation
         started.set()
         release.wait(timeout=2)
         from csvql.inspection import inspect_csv_source
@@ -3296,7 +3398,12 @@ def test_source_worker_failure_preserves_csv_error_message_and_suggestion(
 ) -> None:
     state = _make_source_state(tmp_path)
 
-    def failing_inspect_source(source: TUISource) -> object:
+    def failing_inspect_source(
+        source: TUISource,
+        *,
+        operation: OperationContext,
+    ) -> object:
+        del operation
         del source
         raise CSVQLError(
             "Cannot inspect source.",
@@ -3339,7 +3446,12 @@ def test_unexpected_operation_worker_failure_sanitizes_details(
         "result=alex@example.com detail=internal-worker-state"
     )
 
-    def failing_inspect_source(source: TUISource) -> object:
+    def failing_inspect_source(
+        source: TUISource,
+        *,
+        operation: OperationContext,
+    ) -> object:
+        del operation
         del source
         raise RuntimeError(sentinel)
 
@@ -3377,7 +3489,12 @@ def test_sample_worker_failure_preserves_previous_active_result(
     started = threading.Event()
     release = threading.Event()
 
-    def slow_failing_sample_source(source: TUISource) -> object:
+    def slow_failing_sample_source(
+        source: TUISource,
+        *,
+        operation: OperationContext,
+    ) -> object:
+        del source, operation
         started.set()
         assert release.wait(timeout=2)
         raise CSVQLError(
@@ -3447,12 +3564,16 @@ def test_escape_cancels_running_source_operation(
     started = threading.Event()
     release = threading.Event()
 
-    def slow_inspect_source(source: TUISource):
+    def slow_inspect_source(
+        source: TUISource,
+        *,
+        operation: OperationContext,
+    ):
         started.set()
         release.wait(timeout=2)
         from csvql.tui_workflows import inspect_source as real_inspect_source
 
-        return real_inspect_source(source)
+        return real_inspect_source(source, operation=operation)
 
     monkeypatch.setattr("csvql.tui_app.inspect_source", slow_inspect_source)
 
@@ -3476,6 +3597,58 @@ def test_escape_cancels_running_source_operation(
     assert is_running is False
 
 
+def test_escape_requests_shared_context_interrupt_and_worker_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+    started = threading.Event()
+    interrupted = threading.Event()
+    cleaned_up = threading.Event()
+
+    def cancellable_inspect_source(
+        source: TUISource,
+        *,
+        operation: OperationContext,
+    ) -> object:
+        del source
+        operation.attach_interrupt(interrupted.set)
+        started.set()
+        try:
+            assert interrupted.wait(timeout=2)
+            operation.checkpoint()
+        finally:
+            operation.detach_interrupt()
+            cleaned_up.set()
+        raise AssertionError("cancelled source operation returned a success result")
+
+    monkeypatch.setattr("csvql.tui_app.inspect_source", cancellable_inspect_source)
+
+    async def _inner() -> tuple[str, bool, object]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            await pilot.press("i")
+            await pilot.pause(0.1)
+            assert started.is_set()
+            await pilot.press("escape")
+            await pilot.pause(0.2)
+            return (
+                app.query_one("#status", Static).content,
+                app.state.operation_run.is_running,
+                app.state.active_result,
+            )
+
+    status, is_running, active_result = asyncio.run(_inner())
+
+    assert interrupted.is_set()
+    assert cleaned_up.is_set()
+    assert "Cancelled Inspecting customers." in status
+    assert is_running is False
+    assert active_result.kind == "none"
+
+
 def test_cancelled_sample_worker_preserves_previous_active_result(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -3484,12 +3657,16 @@ def test_cancelled_sample_worker_preserves_previous_active_result(
     started = threading.Event()
     release = threading.Event()
 
-    def slow_sample_source(source: TUISource) -> object:
+    def slow_sample_source(
+        source: TUISource,
+        *,
+        operation: OperationContext,
+    ) -> object:
         started.set()
         assert release.wait(timeout=2)
         from csvql.tui_workflows import sample_source as real_sample_source
 
-        return real_sample_source(source)
+        return real_sample_source(source, operation=operation)
 
     monkeypatch.setattr("csvql.tui_app.sample_source", slow_sample_source)
 
@@ -3892,8 +4069,8 @@ def test_save_result_as_source_writes_full_output_from_spilled_result(
         TUISource(
             name="large_rows",
             path=export_path.resolve(),
-            origin="session",
-            kind="derived",
+            origin="derived",
+            kind="csv",
         ),
     )
     assert selected_alias == "large_rows"
@@ -4024,8 +4201,8 @@ def test_sources_pane_keeps_origin_before_relative_project_path(tmp_path: Path) 
         TUISource(
             name="order_names",
             path=tmp_path / ".csvql" / "results" / "order_names.csv",
-            origin="session",
-            kind="derived",
+            origin="derived",
+            kind="csv",
         )
     )
 
@@ -4106,8 +4283,8 @@ def test_save_result_as_source_writes_csv_and_adds_derived_source(tmp_path: Path
         TUISource(
             name="customer_emails",
             path=(tmp_path / ".csvql" / "results" / "customer_emails.csv").resolve(),
-            origin="session",
-            kind="derived",
+            origin="derived",
+            kind="csv",
         ),
     )
     assert selected_alias == "customer_emails"
@@ -4168,8 +4345,8 @@ def test_save_result_as_source_uses_recalled_history_result(tmp_path: Path) -> N
     assert sources[-1] == TUISource(
         name="recalled_first",
         path=(tmp_path / ".csvql" / "results" / "recalled_first.csv").resolve(),
-        origin="session",
-        kind="derived",
+        origin="derived",
+        kind="csv",
     )
     assert "Saved result as derived source recalled_first" in status
     assert content == "label\nfirst\n"
@@ -4213,8 +4390,8 @@ def test_save_result_source_shortcuts(tmp_path: Path, key: str) -> None:
         TUISource(
             name="customer_ids",
             path=(tmp_path / ".csvql" / "results" / "customer_ids.csv").resolve(),
-            origin="session",
-            kind="derived",
+            origin="derived",
+            kind="csv",
         ),
     )
     assert selected_alias == "customer_ids"
@@ -6718,12 +6895,16 @@ def test_remove_source_is_blocked_while_inspect_operation_runs(
     started = threading.Event()
     release = threading.Event()
 
-    def slow_inspect_source(source: TUISource) -> object:
+    def slow_inspect_source(
+        source: TUISource,
+        *,
+        operation: OperationContext,
+    ) -> object:
         started.set()
         assert release.wait(timeout=2)
         from csvql.tui_workflows import inspect_source as real_inspect_source
 
-        return real_inspect_source(source)
+        return real_inspect_source(source, operation=operation)
 
     monkeypatch.setattr("csvql.tui_app.inspect_source", slow_inspect_source)
 

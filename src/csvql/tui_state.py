@@ -10,8 +10,8 @@ from csvql.models import QueryResult, TableSource
 from csvql.table_mapping import validate_table_alias
 from csvql.tui_result_store import TUIResultHandle
 
-SourceOrigin = Literal["argument", "catalog", "session"]
-SourceKind = Literal["csv", "derived"]
+SourceOrigin = Literal["argument", "catalog", "session", "derived"]
+SourceKind = Literal["csv"]
 TUILastResultStatus = Literal["none", "query", "no_result", "error"]
 TUIFocusPane = Literal["sources", "editor", "results", "history"]
 TUIQueryHistoryStatus = Literal["success", "no_result", "error"]

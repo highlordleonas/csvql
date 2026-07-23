@@ -18,6 +18,7 @@ from csvql.export import (
     write_export_file,
 )
 from csvql.inspection import inspect_csv_source, sample_csv_source
+from csvql.operation import OperationContext, OperationToken
 from csvql.output import (
     OutputFormat,
     format_check_result_json,
@@ -320,14 +321,16 @@ def query(
     """Run SQL against one or more local CSV files."""
 
     try:
+        operation = OperationContext(token=OperationToken())
         request = build_inline_query_request(
             sql_or_csv,
             sql,
             table or [],
             base_dir=Path.cwd(),
+            operation=operation,
         )
-        with CSVQLEngine() as engine:
-            result = execute_query_request(engine, request)
+        with CSVQLEngine(operation=operation) as engine:
+            result = execute_query_request(engine, request, operation=operation)
         if output is OutputFormat.json:
             typer.echo(format_json_result(result))
         else:
@@ -364,13 +367,15 @@ def run(
 
     try:
         loaded_sql = load_sql_file(sql_file, base_dir=Path.cwd())
+        operation = OperationContext(token=OperationToken())
         request = build_saved_sql_query_request(
             loaded_sql.sql,
             table or [],
             base_dir=Path.cwd(),
+            operation=operation,
         )
-        with CSVQLEngine() as engine:
-            result = execute_query_request(engine, request)
+        with CSVQLEngine(operation=operation) as engine:
+            result = execute_query_request(engine, request, operation=operation)
         if output is OutputFormat.json:
             typer.echo(format_json_result(result))
         else:
@@ -421,13 +426,15 @@ def export(
     try:
         loaded_sql = load_sql_file(sql_file, base_dir=Path.cwd())
         output_path = resolve_export_path(out, base_dir=Path.cwd(), force=force)
+        operation = OperationContext(token=OperationToken())
         request = build_saved_sql_query_request(
             loaded_sql.sql,
             table or [],
             base_dir=Path.cwd(),
+            operation=operation,
         )
-        with CSVQLEngine() as engine:
-            result = execute_query_request(engine, request)
+        with CSVQLEngine(operation=operation) as engine:
+            result = execute_query_request(engine, request, operation=operation)
         content = format_query_result_for_export(result, export_format)
         write_export_file(output_path, content, overwrite=force)
         _echo_human_message(f"Wrote export to {output_path}.")
