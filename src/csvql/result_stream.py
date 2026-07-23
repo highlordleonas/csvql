@@ -53,6 +53,7 @@ class ResultStream:
         close_owner: Callable[[], None],
         request_interrupt: Callable[[], None],
         now: Callable[[], float],
+        discard_cursor: Callable[[], None] | None = None,
     ) -> None:
         self._cursor = cursor
         self._operation = operation
@@ -60,6 +61,7 @@ class ResultStream:
         self._close_owner = close_owner
         self._request_interrupt = request_interrupt
         self._now = now
+        self._discard_cursor = discard_cursor or cursor.close
         self._columns = tuple(str(column[0]) for column in cursor.description or ())
         self._elapsed_ms = 0.0
         self._closed = False
@@ -89,23 +91,23 @@ class ResultStream:
             raw_rows = self._cursor.fetchmany(max_rows)
             self._operation.checkpoint()
         except OperationCancelled as exc:
-            self._close_preserving(exc)
+            self._close_preserving(exc, discard=True)
             raise
         except duckdb.Error as exc:
             self._update_elapsed()
             if self._operation.token.is_cancelled:
                 cancelled = OperationCancelled("Operation cancelled.")
-                self._close_preserving(cancelled)
+                self._close_preserving(cancelled, discard=True)
                 raise cancelled from exc
             public_error = QueryExecutionError(
                 f"DuckDB query failed: {exc}",
                 suggestion="Check table names, column names, and SQL syntax.",
             )
-            self._close_preserving(public_error)
+            self._close_preserving(public_error, discard=True)
             raise public_error from exc
         except BaseException as exc:
             self._update_elapsed()
-            self._close_preserving(exc)
+            self._close_preserving(exc, discard=True)
             raise
 
         rows = tuple(_normalize_row(row) for row in raw_rows)
@@ -122,9 +124,9 @@ class ResultStream:
             raise self._close_failure
         if self._closed:
             return
-        self._close_preserving(primary=None)
+        self._close_preserving(primary=None, discard=self._operation.token.is_cancelled)
 
-    def _close_preserving(self, primary: BaseException | None) -> None:
+    def _close_preserving(self, primary: BaseException | None, *, discard: bool) -> None:
         if self._close_failure is not None:
             if primary is not None:
                 _add_cleanup_note(primary)
@@ -134,7 +136,10 @@ class ResultStream:
             return
         close_error: BaseException | None = None
         try:
-            self._cursor.close()
+            if discard:
+                self._discard_cursor()
+            else:
+                self._cursor.close()
         except BaseException as exc:
             close_error = exc
         if close_error is None:

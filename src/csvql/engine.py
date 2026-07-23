@@ -1,9 +1,10 @@
 """DuckDB-backed query execution for CSVQL."""
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from threading import RLock
 from time import perf_counter
+from typing import cast
 
 import duckdb
 
@@ -29,29 +30,35 @@ _RESERVED_ALIAS_PREFIX = "__localql_"
 _QUERY_FETCH_ROWS = 1000
 
 
-class _ConnectionResultCursor:
-    """Logical cursor wrapper that keeps execution on one DuckDB session."""
+class _PersistentResultSessionCursor:
+    """Persistent child-session cursor with logical per-stream close semantics."""
 
     def __init__(self, connection: duckdb.DuckDBPyConnection) -> None:
-        self._connection = connection
+        self._cursor = connection.cursor()
 
     @property
     def description(self) -> Sequence[Sequence[object]] | None:
-        return self._connection.description
+        return self._cursor.description
 
     def execute(
         self,
         sql: str,
         params: Sequence[object] | None = None,
-    ) -> "_ConnectionResultCursor":
-        self._connection.execute(sql, params or [])
+    ) -> "_PersistentResultSessionCursor":
+        self._cursor.execute(sql, params or [])
         return self
 
     def fetchmany(self, size: int) -> Sequence[Sequence[object]]:
-        return self._connection.fetchmany(size)
+        return self._cursor.fetchmany(size)
 
     def close(self) -> None:
         return
+
+    def discard(self) -> None:
+        self._cursor.close()
+
+    def interrupt(self) -> None:
+        self._cursor.interrupt()
 
 
 class CSVQLEngine:
@@ -68,8 +75,8 @@ class CSVQLEngine:
         self._connection: duckdb.DuckDBPyConnection | None = None
         self._bindings: list[PreparedBinding] = []
         self._alias_keys: set[str] = set()
+        self._session_cursor: ResultCursor | None = None
         self._active_stream: ResultStream | None = None
-        self._active_cursor: ResultCursor | None = None
         self._closed = False
         self._lifecycle_lock = RLock()
 
@@ -219,7 +226,8 @@ class CSVQLEngine:
             try:
                 self._operation.checkpoint()
                 connection = self._ensure_connection()
-                cursor = _open_result_cursor(connection)
+                cursor = self._ensure_session_cursor(connection)
+                self._operation.attach_interrupt(_interrupt_callback(cursor, connection))
                 self._operation.checkpoint()
                 cursor.execute(sql, params or [])
                 self._operation.checkpoint()
@@ -230,35 +238,36 @@ class CSVQLEngine:
                     close_owner=self._close_active_stream,
                     request_interrupt=self.interrupt,
                     now=perf_counter,
+                    discard_cursor=self._discard_active_result_session,
                 )
-                self._active_cursor = cursor
                 self._active_stream = stream
                 return stream
             except OperationCancelled as exc:
-                if cursor is not None and self._close_cursor(cursor):
+                if cursor is not None and self._discard_session_cursor():
                     self._fail_closed_start_cleanup(primary=exc, cursor=cursor)
                 self._release_resources(primary=exc)
                 raise
             except duckdb.Error as exc:
                 if self._operation.token.is_cancelled:
                     cancelled = OperationCancelled("Operation cancelled.")
-                    if cursor is not None and self._close_cursor(cursor):
+                    if cursor is not None and self._discard_session_cursor():
                         self._fail_closed_start_cleanup(primary=cancelled, cursor=cursor)
                     self._release_resources(primary=cancelled)
                     raise cancelled from exc
-                if cursor is not None and self._close_cursor(cursor):
+                if cursor is not None and self._discard_session_cursor():
                     public_error = QueryExecutionError(
                         f"DuckDB query failed: {exc}",
                         suggestion="Check table names, column names, and SQL syntax.",
                     )
                     self._fail_closed_start_cleanup(primary=public_error, cursor=cursor)
                     raise public_error from exc
+                self._restore_connection_interrupt()
                 raise QueryExecutionError(
                     f"DuckDB query failed: {exc}",
                     suggestion="Check table names, column names, and SQL syntax.",
                 ) from exc
             except BaseException as exc:
-                if cursor is not None and self._close_cursor(cursor):
+                if cursor is not None and self._discard_session_cursor():
                     self._fail_closed_start_cleanup(primary=exc, cursor=cursor)
                 self._release_resources(primary=exc)
                 raise
@@ -374,6 +383,13 @@ class CSVQLEngine:
                 self._operation.attach_interrupt(connection.interrupt)
             return self._connection
 
+    def _ensure_session_cursor(self, connection: duckdb.DuckDBPyConnection) -> ResultCursor:
+        with self._lifecycle_lock:
+            self._raise_if_closed()
+            if self._session_cursor is None:
+                self._session_cursor = _open_result_cursor(connection)
+            return self._session_cursor
+
     def _raise_if_closed(self, *, query: bool = False) -> None:
         if not self._closed:
             return
@@ -388,12 +404,13 @@ class CSVQLEngine:
             if self._closed:
                 return 0
             connection = self._connection
+            session_cursor = self._session_cursor
             active_stream = self._active_stream
-            active_cursor = self._active_cursor
             bindings = tuple(reversed(self._bindings))
             self._bindings.clear()
             self._alias_keys.clear()
             self._connection = None
+            self._session_cursor = None
             self._closed = True
 
         cursor_failures = 0
@@ -402,8 +419,10 @@ class CSVQLEngine:
                 active_stream.close()
             except BaseException:
                 cursor_failures = 1
-        elif active_cursor is not None:
-            cursor_failures = self._close_cursor(active_cursor)
+        if session_cursor is not None and _cursor_survives_stream_close(session_cursor):
+            cursor_failures += self._close_cursor(session_cursor)
+        elif active_stream is None and session_cursor is not None:
+            cursor_failures += self._close_cursor(session_cursor)
         binding_failures = 0
         for binding in bindings:
             try:
@@ -420,7 +439,6 @@ class CSVQLEngine:
         self._operation.detach_interrupt()
         with self._lifecycle_lock:
             self._active_stream = None
-            self._active_cursor = None
 
         if primary is not None:
             if cursor_failures:
@@ -436,16 +454,46 @@ class CSVQLEngine:
     def _close_active_stream(self) -> None:
         with self._lifecycle_lock:
             self._active_stream = None
-            self._active_cursor = None
+            if (
+                self._session_cursor is not None
+                and not _cursor_survives_stream_close(self._session_cursor)
+            ):
+                self._session_cursor = None
+        self._restore_connection_interrupt()
 
     def _close_cursor(self, cursor: ResultCursor | None) -> int:
         if cursor is None:
             return 0
         try:
-            cursor.close()
+            _discard_cursor(cursor)
         except BaseException:
             return 1
         return 0
+
+    def _discard_session_cursor(self) -> int:
+        with self._lifecycle_lock:
+            cursor = self._session_cursor
+            self._session_cursor = None
+            self._active_stream = None
+        failure = self._close_cursor(cursor)
+        self._restore_connection_interrupt()
+        return failure
+
+    def _discard_active_result_session(self) -> None:
+        with self._lifecycle_lock:
+            cursor = self._session_cursor
+        if cursor is None:
+            return
+        _discard_cursor(cursor)
+        with self._lifecycle_lock:
+            if self._session_cursor is cursor:
+                self._session_cursor = None
+
+    def _restore_connection_interrupt(self) -> None:
+        with self._lifecycle_lock:
+            if self._closed or self._connection is None:
+                return
+            self._operation.attach_interrupt(self._connection.interrupt)
 
     def _fail_closed_start_cleanup(
         self,
@@ -455,7 +503,7 @@ class CSVQLEngine:
     ) -> None:
         _add_cleanup_note(primary)
         with self._lifecycle_lock:
-            self._active_cursor = cursor
+            self._session_cursor = cursor
             self._active_stream = None
         self._release_resources(primary=primary)
 
@@ -467,4 +515,25 @@ def _add_cleanup_note(primary: BaseException) -> None:
 
 
 def _open_result_cursor(connection: duckdb.DuckDBPyConnection) -> ResultCursor:
-    return _ConnectionResultCursor(connection)
+    return _PersistentResultSessionCursor(connection)
+
+
+def _discard_cursor(cursor: ResultCursor) -> None:
+    if isinstance(cursor, _PersistentResultSessionCursor):
+        cursor.discard()
+        return
+    cursor.close()
+
+
+def _cursor_survives_stream_close(cursor: ResultCursor) -> bool:
+    return isinstance(cursor, _PersistentResultSessionCursor)
+
+
+def _interrupt_callback(
+    cursor: ResultCursor,
+    connection: duckdb.DuckDBPyConnection,
+) -> Callable[[], None]:
+    interrupt = cast(Callable[[], None] | None, getattr(cursor, "interrupt", None))
+    if callable(interrupt):
+        return interrupt
+    return connection.interrupt

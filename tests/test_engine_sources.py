@@ -1160,6 +1160,104 @@ def test_query_preserves_real_duckdb_temp_tables_across_sequential_streams(
     assert count_result.rows == ((1,),)
 
 
+def test_failed_multistatement_query_discards_temp_session_state_before_retry(
+    tmp_path: Path,
+) -> None:
+    orders_path = tmp_path / "orders.csv"
+    orders_path.write_text("id,value\n1,alpha\n", encoding="utf-8")
+    engine = CSVQLEngine()
+    engine.register_tables((TableSource(name="orders", path=orders_path),))
+
+    try:
+        with pytest.raises(QueryExecutionError, match="missing_table"):
+            engine.query(
+                "CREATE TEMP TABLE scratch AS SELECT * FROM orders; "
+                "SELECT * FROM missing_table"
+            )
+
+        fallback_result = engine.query("SELECT COUNT(*) AS row_count FROM orders")
+        with pytest.raises(QueryExecutionError, match="scratch"):
+            engine.query("SELECT COUNT(*) AS row_count FROM scratch")
+    finally:
+        engine.close()
+
+    assert fallback_result.columns == ("row_count",)
+    assert fallback_result.rows == ((1,),)
+
+
+def test_stream_close_preserves_successful_temp_session_state_for_next_query(
+    tmp_path: Path,
+) -> None:
+    orders_path = tmp_path / "orders.csv"
+    orders_path.write_text("id,value\n1,alpha\n", encoding="utf-8")
+    engine = CSVQLEngine()
+    engine.register_tables((TableSource(name="orders", path=orders_path),))
+
+    try:
+        engine.query("CREATE TEMP TABLE scratch AS SELECT * FROM orders")
+        stream = engine.stream("SELECT * FROM scratch ORDER BY id")
+        stream.close()
+        result = engine.query("SELECT COUNT(*) AS row_count FROM scratch")
+    finally:
+        engine.close()
+
+    assert result.columns == ("row_count",)
+    assert result.rows == ((1,),)
+
+
+def test_fetch_failure_discards_session_cursor_and_releases_stream_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    connection = RecordingConnection(events, execute_error=None)
+
+    def fail_fetchmany(size: int) -> list[tuple[int]]:
+        events.append(f"fetchmany:{size}")
+        raise duckdb.Error("private fetch detail")
+
+    connection.fetchmany = fail_fetchmany  # type: ignore[method-assign]
+    _install_connection(monkeypatch, events, connection)
+    engine = CSVQLEngine()
+
+    stream = engine.stream("SELECT 1 AS value")
+    with pytest.raises(QueryExecutionError, match="private fetch detail"):
+        stream.fetch_rows(1)
+
+    assert events == ["connect", "execute", "fetchmany:1", "cursor-close"]
+    retry = engine.stream("SELECT 2 AS value")
+    retry.close()
+
+
+def test_fetch_failure_with_discard_uncertainty_keeps_engine_fail_closed_until_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    connection = RecordingConnection(
+        events,
+        cursor_close_error=RuntimeError("private close detail"),
+    )
+
+    def fail_fetchmany(size: int) -> list[tuple[int]]:
+        events.append(f"fetchmany:{size}")
+        raise duckdb.Error("private fetch detail")
+
+    connection.fetchmany = fail_fetchmany  # type: ignore[method-assign]
+    _install_connection(monkeypatch, events, connection)
+    engine = CSVQLEngine()
+
+    stream = engine.stream("SELECT 1 AS value")
+    with pytest.raises(QueryExecutionError, match="private fetch detail") as captured:
+        stream.fetch_rows(1)
+
+    notes = "\n".join(getattr(captured.value, "__notes__", ()))
+    assert "cursor could not be closed" in notes
+    assert events == ["connect", "execute", "fetchmany:1", "cursor-close"]
+    with pytest.raises(QueryExecutionError, match="active result stream"):
+        engine.stream("SELECT 2 AS value")
+    with pytest.raises(CSVQLError, match="cleanup did not complete with certainty"):
+        engine.close()
+
+
 def test_fetch_path_cancellation_interrupts_active_stream_and_releases_slot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

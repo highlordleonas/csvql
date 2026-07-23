@@ -56,6 +56,7 @@ def _stream(
     events: list[str] | None = None,
     close_owner: Callable[[], None] | None = None,
     request_interrupt: Callable[[], None] | None = None,
+    discard_cursor: Callable[[], None] | None = None,
 ) -> ResultStream:
     event_log = events if events is not None else []
     return ResultStream(
@@ -65,6 +66,7 @@ def _stream(
         now=lambda: 0.25,
         close_owner=close_owner or (lambda: event_log.append("owner-close")),
         request_interrupt=request_interrupt or (lambda: event_log.append("interrupt")),
+        discard_cursor=discard_cursor,
     )
 
 
@@ -113,6 +115,22 @@ def test_result_stream_fetch_failure_becomes_query_execution_error_and_closes() 
     assert cursor.close_calls == 1
 
 
+def test_result_stream_fetch_failure_uses_discard_callback_when_provided() -> None:
+    events: list[str] = []
+    cursor = RecordingCursor(fetch_error=duckdb.Error("private fetch detail"), events=events)
+    stream = _stream(
+        cursor,
+        events=events,
+        discard_cursor=lambda: events.append("discard-cursor"),
+    )
+
+    with pytest.raises(QueryExecutionError, match="private fetch detail"):
+        stream.fetch_rows(1)
+
+    assert events == ["fetchmany:1", "discard-cursor", "owner-close"]
+    assert cursor.close_calls == 0
+
+
 def test_result_stream_fetch_failure_preserves_primary_when_close_also_fails() -> None:
     cursor = RecordingCursor(
         fetch_error=duckdb.Error("private fetch detail"),
@@ -137,6 +155,25 @@ def test_result_stream_request_interrupt_and_close_are_idempotent() -> None:
     stream.close()
 
     assert events == ["interrupt", "cursor-close", "owner-close"]
+
+
+def test_result_stream_close_after_cancel_uses_discard_callback() -> None:
+    events: list[str] = []
+    operation = OperationContext(token=OperationToken())
+    stream = ResultStream(
+        cursor=RecordingCursor(events=events),
+        operation=operation,
+        started_at=0.0,
+        now=lambda: 0.25,
+        close_owner=lambda: events.append("owner-close"),
+        request_interrupt=lambda: events.append("interrupt"),
+        discard_cursor=lambda: events.append("discard-cursor"),
+    )
+
+    operation.request_cancel()
+    stream.close()
+
+    assert events == ["discard-cursor", "owner-close"]
 
 
 def test_result_stream_close_failure_does_not_release_owner_and_repeats_failure() -> None:
