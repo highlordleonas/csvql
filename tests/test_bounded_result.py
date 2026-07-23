@@ -22,8 +22,36 @@ def test_preview_policy_requires_positive_limits() -> None:
     with raises(ValueError, match="row_limit must be positive"):
         PreviewPolicy(row_limit=0)
 
+    with raises(ValueError, match="row_limit must be positive"):
+        PreviewPolicy(row_limit=-1)
+
     with raises(ValueError, match="payload_limit_bytes must be positive"):
         PreviewPolicy(payload_limit_bytes=0)
+
+    with raises(ValueError, match="payload_limit_bytes must be positive"):
+        PreviewPolicy(payload_limit_bytes=-1)
+
+
+def test_preview_accumulator_accepts_exact_row_limit_without_truncation() -> None:
+    accumulator = PreviewAccumulator(
+        columns=("id",),
+        elapsed_ms=1.5,
+        policy=PreviewPolicy(row_limit=2, payload_limit_bytes=20),
+    )
+
+    assert accumulator.consider((1,), b"abc") is True
+    assert accumulator.consider((2,), b"def") is True
+
+    result = accumulator.finish()
+
+    assert result == BoundedQueryResult(
+        columns=("id",),
+        rows=((1,), (2,)),
+        elapsed_ms=1.5,
+        preview_payload_bytes=6,
+        has_more_rows=False,
+        truncation_reason=None,
+    )
 
 
 def test_preview_accumulator_omits_row_that_would_exceed_byte_limit() -> None:
@@ -47,6 +75,24 @@ def test_preview_accumulator_omits_row_that_would_exceed_byte_limit() -> None:
         has_more_rows=True,
         truncation_reason="byte_limit",
     )
+
+
+def test_preview_accumulator_accepts_row_that_exactly_fills_byte_limit() -> None:
+    accumulator = PreviewAccumulator(
+        columns=("id",),
+        elapsed_ms=3.0,
+        policy=PreviewPolicy(row_limit=3, payload_limit_bytes=7),
+    )
+
+    assert accumulator.consider((1,), b"abc") is True
+    assert accumulator.consider((2,), b"defg") is True
+
+    result = accumulator.finish()
+
+    assert result.preview_payload_bytes == 7
+    assert result.rows == ((1,), (2,))
+    assert result.has_more_rows is False
+    assert result.truncation_reason is None
 
 
 def test_preview_accumulator_records_first_truncation_reason() -> None:

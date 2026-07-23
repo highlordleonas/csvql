@@ -4,6 +4,7 @@ import pickle
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from math import isnan
+from unittest.mock import patch
 from uuid import UUID
 
 import pytest
@@ -59,12 +60,35 @@ def test_row_payload_round_trips_all_observed_value_families() -> None:
     assert decoded[8] == float("-inf")
 
 
+def test_row_payload_round_trips_empty_tuple() -> None:
+    assert decode_row_payload(encode_row_payload(())) == ()
+
+
 def test_row_payload_decoder_rejects_unknown_version() -> None:
     row = ("value", 1)
     payload = bytes([ROW_PAYLOAD_VERSION + 1]) + encode_row_payload(row)[1:]
 
     with pytest.raises(RowPayloadCodecError, match="Unsupported row payload version"):
         decode_row_payload(payload)
+
+
+def test_row_payload_decoder_normalizes_foreign_global_pickle_failure() -> None:
+    payload = bytes([ROW_PAYLOAD_VERSION]) + b"cdoes_not_exist\nthing\n."
+
+    with pytest.raises(RowPayloadCodecError, match="Malformed row payload"):
+        decode_row_payload(payload)
+
+
+def test_row_payload_decoder_normalizes_index_error_from_unpickling() -> None:
+    payload = bytes([ROW_PAYLOAD_VERSION]) + b"unused"
+
+    with (
+        patch("csvql.result_codec.pickle.loads", side_effect=IndexError("pickle stack underflow")),
+        pytest.raises(RowPayloadCodecError, match="Malformed row payload") as exc_info,
+    ):
+        decode_row_payload(payload)
+
+    assert isinstance(exc_info.value.__cause__, IndexError)
 
 
 @pytest.mark.parametrize(

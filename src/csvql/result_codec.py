@@ -27,7 +27,15 @@ def decode_row_payload(payload: bytes) -> tuple[object, ...]:
         raise RowPayloadCodecError("Unsupported row payload version")
     try:
         decoded = pickle.loads(payload[1:])
-    except (pickle.PickleError, EOFError, ValueError, TypeError, AttributeError) as exc:
+    except (
+        pickle.PickleError,
+        EOFError,
+        ImportError,
+        IndexError,
+        ValueError,
+        TypeError,
+        AttributeError,
+    ) as exc:
         raise RowPayloadCodecError("Malformed row payload") from exc
     if not isinstance(decoded, tuple):
         raise RowPayloadCodecError("Malformed row payload")
