@@ -516,8 +516,8 @@ def test_fallback_alias_is_attempted_at_most_once(
         def prepare_sources(self, sources: object) -> None:
             self.prepared.extend(source.spec.alias for source in sources)  # type: ignore[union-attr]
 
-        def query(self, sql: str) -> None:
-            del sql
+        def stream(self, sql: str, params=None) -> None:
+            del sql, params
             raise self.error
 
     engine = RepeatingMissingEngine(operation)

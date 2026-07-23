@@ -417,12 +417,36 @@ def test_table_readiness_propagates_internal_duckdb_failures(
             return None
 
     class FakeCursor:
+        description = ()
+
+        def __init__(self, error: BaseException | None = None) -> None:
+            self._error = error
+
+        def execute(self, query: str, params: object = None) -> "FakeCursor":
+            del query, params
+            if self._error is not None:
+                raise self._error
+            return self
+
+        def fetchmany(self, size: int) -> list[object]:
+            del size
+            return []
+
         def fetchall(self) -> list[object]:
             return []
+
+        def close(self) -> None:
+            return None
+
+        def interrupt(self) -> None:
+            return None
 
     class FakeConnection:
         def interrupt(self) -> None:
             return None
+
+        def cursor(self) -> FakeCursor:
+            return FakeCursor(duckdb.InternalException("simulated internal failure"))
 
         def read_csv(self, path: str, *, auto_detect: bool, header: bool) -> FakeRelation:
             return FakeRelation()
@@ -499,9 +523,34 @@ def test_run_doctor_omits_check_probes_when_readiness_fails_after_column_discove
         def create_view(self, name: str, *, replace: bool) -> None:
             return None
 
+    class FakeCursor:
+        description = ()
+
+        def __init__(self, error: BaseException | None = None) -> None:
+            self._error = error
+
+        def execute(self, query: str, params: object = None) -> "FakeCursor":
+            del query, params
+            if self._error is not None:
+                raise self._error
+            return self
+
+        def fetchmany(self, size: int) -> list[object]:
+            del size
+            return []
+
+        def close(self) -> None:
+            return None
+
+        def interrupt(self) -> None:
+            return None
+
     class FakeConnection:
         def interrupt(self) -> None:
             return None
+
+        def cursor(self) -> FakeCursor:
+            return FakeCursor(duckdb.InvalidInputException("simulated readiness failure"))
 
         def read_csv(self, path: str, *, auto_detect: bool, header: bool) -> FakeRelation:
             return FakeRelation()

@@ -527,13 +527,17 @@ def test_unexpected_query_terminal_prevents_reuse_before_metadata_io(
     engine = CSVQLEngine(registry=_recording_registry(adapter))
     operations = SourceOperations(engine, source)
     operations.sample()
-    connection = engine._connection
-    assert connection is not None
+    session_cursor = engine._session_cursor
+    assert session_cursor is not None
 
-    class FailOnceConnection:
-        def __init__(self, delegate: duckdb.DuckDBPyConnection) -> None:
+    class FailOnceSessionCursor:
+        def __init__(self, delegate) -> None:
             self._delegate = delegate
             self._failed = False
+
+        @property
+        def description(self):
+            return self._delegate.description
 
         def execute(self, query: str, params: object = None):
             if not self._failed:
@@ -543,10 +547,16 @@ def test_unexpected_query_terminal_prevents_reuse_before_metadata_io(
                 return self._delegate.execute(query)
             return self._delegate.execute(query, params)
 
+        def fetchmany(self, size: int):
+            return self._delegate.fetchmany(size)
+
         def close(self) -> None:
             self._delegate.close()
 
-    engine._connection = FailOnceConnection(connection)
+        def interrupt(self) -> None:
+            self._delegate.interrupt()
+
+    engine._session_cursor = FailOnceSessionCursor(session_cursor)
     with pytest.raises(RuntimeError, match="unexpected query failure"):
         operations.sample()
     events.clear()
