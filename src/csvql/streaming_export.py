@@ -461,10 +461,7 @@ def _write_wrapped_row(
     separator: str,
     right: str,
 ) -> None:
-    chunks = [
-        chop_cells(cell, width) or [""]
-        for cell, width in zip(cells, widths, strict=True)
-    ]
+    chunks = [chop_cells(cell, width) or [""] for cell, width in zip(cells, widths, strict=True)]
     line_count = max(len(parts) for parts in chunks)
     for line_index in range(line_count):
         output.write(

@@ -179,11 +179,7 @@ def test_execute_query_request_stream_only_applies_fallback_while_starting(
     )
     operation = OperationContext(token=OperationToken())
     request = build_inline_query_request(
-        (
-            "SELECT c.email "
-            "FROM orders o JOIN customers c USING (customer_id) "
-            "ORDER BY c.email"
-        ),
+        ("SELECT c.email FROM orders o JOIN customers c USING (customer_id) ORDER BY c.email"),
         None,
         [f"orders={orders}"],
         base_dir=tmp_path,
@@ -248,10 +244,13 @@ def test_execute_query_request_does_not_retry_after_stream_fetch_failure(
 
     monkeypatch.setattr(CSVQLEngine, "stream", failing_stream)
 
-    with CSVQLEngine(operation=operation) as engine, pytest.raises(
-        QueryExecutionError,
-        match="fetch broke",
-    ) as captured:
+    with (
+        CSVQLEngine(operation=operation) as engine,
+        pytest.raises(
+            QueryExecutionError,
+            match="fetch broke",
+        ) as captured,
+    ):
         execute_query_request(engine, request, operation=operation)
 
     assert calls == 1
@@ -297,10 +296,13 @@ def test_execute_query_request_stream_start_failure_with_cleanup_uncertainty_nev
 
     monkeypatch.setattr(CSVQLEngine, "stream", failing_stream)
 
-    with CSVQLEngine(operation=operation) as engine, pytest.raises(
-        QueryExecutionError,
-        match="Table with name customers does not exist",
-    ) as captured:
+    with (
+        CSVQLEngine(operation=operation) as engine,
+        pytest.raises(
+            QueryExecutionError,
+            match="Table with name customers does not exist",
+        ) as captured,
+    ):
         execute_query_request_stream(engine, request, operation=operation)
 
     assert calls == 1

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast
@@ -77,6 +79,14 @@ class _UninspectableRow(Sequence[object]):
 
     def __getitem__(self, index: int) -> object:
         raise AssertionError(f"Row should not be inspected: {index}")
+
+
+class _LargePayload:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def __reduce__(self) -> tuple[object, tuple[str]]:
+        return (_LargePayload, (self.text,))
 
 
 def test_collect_bounded_preview_rejects_zero_fetch_batch_size_before_stream_use() -> None:
@@ -242,6 +252,69 @@ def test_collect_bounded_preview_caps_row_limit_budget_across_multiple_fetches()
     assert stream.close_calls == 1
 
 
+def test_collect_bounded_preview_large_stream_keeps_only_limit_and_one_probe() -> None:
+    class LargeRecordingStream:
+        def __init__(self, total_rows: int) -> None:
+            self.columns = ("row_id",)
+            self.elapsed_ms = 25.0
+            self._next_row = 0
+            self._total_rows = total_rows
+            self.fetch_sizes: list[int] = []
+            self.returned_row_total = 0
+            self.events: list[str] = []
+            self.interrupt_calls = 0
+            self.close_calls = 0
+            self.count_calls = 0
+            self.reexecute_calls = 0
+
+        def fetch_rows(self, max_rows: int) -> ResultBatch:
+            self.fetch_sizes.append(max_rows)
+            self.events.append(f"fetch:{max_rows}")
+            remaining = self._total_rows - self._next_row
+            emitted = min(max_rows, remaining)
+            rows = tuple((row_id,) for row_id in range(self._next_row, self._next_row + emitted))
+            self._next_row += emitted
+            self.returned_row_total += emitted
+            return ResultBatch(rows=rows, exhausted=self._next_row >= self._total_rows)
+
+        def request_interrupt(self) -> None:
+            self.interrupt_calls += 1
+            self.events.append("interrupt")
+
+        def close(self) -> None:
+            self.close_calls += 1
+            self.events.append("close")
+
+        def count_rows(self) -> int:
+            self.count_calls += 1
+            raise AssertionError("bounded preview must not issue a count")
+
+        def reexecute(self) -> None:
+            self.reexecute_calls += 1
+            raise AssertionError("bounded preview must not rerun the query")
+
+    stream = LargeRecordingStream(total_rows=10_000)
+
+    result = collect_bounded_preview(
+        stream,
+        policy=PreviewPolicy(row_limit=1_000, payload_limit_bytes=16 * 1024 * 1024),
+        fetch_batch_size=512,
+    )
+
+    assert len(result.rows) == 1_000
+    assert result.rows[0] == (0,)
+    assert result.rows[-1] == (999,)
+    assert result.has_more_rows is True
+    assert result.truncation_reason == "row_limit"
+    assert stream.fetch_sizes == [512, 489]
+    assert stream.returned_row_total == 1_001
+    assert stream.interrupt_calls == 1
+    assert stream.close_calls == 1
+    assert stream.count_calls == 0
+    assert stream.reexecute_calls == 0
+    assert stream.events == ["fetch:512", "fetch:489", "interrupt", "close"]
+
+
 def test_collect_bounded_preview_stops_on_first_row_that_exceeds_byte_limit() -> None:
     kept = (1, "one")
     omitted = (2, "two")
@@ -282,6 +355,32 @@ def test_collect_bounded_preview_marks_oversized_first_row_as_byte_truncation() 
     assert stream.fetch_sizes == [1]
     assert stream.interrupt_calls == 1
     assert stream.close_calls == 1
+
+
+def test_collect_bounded_preview_does_not_retain_oversized_row_object() -> None:
+    oversized = _LargePayload("x" * (16 * 1024 * 1024 + 1))
+    released: list[str] = []
+    finalized = weakref.finalize(oversized, released.append, "released")
+    stream = _RecordingStream((_FetchStep(rows=((oversized,),)),), columns=("payload",))
+
+    result = collect_bounded_preview(
+        stream,
+        policy=PreviewPolicy(row_limit=3, payload_limit_bytes=16 * 1024 * 1024),
+        fetch_batch_size=1,
+    )
+
+    del oversized
+    gc.collect()
+
+    assert result.rows == ()
+    assert result.preview_payload_bytes == 0
+    assert result.has_more_rows is True
+    assert result.truncation_reason == "byte_limit"
+    assert stream.fetch_sizes == [1]
+    assert stream.interrupt_calls == 1
+    assert stream.close_calls == 1
+    assert finalized.alive is False
+    assert released == ["released"]
 
 
 def test_collect_bounded_preview_preserves_fetch_failure_when_close_also_fails() -> None:

@@ -1171,8 +1171,7 @@ def test_failed_multistatement_query_discards_temp_session_state_before_retry(
     try:
         with pytest.raises(QueryExecutionError, match="missing_table"):
             engine.query(
-                "CREATE TEMP TABLE scratch AS SELECT * FROM orders; "
-                "SELECT * FROM missing_table"
+                "CREATE TEMP TABLE scratch AS SELECT * FROM orders; SELECT * FROM missing_table"
             )
 
         fallback_result = engine.query("SELECT COUNT(*) AS row_count FROM orders")

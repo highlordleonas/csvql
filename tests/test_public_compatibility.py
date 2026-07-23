@@ -85,6 +85,10 @@ def test_public_exports_are_exact_and_exclude_private_source_foundations() -> No
         "TableSource",
     ]
     assert not {
+        "BoundedQueryResult",
+        "ExportRowSource",
+        "ExportSummary",
+        "PreviewPolicy",
         "SourceSpec",
         "SourceAdapter",
         "SourceRegistry",

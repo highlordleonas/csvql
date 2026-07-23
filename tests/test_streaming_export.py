@@ -399,6 +399,54 @@ def test_streaming_export_closes_iterator_before_rolling_back_failed_destination
     assert not output_path.exists()
 
 
+def test_streaming_export_closes_iterator_before_successful_destination_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_path = tmp_path / "result.csv"
+    source = _OneShotSource(("id",), [(1,), (2,)])
+    events: list[str] = []
+
+    def record_close() -> None:
+        events.append("iterator-close")
+        source._iterator.close_calls += 1
+
+    source._iterator.close = record_close  # type: ignore[method-assign]
+
+    @contextmanager
+    def recording_atomic_output(*args: object, **kwargs: object) -> Iterator[Any]:
+        del args, kwargs
+
+        class RecordingWriter:
+            def write(self, content: str) -> int:
+                events.append(f"write:{len(content)}")
+                return len(content)
+
+        events.append("enter")
+        try:
+            yield RecordingWriter()
+        except BaseException as exc:
+            events.append(f"exit:{type(exc).__name__}")
+            raise
+        else:
+            events.append("exit:none")
+
+    monkeypatch.setattr("csvql.streaming_export.atomic_text_output", recording_atomic_output)
+
+    summary = write_streaming_export(
+        source,
+        output_path,
+        export_format=ExportFormat.csv,
+        overwrite=False,
+    )
+
+    assert summary.row_count == 2
+    assert events[0] == "enter"
+    assert events[-2:] == ["iterator-close", "exit:none"]
+    assert source._iterator.close_calls == 1
+    assert not output_path.exists()
+
+
 def test_streaming_export_preserves_primary_failure_when_iterator_close_also_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -495,11 +543,7 @@ def test_streaming_text_export_caps_terminal_width_for_wide_unicode_cells(tmp_pa
 
     output = output_path.read_text(encoding="utf-8")
     lines = output.splitlines()
-    wrapped_segments = [
-        line.split("│")[2].strip()
-        for line in lines
-        if line.startswith("│")
-    ]
+    wrapped_segments = [line.split("│")[2].strip() for line in lines if line.startswith("│")]
 
     assert summary.row_count == 1
     assert all(cell_len(line) <= 120 for line in lines)

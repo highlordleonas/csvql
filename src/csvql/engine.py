@@ -454,9 +454,8 @@ class CSVQLEngine:
     def _close_active_stream(self) -> None:
         with self._lifecycle_lock:
             self._active_stream = None
-            if (
-                self._session_cursor is not None
-                and not _cursor_survives_stream_close(self._session_cursor)
+            if self._session_cursor is not None and not _cursor_survives_stream_close(
+                self._session_cursor
             ):
                 self._session_cursor = None
         self._restore_connection_interrupt()

@@ -195,9 +195,7 @@ def test_result_stream_close_failure_does_not_release_owner_and_repeats_failure(
 def test_result_stream_close_runs_cursor_before_owner_and_tracks_elapsed_time() -> None:
     events: list[str] = []
     cursor = RecordingCursor(
-        batches=(
-            [],
-        ),
+        batches=([],),
         events=events,
     )
     elapsed_points = iter((0.125, 0.375))
