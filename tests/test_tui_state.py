@@ -626,6 +626,31 @@ def test_mark_results_unavailable_keeps_preview() -> None:
     assert state.result_view is view
 
 
+def test_preview_only_history_recall_preserves_existing_preview_rows() -> None:
+    state = TUISessionState()
+    handle = TUIResultHandle(sequence=1, is_spilled=True, temp_path=Path("query-1.pickle"))
+    view = TUIResultViewState(
+        columns=("id",),
+        display_rows=(("1",),),
+        total_row_count=10_001,
+        is_truncated=True,
+        source_result_sequence=1,
+    )
+    state.record_query_success(
+        1,
+        "SELECT * FROM large",
+        handle=handle,
+        result_view=view,
+        elapsed_ms=1.0,
+    )
+    state.mark_results_unavailable((1,), "The full result is no longer available.")
+
+    assert state.restore_query_result(1) is True
+    assert state.active_result.kind == "history"
+    assert state.result_view.display_rows == (("1",),)
+    assert state.query_result_record(1).availability == "preview_only"
+
+
 def test_buffer_outcomes_finish_only_after_batch_completion() -> None:
     state = TUISessionState()
     sequences = state.begin_query_batch(("SELECT 1", "SELECT 2"))

@@ -93,6 +93,23 @@ def test_small_result_does_not_create_spill_workspace(tmp_path: Path) -> None:
     assert store.get(outcome.handle).row_count == 2
 
 
+def test_spill_compatibility_freezes_store_round_trip_not_private_pickle_bytes(
+    tmp_path: Path,
+) -> None:
+    store = TUIResultStore(temp_root=tmp_path, session_id="a" * 32)
+    result = _result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1)
+
+    outcome = store.put(result, sequence=1)
+
+    assert outcome.handle.is_spilled is True
+    assert store.get(outcome.handle) == result
+    assert outcome.handle.temp_path is not None
+    assert outcome.handle.temp_path.suffix == ".pickle"
+    # The current spill file remains a private implementation detail. Freeze only the
+    # user-visible store round trip, not the exact whole-QueryResult pickle bytes.
+    assert outcome.handle.temp_path.read_bytes()
+
+
 def test_default_temp_failure_is_deferred_until_first_spill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -24,6 +24,7 @@ from csvql.models import QueryResult
 from csvql.operation import OperationContext
 from csvql.source import SourceCapabilityStatus
 from csvql.tui_app import CSVQLMenuApp
+from csvql.tui_help import WORKBENCH_HELP
 from csvql.tui_result_store import (
     TUI_RESULT_MARKER_NAME,
     TUIResultCleanupSummary,
@@ -4770,6 +4771,22 @@ def test_help_text_documents_workbench_keymap() -> None:
     assert "F9 / q              Quit outside text entry" in help_text
     assert "Ctrl+S              Save active result to .csvql/results/{alias}.csv" in help_text
     assert "r                   Rerun selected query with current session sources" in help_text
+
+
+def test_help_screen_renders_current_workbench_help_text(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> str:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f1")
+            await pilot.pause()
+            return app.screen.query_one("#help-text", Static).content
+
+    help_text = asyncio.run(_inner())
+
+    assert help_text == WORKBENCH_HELP
 
 
 def test_tui_guide_documents_portable_fallbacks_and_run_labels() -> None:

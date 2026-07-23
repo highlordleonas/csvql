@@ -30,6 +30,17 @@ def test_menu_help_lists_startup_arguments() -> None:
     assert "Open the interactive CSVQL terminal menu." in result.output
 
 
+def test_menu_help_keeps_csv_path_and_table_contract_before_session_options() -> None:
+    result = runner.invoke(app, ["menu", "--help"], terminal_width=120)
+
+    assert result.exit_code == 0, result.output
+    assert "Usage:" in result.output
+    assert "[CSV_PATH]" in result.output
+    assert "--table" in result.output
+    assert "--limit" not in result.output
+    assert "--spool-capacity-mib" not in result.output
+
+
 def test_menu_delegates_startup_args(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -87,6 +98,47 @@ def test_menu_without_startup_args_forwards_empty_values(
     assert captured["csv_path"] is None
     assert captured["table_mappings"] == ()
     assert captured["start_dir"] == Path.cwd()
+
+
+def test_menu_csv_path_precedes_repeated_table_mappings_in_launcher_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    observed_calls: list[tuple[str | None, tuple[str, ...], Path]] = []
+
+    def fake_run_menu_command(
+        *, csv_path: str | None, table_mappings: tuple[str, ...], start_dir: Path
+    ) -> None:
+        observed_calls.append((csv_path, table_mappings, start_dir))
+
+    monkeypatch.setattr("csvql.cli.run_menu_command", fake_run_menu_command)
+
+    csv_path = tmp_path / "customers.csv"
+    orders_path = tmp_path / "orders.csv"
+    result = runner.invoke(
+        app,
+        [
+            "menu",
+            str(csv_path),
+            "--table",
+            f"orders={orders_path}",
+            "--table",
+            f"customers_copy={csv_path}",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert observed_calls == [
+        (
+            str(csv_path),
+            (
+                f"orders={orders_path}",
+                f"customers_copy={csv_path}",
+            ),
+            tmp_path,
+        )
+    ]
 
 
 def test_menu_uses_existing_cli_error_path() -> None:

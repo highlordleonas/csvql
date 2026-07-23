@@ -1,5 +1,6 @@
 import json
 import os
+import pickle
 import socket
 import subprocess
 import sys
@@ -717,6 +718,32 @@ def test_recovery_removes_only_exact_files_from_valid_old_candidate(tmp_path: Pa
     assert summary.files_failed == 0
     assert summary.workspaces_removed == 1
     assert summary.workspaces_failed == 0
+
+
+def test_recovery_removes_abandoned_workspace_without_deserializing_spill_contents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _write_candidate(tmp_path, created_at=_OLD_CREATED_AT)
+    (workspace / "query-1.pickle").write_bytes(b"not-a-pickle")
+    _age_workspace(workspace)
+
+    monkeypatch.setattr(
+        pickle,
+        "load",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError),
+    )
+    monkeypatch.setattr(
+        pickle,
+        "loads",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError),
+    )
+
+    summary = recover_abandoned_result_workspaces(temp_root=tmp_path, now=_NOW)
+
+    assert summary.files_removed == 3
+    assert summary.workspaces_removed == 1
+    assert not workspace.exists()
 
 
 def test_windows_recovery_accepts_explicit_child_of_current_temp_root(

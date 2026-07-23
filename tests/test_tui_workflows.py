@@ -137,6 +137,27 @@ def test_build_initial_state_loads_table_mappings_in_argument_order(
     assert state.selected_alias == "first"
 
 
+def test_build_initial_state_keeps_csv_argument_before_table_mappings(
+    tmp_path: Path,
+) -> None:
+    csv_path = _write_csv(tmp_path / "primary.csv")
+    second_csv = _write_csv(tmp_path / "second.csv")
+    third_csv = _write_csv(tmp_path / "third.csv")
+
+    state = build_initial_state(
+        csv_path=str(csv_path),
+        table_mappings=(f"second={second_csv}", f"third={third_csv}"),
+        start_dir=tmp_path,
+    )
+
+    assert state.sources == (
+        TUISource(name="primary", path=csv_path.resolve(), origin="argument"),
+        TUISource(name="second", path=second_csv.resolve(), origin="argument"),
+        TUISource(name="third", path=third_csv.resolve(), origin="argument"),
+    )
+    assert state.selected_alias == "primary"
+
+
 def test_build_initial_state_rejects_duplicate_aliases_between_csv_and_mapping(
     tmp_path: Path,
 ) -> None:
