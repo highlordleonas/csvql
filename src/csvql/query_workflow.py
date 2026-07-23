@@ -115,7 +115,7 @@ class _ResultStreamExportIterator(Iterator[tuple[object, ...]]):
     def close(self) -> None:
         if self._closed:
             return
-        if self._source_exhausted:
+        if self._source_exhausted and self._row_index >= len(self._rows):
             self._finish()
             return
         self._abort(primary=None)

@@ -386,6 +386,34 @@ def test_export_row_source_is_concrete_one_shot_and_fetches_bounded_batches() ->
         source.iter_rows()
 
 
+def test_export_row_source_interrupts_when_closed_with_buffered_exhausted_rows() -> None:
+    events: list[str] = []
+
+    class RecordingStream:
+        columns = ("value",)
+        elapsed_ms = 1.0
+
+        def fetch_rows(self, max_rows: int) -> ResultBatch:
+            assert max_rows == 256
+            events.append("fetch")
+            return ResultBatch(rows=((1,), (2,)), exhausted=True)
+
+        def request_interrupt(self) -> None:
+            events.append("interrupt")
+
+        def close(self) -> None:
+            events.append("close")
+
+    source = query_workflow._adapt_result_stream_for_export(RecordingStream())
+    iterator = source.iter_rows()
+
+    assert next(iterator) == (1,)
+
+    iterator.close()
+
+    assert events == ["fetch", "interrupt", "close"]
+
+
 def test_session_export_writes_json_with_query_result_shape(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_project(project_root)
