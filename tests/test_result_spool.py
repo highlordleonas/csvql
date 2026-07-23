@@ -321,3 +321,78 @@ def test_result_spool_writer_rejects_foreign_final_without_overwrite(tmp_path: P
 
     assert final_path.read_bytes() == foreign_bytes
     assert not staging_path.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX-only unsafe link fallback regression")
+def test_result_spool_writer_fails_closed_without_nofollow_link_support(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging_path = tmp_path / ".query-10-aaaaaaaaaaaaaaaa.result.tmp"
+    final_path = tmp_path / "query-10.result"
+    foreign_target = tmp_path / "foreign-source.result"
+    foreign_bytes = b"foreign-bytes"
+    foreign_target.write_bytes(foreign_bytes)
+    writer = ResultSpoolWriter(
+        staging_path=staging_path,
+        final_path=final_path,
+        columns=("id",),
+    )
+    unsafe_link_called = False
+
+    def unsafe_following_link(
+        source: os.PathLike[str] | str,
+        destination: os.PathLike[str] | str,
+    ) -> None:
+        nonlocal unsafe_link_called
+        unsafe_link_called = True
+        source_path = Path(source)
+        destination_path = Path(destination)
+        source_path.unlink()
+        source_path.symlink_to(foreign_target)
+        os.link(foreign_target, destination_path)
+
+    writer.append_payload(encode_row_payload((1,)))
+    monkeypatch.setattr("csvql.result_spool._OS_LINK_SUPPORTS_NOFOLLOW", False)
+    monkeypatch.setattr("csvql.result_spool.os.link", unsafe_following_link)
+
+    with pytest.raises(OSError, match="cannot be committed safely"):
+        writer.commit()
+
+    assert unsafe_link_called is False
+    assert not staging_path.exists()
+    assert not final_path.exists()
+    assert foreign_target.read_bytes() == foreign_bytes
+
+
+def test_result_spool_writer_uses_plain_link_on_windows_without_nofollow_support(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging_path = tmp_path / ".query-11-aaaaaaaaaaaaaaaa.result.tmp"
+    final_path = tmp_path / "query-11.result"
+    writer = ResultSpoolWriter(
+        staging_path=staging_path,
+        final_path=final_path,
+        columns=("id",),
+    )
+    link_calls: list[tuple[object, object]] = []
+    real_link = os.link
+
+    def record_windows_link(
+        source: os.PathLike[str] | str,
+        destination: os.PathLike[str] | str,
+    ) -> None:
+        link_calls.append((source, destination))
+        real_link(source, destination)
+
+    writer.append_payload(encode_row_payload((1,)))
+    monkeypatch.setattr("csvql.result_spool._OS_LINK_SUPPORTS_NOFOLLOW", False)
+    monkeypatch.setattr("csvql.result_spool.os.name", "nt")
+    monkeypatch.setattr("csvql.result_spool.os.link", record_windows_link)
+
+    writer.commit()
+
+    assert link_calls == [(staging_path, final_path)]
+    assert not staging_path.exists()
+    assert final_path.exists()

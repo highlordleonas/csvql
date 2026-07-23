@@ -21,6 +21,8 @@ _HEADER = struct.Struct(">5sBQ")
 _FRAME = struct.Struct(">BQ")
 _FOOTER = struct.Struct(">BQ")
 _COUNT = struct.Struct(">Q")
+_ORIGINAL_OS_LINK = os.link
+_OS_LINK_SUPPORTS_NOFOLLOW = _ORIGINAL_OS_LINK in os.supports_follow_symlinks
 
 
 class ResultSpoolError(ValueError):
@@ -241,10 +243,15 @@ class ResultSpoolWriter:
             raise OSError(errno.ENOENT, "Temporary result storage disappeared before commit.")
 
     def _publish_staging_file(self) -> None:
-        if os.link in os.supports_follow_symlinks:
+        if _OS_LINK_SUPPORTS_NOFOLLOW:
             os.link(self._staging_path, self._final_path, follow_symlinks=False)
-        else:
+        elif os.name == "nt":
             os.link(self._staging_path, self._final_path)
+        else:
+            raise OSError(
+                errno.ENOTSUP,
+                "Temporary result storage cannot be committed safely on this platform.",
+            )
         if not self._path_matches_original(self._final_path, self._staging_identity):
             raise OSError(errno.EIO, "Temporary result storage committed with unexpected identity.")
         if not self._path_matches_original(self._staging_path, self._staging_identity):
