@@ -18,9 +18,7 @@ from csvql.engine import CSVQLEngine
 from csvql.exceptions import CSVQLError, DataQualityCheckFailure, DoctorFailure
 from csvql.export import (
     ExportFormat,
-    format_query_result_for_export,
     resolve_export_path,
-    write_export_file,
 )
 from csvql.inspection import inspect_csv_source, sample_csv_source
 from csvql.operation import OperationContext, OperationToken
@@ -50,6 +48,7 @@ from csvql.project_config import (
 )
 from csvql.query_workflow import (
     QueryRequest,
+    _adapt_result_stream_for_export,
     build_inline_query_request,
     build_saved_sql_query_request,
     execute_query_request,
@@ -57,6 +56,7 @@ from csvql.query_workflow import (
 )
 from csvql.source_resolver import resolve_path_or_catalog_source
 from csvql.sql_file import load_sql_file
+from csvql.streaming_export import write_streaming_export
 from csvql.terminal_text import literal_terminal_text, terminal_safe_text
 from csvql.tui_launcher import run_menu_command
 
@@ -66,8 +66,7 @@ app = typer.Typer(
 )
 
 _JSON_LIMIT_MESSAGE = (
-    "The --limit option only applies to table output. "
-    "JSON output remains complete in v1.1."
+    "The --limit option only applies to table output. JSON output remains complete in v1.1."
 )
 _JSON_LIMIT_SUGGESTION = "Remove --limit or use --output table."
 _INTERRUPTED_QUERY_MESSAGE = "Query interrupted."
@@ -487,9 +486,14 @@ def export(
             operation=operation,
         )
         with CSVQLEngine(operation=operation) as engine:
-            result = execute_query_request(engine, request, operation=operation)
-        content = format_query_result_for_export(result, export_format)
-        write_export_file(output_path, content, overwrite=force)
+            stream = execute_query_request_stream(engine, request, operation=operation)
+            write_streaming_export(
+                _adapt_result_stream_for_export(stream),
+                output_path,
+                export_format=export_format,
+                overwrite=force,
+                token=operation.token,
+            )
         _echo_human_message(f"Wrote export to {output_path}.")
     except CSVQLError as exc:
         _exit_with_error(exc)

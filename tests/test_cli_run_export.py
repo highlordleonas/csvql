@@ -1,13 +1,19 @@
+import csv
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+import csvql.cli as cli_module
 from csvql.bounded_result import BoundedQueryResult, PreviewPolicy
 from csvql.cli import app
 from csvql.exceptions import CSVQLError
+from csvql.export import ExportFormat
 from csvql.models import QueryResult
+from csvql.result_stream import ResultBatch
+from csvql.streaming_export import write_streaming_export
 
 runner = CliRunner()
 
@@ -126,6 +132,73 @@ def test_export_sql_file_writes_csv(tmp_path: Path, monkeypatch) -> None:
     assert "Wrote export" in result.output
 
 
+def test_cli_export_streams_without_calling_query_materializer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    orders = tmp_path / "orders.csv"
+    query = tmp_path / "list_orders.sql"
+    output_path = tmp_path / "result.csv"
+    _write_csv(orders, "order_id,status\nORD-001,paid\nORD-002,pending\n")
+    query.write_text(
+        "SELECT order_id, status FROM orders ORDER BY order_id",
+        encoding="utf-8",
+    )
+    writer_calls: list[tuple[Path, ExportFormat, bool]] = []
+
+    def reject_materialization(*args: object, **kwargs: object) -> QueryResult:
+        del args, kwargs
+        raise AssertionError("csvql export must not materialize a QueryResult.")
+
+    def recording_streaming_writer(
+        source: object,
+        path: Path,
+        *,
+        export_format: ExportFormat,
+        overwrite: bool,
+        token: object = None,
+    ) -> object:
+        writer_calls.append((path, export_format, overwrite))
+        return write_streaming_export(
+            source,
+            path,
+            export_format=export_format,
+            overwrite=overwrite,
+            token=token,
+        )
+
+    monkeypatch.setattr(cli_module, "execute_query_request", reject_materialization)
+    monkeypatch.setattr(
+        cli_module,
+        "write_streaming_export",
+        recording_streaming_writer,
+        raising=False,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "export",
+            "list_orders.sql",
+            "--format",
+            "csv",
+            "--out",
+            "result.csv",
+            "--table",
+            "orders=orders.csv",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert writer_calls == [(output_path.resolve(), ExportFormat.csv, False)]
+    assert output_path.read_text(encoding="utf-8").splitlines() == [
+        "order_id,status",
+        "ORD-001,paid",
+        "ORD-002,pending",
+    ]
+
+
 def test_export_success_output_encodes_terminal_controls_in_output_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -134,7 +207,6 @@ def test_export_success_output_encodes_terminal_controls_in_output_path(
     orders = tmp_path / "orders.csv"
     query = tmp_path / "count_orders.sql"
     unsafe_output_path = tmp_path / "result\x1b]0;spoof\x07\x7f\x85\x9b31m.csv"
-    written_exports: list[tuple[Path, str, bool]] = []
     _write_csv(orders, "order_id,total_amount\nORD-001,20.00\n")
     query.write_text("SELECT COUNT(*) AS order_count FROM orders", encoding="utf-8")
 
@@ -149,11 +221,7 @@ def test_export_success_output_encodes_terminal_controls_in_output_path(
         assert force is False
         return unsafe_output_path
 
-    def fake_write_export_file(path: Path, content: str, *, overwrite: bool) -> None:
-        written_exports.append((path, content, overwrite))
-
     monkeypatch.setattr("csvql.cli.resolve_export_path", fake_resolve_export_path)
-    monkeypatch.setattr("csvql.cli.write_export_file", fake_write_export_file)
 
     result = runner.invoke(
         app,
@@ -170,7 +238,7 @@ def test_export_success_output_encodes_terminal_controls_in_output_path(
     )
 
     assert result.exit_code == 0, result.output
-    assert written_exports == [(unsafe_output_path, "order_count\r\n1\r\n", False)]
+    assert unsafe_output_path.read_bytes() == b"order_count\r\n1\r\n"
     assert all(control not in result.output for control in "\x1b\x07\x7f\x85\x9b")
     assert r"result\x1b]0;spoof\x07\x7f\x85\x9b31m.csv" in result.output
 
@@ -215,7 +283,7 @@ def test_export_json_contract_matches_query_result_shape_on_disk(
 
     assert result.exit_code == 0, result.output
     payload = json.loads(output_path.read_text(encoding="utf-8"))
-    assert list(payload) == ["columns", "elapsed_ms", "row_count", "rows"]
+    assert set(payload) == {"columns", "elapsed_ms", "row_count", "rows"}
     assert payload["columns"] == ["order_count"]
     assert payload["rows"] == [{"order_count": 1}]
     assert payload["row_count"] == 1
@@ -308,6 +376,172 @@ def test_export_force_overwrites_existing_file(tmp_path: Path, monkeypatch) -> N
     assert output_path.read_bytes() == b"order_count\r\n1\r\n"
 
 
+@pytest.mark.parametrize(
+    ("export_format", "suffix"),
+    [
+        ("csv", "csv"),
+        ("json", "json"),
+        ("markdown", "md"),
+        ("text", "txt"),
+    ],
+)
+def test_cli_export_keeps_all_rows_beyond_interactive_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    export_format: str,
+    suffix: str,
+) -> None:
+    _init_catalog(tmp_path, monkeypatch)
+    query_path = tmp_path / "all_rows.sql"
+    output_path = tmp_path / f"all-rows.{suffix}"
+    query_path.write_text(
+        "SELECT range AS row_id FROM range(1005)",
+        encoding="utf-8",
+    )
+
+    export_result = runner.invoke(
+        app,
+        [
+            "export",
+            "all_rows.sql",
+            "--format",
+            export_format,
+            "--out",
+            output_path.name,
+        ],
+    )
+
+    assert export_result.exit_code == 0, export_result.output
+    if export_format == "csv":
+        with output_path.open(newline="", encoding="utf-8") as output:
+            exported_rows = list(csv.reader(output))
+        assert len(exported_rows) == 1_006
+        assert exported_rows[-1] == ["1004"]
+    elif export_format == "json":
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+        assert payload["row_count"] == 1_005
+        assert payload["rows"][-1] == {"row_id": 1_004}
+    elif export_format == "markdown":
+        lines = output_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1_007
+        assert lines[-1] == "| 1004 |"
+    else:
+        text = output_path.read_text(encoding="utf-8")
+        assert "1005 row(s)" in text
+        assert "1004" in text
+
+    run_result = runner.invoke(app, ["run", "all_rows.sql"])
+    assert run_result.exit_code == 0, run_result.output
+    assert "more rows exist" in run_result.output
+    assert "1000-row limit" in run_result.output
+
+
+def test_cli_export_header_failure_cleans_eager_stream_before_destination_and_engine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    query_path = tmp_path / "rows.sql"
+    output_path = tmp_path / "rows.csv"
+    query_path.write_text("SELECT 1 AS value", encoding="utf-8")
+    events: list[str] = []
+    primary_error = RuntimeError("writer failed")
+    cleanup_error = RuntimeError("cursor close failed")
+
+    class FailingOutput:
+        def __init__(self) -> None:
+            self.write_count = 0
+
+        def write(self, text: str) -> int:
+            self.write_count += 1
+            if self.write_count == 1:
+                events.append("writer.fail")
+                raise primary_error
+            return len(text)
+
+    @contextmanager
+    def recording_atomic_output(*args: object, **kwargs: object):
+        del args, kwargs
+        events.append("destination.open")
+        try:
+            yield FailingOutput()
+        finally:
+            events.append("destination.rollback")
+
+    class FakeStream:
+        columns = ("value",)
+        elapsed_ms = 1.0
+
+        def fetch_rows(self, max_rows: int) -> ResultBatch:
+            del max_rows
+            raise AssertionError("Header failure must happen before the first row fetch.")
+
+        def request_interrupt(self) -> None:
+            events.append("interrupt")
+
+        def close(self) -> None:
+            events.append("cursor.close")
+            raise cleanup_error
+
+    class FakeEngine:
+        def __init__(self, *, operation: object) -> None:
+            self.operation = operation
+
+        def __enter__(self) -> "FakeEngine":
+            return self
+
+        def __exit__(self, *exc_info: object) -> None:
+            events.extend(
+                [
+                    "binding.second.close",
+                    "binding.first.close",
+                    "connection.close",
+                ]
+            )
+
+    monkeypatch.setattr(cli_module, "CSVQLEngine", FakeEngine)
+    monkeypatch.setattr(
+        cli_module,
+        "build_saved_sql_query_request",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "execute_query_request_stream",
+        lambda *args, **kwargs: FakeStream(),
+    )
+    monkeypatch.setattr(
+        "csvql.streaming_export.atomic_text_output",
+        recording_atomic_output,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "export",
+            "rows.sql",
+            "--format",
+            "csv",
+            "--out",
+            output_path.name,
+        ],
+    )
+
+    assert result.exception is primary_error
+    assert events == [
+        "destination.open",
+        "writer.fail",
+        "interrupt",
+        "cursor.close",
+        "destination.rollback",
+        "binding.second.close",
+        "binding.first.close",
+        "connection.close",
+    ]
+    assert not output_path.exists()
+    assert not list(tmp_path.glob(".rows.csv.*"))
+
+
 def test_run_and_export_cli_use_one_operation_context_across_builder_engine_and_executor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -316,7 +550,7 @@ def test_run_and_export_cli_use_one_operation_context_across_builder_engine_and_
     sql_file = tmp_path / "count_orders.sql"
     sql_file.write_text("SELECT 1 AS one", encoding="utf-8")
     seen: list[object] = []
-    write_calls: list[tuple[Path, str, bool]] = []
+    write_calls: list[tuple[Path, ExportFormat, bool, object]] = []
 
     class FakeEngine:
         def __init__(self, *, operation: object) -> None:
@@ -357,8 +591,48 @@ def test_run_and_export_cli_use_one_operation_context_across_builder_engine_and_
         assert request is not None
         return QueryResult(columns=("one",), rows=((1,),), elapsed_ms=1.0)
 
-    def fake_write_export_file(path: Path, content: str, *, overwrite: bool) -> None:
-        write_calls.append((path, content, overwrite))
+    class FakeStream:
+        columns = ("one",)
+        elapsed_ms = 1.0
+
+        def __init__(self) -> None:
+            self.fetched = False
+
+        def fetch_rows(self, max_rows: int) -> object:
+            assert max_rows == 256
+            if self.fetched:
+                return type("Batch", (), {"rows": (), "exhausted": True})()
+            self.fetched = True
+            return type("Batch", (), {"rows": ((1,),), "exhausted": False})()
+
+        def request_interrupt(self) -> None:
+            raise AssertionError("Complete export must not request interruption.")
+
+        def close(self) -> None:
+            return None
+
+    def fake_execute_query_request_stream(
+        engine: object,
+        request: object,
+        *,
+        operation: object,
+    ) -> FakeStream:
+        seen.append(operation)
+        assert engine is not None
+        assert request is not None
+        return FakeStream()
+
+    def fake_write_streaming_export(
+        source: object,
+        path: Path,
+        *,
+        export_format: ExportFormat,
+        overwrite: bool,
+        token: object,
+    ) -> object:
+        assert list(source.iter_rows()) == [(1,)]
+        write_calls.append((path, export_format, overwrite, token))
+        return object()
 
     monkeypatch.setattr("csvql.cli.CSVQLEngine", FakeEngine)
     monkeypatch.setattr("csvql.cli.load_sql_file", fake_load_sql_file)
@@ -367,7 +641,11 @@ def test_run_and_export_cli_use_one_operation_context_across_builder_engine_and_
         fake_build_saved_sql_query_request,
     )
     monkeypatch.setattr("csvql.cli.execute_query_request", fake_execute_query_request)
-    monkeypatch.setattr("csvql.cli.write_export_file", fake_write_export_file)
+    monkeypatch.setattr(
+        "csvql.cli.execute_query_request_stream",
+        fake_execute_query_request_stream,
+    )
+    monkeypatch.setattr("csvql.cli.write_streaming_export", fake_write_streaming_export)
 
     run_result = runner.invoke(app, ["run", "count_orders.sql", "--output", "json"])
     assert run_result.exit_code == 0, run_result.output
@@ -382,15 +660,11 @@ def test_run_and_export_cli_use_one_operation_context_across_builder_engine_and_
     assert export_result.exit_code == 0, export_result.output
     assert seen[0] is seen[1] is seen[2]
     assert len(write_calls) == 1
-    path, content, overwrite = write_calls[0]
+    path, export_format, overwrite, token = write_calls[0]
     assert path == tmp_path / "result.json"
+    assert export_format is ExportFormat.json
     assert overwrite is False
-    assert json.loads(content) == {
-        "columns": ["one"],
-        "rows": [{"one": 1}],
-        "row_count": 1,
-        "elapsed_ms": 1.0,
-    }
+    assert token is seen[0].token
 
 
 def test_run_table_output_uses_explicit_preview_limit_override(

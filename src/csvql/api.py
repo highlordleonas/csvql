@@ -18,9 +18,7 @@ from csvql.exceptions import (
 )
 from csvql.export import (
     ExportFormat,
-    format_query_result_for_export,
     resolve_export_path,
-    write_export_file,
 )
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
 from csvql.operation import OperationContext, OperationToken
@@ -32,9 +30,15 @@ from csvql.project_config import (
     load_project,
 )
 from csvql.quality import CheckRunResult
+from csvql.query_workflow import (
+    QueryRequest,
+    _adapt_result_stream_for_export,
+    execute_query_request_stream,
+)
 from csvql.source import ResolvedSource, source_spec_from_catalog_table
 from csvql.source_operations import SourceOperations
 from csvql.sql_file import load_sql_file
+from csvql.streaming_export import write_streaming_export
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,9 +165,42 @@ class CSVQLSession:
             base_dir=self._context.project_root,
             force=force,
         )
-        result = self.run_file(sql_file)
-        content = format_query_result_for_export(result, export_format)
-        write_export_file(output_path, content, overwrite=force)
+        loaded_sql = load_sql_file(str(sql_file), base_dir=self._context.project_root)
+        operation = OperationContext(OperationToken())
+        sources = tuple(
+            _resolve_catalog_source(self._context, table, operation=operation)
+            for table in self._context.config.tables
+        )
+        request = QueryRequest(
+            sql=loaded_sql.sql,
+            required_sources=sources,
+            fallback_sources=(),
+        )
+        try:
+            with CSVQLEngine(operation=operation) as engine:
+                stream = execute_query_request_stream(
+                    engine,
+                    request,
+                    operation=operation,
+                )
+                write_streaming_export(
+                    _adapt_result_stream_for_export(stream),
+                    output_path,
+                    export_format=export_format,
+                    overwrite=force,
+                    token=operation.token,
+                )
+        except SourceError as exc:
+            source = next(
+                (candidate for candidate in sources if candidate.spec.alias == exc.alias),
+                None,
+            )
+            alias = exc.alias or "source"
+            source_path = source.canonical_locator if source is not None else "<unavailable>"
+            raise CSVQLError(
+                f"Failed to register CSV table '{alias}' from {source_path}.",
+                suggestion="Check that the file is a readable CSV with a header row.",
+            ) from exc
         return output_path
 
 

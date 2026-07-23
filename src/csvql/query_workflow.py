@@ -1,6 +1,7 @@
 """Shared query workflow orchestration."""
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from csvql.table_mapping import derive_alias_from_path, validate_table_alias
 _DUCKDB_MISSING_TABLE_RE = re.compile(
     r"Table with name (?P<name>[A-Za-z_][A-Za-z0-9_]*) does not exist!"
 )
+_EXPORT_FETCH_BATCH_SIZE = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +52,113 @@ class QueryRequest:
     sql: str
     required_sources: tuple[ResolvedSource, ...]
     fallback_sources: tuple[SourceCandidate, ...]
+
+
+class _ResultStreamExportSource:
+    """One-shot export-row view over an owned result stream."""
+
+    def __init__(self, stream: ResultStream) -> None:
+        self._stream = stream
+        self._iterated = False
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        return self._stream.columns
+
+    @property
+    def elapsed_ms(self) -> float:
+        return self._stream.elapsed_ms
+
+    def iter_rows(self) -> Iterator[tuple[object, ...]]:
+        if self._iterated:
+            raise RuntimeError("Export result stream has already been consumed.")
+        self._iterated = True
+        return _ResultStreamExportIterator(self._stream)
+
+
+class _ResultStreamExportIterator(Iterator[tuple[object, ...]]):
+    """Concrete bounded iterator that closes or interrupts its result stream."""
+
+    def __init__(self, stream: ResultStream) -> None:
+        self._stream = stream
+        self._rows: tuple[tuple[object, ...], ...] = ()
+        self._row_index = 0
+        self._source_exhausted = False
+        self._closed = False
+
+    def __next__(self) -> tuple[object, ...]:
+        if self._closed:
+            raise StopIteration
+        if self._row_index < len(self._rows):
+            row = self._rows[self._row_index]
+            self._row_index += 1
+            return row
+        if self._source_exhausted:
+            self._finish()
+            raise StopIteration
+
+        try:
+            batch = self._stream.fetch_rows(_EXPORT_FETCH_BATCH_SIZE)
+        except BaseException as exc:
+            self._abort(primary=exc)
+            raise
+
+        self._rows = batch.rows
+        self._row_index = 0
+        self._source_exhausted = batch.exhausted
+        if not self._rows and not self._source_exhausted:
+            error = RuntimeError("Result stream returned an empty non-exhausted export batch.")
+            self._abort(primary=error)
+            raise error
+        return self.__next__()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        if self._source_exhausted:
+            self._finish()
+            return
+        self._abort(primary=None)
+
+    def _finish(self) -> None:
+        if self._closed:
+            return
+        self._stream.close()
+        self._closed = True
+
+    def _abort(self, *, primary: BaseException | None) -> None:
+        if self._closed:
+            return
+        interrupt_error: BaseException | None = None
+        close_error: BaseException | None = None
+        try:
+            self._stream.request_interrupt()
+        except BaseException as exc:
+            interrupt_error = exc
+        try:
+            self._stream.close()
+        except BaseException as exc:
+            close_error = exc
+        if close_error is None:
+            self._closed = True
+        if primary is not None:
+            if interrupt_error is not None:
+                primary.add_note("Cleanup uncertainty: the result stream could not be interrupted.")
+            if close_error is not None:
+                _add_cleanup_note(primary)
+            return
+        if interrupt_error is not None:
+            raise interrupt_error
+        if close_error is not None:
+            raise close_error
+
+
+def _adapt_result_stream_for_export(
+    stream: ResultStream,
+) -> _ResultStreamExportSource:
+    """Adapt one engine-owned result stream for the private export writer."""
+
+    return _ResultStreamExportSource(stream)
 
 
 def build_inline_query_request(
