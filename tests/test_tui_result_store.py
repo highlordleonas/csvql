@@ -692,6 +692,50 @@ def test_result_store_rejects_copied_spill_handle_before_unpickling(
         store.get(replace(stored.handle))
 
 
+def test_result_store_rejects_same_path_replacement_and_preserves_foreign_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    first_store = TUIResultStore(temp_root=first_root, session_id="a" * 32)
+    second_store = TUIResultStore(temp_root=second_root, session_id="b" * 32)
+    first = first_store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
+    second = second_store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)
+    assert first.handle.temp_path is not None
+    assert second.handle.temp_path is not None
+    foreign_bytes = second.handle.temp_path.read_bytes()
+    replacement_path = first_root / "replacement.result"
+    shutil.copy2(second.handle.temp_path, replacement_path)
+    os.replace(replacement_path, first.handle.temp_path)
+
+    calls: list[object] = []
+
+    def fail_on_load(*args: object, **kwargs: object) -> object:
+        calls.append((args, kwargs))
+        raise AssertionError("same-path replacements must be rejected before decode")
+
+    monkeypatch.setattr("csvql.tui_result_store.ResultSpoolReader.from_file", fail_on_load)
+
+    with pytest.raises(TUIResultStorageError, match="no longer available") as error:
+        first_store.get(first.handle)
+
+    assert error.value.kind == "result_unavailable"
+    assert error.value.invalidated_sequences == (1,)
+    assert calls == []
+
+    summary = first_store.cleanup()
+
+    assert first.handle.temp_path.exists()
+    assert first.handle.temp_path.read_bytes() == foreign_bytes
+    assert second.handle.temp_path.read_bytes() == foreign_bytes
+    assert not replacement_path.exists()
+    assert summary.files_failed >= 0
+    assert summary.workspaces_failed == 1
+
+
 def test_lost_workspace_invalidates_all_registered_spills(tmp_path: Path) -> None:
     store = TUIResultStore(temp_root=tmp_path, session_id="a" * 32)
     first = store.put(_result(TUI_RESULT_SPILL_ROW_THRESHOLD + 1), sequence=1)

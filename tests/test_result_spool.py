@@ -127,7 +127,7 @@ def test_result_spool_reader_rejects_truncated_footer(tmp_path: Path) -> None:
     spool_path, _metadata = _write_spool(tmp_path, rows=((1,),))
     spool_path.write_bytes(spool_path.read_bytes()[:-1])
 
-    with pytest.raises(ResultSpoolError, match="truncated footer"):
+    with pytest.raises(ResultSpoolError, match="invalid row frame length"):
         tuple(_reader_for(spool_path).iter_rows())
 
 
@@ -245,6 +245,42 @@ def test_result_spool_reader_rejects_malformed_row_payload(tmp_path: Path) -> No
     spool_path.write_bytes(data)
 
     with pytest.raises(ResultSpoolError, match="malformed row payload"):
+        tuple(_reader_for(spool_path).iter_rows())
+
+
+@pytest.mark.parametrize(
+    ("columns", "row"),
+    [
+        (("left", "right"), (1,)),
+        (("left", "right"), (1, 2, 3)),
+    ],
+)
+def test_result_spool_reader_rejects_schema_arity_mismatch(
+    tmp_path: Path,
+    columns: tuple[str, ...],
+    row: tuple[object, ...],
+) -> None:
+    spool_path, _metadata = _write_spool(tmp_path, columns=columns, rows=(row,))
+
+    with pytest.raises(ResultSpoolError, match="malformed row payload"):
+        next(_reader_for(spool_path).iter_rows())
+
+
+def test_result_spool_reader_rejects_frame_length_that_consumes_footer(
+    tmp_path: Path,
+) -> None:
+    spool_path, _metadata = _write_spool(tmp_path, rows=((1,),))
+    data = bytearray(spool_path.read_bytes())
+    footer_offset = len(data) - 9
+    frame_header_start = footer_offset - (9 + len(encode_row_payload((1,))))
+    remaining_after_frame_length = footer_offset - (frame_header_start + 9)
+    data[frame_header_start + 1 : frame_header_start + 9] = struct.pack(
+        ">Q",
+        remaining_after_frame_length + 1,
+    )
+    spool_path.write_bytes(data)
+
+    with pytest.raises(ResultSpoolError, match="invalid row frame length"):
         tuple(_reader_for(spool_path).iter_rows())
 
 

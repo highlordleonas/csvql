@@ -328,6 +328,7 @@ class TUIResultStore:
         self._created_at = now or datetime.now(UTC)
         self._memory_results: dict[int, QueryResult] = {}
         self._spill_paths: dict[int, Path] = {}
+        self._spill_identities: dict[int, tuple[int, int]] = {}
         self._spill_elapsed_ms: dict[int, float] = {}
         self._issued_handles: dict[int, TUIResultHandle] = {}
         self._workspace_path: Path | None = None
@@ -418,10 +419,12 @@ class TUIResultStore:
                 raise _result_unavailable_error(handle.sequence) from exc
 
         registered_path = self._spill_paths.get(handle.sequence)
+        expected_identity = self._spill_identities.get(handle.sequence)
         if (
             handle.sequence in self._invalidated_sequences
             or handle.temp_path is None
             or registered_path is None
+            or expected_identity is None
             or handle.temp_path != registered_path
         ):
             raise _result_unavailable_error(handle.sequence)
@@ -441,6 +444,7 @@ class TUIResultStore:
                 or _is_reparse_point(pre_stat)
                 or not _file_mode_is_private(pre_stat)
                 or not _stat_has_current_owner(pre_stat)
+                or _usable_stat_identity(pre_stat) != expected_identity
             ):
                 raise FileNotFoundError(registered_path)
             with registered_path.open("rb") as file:
@@ -451,6 +455,7 @@ class TUIResultStore:
                     or not _file_mode_is_private(post_stat)
                     or not _stat_has_current_owner(post_stat)
                     or not _same_opened_file(pre_stat, post_stat)
+                    or _usable_stat_identity(post_stat) != expected_identity
                 ):
                     raise FileNotFoundError(registered_path)
                 self._ensure_workspace()
@@ -506,12 +511,20 @@ class TUIResultStore:
         if workspace is not None:
             identity = self._workspace_identity
             if identity is not None and _is_owned_workspace(workspace, identity=identity):
-                paths = tuple(self._pending_cleanup_paths) + tuple(self._spill_paths.values())
-                for path in paths:
+                for path in tuple(self._pending_cleanup_paths):
                     path_removed, path_failed = _unlink_owned_workspace_entry(
                         workspace,
                         identity=identity,
                         path=path,
+                    )
+                    removed += path_removed
+                    failed += path_failed
+                for sequence, path in tuple(self._spill_paths.items()):
+                    path_removed, path_failed = _unlink_owned_workspace_entry(
+                        workspace,
+                        identity=identity,
+                        path=path,
+                        expected_identity=self._spill_identities.get(sequence),
                     )
                     removed += path_removed
                     failed += path_failed
@@ -552,6 +565,7 @@ class TUIResultStore:
 
         self._memory_results.clear()
         self._spill_paths.clear()
+        self._spill_identities.clear()
         self._spill_elapsed_ms.clear()
         self._issued_handles.clear()
         self._pending_cleanup_paths.clear()
@@ -705,6 +719,13 @@ class TUIResultStore:
             ) from exc
         self._pending_cleanup_paths.discard(staging_path)
         self._spill_paths[sequence] = final_path
+        spill_identity = writer.staging_identity
+        if spill_identity is None:
+            raise TUIResultStorageError(
+                "Unable to serialize the query result for temporary storage.",
+                kind="serialization",
+            )
+        self._spill_identities[sequence] = spill_identity
         self._spill_elapsed_ms[sequence] = result.elapsed_ms
         handle = TUIResultHandle(sequence=sequence, is_spilled=True, temp_path=final_path)
         self._issued_handles[sequence] = handle
@@ -742,6 +763,7 @@ class TUIResultStore:
         for sequence in invalidated:
             self._issued_handles.pop(sequence, None)
         self._spill_paths.clear()
+        self._spill_identities.clear()
         self._spill_elapsed_ms.clear()
         self._pending_cleanup_paths.clear()
         self._pending_cleanup_identities.clear()

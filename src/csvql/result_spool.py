@@ -106,7 +106,7 @@ class ResultSpoolReader:
                 _read_exact(self._file, _COUNT.size, "truncated row frame")
             )[0]
             remaining = self._logical_bytes - self._file.tell()
-            if payload_length > remaining:
+            if payload_length > remaining - _FOOTER.size:
                 raise ResultSpoolError("invalid row frame length")
             payload = _read_exact(self._file, payload_length, "truncated row payload")
             if self._logical_bytes - self._file.tell() < _FOOTER.size:
@@ -115,6 +115,8 @@ class ResultSpoolReader:
                 row = decode_row_payload(payload)
             except RowPayloadCodecError as exc:
                 raise ResultSpoolError("malformed row payload") from exc
+            if len(row) != len(self._columns):
+                raise ResultSpoolError("malformed row payload")
             row_count += 1
             yield row
 
