@@ -11,11 +11,13 @@ from csvql.bounded_result import PreviewPolicy
 from csvql.cli import app
 from csvql.exceptions import CSVQLError
 from csvql.models import QueryResult
+from csvql.result_codec import encode_row_payload
 from csvql.tui_launcher import run_menu_command
 from csvql.tui_result_store import (
     DEFAULT_TUI_RESULT_CAPACITY_BYTES,
     TUIResultCleanupSummary,
     TUIResultHandle,
+    TUIResultStore,
 )
 from csvql.tui_results import make_result_view_state
 from csvql.tui_state import TUIBufferResultTab, TUISessionState, TUISource
@@ -196,11 +198,17 @@ def _assert_derived_csv_and_catalog_save(
     del monkeypatch
     project_root = tmp_path / "project"
     project_root.mkdir()
-    result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
+    result_store = TUIResultStore(temp_root=tmp_path)
+    writer = result_store.begin_complete(sequence=1, columns=("id",))
+    writer.append_payload(encode_row_payload((1,)))
+    stored = writer.commit(elapsed_ms=1.0)
 
     derived = save_derived_result_source(
-        result,
+        result_store,
+        stored.handle,
         "derived_ids",
+        columns=stored.columns,
+        elapsed_ms=stored.elapsed_ms,
         existing_sources=(),
         start_dir=project_root,
     )

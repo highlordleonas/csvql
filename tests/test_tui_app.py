@@ -21,7 +21,9 @@ from textual.widgets._footer import FooterKey
 from csvql import tui_app as tui_app_module
 from csvql.atomic_write import OperationToken
 from csvql.bounded_result import BoundedQueryResult, PreviewPolicy
-from csvql.exceptions import CSVQLError
+from csvql.csv_adapter import CSVSourceAdapter
+from csvql.engine import CSVQLEngine
+from csvql.exceptions import CSVQLError, SourceError, TableMappingError
 from csvql.export import ExportFormat
 from csvql.models import QueryResult
 from csvql.operation import OperationCancelled, OperationContext
@@ -56,7 +58,10 @@ from csvql.tui_state import (
     TUISource,
     TUISourceColumn,
 )
-from csvql.tui_workflows import export_last_result as workflows_export_last_result
+from csvql.tui_workflows import build_initial_state
+from csvql.tui_workflows import (
+    export_last_result as workflows_export_last_result,
+)
 
 
 def _read_doc_text(relative_path: str) -> str:
@@ -5017,6 +5022,236 @@ def test_export_from_spilled_result_writes_full_output(
     assert export_path.read_text(encoding="utf-8").splitlines()[1] == "0"
 
 
+def test_full_tui_export_streams_preserved_rows_once_without_rerunning_sql(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    source_path = state.sources[0].path
+    source_bytes_before = source_path.read_bytes()
+    source_stat_before = source_path.stat()
+    export_path = tmp_path / "exports" / "ordered.csv"
+    export_path.parent.mkdir()
+    sql = "SELECT range AS id FROM range(2501) ORDER BY id"
+    executed_sql: list[str] = []
+    opened_handles: list[object] = []
+    real_stream = CSVQLEngine.stream
+    store = TUIResultStore(temp_root=tmp_path)
+    real_open_rows = store.open_rows
+
+    def recording_stream(
+        engine: CSVQLEngine,
+        statement: str,
+        params: tuple[object, ...] | None = None,
+    ):
+        executed_sql.append(statement)
+        return real_stream(engine, statement, params)
+
+    def recording_open_rows(handle: object):
+        opened_handles.append(handle)
+        return real_open_rows(handle)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(CSVQLEngine, "stream", recording_stream)
+    monkeypatch.setattr(store, "open_rows", recording_open_rows)
+
+    async def _inner() -> object:
+        app = CSVQLMenuApp(
+            initial_state=state,
+            start_dir=tmp_path,
+            result_store=store,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text(sql)
+            await pilot.press("f4")
+            await _settled_query_idle(pilot, app)
+            record = app.state.active_query_result_record()
+            assert record is not None
+            assert record.handle is not None
+            assert record.full_row_count == 2_501
+
+            await pilot.press("f7")
+            await pilot.pause()
+            app.screen.query_one("#export-path", Input).value = str(export_path)
+            await pilot.press("enter")
+            await _settled_operation_idle(pilot, app, wait_for_status_settle=False)
+            return record.handle
+
+    exported_handle = asyncio.run(_inner())
+    exported_lines = export_path.read_text(encoding="utf-8").splitlines()
+
+    assert exported_lines == ["id", *(str(index) for index in range(2_501))]
+    assert executed_sql == [sql]
+    assert opened_handles == [exported_handle]
+    assert source_path.read_bytes() == source_bytes_before
+    source_stat_after = source_path.stat()
+    assert source_stat_after.st_size == source_stat_before.st_size
+    assert source_stat_after.st_mtime_ns == source_stat_before.st_mtime_ns
+
+
+def test_queued_source_fingerprint_mutation_terminalizes_as_source_changed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    source_path = state.sources[0].path
+    first_started = threading.Event()
+    release_first = threading.Event()
+    seen_requests: list[TUIRunRequest] = []
+    second_events: list[object] = []
+    source_error_codes: list[str] = []
+    real_run_tui_request = tui_app_module.run_tui_request
+    real_bind = CSVSourceAdapter.bind
+
+    def recording_bind(
+        adapter: CSVSourceAdapter,
+        connection: object,
+        source: object,
+        operation: OperationContext,
+    ):
+        try:
+            return real_bind(adapter, connection, source, operation)  # type: ignore[arg-type]
+        except SourceError as exc:
+            source_error_codes.append(exc.code)
+            raise
+
+    def controlled_run_tui_request(
+        request: TUIRunRequest,
+        *,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        seen_requests.append(request)
+        if len(seen_requests) == 1:
+            first_started.set()
+            assert release_first.wait(timeout=5.0)
+            _emit_complete_result(
+                request=request,
+                result_store=result_store,
+                event_sink=event_sink,
+                result=QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+            )
+            return
+
+        def record_second_event(event: object) -> None:
+            second_events.append(event)
+            event_sink(event)
+
+        real_run_tui_request(
+            request,
+            result_store=result_store,
+            event_sink=record_second_event,
+            operation=operation,
+        )
+
+    monkeypatch.setattr(CSVSourceAdapter, "bind", recording_bind)
+    monkeypatch.setattr(tui_app_module, "run_tui_request", controlled_run_tui_request)
+
+    async def _inner() -> tuple[object, tuple[object, ...], bool]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT 1 AS value")
+            await pilot.press("f4")
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if first_started.is_set():
+                    break
+            assert first_started.is_set()
+
+            sql.load_text("SELECT count(*) AS total FROM customers")
+            await pilot.press("f4")
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if app.state.queued_run is not None:
+                    break
+            assert app.state.queued_run is not None
+            queued_request = app.state.queued_run.request
+            queued_fingerprint = queued_request.sources[0].fingerprint
+
+            source_path.write_text(
+                source_path.read_text(encoding="utf-8") + "CUST-003,cora@example.com\n",
+                encoding="utf-8",
+            )
+            release_first.set()
+            for _ in range(300):
+                await pilot.pause(0.02)
+                if len(app.state.query_history) == 2 and not app.state.query_run.is_running:
+                    break
+
+            return (
+                queued_fingerprint,
+                app.state.query_history,
+                app.state.query_run.is_running,
+            )
+
+    queued_fingerprint, history, query_is_running = asyncio.run(_inner())
+    failed_events = [
+        event for event in second_events if isinstance(event, TUIFailedBeforePreviewEvent)
+    ]
+
+    assert queued_fingerprint is not None
+    assert source_error_codes == ["source_changed"]
+    assert len(failed_events) == 1
+    assert failed_events[0].error_message == "CSV source changed after submission."
+    assert failed_events[0].suggestion == (
+        "Submit the operation again to capture the current CSV source."
+    )
+    assert [item.status for item in history] == ["success", "error"]
+    assert history[-1].error_message == "CSV source changed after submission."
+    assert len(seen_requests) == 2
+    assert query_is_running is False
+
+
+def test_private_spool_path_is_not_admitted_by_direct_ui_or_catalog_workflows(
+    tmp_path: Path,
+) -> None:
+    store = TUIResultStore(temp_root=tmp_path)
+    stored = _store_complete_result(
+        store,
+        QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0),
+        sequence=1,
+    )
+    workspace = store.workspace_path
+    assert workspace is not None
+    private_spool = workspace / "query-1.result"
+    spool_bytes = private_spool.read_bytes()
+
+    async def _direct_ui_attempt() -> tuple[bool, tuple[TUISource, ...]]:
+        app = CSVQLMenuApp(initial_state=TUISessionState(), start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            handled_as_source = app._handle_pasted_csv_sources(str(private_spool))
+            await pilot.pause()
+            return handled_as_source, app.state.sources
+
+    handled_as_source, direct_sources = asyncio.run(_direct_ui_attempt())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / ".csvql.yml").write_text(
+        f"version: 1\ntables:\n  private_result:\n    path: {private_spool}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TableMappingError) as catalog_error:
+        build_initial_state(
+            csv_path=None,
+            table_mappings=(),
+            start_dir=project_root,
+        )
+
+    assert handled_as_source is False
+    assert direct_sources == ()
+    assert catalog_error.value.message == (
+        "Private TUI result artifacts cannot be used as sources."
+    )
+    assert catalog_error.value.suggestion == ("Use Save as source to create a normal CSV source.")
+    assert stored.handle.sequence == 1
+    assert private_spool.read_bytes() == spool_bytes
+
+
 def test_save_result_as_source_writes_full_output_from_spilled_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -6106,6 +6341,7 @@ def test_preview_only_result_refuses_export_and_save_without_loading_store(
     state = TUISessionState()
     sequence = state.reserve_query_sequences(1)[0]
     store = TUIResultStore(temp_root=tmp_path)
+    sql_execution_calls: list[tuple[object, ...]] = []
     _record_preview_only_result(
         state,
         store,
@@ -6124,7 +6360,13 @@ def test_preview_only_result_refuses_export_and_save_without_loading_store(
     def fail_if_loaded(handle: object) -> object:
         raise AssertionError(f"preview-only rows must not be loaded: {handle!r}")
 
+    def fail_if_sql_executes(*args: object, **kwargs: object) -> None:
+        sql_execution_calls.append((*args, kwargs))
+        raise AssertionError("preview-only export/save must not execute SQL")
+
     monkeypatch.setattr(store, "open_rows", fail_if_loaded)
+    monkeypatch.setattr(tui_app_module, "run_tui_request", fail_if_sql_executes)
+    monkeypatch.setattr(CSVQLEngine, "stream", fail_if_sql_executes)
 
     async def _inner() -> tuple[str, str, bool]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
@@ -6143,6 +6385,7 @@ def test_preview_only_result_refuses_export_and_save_without_loading_store(
     assert "Full export/save are unavailable for this result." in status
     assert "Full export/save are unavailable for this result." in message
     assert has_active_result is True
+    assert sql_execution_calls == []
 
 
 @pytest.mark.parametrize("focus", ["results", "history"])

@@ -1,3 +1,4 @@
+import importlib
 import json
 import os
 import socket
@@ -12,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import csvql.result_spool as result_spool
 import csvql.tui_result_store as result_store
 from csvql.tui_result_store import (
     TUI_RESULT_LEASE_NAME,
@@ -250,9 +252,15 @@ def test_recovery_rejects_lease_that_is_not_exactly_one_byte(
         "query-0.result",
         "query-01.result",
         "query-1.RESULT",
+        "preview-0.result",
+        "preview-01.result",
+        "preview--1.result",
+        "query-1.result.tmp",
         ".query-0-abcdef0123456789.result.tmp",
         ".query-1-ABCDEF0123456789.result.tmp",
         ".query-1-abcdef012345678.result.tmp",
+        ".preview-1-abcdef01234567890.result.tmp",
+        ".preview-1-abcdef0123456789.RESULT.tmp",
     ],
 )
 def test_recovery_rejects_unexpected_entry_name(
@@ -740,6 +748,35 @@ def test_recovery_recognizes_exact_preview_and_preview_staging_names(
     assert summary.workspaces_removed == 1
 
 
+@pytest.mark.parametrize(
+    "entry_name",
+    [
+        "query-1.result",
+        "preview-2.result",
+        ".query-3-abcdef0123456789.result.tmp",
+        ".preview-4-0123456789abcdef.result.tmp",
+    ],
+)
+def test_recovery_accepts_exact_completed_and_staging_filename_grammar(
+    tmp_path: Path,
+    entry_name: str,
+) -> None:
+    workspace = _write_candidate(tmp_path, created_at=_OLD_CREATED_AT)
+    (workspace / "query-1.result").unlink()
+    entry_path = workspace / entry_name
+    entry_path.write_bytes(b"disposable")
+    if os.name != "nt":
+        os.chmod(entry_path, 0o600)
+    _age_workspace(workspace)
+
+    summary = recover_abandoned_result_workspaces(temp_root=tmp_path, now=_NOW)
+
+    assert summary.files_removed == 3
+    assert summary.files_failed == 0
+    assert summary.workspaces_removed == 1
+    assert not workspace.exists()
+
+
 def test_recovery_removes_abandoned_workspace_without_deserializing_spill_contents(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -747,6 +784,20 @@ def test_recovery_removes_abandoned_workspace_without_deserializing_spill_conten
     workspace = _write_candidate(tmp_path, created_at=_OLD_CREATED_AT)
     (workspace / "query-1.result").write_bytes(b"not-a-spool")
     _age_workspace(workspace)
+    real_import_module = importlib.import_module
+
+    def reject_dynamic_codec_import(name: str, package: str | None = None) -> object:
+        if name in {"csvql.result_codec", "csvql.result_spool"}:
+            raise AssertionError(f"recovery dynamically imported {name}")
+        return real_import_module(name, package)
+
+    def reject_row_deserialization(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("recovery deserialized an abandoned row payload")
+
+    monkeypatch.setattr(importlib, "import_module", reject_dynamic_codec_import)
+    monkeypatch.setattr(result_store, "decode_row_payload", reject_row_deserialization)
+    monkeypatch.setattr(result_spool, "decode_row_payload", reject_row_deserialization)
 
     summary = recover_abandoned_result_workspaces(temp_root=tmp_path, now=_NOW)
 
