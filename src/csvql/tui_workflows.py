@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from csvql.atomic_write import write_text_atomic
+from csvql.bounded_result import PreviewPolicy
 from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import CSVQLError, ExportError, ProjectConfigError, TableMappingError
@@ -31,6 +32,7 @@ from csvql.project_config import (
     resolve_catalog_path,
     save_project,
 )
+from csvql.query_workflow import _snapshot_optional_catalog
 from csvql.source import (
     ResolvedSource,
     SourceCapability,
@@ -39,7 +41,14 @@ from csvql.source import (
 )
 from csvql.source_operations import SourceOperations
 from csvql.table_mapping import parse_table_mapping, source_from_single_csv, validate_table_alias
-from csvql.tui_state import TUIQueryOutcome, TUISessionState, TUISource, TUISourceColumn
+from csvql.tui_query_runner import TUIRunRequest
+from csvql.tui_state import (
+    TUIQueryOutcome,
+    TUIQueryRunMode,
+    TUISessionState,
+    TUISource,
+    TUISourceColumn,
+)
 
 _MISSING_PROJECT_PREFIX = "No .csvql.yml project catalog found."
 _DERIVED_RESULTS_DIR = Path(".csvql") / "results"
@@ -207,6 +216,39 @@ def query_sources(sources: Sequence[TUISource], sql: str) -> QueryResult:
     with CSVQLEngine(operation=operation) as engine:
         engine.prepare_sources(resolved)
         return engine.query(sql)
+
+
+def build_tui_run_request(
+    sources: Sequence[TUISource],
+    statements: Sequence[str],
+    *,
+    sequences: Sequence[int],
+    preview_policy: PreviewPolicy,
+    run_mode: TUIQueryRunMode,
+    submission_order: int,
+    start_dir: Path,
+    operation: OperationContext | None = None,
+) -> TUIRunRequest:
+    """Capture immutable SQL, source, fallback, and preview inputs for one TUI run."""
+
+    active_operation = operation or OperationContext(OperationToken())
+    resolved_sources = tuple(
+        _resolve_tui_source(source, capability="query", operation=active_operation)
+        for source in tuple(sources)
+    )
+    fallback_sources = _snapshot_optional_catalog(
+        start_dir=start_dir,
+        operation=active_operation,
+    )
+    return TUIRunRequest(
+        statements=tuple(statements),
+        sequences=tuple(sequences),
+        sources=resolved_sources,
+        fallback_sources=fallback_sources,
+        preview_policy=preview_policy,
+        run_mode=run_mode,
+        submission_order=submission_order,
+    )
 
 
 def run_buffer_for_tui(

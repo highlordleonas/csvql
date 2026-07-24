@@ -771,10 +771,10 @@ def test_private_spill_handle_cannot_enter_catalog_but_committed_csv_can(
 ) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
-    private_spool = tmp_path / "localql-private-spool" / "query-1.pickle"
+    private_spool = tmp_path / "localql-private-spool" / "query-1.result"
     private_spool.parent.mkdir()
     private_spool.write_bytes(b"private result bytes")
-    handle = TUIResultHandle(sequence=1, is_spilled=True, temp_path=private_spool)
+    handle = TUIResultHandle(sequence=1, store_id="1" * 32, nonce="2" * 32)
 
     with pytest.raises(AttributeError):
         source_spec_from_tui_source(handle)  # type: ignore[arg-type]
@@ -804,7 +804,7 @@ def test_private_spill_handle_cannot_enter_catalog_but_committed_csv_can(
     assert len(context.config.tables) == 1
     assert context.config.tables[0].name == "committed_ids"
     assert Path(context.config.tables[0].path).suffix == ".csv"
-    assert "pickle" not in context.config.tables[0].path
+    assert private_spool.name not in context.config.tables[0].path
     assert private_spool.read_bytes() == b"private result bytes"
 
 
