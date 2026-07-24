@@ -140,6 +140,14 @@ def test_private_result_artifact_recognition_ignores_unresolvable_symlink_alias(
     assert not tui_result_store._is_private_tui_result_artifact(alias)
 
 
+def test_private_result_artifact_recognition_ignores_malformed_path_syntax(
+    tmp_path: Path,
+) -> None:
+    malformed_path = tmp_path / "result\x00alias"
+
+    assert not tui_result_store._is_private_tui_result_artifact(malformed_path)
+
+
 def test_complete_result_round_trips_from_framed_storage(tmp_path: Path) -> None:
     store = TUIResultStore(temp_root=tmp_path)
 

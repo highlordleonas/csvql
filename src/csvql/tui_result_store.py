@@ -2334,7 +2334,7 @@ def _is_private_tui_result_artifact(path: Path) -> bool:
     candidate_paths: tuple[Path, ...] = (path,)
     try:
         resolved_path = path.resolve(strict=True)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         pass
     else:
         candidate_paths += (resolved_path,)
