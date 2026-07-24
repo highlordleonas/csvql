@@ -495,6 +495,9 @@ class TUIResultStore:
         self._pending_cleanup_workspaces: dict[Path, _PendingWorkspaceCleanup] = {}
         self._lease: _PlatformLease | None = None
         self._cleanup_uncertainties = 0
+        # Starting cleanup permanently closes normal store operations. Completion
+        # remains separate so an interrupted cleanup can retry its original state.
+        self._cleanup_started = False
         self._cleanup_attempted = False
         self._lock = threading.RLock()
 
@@ -699,6 +702,7 @@ class TUIResultStore:
         with self._lock:
             if self._cleanup_attempted:
                 return TUIResultCleanupSummary()
+            self._cleanup_started = True
             if self._active_writer is not None:
                 self._rollback_writer(self._active_writer)
             removed = 0
@@ -916,6 +920,7 @@ class TUIResultStore:
 
     def _writer_progress(self, writer: TUIResultWriter) -> TUIResultStoreProgress:
         with self._lock:
+            self._require_available()
             if writer._stored_result is not None:
                 return TUIResultStoreProgress(
                     rows_written=writer._rows_written,
@@ -1065,6 +1070,7 @@ class TUIResultStore:
         self._allocated_bytes += amount
 
     def _record_for_handle(self, handle: TUIResultHandle) -> _StoredResultRecord:
+        self._require_available()
         if (
             type(handle) is not TUIResultHandle
             or not _is_positive_sequence(handle.sequence)
@@ -1232,7 +1238,7 @@ class TUIResultStore:
         )
 
     def _require_available(self) -> None:
-        if self._cleanup_attempted:
+        if self._cleanup_started:
             raise TUIResultStorageError(
                 "Result storage is no longer available.",
                 kind="result_unavailable",

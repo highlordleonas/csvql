@@ -5,6 +5,7 @@ import json
 import multiprocessing
 import os
 import stat
+import threading
 from dataclasses import fields, replace
 from datetime import UTC, datetime
 from multiprocessing.connection import Connection
@@ -504,6 +505,8 @@ def test_cleanup_retries_after_one_shot_late_failure(
 ) -> None:
     store = TUIResultStore(temp_root=tmp_path, session_id="8" * 32)
     stored = _commit(store)
+    active_writer = store.begin_complete(sequence=2, columns=("value",))
+    active_writer.append_payload(encode_row_payload(("pending",)))
     workspace = store.workspace_path
     assert workspace is not None
     result_path = workspace / "query-1.result"
@@ -534,6 +537,7 @@ def test_cleanup_retries_after_one_shot_late_failure(
     with pytest.raises(RuntimeError, match="one-shot late cleanup failure"):
         store.cleanup()
 
+    assert store._cleanup_started is True
     assert store._cleanup_attempted is False
     assert store.workspace_path == workspace
     assert store._allocated_bytes == stored.logical_bytes
@@ -541,10 +545,34 @@ def test_cleanup_retries_after_one_shot_late_failure(
     assert lease_path.is_file()
     assert foreign_path.read_text(encoding="utf-8") == "retain"
 
+    def assert_result_unavailable(operation: object) -> None:
+        assert callable(operation)
+        with pytest.raises(TUIResultStorageError) as error:
+            operation()
+        assert error.value.kind == "result_unavailable"
+
+    assert_result_unavailable(lambda: store.begin_complete(sequence=3, columns=("value",)))
+    assert_result_unavailable(
+        lambda: store.persist_preview(
+            sequence=3,
+            preview=_preview(),
+            reason="preservation_failed",
+            elapsed_ms=1.0,
+        )
+    )
+    assert_result_unavailable(lambda: store.open_rows(stored.handle))
+    assert_result_unavailable(lambda: store.load_preview(stored.handle, PreviewPolicy()))
+    assert_result_unavailable(lambda: store.remove(stored.handle))
+    assert_result_unavailable(lambda: active_writer.append_payload(encode_row_payload(("late",))))
+    assert_result_unavailable(lambda: active_writer.progress)
+    assert_result_unavailable(lambda: active_writer.commit(elapsed_ms=2.0))
+    assert store.workspace_path == workspace
+
     summary = store.cleanup()
 
     assert summary == TUIResultCleanupSummary(files_removed=1, workspaces_removed=1)
     assert close_calls == 2
+    assert store._cleanup_started is True
     assert store._cleanup_attempted is True
     assert store.workspace_path is None
     assert store._workspace_identity is None
@@ -565,6 +593,103 @@ def test_cleanup_retries_after_one_shot_late_failure(
     assert close_calls == 2
     with pytest.raises(TUIResultStorageError, match="no longer available"):
         store.open_rows(stored.handle)
+
+
+def test_writer_queued_behind_late_cleanup_failure_cannot_replace_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = TUIResultStore(temp_root=tmp_path)
+    stored = _commit(store)
+    workspace = store.workspace_path
+    workspace_identity = store._workspace_identity
+    assert workspace is not None
+    assert workspace_identity is not None
+    result_path = workspace / "query-1.result"
+    marker_path = workspace / TUI_RESULT_MARKER_NAME
+    lease_path = workspace / TUI_RESULT_LEASE_NAME
+    real_close_active_lease = store._close_active_lease
+    cleanup_reached_late_failure = threading.Event()
+    release_cleanup_failure = threading.Event()
+    writer_call_started = threading.Event()
+    writer_finished = threading.Event()
+    cleanup_errors: list[BaseException] = []
+    writer_outcomes: list[object] = []
+    close_calls = 0
+
+    def fail_once_at_lease_close(candidate: TUIResultStore) -> bool:
+        nonlocal close_calls
+        assert candidate is store
+        close_calls += 1
+        if close_calls == 1:
+            assert not result_path.exists()
+            assert not marker_path.exists()
+            assert lease_path.is_file()
+            cleanup_reached_late_failure.set()
+            if not release_cleanup_failure.wait(timeout=5.0):
+                raise AssertionError("cleanup failure was not released within five seconds")
+            raise RuntimeError("one-shot late cleanup failure")
+        return real_close_active_lease()
+
+    monkeypatch.setattr(
+        store,
+        "_close_active_lease",
+        MethodType(fail_once_at_lease_close, store),
+    )
+
+    def run_cleanup() -> None:
+        try:
+            store.cleanup()
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+
+    def run_writer() -> None:
+        writer_call_started.set()
+        try:
+            writer_outcomes.append(store.begin_complete(sequence=2, columns=("value",)))
+        except BaseException as exc:
+            writer_outcomes.append(exc)
+        finally:
+            writer_finished.set()
+
+    cleanup_thread = threading.Thread(target=run_cleanup, name="cleanup")
+    writer_thread = threading.Thread(target=run_writer, name="queued-writer")
+    cleanup_thread.start()
+    try:
+        assert cleanup_reached_late_failure.wait(timeout=5.0)
+        writer_thread.start()
+        assert writer_call_started.wait(timeout=5.0)
+        assert not writer_finished.wait(timeout=0.1)
+    finally:
+        release_cleanup_failure.set()
+        cleanup_thread.join(timeout=5.0)
+        if writer_thread.ident is not None:
+            writer_thread.join(timeout=5.0)
+
+    assert not cleanup_thread.is_alive()
+    assert not writer_thread.is_alive()
+    assert len(cleanup_errors) == 1
+    assert isinstance(cleanup_errors[0], RuntimeError)
+    assert str(cleanup_errors[0]) == "one-shot late cleanup failure"
+    assert len(writer_outcomes) == 1
+    assert isinstance(writer_outcomes[0], TUIResultStorageError)
+    assert writer_outcomes[0].kind == "result_unavailable"
+    assert store._cleanup_started is True
+    assert store._cleanup_attempted is False
+    assert store.workspace_path == workspace
+    assert store._workspace_identity == workspace_identity
+    assert store._allocated_bytes == stored.logical_bytes
+    assert {path for path in tmp_path.iterdir() if path.is_dir()} == {workspace}
+
+    summary = store.cleanup()
+
+    assert summary == TUIResultCleanupSummary(files_removed=1, workspaces_removed=1)
+    assert close_calls == 2
+    assert store._cleanup_started is True
+    assert store._cleanup_attempted is True
+    assert store.workspace_path is None
+    assert not workspace.exists()
+    assert tuple(tmp_path.iterdir()) == ()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink regression")
