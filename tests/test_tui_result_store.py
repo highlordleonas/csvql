@@ -9,6 +9,7 @@ from dataclasses import fields, replace
 from datetime import UTC, datetime
 from multiprocessing.connection import Connection
 from pathlib import Path
+from types import MethodType
 
 import pytest
 
@@ -495,6 +496,75 @@ def test_cleanup_removes_marker_before_releasing_lease(
     monkeypatch.setattr(Path, "unlink", observe_order)
 
     assert store.cleanup().warning_count == 0
+
+
+def test_cleanup_retries_after_one_shot_late_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = TUIResultStore(temp_root=tmp_path, session_id="8" * 32)
+    stored = _commit(store)
+    workspace = store.workspace_path
+    assert workspace is not None
+    result_path = workspace / "query-1.result"
+    marker_path = workspace / TUI_RESULT_MARKER_NAME
+    lease_path = workspace / TUI_RESULT_LEASE_NAME
+    foreign_path = tmp_path / "foreign.txt"
+    foreign_path.write_text("retain", encoding="utf-8")
+    real_close_active_lease = store._close_active_lease
+    close_calls = 0
+
+    def fail_once_at_lease_close(candidate: TUIResultStore) -> bool:
+        nonlocal close_calls
+        assert candidate is store
+        close_calls += 1
+        if close_calls == 1:
+            assert not result_path.exists()
+            assert not marker_path.exists()
+            assert lease_path.is_file()
+            raise RuntimeError("one-shot late cleanup failure")
+        return real_close_active_lease()
+
+    monkeypatch.setattr(
+        store,
+        "_close_active_lease",
+        MethodType(fail_once_at_lease_close, store),
+    )
+
+    with pytest.raises(RuntimeError, match="one-shot late cleanup failure"):
+        store.cleanup()
+
+    assert store._cleanup_attempted is False
+    assert store.workspace_path == workspace
+    assert store._allocated_bytes == stored.logical_bytes
+    assert workspace.is_dir()
+    assert lease_path.is_file()
+    assert foreign_path.read_text(encoding="utf-8") == "retain"
+
+    summary = store.cleanup()
+
+    assert summary == TUIResultCleanupSummary(files_removed=1, workspaces_removed=1)
+    assert close_calls == 2
+    assert store._cleanup_attempted is True
+    assert store.workspace_path is None
+    assert store._workspace_identity is None
+    assert store._session_id is None
+    assert store._lease is None
+    assert store._allocated_bytes == 0
+    assert store._records_by_nonce == {}
+    assert store._record_nonce_by_sequence == {}
+    assert store._issued_handles == {}
+    assert store._pending_cleanup_paths == set()
+    assert store._pending_cleanup_identities == {}
+    assert store._pending_cleanup_bytes == {}
+    assert store._pending_cleanup_workspaces == {}
+    assert not workspace.exists()
+    assert foreign_path.read_text(encoding="utf-8") == "retain"
+
+    assert store.cleanup() == TUIResultCleanupSummary()
+    assert close_calls == 2
+    with pytest.raises(TUIResultStorageError, match="no longer available"):
+        store.open_rows(stored.handle)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink regression")

@@ -656,29 +656,77 @@ def test_concurrent_unmount_callers_share_cleanup_completion(
 
 def test_unmount_retries_after_unexpected_cleanup_failure(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    store = Mock(spec=TUIResultStore)
-    store.cleanup.side_effect = [
-        RuntimeError("cleanup failed"),
-        TUIResultCleanupSummary(files_failed=1),
-    ]
+    store = TUIResultStore(temp_root=tmp_path, session_id="f" * 32)
+    writer = store.begin_complete(sequence=1, columns=("value",))
+    writer.append_payload(encode_row_payload(("alpha",)))
+    stored = writer.commit(elapsed_ms=1.0)
+    workspace = store.workspace_path
+    assert workspace is not None
+    result_path = workspace / "query-1.result"
+    marker_path = workspace / ".localql-session.json"
+    lease_path = workspace / ".lease"
+    foreign_path = tmp_path / "foreign.txt"
+    foreign_path.write_text("retain", encoding="utf-8")
+    real_close_active_lease = store._close_active_lease
+    close_calls = 0
+
+    def fail_once_at_lease_close(candidate: TUIResultStore) -> bool:
+        nonlocal close_calls
+        assert candidate is store
+        close_calls += 1
+        if close_calls == 1:
+            assert not result_path.exists()
+            assert not marker_path.exists()
+            assert lease_path.is_file()
+            raise RuntimeError("one-shot late cleanup failure")
+        return real_close_active_lease()
+
+    monkeypatch.setattr(
+        store,
+        "_close_active_lease",
+        MethodType(fail_once_at_lease_close, store),
+    )
     app = CSVQLMenuApp(
         initial_state=TUISessionState(),
         start_dir=tmp_path,
         result_store=store,
     )
 
-    with pytest.raises(RuntimeError, match="cleanup failed"):
+    with pytest.raises(RuntimeError, match="one-shot late cleanup failure"):
         asyncio.run(app.on_unmount())
 
     assert app._did_cleanup is False
+    assert store._cleanup_attempted is False
+    assert store.workspace_path == workspace
+    assert store._allocated_bytes == stored.logical_bytes
+    assert workspace.is_dir()
+    assert lease_path.is_file()
+    assert foreign_path.read_text(encoding="utf-8") == "retain"
 
     asyncio.run(app.on_unmount())
     asyncio.run(app.on_unmount())
 
     assert app._did_cleanup is True
-    assert app.cleanup_summary.files_failed == 1
-    assert store.cleanup.call_count == 2
+    assert app.cleanup_summary == TUIResultCleanupSummary(
+        files_removed=1,
+        workspaces_removed=1,
+    )
+    assert close_calls == 2
+    assert store._cleanup_attempted is True
+    assert store.workspace_path is None
+    assert store._workspace_identity is None
+    assert store._session_id is None
+    assert store._lease is None
+    assert store._allocated_bytes == 0
+    assert store._records_by_nonce == {}
+    assert store._record_nonce_by_sequence == {}
+    assert store._issued_handles == {}
+    assert not workspace.exists()
+    assert foreign_path.read_text(encoding="utf-8") == "retain"
+    with pytest.raises(TUIResultStorageError, match="no longer available"):
+        store.open_rows(stored.handle)
 
 
 @pytest.mark.parametrize("work_kind", ["query", "operation"])

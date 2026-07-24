@@ -701,7 +701,6 @@ class TUIResultStore:
                 return TUIResultCleanupSummary()
             if self._active_writer is not None:
                 self._rollback_writer(self._active_writer)
-            self._cleanup_attempted = True
             removed = 0
             failed = self._cleanup_uncertainties
             workspace_removed = 0
@@ -783,6 +782,7 @@ class TUIResultStore:
             self._session_id = None
             self._allocated_bytes = 0
             self._cleanup_uncertainties = 0
+            self._cleanup_attempted = True
             return TUIResultCleanupSummary(
                 files_removed=removed,
                 files_failed=failed,
