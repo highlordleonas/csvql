@@ -534,6 +534,153 @@ def test_unmount_merges_recovery_and_store_cleanup_summaries_once(
     store.cleanup.assert_called_once_with()
 
 
+def test_cancelled_unmount_waits_for_shared_cleanup_before_propagating(
+    tmp_path: Path,
+) -> None:
+    started = threading.Event()
+    cancellation_requested = threading.Event()
+    release_callable_cleanup = threading.Event()
+    callable_terminal = threading.Event()
+    cleanup_observations: list[bool] = []
+    store = Mock(spec=TUIResultStore)
+    store.cleanup.side_effect = lambda: (
+        cleanup_observations.append(callable_terminal.is_set()) or TUIResultCleanupSummary()
+    )
+
+    def work(operation: OperationContext) -> None:
+        operation.attach_interrupt(cancellation_requested.set)
+        started.set()
+        try:
+            assert cancellation_requested.wait(timeout=2.0)
+            assert release_callable_cleanup.wait(timeout=2.0)
+        finally:
+            callable_terminal.set()
+
+    async def yield_to_event_loop() -> None:
+        resumed: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_soon(resumed.set_result, None)
+        await resumed
+
+    async def _inner() -> None:
+        app = CSVQLMenuApp(
+            initial_state=TUISessionState(),
+            start_dir=tmp_path,
+            result_store=store,
+        )
+        operation = OperationContext(OperationToken())
+        callable_task = asyncio.create_task(
+            asyncio.to_thread(app._track_thread_callable(operation, lambda: work(operation)))
+        )
+        assert await asyncio.to_thread(started.wait, 2.0)
+
+        first_unmount = asyncio.create_task(app.on_unmount())
+        assert await asyncio.to_thread(cancellation_requested.wait, 2.0)
+
+        first_unmount.cancel()
+        await yield_to_event_loop()
+        assert not first_unmount.done()
+        store.cleanup.assert_not_called()
+
+        first_unmount.cancel()
+        await yield_to_event_loop()
+        assert not first_unmount.done()
+        store.cleanup.assert_not_called()
+
+        release_callable_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await first_unmount
+        await callable_task
+
+        assert callable_terminal.is_set()
+        assert cleanup_observations == [True]
+
+        await app.on_unmount()
+        store.cleanup.assert_called_once_with()
+
+    asyncio.run(_inner())
+
+
+def test_concurrent_unmount_callers_share_cleanup_completion(
+    tmp_path: Path,
+) -> None:
+    started = threading.Event()
+    cancellation_requested = threading.Event()
+    release_callable_cleanup = threading.Event()
+    callable_terminal = threading.Event()
+    store = Mock(spec=TUIResultStore)
+    store.cleanup.side_effect = lambda: callable_terminal.is_set() and TUIResultCleanupSummary()
+
+    def work(operation: OperationContext) -> None:
+        operation.attach_interrupt(cancellation_requested.set)
+        started.set()
+        try:
+            assert cancellation_requested.wait(timeout=2.0)
+            assert release_callable_cleanup.wait(timeout=2.0)
+        finally:
+            callable_terminal.set()
+
+    async def yield_to_event_loop() -> None:
+        resumed: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_soon(resumed.set_result, None)
+        await resumed
+
+    async def _inner() -> None:
+        app = CSVQLMenuApp(
+            initial_state=TUISessionState(),
+            start_dir=tmp_path,
+            result_store=store,
+        )
+        operation = OperationContext(OperationToken())
+        callable_task = asyncio.create_task(
+            asyncio.to_thread(app._track_thread_callable(operation, lambda: work(operation)))
+        )
+        assert await asyncio.to_thread(started.wait, 2.0)
+
+        first_unmount = asyncio.create_task(app.on_unmount())
+        assert await asyncio.to_thread(cancellation_requested.wait, 2.0)
+        second_unmount = asyncio.create_task(app.on_unmount())
+        await yield_to_event_loop()
+
+        assert not first_unmount.done()
+        assert not second_unmount.done()
+        store.cleanup.assert_not_called()
+
+        release_callable_cleanup.set()
+        await asyncio.gather(first_unmount, second_unmount, callable_task)
+
+        assert callable_terminal.is_set()
+        store.cleanup.assert_called_once_with()
+
+    asyncio.run(_inner())
+
+
+def test_unmount_retries_after_unexpected_cleanup_failure(
+    tmp_path: Path,
+) -> None:
+    store = Mock(spec=TUIResultStore)
+    store.cleanup.side_effect = [
+        RuntimeError("cleanup failed"),
+        TUIResultCleanupSummary(files_failed=1),
+    ]
+    app = CSVQLMenuApp(
+        initial_state=TUISessionState(),
+        start_dir=tmp_path,
+        result_store=store,
+    )
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        asyncio.run(app.on_unmount())
+
+    assert app._did_cleanup is False
+
+    asyncio.run(app.on_unmount())
+    asyncio.run(app.on_unmount())
+
+    assert app._did_cleanup is True
+    assert app.cleanup_summary.files_failed == 1
+    assert store.cleanup.call_count == 2
+
+
 @pytest.mark.parametrize("work_kind", ["query", "operation"])
 def test_unmount_cancels_and_drains_thread_callable_before_store_cleanup(
     tmp_path: Path,

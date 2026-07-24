@@ -585,6 +585,7 @@ class CSVQLMenuApp(App[None]):
             self._result_store = result_store
         self._cleanup_summary = initial_cleanup_summary or TUIResultCleanupSummary()
         self._did_cleanup = False
+        self._cleanup_task: asyncio.Task[None] | None = None
         self._thread_callables: set[_TrackedThreadCallable] = set()
 
     @property
@@ -626,7 +627,32 @@ class CSVQLMenuApp(App[None]):
     async def on_unmount(self) -> None:
         if self._did_cleanup:
             return
-        self._did_cleanup = True
+        cleanup_task = self._cleanup_task
+        if cleanup_task is None:
+            cleanup_task = asyncio.create_task(self._drain_and_cleanup())
+            self._cleanup_task = cleanup_task
+
+        cancellation: asyncio.CancelledError | None = None
+        current_task = asyncio.current_task()
+        try:
+            while True:
+                try:
+                    await asyncio.shield(cleanup_task)
+                    break
+                except asyncio.CancelledError as error:
+                    if current_task is None or current_task.cancelling() == 0:
+                        raise
+                    cancellation = error
+                    while current_task.cancelling():
+                        current_task.uncancel()
+        finally:
+            if cleanup_task.done() and not self._did_cleanup and self._cleanup_task is cleanup_task:
+                self._cleanup_task = None
+
+        if cancellation is not None:
+            raise cancellation
+
+    async def _drain_and_cleanup(self) -> None:
         while self._thread_callables:
             callables = tuple(self._thread_callables)
             for tracked in callables:
@@ -636,6 +662,7 @@ class CSVQLMenuApp(App[None]):
                     self._finish_thread_callable(tracked)
             await asyncio.gather(*(asyncio.shield(tracked.terminal) for tracked in callables))
         self._cleanup_summary = self._cleanup_summary.merge(self._result_store.cleanup())
+        self._did_cleanup = True
 
     def _track_thread_callable(
         self,
