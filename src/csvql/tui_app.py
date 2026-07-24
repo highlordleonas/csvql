@@ -65,11 +65,14 @@ from csvql.tui_sql_assist import (
 )
 from csvql.tui_state import (
     TUIBufferResultTab,
+    TUIExportIntent,
+    TUIExportIntentReplacement,
     TUIFocusPane,
     TUIOperationKind,
     TUIOperationRunState,
     TUIQueryHistoryItem,
     TUIQueryRunMode,
+    TUIQueuedRunReplacement,
     TUIResultRecord,
     TUIResultViewState,
     TUISessionState,
@@ -79,6 +82,7 @@ from csvql.tui_state import (
 )
 from csvql.tui_workflows import (
     build_initial_state,
+    build_tui_export_intent,
     build_tui_run_request,
     export_last_result,
     external_catalog_source_paths,
@@ -486,6 +490,8 @@ class CSVQLMenuApp(App[None]):
         self._active_operation_worker_name: str | None = None
         self._active_query_worker: Worker[object] | None = None
         self._active_query_operation: OperationContext | None = None
+        self._query_terminal_event_sequence: int | None = None
+        self._attached_export_intent_in_flight: TUIExportIntent | None = None
         self._cancelled_operation_names: set[str] = set()
         self._sql_assist_choices: dict[str, SQLTemplateOption | SQLCompletionItem] = {}
         self._preview_policy = preview_policy or PreviewPolicy()
@@ -887,11 +893,11 @@ class CSVQLMenuApp(App[None]):
                 )
             )
             return
-        if self._run_editor_pending or self.state.query_run.is_running:
+        if self._run_editor_pending:
             self._show_rejected_run(
                 CSVQLError(
-                    "Query already running.",
-                    suggestion="Wait for the current query to finish.",
+                    "A run request is already being prepared.",
+                    suggestion="Wait for the editor snapshot to settle.",
                 ),
                 reset_run_status=False,
                 simple_message_without_previous=True,
@@ -941,7 +947,10 @@ class CSVQLMenuApp(App[None]):
                 sequences=sequences,
                 run_mode="buffer",
             )
-            self.state.start_query_request(request)
+            if self.state.query_run.is_running:
+                self._enqueue_query_request(request)
+                return
+            self._activate_query_request(request)
         except RuntimeError:
             self._show_rejected_run(
                 CSVQLError(
@@ -958,19 +967,6 @@ class CSVQLMenuApp(App[None]):
         except ValueError as exc:
             self._show_rejected_run(CSVQLError(str(exc)))
             return
-
-        message = _run_start_message(
-            sequence=sequences[0],
-            run_label="buffer SQL",
-            run_mode="buffer",
-            rerun_source_sequence=None,
-        )
-        self._set_status(message)
-        self._update_static_text("#run-status", message)
-        for sequence, statement in zip(sequences, statements, strict=True):
-            self._active_query_sql[sequence] = statement
-            self._active_query_run_modes[sequence] = "buffer"
-        self._start_query_worker(request)
 
     def _run_selected_or_current_query_from_editor(self) -> None:
         self._run_editor_pending = False
@@ -1001,13 +997,109 @@ class CSVQLMenuApp(App[None]):
             operation=operation,
         )
         self._next_query_submission_order += 1
-        self._active_query_operation = operation
         return request
 
+    def _enqueue_query_request(self, request: TUIRunRequest) -> None:
+        replacement = self.state.enqueue_run(request)
+        if replacement is None:
+            message = f"Queued 1 run request: {_run_request_description(request)}."
+            self._set_status(message)
+            self._update_static_text("#run-status", message)
+            self.query_one("#sql", TextArea).focus()
+            return
+
+        prompt = (
+            "Replace queued run "
+            f"{_run_request_description(replacement.existing.request)} "
+            f"with {_run_request_description(replacement.proposed.request)}? "
+            "Press y to replace or n to keep the existing request."
+        )
+        self.push_screen(
+            _ConfirmationScreen(prompt),
+            callback=lambda confirmed: self._handle_queued_run_replacement(
+                replacement,
+                confirmed,
+            ),
+        )
+
+    def _handle_queued_run_replacement(
+        self,
+        replacement: TUIQueuedRunReplacement,
+        confirmed: bool | None,
+    ) -> None:
+        if not confirmed:
+            self._set_status(
+                "Queued run replacement cancelled; "
+                f"kept {_run_request_description(replacement.existing.request)}."
+            )
+            self.query_one("#sql", TextArea).focus()
+            return
+        try:
+            self.state.replace_queued_run(replacement)
+        except RuntimeError as exc:
+            self._show_error(CSVQLError(str(exc)))
+            return
+        message = (
+            f"Replaced queued run with {_run_request_description(replacement.proposed.request)}."
+        )
+        self._set_status(message)
+        self._update_static_text("#run-status", message)
+        self.query_one("#sql", TextArea).focus()
+
+    def _activate_query_request(
+        self,
+        request: TUIRunRequest,
+        *,
+        run_label: str | None = None,
+        rerun_source_sequence: int | None = None,
+    ) -> None:
+        self._query_terminal_event_sequence = None
+        self.state.start_query_request(request)
+        if request.run_mode != "buffer":
+            sequence = request.sequences[0]
+            executing_record = TUIResultRecord(
+                handle=None,
+                state="executing",
+                reason=None,
+                columns=(),
+                preview_row_count=0,
+                full_row_count=None,
+                elapsed_ms=0.0,
+            )
+            self.state.set_active_result_record(
+                sequence,
+                executing_record,
+                run_mode=request.run_mode,
+            )
+            self._active_query_records[sequence] = executing_record
+
+        for sequence, statement in zip(
+            request.sequences,
+            request.statements,
+            strict=True,
+        ):
+            self._active_query_sql[sequence] = statement
+            self._active_query_run_modes[sequence] = request.run_mode
+
+        message = _run_start_message(
+            sequence=request.sequences[0],
+            run_label=(
+                run_label
+                if run_label is not None
+                else ("buffer SQL" if request.run_mode == "buffer" else "query")
+            ),
+            run_mode=request.run_mode,
+            rerun_source_sequence=rerun_source_sequence,
+        )
+        self._set_status(message)
+        self._update_static_text("#run-status", message)
+        self._start_query_worker(request)
+
     def _start_query_worker(self, request: TUIRunRequest) -> None:
-        operation = self._active_query_operation
-        if operation is None:
-            raise RuntimeError("query worker requires an active operation context")
+        if self._active_query_worker is not None and not self._active_query_worker.is_finished:
+            raise RuntimeError("query worker already active")
+        operation = OperationContext(OperationToken())
+        self._active_query_operation = operation
 
         self._active_query_worker = self.run_worker(
             lambda: run_tui_request(
@@ -1116,27 +1208,19 @@ class CSVQLMenuApp(App[None]):
 
         try:
             sequence = self.state.reserve_query_sequences(1)[0]
-            executing_record = TUIResultRecord(
-                handle=None,
-                state="executing",
-                reason=None,
-                columns=(),
-                preview_row_count=0,
-                full_row_count=None,
-                elapsed_ms=0.0,
-            )
             request = self._build_query_request(
                 (sql,),
                 sequences=(sequence,),
                 run_mode=run_mode,
             )
-            self.state.start_query_request(request)
-            self.state.set_active_result_record(
-                sequence,
-                executing_record,
-                run_mode=run_mode,
+            if self.state.query_run.is_running:
+                self._enqueue_query_request(request)
+                return
+            self._activate_query_request(
+                request,
+                run_label=run_label,
+                rerun_source_sequence=rerun_source_sequence,
             )
-            self._active_query_records[sequence] = executing_record
         except RuntimeError:
             self._show_rejected_run(
                 CSVQLError(
@@ -1154,19 +1238,6 @@ class CSVQLMenuApp(App[None]):
             self._show_rejected_run(CSVQLError(str(exc)))
             return
 
-        message = _run_start_message(
-            sequence=sequence,
-            run_label=run_label,
-            run_mode=run_mode,
-            rerun_source_sequence=rerun_source_sequence,
-        )
-
-        self._set_status(message)
-        self._update_static_text("#run-status", message)
-        self._active_query_sql[sequence] = sql
-        self._active_query_run_modes[sequence] = run_mode
-        self._start_query_worker(request)
-
     def action_export_last_result(self) -> None:
         if self._prompt_screen_active():
             return
@@ -1174,7 +1245,16 @@ class CSVQLMenuApp(App[None]):
             self._show_selected_history_result()
         if self._show_active_result_unavailable():
             return
-        if self._active_query_result() is None:
+        record = self.state.active_query_result_record()
+        result_sequence = self.state.active_result.sequence
+        if (
+            record is None
+            or result_sequence is None
+            or record.state not in {"preserving", "complete"}
+        ):
+            self._show_error(CSVQLError("Run a query before exporting."))
+            return
+        if record.state == "complete" and self._query_result_for_sequence(result_sequence) is None:
             if self._show_active_result_unavailable():
                 return
             self._show_error(CSVQLError("Run a query before exporting."))
@@ -1188,7 +1268,10 @@ class CSVQLMenuApp(App[None]):
                 ),
                 input_id="export-path",
             ),
-            callback=self._handle_export_last_result,
+            callback=lambda path_value: self._handle_export_last_result(
+                path_value,
+                result_sequence=result_sequence,
+            ),
         )
 
     def action_save_result_as_source(self) -> None:
@@ -1276,10 +1359,10 @@ class CSVQLMenuApp(App[None]):
         kind: TUIOperationKind,
         label: str,
         work: Callable[[OperationContext], object],
-    ) -> None:
+    ) -> bool:
         if self._operation_running():
             self._set_status(f"{self.state.operation_run.label} already running.")
-            return
+            return False
 
         self.state.operation_run = TUIOperationRunState(is_running=True, kind=kind, label=label)
         self._set_status(f"{label}...")
@@ -1298,6 +1381,7 @@ class CSVQLMenuApp(App[None]):
             exit_on_error=False,
         )
         self._active_operation_worker = worker
+        return True
 
     def action_cancel_operation(self) -> None:
         if self.state.query_run.is_running:
@@ -1316,6 +1400,22 @@ class CSVQLMenuApp(App[None]):
         operation = self._active_operation_context
         label = self.state.operation_run.label
         worker_name = worker.name or ""
+        ordered_chain_pending = (
+            self._attached_export_intent_in_flight is not None
+            or self.state.export_intent is not None
+        )
+        if ordered_chain_pending:
+            if operation is None:
+                self._show_error(
+                    CSVQLError(
+                        f"Unable to cancel {label}.",
+                        suggestion="Wait for the current action to finish.",
+                    )
+                )
+                return
+            operation.request_cancel()
+            self._set_status(f"Cancelling {label}...")
+            return
         self._cancelled_operation_names.add(worker_name)
         if operation is not None:
             operation.request_cancel()
@@ -1342,11 +1442,13 @@ class CSVQLMenuApp(App[None]):
             if self._active_operation_worker is worker:
                 self._active_operation_worker = None
                 self.state.operation_run = TUIOperationRunState()
+            self._resume_deferred_attached_export()
             return
 
         if self._active_operation_worker is not worker:
             return
 
+        attached_intent = self._attached_export_intent_in_flight
         operation_label = self.state.operation_run.label.strip()
         self._active_operation_worker = None
         self.state.operation_run = TUIOperationRunState()
@@ -1356,14 +1458,31 @@ class CSVQLMenuApp(App[None]):
             self._active_operation_token = None
 
         if state == WorkerState.CANCELLED:
+            if attached_intent is not None:
+                self._set_status(
+                    "Cancelled attached export to "
+                    f"{_display_path(attached_intent.destination, self.start_dir)}."
+                )
+                self._finish_attached_export(attached_intent)
+            else:
+                self._resume_deferred_attached_export()
             return
         if state == WorkerState.ERROR:
             self._handle_operation_worker_failure(worker.error, operation_label=operation_label)
+            if attached_intent is not None:
+                self._finish_attached_export(attached_intent)
+            else:
+                self._resume_deferred_attached_export()
             return
         if state != WorkerState.SUCCESS:
+            self._resume_deferred_attached_export()
             return
 
         self._apply_operation_outcome(worker.result, operation_label=operation_label)
+        if attached_intent is not None:
+            self._finish_attached_export(attached_intent)
+        else:
+            self._resume_deferred_attached_export()
 
     def _apply_operation_outcome(self, outcome: object, *, operation_label: str) -> None:
         query_running = self.state.query_run.is_running
@@ -1495,16 +1614,19 @@ class CSVQLMenuApp(App[None]):
             return
         if worker.group != "query" or not worker.is_finished:
             return
+        request = self.state.query_run.request
         if self._active_query_worker is worker:
             self._active_query_worker = None
             self._active_query_operation = None
-        if event.state == WorkerState.ERROR:
+        if self._query_terminal_event_sequence is not None:
+            self.state.finish_query_run()
+        elif event.state == WorkerState.ERROR:
             self._handle_query_worker_failure(worker, worker.error)
-            return
-        if event.state != WorkerState.SUCCESS:
-            return
-        request = self.state.query_run.request
-        if request is not None and request.run_mode == "buffer":
+        elif (
+            event.state == WorkerState.SUCCESS
+            and request is not None
+            and request.run_mode == "buffer"
+        ):
             handled_sequences = {
                 item.sequence
                 for item in self.state.query_history
@@ -1512,10 +1634,111 @@ class CSVQLMenuApp(App[None]):
             }
             if not handled_sequences:
                 self._handle_empty_buffer_outcome(worker)
-                return
+            else:
+                self.state.finish_query_run()
+        elif event.state == WorkerState.SUCCESS:
             self.state.finish_query_run()
+        elif request is not None:
+            self._handle_query_worker_failure(worker, worker.error)
+
+        if not self.state.query_run.is_running:
+            self._query_terminal_event_sequence = None
+        if self._continue_after_query_worker_terminalized():
+            return
+        if not self.state.query_run.is_running:
             self._update_static_text("#run-status", "Ready.")
             self.query_one("#sql", TextArea).focus()
+
+    def _continue_after_query_worker_terminalized(self) -> bool:
+        if self.state.query_run.is_running:
+            return False
+
+        intent = self.state.export_intent
+        if intent is not None:
+            record = self.state.query_result_record(intent.result_sequence)
+            if record is not None and record.state == "complete" and record.handle is not None:
+                return self._start_attached_export(intent, record)
+
+            self.state.clear_export_intent(intent)
+            message = (
+                f"Attached export for query {intent.result_sequence} was not started "
+                "because preservation did not produce a complete result."
+            )
+            self._set_status(message)
+            self._update_static_text("#results-message", message)
+
+        return self._start_next_queued_request()
+
+    def _start_attached_export(
+        self,
+        intent: TUIExportIntent,
+        record: TUIResultRecord,
+    ) -> bool:
+        if self._attached_export_intent_in_flight is not None:
+            raise RuntimeError("an attached export is already active")
+        if self._operation_running():
+            return True
+        self._attached_export_intent_in_flight = intent
+        started = self._start_operation_worker(
+            kind="export",
+            label=(
+                f"Exporting preserved query {intent.result_sequence} to "
+                f"{_display_path(intent.destination, self.start_dir)}"
+            ),
+            work=lambda operation: _ExportOutcome(
+                path=export_last_result(
+                    self._materialize_result_record(record),
+                    str(intent.destination),
+                    export_format=intent.format,
+                    base_dir=self.start_dir,
+                    force=False,
+                    token=operation.token,
+                )
+            ),
+        )
+        if started:
+            return True
+        self._attached_export_intent_in_flight = None
+        return True
+
+    def _resume_deferred_attached_export(self) -> None:
+        if (
+            self.state.query_run.is_running
+            or self._operation_running()
+            or self._attached_export_intent_in_flight is not None
+            or self.state.export_intent is None
+        ):
+            return
+        self._continue_after_query_worker_terminalized()
+
+    def _finish_attached_export(self, intent: TUIExportIntent) -> None:
+        if self._attached_export_intent_in_flight is not intent:
+            return
+        current_intent = self.state.export_intent
+        if current_intent is intent:
+            self.state.clear_export_intent(intent)
+        elif current_intent is not None:
+            self._show_error(
+                CSVQLError("Attached export identity changed while the export was running.")
+            )
+            return
+        self._attached_export_intent_in_flight = None
+        if self._start_next_queued_request():
+            return
+        self._update_static_text("#run-status", "Ready.")
+        self.query_one("#sql", TextArea).focus()
+
+    def _start_next_queued_request(self) -> bool:
+        queued = self.state.dequeue_run()
+        if queued is None:
+            return False
+        try:
+            self._activate_query_request(queued.request)
+        except (CSVQLError, RuntimeError, ValueError) as exc:
+            self._show_error(CSVQLError(f"Unable to start queued run: {exc}"))
+            self._update_static_text("#run-status", "Ready.")
+            return False
+        return True
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if event.data_table.id == "sources":
@@ -1605,7 +1828,10 @@ class CSVQLMenuApp(App[None]):
         if action in history_actions and not self._is_focused("#history"):
             return False
         if action == "export_last_result":
-            return self.state.active_result_capabilities().can_export_full
+            record = self.state.active_query_result_record()
+            return (
+                record is not None and record.state == "preserving"
+            ) or self.state.active_result_capabilities().can_export_full
         if action == "save_result_as_source":
             return self.state.active_result_capabilities().can_save_as_source
         return True
@@ -2004,19 +2230,47 @@ class CSVQLMenuApp(App[None]):
             self._show_error(exc)
             return
 
-    def _handle_export_last_result(self, path_value: str | None) -> None:
+    def _handle_export_last_result(
+        self,
+        path_value: str | None,
+        *,
+        result_sequence: int | None = None,
+    ) -> None:
         if path_value is None:
             return
 
-        result = self._active_query_result()
-        if result is None:
-            if self._show_active_result_unavailable():
-                return
+        if result_sequence is None:
+            result_sequence = self.state.active_result.sequence
+        if result_sequence is None:
             self._show_error(CSVQLError("Run a query before exporting."))
             return
+        record = self._result_record_for_sequence(result_sequence)
 
         try:
             export_path_value, export_format = _export_path_and_format_for_prompt(path_value)
+            if record is not None and record.state == "preserving":
+                intent = build_tui_export_intent(
+                    result_sequence=result_sequence,
+                    path_value=export_path_value,
+                    export_format=export_format,
+                    base_dir=self.start_dir,
+                )
+                replacement = self.state.attach_export_intent(intent)
+                if replacement is None:
+                    self._set_status(
+                        f"Attached export for query {result_sequence}: "
+                        f"{_display_path(intent.destination, self.start_dir)}."
+                    )
+                    return
+                self._confirm_export_intent_replacement(replacement)
+                return
+
+            result = self._query_result_for_sequence(result_sequence)
+            if result is None:
+                if self._show_active_result_unavailable():
+                    return
+                self._show_error(CSVQLError("Run a query before exporting."))
+                return
             if not self.call_after_refresh(
                 lambda: self._start_operation_worker(
                     kind="export",
@@ -2042,6 +2296,45 @@ class CSVQLMenuApp(App[None]):
         except CSVQLError as exc:
             self._show_error(exc)
             return
+
+    def _confirm_export_intent_replacement(
+        self,
+        replacement: TUIExportIntentReplacement,
+    ) -> None:
+        prompt = (
+            "Replace attached export "
+            f"{replacement.existing.destination} with {replacement.proposed.destination}? "
+            "Press y to replace or n to keep the existing destination."
+        )
+        self.push_screen(
+            _ConfirmationScreen(prompt),
+            callback=lambda confirmed: self._handle_export_intent_replacement(
+                replacement,
+                confirmed,
+            ),
+        )
+
+    def _handle_export_intent_replacement(
+        self,
+        replacement: TUIExportIntentReplacement,
+        confirmed: bool | None,
+    ) -> None:
+        if not confirmed:
+            self._set_status(
+                f"Attached export replacement cancelled; kept {replacement.existing.destination}."
+            )
+            return
+        if self._attached_export_intent_in_flight is replacement.existing:
+            self._set_status(
+                f"Attached export already started; kept {replacement.existing.destination}."
+            )
+            return
+        try:
+            self.state.replace_export_intent(replacement)
+        except RuntimeError as exc:
+            self._show_error(CSVQLError(str(exc)))
+            return
+        self._set_status(f"Attached export updated to {replacement.proposed.destination}.")
 
     def _handle_save_sources_confirmation(self, confirmed: bool | None) -> None:
         if not confirmed:
@@ -2141,21 +2434,27 @@ class CSVQLMenuApp(App[None]):
         return item.sequence
 
     def _active_query_result(self) -> QueryResult | None:
-        record = self.state.active_query_result_record()
+        return self._query_result_for_sequence(self.state.active_result.sequence)
+
+    def _result_record_for_sequence(
+        self,
+        sequence: int | None,
+    ) -> TUIResultRecord | None:
+        if sequence is None:
+            return None
+        if self.state.active_result.sequence == sequence:
+            active_record = self.state.active_query_result_record()
+            if active_record is not None:
+                return active_record
+        return self.state.query_result_record(sequence)
+
+    def _query_result_for_sequence(self, sequence: int | None) -> QueryResult | None:
+        record = self._result_record_for_sequence(sequence)
         if record is None or record.state != "complete" or record.handle is None:
             return None
-        source = None
-        primary_error: BaseException | None = None
         try:
-            source = self._result_store.open_rows(record.handle)
-            rows = tuple(source.iter_rows())
-            return QueryResult(
-                columns=source.columns,
-                rows=rows,
-                elapsed_ms=source.elapsed_ms,
-            )
+            return self._materialize_result_record(record)
         except TUIResultStorageError as exc:
-            primary_error = exc
             invalidated_sequences = tuple(
                 sorted({record.handle.sequence, *exc.invalidated_sequences})
             )
@@ -2166,6 +2465,20 @@ class CSVQLMenuApp(App[None]):
             self._set_status(_FULL_RESULT_UNAVAILABLE_MESSAGE)
             self._update_static_text("#results-message", _FULL_RESULT_UNAVAILABLE_MESSAGE)
             return None
+
+    def _materialize_result_record(self, record: TUIResultRecord) -> QueryResult:
+        if record.state != "complete" or record.handle is None:
+            raise ValueError("only complete result records can be materialized")
+        source = None
+        primary_error: BaseException | None = None
+        try:
+            source = self._result_store.open_rows(record.handle)
+            rows = tuple(source.iter_rows())
+            return QueryResult(
+                columns=source.columns,
+                rows=rows,
+                elapsed_ms=source.elapsed_ms,
+            )
         except BaseException as exc:
             primary_error = exc
             raise
@@ -2342,6 +2655,11 @@ class CSVQLMenuApp(App[None]):
         self.query_one("#sql", TextArea).focus()
 
     def _handle_query_event(self, event: TUIQueryEvent) -> None:
+        if (
+            self._query_terminal_event_sequence is not None
+            or not self.state.is_current_query_sequence(event.sequence)
+        ):
+            return
         if isinstance(event, TUIPreviewReadyEvent):
             self._handle_preview_ready_event(event)
             return
@@ -2350,17 +2668,24 @@ class CSVQLMenuApp(App[None]):
             return
         if isinstance(event, TUICompleteEvent):
             self._handle_complete_event(event)
+            if self._is_last_sequence_in_request(event.sequence):
+                self._query_terminal_event_sequence = event.sequence
             return
         if isinstance(event, TUIPreviewOnlyEvent):
             self._handle_preview_only_event(event)
+            self._query_terminal_event_sequence = event.sequence
             return
         if isinstance(event, TUINoResultEvent):
             self._handle_no_result_event(event)
+            if self._is_last_sequence_in_request(event.sequence):
+                self._query_terminal_event_sequence = event.sequence
             return
         if isinstance(event, TUICancelledBeforePreviewEvent):
             self._handle_cancelled_before_preview_event(event)
+            self._query_terminal_event_sequence = event.sequence
             return
         self._handle_failed_before_preview_event(event)
+        self._query_terminal_event_sequence = event.sequence
 
     def _handle_preview_ready_event(self, event: TUIPreviewReadyEvent) -> None:
         if not self.state.is_current_query_sequence(event.sequence):
@@ -2453,7 +2778,7 @@ class CSVQLMenuApp(App[None]):
             result_view=view,
             run_mode=run_mode,
             buffer_result_index=buffer_result_index,
-            complete_run=self._is_last_sequence_in_request(event.sequence),
+            complete_run=False,
             activate_result=not preserve_active_result,
         )
         self._active_query_run_modes.pop(event.sequence, None)
@@ -2509,10 +2834,11 @@ class CSVQLMenuApp(App[None]):
                 sql,
                 message,
                 run_mode=run_mode,
+                complete_run=False,
                 preserve_active_result=True,
             )
             self._append_latest_history_row_preserving_selection()
-            self._update_static_text("#run-status", "Ready.")
+            self._update_static_text("#run-status", "Finalizing query...")
             self._set_status(_error_message(CSVQLError(message)), already_safe=True)
             self.query_one("#sql", TextArea).focus()
             return
@@ -2536,7 +2862,7 @@ class CSVQLMenuApp(App[None]):
             result_view=view,
             run_mode=run_mode,
             buffer_result_index=buffer_result_index,
-            complete_run=True,
+            complete_run=False,
             activate_result=not preserve_active_result,
         )
         if not preserve_active_result:
@@ -2550,7 +2876,7 @@ class CSVQLMenuApp(App[None]):
             self._append_latest_history_row_preserving_selection()
         else:
             self._refresh_history_table()
-        self._update_static_text("#run-status", "Ready.")
+        self._update_static_text("#run-status", "Finalizing query...")
         self.query_one("#sql", TextArea).focus()
 
     def _handle_no_result_event(self, event: TUINoResultEvent) -> None:
@@ -2567,7 +2893,7 @@ class CSVQLMenuApp(App[None]):
             sql,
             event.elapsed_ms,
             run_mode=run_mode,
-            complete_run=self._is_last_sequence_in_request(event.sequence),
+            complete_run=False,
             preserve_active_result=preserve_active_result,
         )
         if preserve_active_result:
@@ -2605,7 +2931,7 @@ class CSVQLMenuApp(App[None]):
             event.sequence,
             sql,
             run_mode=run_mode,
-            complete_run=True,
+            complete_run=False,
             preserve_active_result=preserve_active_result,
         )
         if preserve_active_result:
@@ -2620,7 +2946,7 @@ class CSVQLMenuApp(App[None]):
         self._set_status(message)
         if not preserve_active_result:
             self._update_static_text("#results-message", message)
-        self._update_static_text("#run-status", "Ready.")
+        self._update_static_text("#run-status", "Finalizing query...")
         self.query_one("#sql", TextArea).focus()
 
     def _handle_failed_before_preview_event(
@@ -2641,7 +2967,7 @@ class CSVQLMenuApp(App[None]):
             sql,
             event.error_message,
             run_mode=run_mode,
-            complete_run=True,
+            complete_run=False,
             preserve_active_result=preserve_active_result,
         )
         if preserve_active_result:
@@ -2652,7 +2978,7 @@ class CSVQLMenuApp(App[None]):
             self._clear_result_grid()
             self._refresh_results_title()
             self._refresh_result_tabs()
-        self._update_static_text("#run-status", "Ready.")
+        self._update_static_text("#run-status", "Finalizing query...")
         if preserve_active_result:
             self._set_status(
                 _error_message(CSVQLError(event.error_message, suggestion=event.suggestion)),
@@ -2777,6 +3103,7 @@ class CSVQLMenuApp(App[None]):
             sql,
             message,
             run_mode=run_mode,
+            complete_run=False,
             preserve_active_result=preserve_active_result,
         )
         self._active_query_run_modes.pop(sequence, None)
@@ -2784,7 +3111,7 @@ class CSVQLMenuApp(App[None]):
             self._append_latest_history_row_preserving_selection()
         else:
             self._refresh_history_table()
-        self._update_static_text("#run-status", "Ready.")
+        self._update_static_text("#run-status", "Finalizing query...")
         if preserve_active_result:
             self._set_status(_error_message(CSVQLError(message)), already_safe=True)
         else:
@@ -3118,6 +3445,22 @@ def _one_line_sql(sql: str) -> str:
     return " ".join(sql.split())
 
 
+def _run_request_description(request: TUIRunRequest) -> str:
+    first_sql = _one_line_sql(request.statements[0])
+    if len(first_sql) > 80:
+        first_sql = f"{first_sql[:77]}..."
+    if len(request.statements) == 1:
+        return (
+            f"{request.run_mode} query {request.sequences[0]} "
+            f"(submission {request.submission_order}: {first_sql})"
+        )
+    return (
+        f"{request.run_mode} queries {request.sequences[0]}-{request.sequences[-1]} "
+        f"(submission {request.submission_order}, {len(request.statements)} statements: "
+        f"{first_sql})"
+    )
+
+
 def _run_mode_display(run_mode: TUIQueryRunMode) -> str:
     return run_mode
 
@@ -3131,6 +3474,8 @@ def _run_start_message(
 ) -> str:
     if run_mode == "rerun" and rerun_source_sequence is not None:
         return f"Rerunning history query {rerun_source_sequence} as query {sequence}..."
+    if run_mode == "rerun":
+        return f"Running queued rerun as query {sequence}..."
     if run_mode == "current":
         return f"Running current SQL as query {sequence}..."
     if run_mode == "buffer":

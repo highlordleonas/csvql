@@ -22,8 +22,9 @@ from csvql import tui_app as tui_app_module
 from csvql.atomic_write import OperationToken
 from csvql.bounded_result import BoundedQueryResult, PreviewPolicy
 from csvql.exceptions import CSVQLError
+from csvql.export import ExportFormat
 from csvql.models import QueryResult
-from csvql.operation import OperationContext
+from csvql.operation import OperationCancelled, OperationContext
 from csvql.result_codec import encode_row_payload
 from csvql.source import SourceCapabilityStatus
 from csvql.tui_app import CSVQLMenuApp
@@ -35,6 +36,7 @@ from csvql.tui_query_runner import (
     TUINoResultEvent,
     TUIPreservationProgress,
     TUIPreservationProgressEvent,
+    TUIPreviewOnlyEvent,
     TUIPreviewReadyEvent,
     TUIRunRequest,
 )
@@ -5043,6 +5045,7 @@ def test_export_uses_recalled_history_result(tmp_path: Path) -> None:
             history = app.query_one("#history", DataTable)
             history.focus()
             history.move_cursor(row=0)
+            app._show_history_result_at_row(0)
             await pilot.pause()
 
             await pilot.press("f7")
@@ -7024,13 +7027,17 @@ def test_sample_after_query_clears_exportable_result_and_export_refuses(tmp_path
     assert run_status == "Ready."
 
 
-def test_second_run_while_worker_active_shows_already_running(
+def test_queued_run_buffer_uses_one_immutable_captured_request_after_worker_terminal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _make_source_state(tmp_path)
     worker_started = threading.Event()
     release_worker = threading.Event()
+    seen_requests: list[TUIRunRequest] = []
+    event_order: list[str] = []
+    first_worker: list[object] = []
+    prior_worker_finished_at_queue_start: list[bool] = []
 
     def fake_run_tui_request(
         *,
@@ -7040,196 +7047,1169 @@ def test_second_run_while_worker_active_shows_already_running(
         operation: OperationContext,
     ) -> None:
         del operation
-        worker_started.set()
-        assert release_worker.wait(timeout=5.0)
-        _emit_complete_result(
-            request=request,
-            result_store=result_store,
-            event_sink=event_sink,
-            result=QueryResult(
-                columns=("customer_id",),
-                rows=(("CUST-001",),),
-                elapsed_ms=5.0,
-            ),
-            sequence=request.sequences[0],
-        )
-
-    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
-
-    async def _inner() -> tuple[str, str, bool, int | None, str, list[str]]:
-        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.query_one("#sql", TextArea).load_text("SELECT * FROM customers")
-
-            await pilot.press("f4")
-            await pilot.pause(0.05)
-            assert worker_started.is_set()
-
-            await pilot.press("f4")
-            await pilot.pause(0.05)
-
-            status = app.query_one("#status", Static).content
-            run_status = app.query_one("#run-status", Static).content
-            is_running = app.state.query_run.is_running
-            sequence = app.state.query_run.sequence
-
-            release_worker.set()
-            await _settled_query_idle(pilot, app)
-
-            final_status = app.query_one("#status", Static).content
-            return (
-                status,
-                run_status,
-                is_running,
-                sequence,
-                final_status,
-                app_history_statuses(app.state),
+        seen_requests.append(request)
+        event_order.append(f"query-{request.sequences[0]}-start")
+        if len(seen_requests) == 1:
+            event_sink(
+                TUIPreviewReadyEvent(
+                    sequence=request.sequences[0],
+                    preview=BoundedQueryResult(
+                        columns=("customer_id",),
+                        rows=(("CUST-001",),),
+                        elapsed_ms=1.0,
+                        preview_payload_bytes=len(encode_row_payload(("CUST-001",))),
+                        has_more_rows=True,
+                        truncation_reason="row_limit",
+                    ),
+                )
             )
-
-    status, run_status, is_running, sequence, final_status, history_statuses = asyncio.run(_inner())
-
-    assert "Query already running." in status
-    assert run_status == "Running current SQL as query 1..."
-    assert is_running is True
-    assert sequence == 1
-    assert "1 returned row(s)" in final_status
-    assert history_statuses == ["success"]
-
-
-def test_already_running_rejection_preserves_previous_result(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state = _make_source_state(tmp_path)
-    worker_started = threading.Event()
-    release_worker = threading.Event()
-    calls = {"count": 0}
-
-    def fake_run_tui_request(
-        *,
-        request: TUIRunRequest,
-        result_store: TUIResultStore,
-        event_sink,
-        operation: OperationContext,
-    ) -> None:
-        del operation
-        calls["count"] += 1
-        if calls["count"] == 1:
-            _emit_complete_result(
+            worker_started.set()
+            assert release_worker.wait(timeout=5.0)
+            completed = _store_complete_result(
+                result_store,
+                QueryResult(columns=("customer_id",), rows=(("CUST-001",),), elapsed_ms=5.0),
+                sequence=request.sequences[0],
+            )
+            event_sink(TUICompleteEvent(sequence=request.sequences[0], stored=completed))
+        else:
+            prior_worker_finished_at_queue_start.append(
+                bool(first_worker and first_worker[0].is_finished)
+            )
+            _emit_buffer_complete_results(
                 request=request,
                 result_store=result_store,
                 event_sink=event_sink,
-                result=QueryResult(
-                    columns=("email",),
-                    rows=(("alex@example.com",),),
-                    elapsed_ms=1.0,
-                ),
-                sequence=request.sequences[0],
             )
-            return
-
-        worker_started.set()
-        assert release_worker.wait(timeout=5.0)
-        _emit_complete_result(
-            request=request,
-            result_store=result_store,
-            event_sink=event_sink,
-            result=QueryResult(
-                columns=("customer_id",),
-                rows=(("CUST-001",),),
-                elapsed_ms=5.0,
-            ),
-            sequence=request.sequences[0],
-        )
+        event_order.append(f"query-{request.sequences[0]}-return")
 
     _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[
-        bool,
-        bool,
+        TUIRunRequest,
+        OperationContext | None,
+        OperationContext | None,
         tuple[str, ...],
+        PreviewPolicy,
         int,
-        str,
-        str,
-        str,
-        bool,
-        int | None,
-        list[str],
-        list[str],
+        list[int],
     ]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
             sql = app.query_one("#sql", TextArea)
-            sql.load_text("SELECT email FROM customers LIMIT 1")
-            await pilot.press("f4")
-            await _settled_query_idle(pilot, app)
+            sql.load_text("SELECT * FROM customers")
 
-            previous_result = app.state.active_query_result_record()
-            previous_view = app.state.result_view
-            assert previous_result is not None
-
-            sql.load_text("SELECT customer_id FROM customers LIMIT 1")
             await pilot.press("f4")
             await pilot.pause(0.05)
             assert worker_started.is_set()
+            active_operation = app._active_query_operation
+            assert app._active_query_worker is not None
+            first_worker.append(app._active_query_worker)
+            preserving_record = app.state.active_result_record
+            preserving_view = app.state.result_view
+            preserving_grid = _result_grid_snapshot(app)
 
-            await pilot.press("f4")
-            await pilot.pause(0.05)
+            sql.load_text("SELECT 2 AS second; SELECT 3 AS third")
+            await pilot.press("f12")
+            for _ in range(50):
+                await pilot.pause(0.02)
+                if app.state.queued_run is not None:
+                    break
+            assert app.state.queued_run is not None
+            queued_request = app.state.queued_run.request
+            operation_after_enqueue = app._active_query_operation
+            assert app.state.active_result_record == preserving_record
+            assert app.state.result_view == preserving_view
+            assert _result_grid_snapshot(app) == preserving_grid
 
-            columns, row_count, message = _result_grid_snapshot(app)
-            status = app.query_one("#status", Static).content
-            run_status = app.query_one("#run-status", Static).content
-            is_running = app.state.query_run.is_running
-            sequence = app.state.query_run.sequence
-            history_before_release = app_history_statuses(app.state)
-            result_preserved = app.state.active_query_result_record() == previous_result
-            view_preserved = app.state.result_view == previous_view
+            sql.load_text("SELECT 999 AS mutated")
+            changed_source = tmp_path / "changed.csv"
+            changed_source.write_text("value\nchanged\n", encoding="utf-8")
+            app.state.add_source(TUISource(name="changed", path=changed_source, origin="session"))
+            app._preview_policy = PreviewPolicy(row_limit=7, payload_limit_bytes=4096)
 
             release_worker.set()
-            await _settled_query_idle(pilot, app)
-
+            for _ in range(300):
+                await pilot.pause(0.02)
+                if (
+                    len(seen_requests) == 2
+                    and not app.state.query_run.is_running
+                    and app.state.queued_run is None
+                ):
+                    break
+            assert len(seen_requests) == 2
             return (
-                result_preserved,
-                view_preserved,
-                columns,
-                row_count,
-                message,
-                status,
-                run_status,
-                is_running,
-                sequence,
-                history_before_release,
-                app_history_statuses(app.state),
+                queued_request,
+                active_operation,
+                operation_after_enqueue,
+                tuple(source.spec.alias for source in seen_requests[1].sources),
+                seen_requests[1].preview_policy,
+                seen_requests[1].submission_order,
+                [item.sequence for item in app.state.query_history],
             )
 
     (
-        result_preserved,
-        view_preserved,
-        columns,
-        row_count,
-        message,
-        status,
-        run_status,
-        is_running,
-        sequence,
-        history_before_release,
-        final_history_statuses,
+        queued_request,
+        active_operation,
+        operation_after_enqueue,
+        executed_aliases,
+        executed_policy,
+        submission_order,
+        history_sequences,
     ) = asyncio.run(_inner())
 
-    assert result_preserved is False
-    assert view_preserved is False
-    assert columns == ("email",)
-    assert row_count == 1
-    assert "Query already running." in status
-    assert "Previous result is still available." in status
-    assert "Previous result is still available." in message
-    assert run_status == "Running current SQL as query 2..."
-    assert is_running is True
-    assert sequence == 2
-    assert history_before_release == ["success"]
-    assert final_history_statuses == ["success", "success"]
+    assert seen_requests[1] is queued_request
+    assert seen_requests[1].statements == ("SELECT 2 AS second", "SELECT 3 AS third")
+    assert len(seen_requests[1].sequences) == 2
+    assert active_operation is operation_after_enqueue
+    assert executed_aliases == ("customers",)
+    assert executed_policy == PreviewPolicy()
+    assert submission_order == 2
+    assert history_sequences == [1, *seen_requests[1].sequences]
+    assert prior_worker_finished_at_queue_start == [True]
+    assert event_order.count("query-1-start") == 1
+    assert event_order.count(f"query-{seen_requests[1].sequences[0]}-start") == 1
+
+
+def test_queued_run_replacement_is_identity_bound_and_cancel_preserves_existing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    seen_requests: list[TUIRunRequest] = []
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        seen_requests.append(request)
+        if len(seen_requests) == 1:
+            event_sink(
+                TUIPreviewReadyEvent(
+                    sequence=request.sequences[0],
+                    preview=BoundedQueryResult(
+                        columns=("value",),
+                        rows=((1,),),
+                        elapsed_ms=1.0,
+                        preview_payload_bytes=len(encode_row_payload((1,))),
+                        has_more_rows=True,
+                        truncation_reason="row_limit",
+                    ),
+                )
+            )
+            worker_started.set()
+            assert release_worker.wait(timeout=5.0)
+            completed = _store_complete_result(
+                result_store,
+                QueryResult(
+                    columns=("value",),
+                    rows=((request.sequences[0],),),
+                    elapsed_ms=1.0,
+                ),
+                sequence=request.sequences[0],
+            )
+            event_sink(TUICompleteEvent(sequence=request.sequences[0], stored=completed))
+            return
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(
+                columns=("value",),
+                rows=((request.sequences[0],),),
+                elapsed_ms=1.0,
+            ),
+        )
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+
+    async def _inner() -> tuple[TUIRunRequest, TUIRunRequest, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT 1")
+            await pilot.press("f4")
+            await pilot.pause(0.05)
+            assert worker_started.is_set()
+            preserving_record = app.state.active_result_record
+            preserving_view = app.state.result_view
+            preserving_grid = _result_grid_snapshot(app)
+
+            sql.load_text("SELECT 2")
+            app.action_run_selected_or_current_query()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if app.state.queued_run is not None and not app._run_editor_pending:
+                    break
+            assert app.state.queued_run is not None
+            original = app.state.queued_run.request
+            assert app.state.active_result_record == preserving_record
+            assert app.state.result_view == preserving_view
+            assert _result_grid_snapshot(app) == preserving_grid
+
+            sql.load_text("SELECT 3")
+            app.action_run_selected_or_current_query()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if isinstance(app.screen, tui_app_module._ConfirmationScreen):
+                    break
+            assert isinstance(app.screen, tui_app_module._ConfirmationScreen), (
+                app.query_one("#status", Static).content,
+                app._run_editor_pending,
+                app.state.queued_run,
+            )
+            cancelled_prompt = app.screen.query_one("#confirm-text", Static).content
+            await pilot.press("n")
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if not isinstance(app.screen, tui_app_module._ConfirmationScreen):
+                    break
+            assert app.state.queued_run is not None
+            assert app.state.queued_run.request is original
+            assert app.state.active_result_record == preserving_record
+            assert app.state.result_view == preserving_view
+            assert _result_grid_snapshot(app) == preserving_grid
+
+            sql.load_text("SELECT 4")
+            app.action_run_selected_or_current_query()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if isinstance(app.screen, tui_app_module._ConfirmationScreen):
+                    break
+            confirmed_prompt = app.screen.query_one("#confirm-text", Static).content
+            await pilot.press("y")
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if not isinstance(app.screen, tui_app_module._ConfirmationScreen):
+                    break
+            assert app.state.queued_run is not None
+            replacement = app.state.queued_run.request
+            assert app.state.active_result_record == preserving_record
+            assert app.state.result_view == preserving_view
+            assert _result_grid_snapshot(app) == preserving_grid
+            release_worker.set()
+            for _ in range(300):
+                await pilot.pause(0.02)
+                if len(seen_requests) == 2 and not app.state.query_run.is_running:
+                    break
+            assert len(seen_requests) == 2
+            return original, replacement, cancelled_prompt, confirmed_prompt
+
+    original, replacement, cancelled_prompt, confirmed_prompt = asyncio.run(_inner())
+
+    assert "SELECT 2" in cancelled_prompt
+    assert "SELECT 3" in cancelled_prompt
+    assert "SELECT 2" in confirmed_prompt
+    assert "SELECT 4" in confirmed_prompt
+    assert original.statements == ("SELECT 2",)
+    assert replacement.statements == ("SELECT 4",)
+    assert replacement.submission_order == 4
+    assert [request.statements for request in seen_requests] == [
+        ("SELECT 1",),
+        ("SELECT 4",),
+    ]
+
+
+@pytest.mark.parametrize("export_terminal", ["success", "failure", "cancel"])
+def test_attached_export_terminalizes_before_queued_query_and_keeps_bound_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    export_terminal: str,
+) -> None:
+    state = _make_source_state(tmp_path)
+    store = _record_stored_result(
+        state,
+        QueryResult(columns=("value",), rows=((99,),), elapsed_ms=1.0),
+        sequence=state.reserve_query_sequences(1)[0],
+        sql="SELECT 99 AS value",
+    )
+    preview_ready = threading.Event()
+    release_preservation = threading.Event()
+    export_started = threading.Event()
+    release_export = threading.Event()
+    seen_requests: list[TUIRunRequest] = []
+    exported_rows: list[tuple[tuple[object, ...], ...]] = []
+    exported_paths: list[Path] = []
+    event_order: list[str] = []
+    first_query_worker: list[object] = []
+    attached_export_worker: list[object] = []
+    first_worker_finished_at_export_start: list[bool] = []
+    export_worker_finished_at_queue_start: list[bool] = []
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        seen_requests.append(request)
+        event_order.append(f"query-{request.sequences[0]}-start")
+        if len(seen_requests) == 1:
+            event_sink(
+                TUIPreviewReadyEvent(
+                    sequence=request.sequences[0],
+                    preview=BoundedQueryResult(
+                        columns=("value",),
+                        rows=((2,),),
+                        elapsed_ms=1.0,
+                        preview_payload_bytes=len(encode_row_payload((2,))),
+                        has_more_rows=True,
+                        truncation_reason="row_limit",
+                    ),
+                )
+            )
+            preview_ready.set()
+            assert release_preservation.wait(timeout=5.0)
+            completed = _store_complete_result(
+                result_store,
+                QueryResult(
+                    columns=("value",),
+                    rows=((request.sequences[0],),),
+                    elapsed_ms=1.0,
+                ),
+                sequence=request.sequences[0],
+            )
+            event_sink(TUICompleteEvent(sequence=request.sequences[0], stored=completed))
+        else:
+            export_worker_finished_at_queue_start.append(
+                bool(attached_export_worker and attached_export_worker[0].is_finished)
+            )
+            _emit_complete_result(
+                request=request,
+                result_store=result_store,
+                event_sink=event_sink,
+                result=QueryResult(
+                    columns=("value",),
+                    rows=((request.sequences[0],),),
+                    elapsed_ms=1.0,
+                ),
+            )
+        event_order.append(f"query-{request.sequences[0]}-return")
+
+    def fake_export_last_result(
+        result: QueryResult,
+        path_value: str,
+        *,
+        export_format: ExportFormat,
+        base_dir: Path,
+        force: bool = False,
+        token: OperationToken | None = None,
+    ) -> Path:
+        del export_format, base_dir, force
+        exported_rows.append(result.rows)
+        exported_paths.append(Path(path_value))
+        event_order.append("export-start")
+        first_worker_finished_at_export_start.append(
+            bool(first_query_worker and first_query_worker[0].is_finished)
+        )
+        export_started.set()
+        if export_terminal != "cancel":
+            assert release_export.wait(timeout=5.0)
+        if export_terminal == "failure":
+            event_order.append("export-failed")
+            raise CSVQLError("attached export failed")
+        if export_terminal == "cancel":
+            assert token is not None
+            for _ in range(500):
+                if token.is_cancelled:
+                    event_order.append("export-cancelled")
+                    raise OperationCancelled("cancelled")
+                threading.Event().wait(0.01)
+            raise AssertionError("attached export was not cancelled")
+        event_order.append("export-succeeded")
+        return Path(path_value)
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+    monkeypatch.setattr(tui_app_module, "export_last_result", fake_export_last_result)
+    destination = tmp_path / f"attached-{export_terminal}.csv"
+
+    async def _inner() -> tuple[
+        int | None,
+        int | None,
+        TUIResultRecord,
+        TUIResultRecord,
+        tuple[tuple[object, ...], ...],
+    ]:
+        app = CSVQLMenuApp(
+            initial_state=state,
+            start_dir=tmp_path,
+            result_store=store,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT 2 AS value")
+            await pilot.press("f4")
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if preview_ready.is_set() and app.state.active_result_record is not None:
+                    break
+            assert app.state.active_result_record is not None
+            assert app.state.active_result_record.state == "preserving"
+            assert app._active_query_worker is not None
+            first_query_worker.append(app._active_query_worker)
+
+            app.action_export_last_result()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if isinstance(app.screen, tui_app_module._PromptInputScreen):
+                    break
+            app.screen.query_one("#export-path", Input).value = str(destination)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.state.export_intent is not None
+            attached_sequence = app.state.export_intent.result_sequence
+
+            history = app.query_one("#history", DataTable)
+            history.focus()
+            history.move_cursor(row=0)
+            app._show_history_result_at_row(0)
+            await pilot.pause()
+            assert app.state.active_result.sequence == 1
+
+            sql.load_text("SELECT 3 AS value")
+            app.action_run_selected_or_current_query()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if app.state.queued_run is not None:
+                    break
+            assert app.state.queued_run is not None
+            queued_sequence = app.state.queued_run.request.sequences[0]
+
+            release_preservation.set()
+            for _ in range(150):
+                await pilot.pause(0.02)
+                if export_started.is_set():
+                    break
+            assert export_started.is_set()
+            assert app._active_operation_worker is not None
+            attached_export_worker.append(app._active_operation_worker)
+            record_before_export_terminal = app.state.query_result_record(attached_sequence)
+            assert record_before_export_terminal is not None
+            if export_terminal == "cancel":
+                await pilot.press("escape")
+            else:
+                release_export.set()
+
+            for _ in range(400):
+                await pilot.pause(0.02)
+                if (
+                    len(seen_requests) == 2
+                    and not app.state.query_run.is_running
+                    and not app.state.operation_run.is_running
+                    and app.state.queued_run is None
+                ):
+                    break
+            assert len(seen_requests) == 2
+            assert app.state.export_intent is None
+            record_after_export_terminal = app.state.query_result_record(attached_sequence)
+            assert record_after_export_terminal is not None
+            assert record_after_export_terminal.handle is not None
+            source = app._result_store.open_rows(record_after_export_terminal.handle)
+            try:
+                retained_rows = tuple(source.iter_rows())
+            finally:
+                close = getattr(source, "close", None)
+                if callable(close):
+                    close()
+            return (
+                attached_sequence,
+                queued_sequence,
+                record_before_export_terminal,
+                record_after_export_terminal,
+                retained_rows,
+            )
+
+    (
+        attached_sequence,
+        queued_sequence,
+        record_before_export_terminal,
+        record_after_export_terminal,
+        retained_rows,
+    ) = asyncio.run(_inner())
+
+    assert attached_sequence == 2
+    assert queued_sequence == 3
+    assert exported_rows == [((2,),)]
+    assert exported_paths == [destination]
+    assert destination.exists() is False
+    export_start_index = event_order.index("export-start")
+    queued_start_index = event_order.index("query-3-start")
+    assert export_start_index < queued_start_index
+    assert first_worker_finished_at_export_start == [True]
+    assert export_worker_finished_at_queue_start == [True]
+    assert event_order.count("export-start") == 1
+    assert event_order.count("query-3-start") == 1
+    assert record_after_export_terminal == record_before_export_terminal
+    assert record_after_export_terminal.handle == record_before_export_terminal.handle
+    assert retained_rows == ((2,),)
+
+
+@pytest.mark.parametrize(
+    "unrelated_terminal",
+    ["success", "failure", "cancel", "success_before_query_terminal"],
+)
+def test_attached_export_waits_for_unrelated_result_operation_before_queued_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unrelated_terminal: str,
+) -> None:
+    state = _make_source_state(tmp_path)
+    store = _record_stored_result(
+        state,
+        QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+        sequence=state.reserve_query_sequences(1)[0],
+        sql="SELECT 1 AS value",
+    )
+    preview_ready = threading.Event()
+    release_preservation = threading.Event()
+    unrelated_started = threading.Event()
+    release_unrelated = threading.Event()
+    attached_started = threading.Event()
+    release_attached = threading.Event()
+    queued_started = threading.Event()
+    seen_requests: list[TUIRunRequest] = []
+    exported_paths: list[Path] = []
+    event_order: list[str] = []
+    unrelated_worker: list[object] = []
+    attached_worker: list[object] = []
+    unrelated_finished_at_attached_start: list[bool] = []
+    attached_finished_at_queue_start: list[bool] = []
+    manual_destination = tmp_path / "manual.csv"
+    attached_destination = tmp_path / "attached.csv"
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        seen_requests.append(request)
+        event_order.append(f"query-{request.sequences[0]}-start")
+        if len(seen_requests) == 1:
+            event_sink(
+                TUIPreviewReadyEvent(
+                    sequence=request.sequences[0],
+                    preview=BoundedQueryResult(
+                        columns=("value",),
+                        rows=((2,),),
+                        elapsed_ms=1.0,
+                        preview_payload_bytes=len(encode_row_payload((2,))),
+                        has_more_rows=True,
+                        truncation_reason="row_limit",
+                    ),
+                )
+            )
+            preview_ready.set()
+            assert release_preservation.wait(timeout=5.0)
+            completed = _store_complete_result(
+                result_store,
+                QueryResult(columns=("value",), rows=((2,),), elapsed_ms=1.0),
+                sequence=request.sequences[0],
+            )
+            event_sink(TUICompleteEvent(sequence=request.sequences[0], stored=completed))
+        else:
+            attached_finished_at_queue_start.append(
+                bool(attached_worker and attached_worker[0].is_finished)
+            )
+            queued_started.set()
+            _emit_complete_result(
+                request=request,
+                result_store=result_store,
+                event_sink=event_sink,
+                result=QueryResult(columns=("value",), rows=((3,),), elapsed_ms=1.0),
+            )
+        event_order.append(f"query-{request.sequences[0]}-return")
+
+    def fake_export_last_result(
+        result: QueryResult,
+        path_value: str,
+        *,
+        token: OperationToken | None = None,
+        **kwargs: object,
+    ) -> Path:
+        del result, kwargs
+        destination = Path(path_value)
+        exported_paths.append(destination)
+        if destination == manual_destination:
+            event_order.append("unrelated-export-start")
+            unrelated_started.set()
+            if unrelated_terminal == "cancel":
+                assert token is not None
+                for _ in range(500):
+                    if token.is_cancelled:
+                        event_order.append("unrelated-export-terminal")
+                        raise OperationCancelled("cancelled")
+                    threading.Event().wait(0.01)
+                raise AssertionError("unrelated export was not cancelled")
+            assert release_unrelated.wait(timeout=5.0)
+            event_order.append("unrelated-export-terminal")
+            if unrelated_terminal == "failure":
+                raise CSVQLError("unrelated export failed")
+            return destination
+        assert destination == attached_destination
+        event_order.append("attached-export-start")
+        unrelated_finished_at_attached_start.append(
+            bool(unrelated_worker and unrelated_worker[0].is_finished)
+        )
+        attached_started.set()
+        assert release_attached.wait(timeout=5.0)
+        event_order.append("attached-export-finish")
+        return destination
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+    monkeypatch.setattr(tui_app_module, "export_last_result", fake_export_last_result)
+
+    async def _submit_export_path(
+        pilot: Pilot[None],
+        app: CSVQLMenuApp,
+        destination: Path,
+    ) -> None:
+        app.action_export_last_result()
+        for _ in range(100):
+            await pilot.pause(0.02)
+            if isinstance(app.screen, tui_app_module._PromptInputScreen):
+                break
+        app.screen.query_one("#export-path", Input).value = str(destination)
+        await pilot.press("enter")
+        await pilot.pause()
+
+    async def _inner() -> tuple[bool, bool, int, bool, bool]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT 2 AS value")
+            await pilot.press("f4")
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if preview_ready.is_set() and app.state.active_result_record is not None:
+                    break
+
+            await _submit_export_path(pilot, app, attached_destination)
+            assert app.state.export_intent is not None
+            original_intent = app.state.export_intent
+
+            sql.load_text("SELECT 3 AS value")
+            app.action_run_selected_or_current_query()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if app.state.queued_run is not None:
+                    break
+            assert app.state.queued_run is not None
+            original_queue = app.state.queued_run
+
+            app._show_history_result_at_row(0)
+            await pilot.pause()
+            assert app.state.active_result.sequence == 1
+            await _submit_export_path(pilot, app, manual_destination)
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if unrelated_started.is_set():
+                    break
+            assert unrelated_started.is_set()
+            assert app._active_operation_worker is not None
+            unrelated_worker.append(app._active_operation_worker)
+
+            no_op_while_query_running = False
+            if unrelated_terminal == "success_before_query_terminal":
+                release_unrelated.set()
+                for _ in range(150):
+                    await pilot.pause(0.02)
+                    if not app.state.operation_run.is_running:
+                        break
+                no_op_while_query_running = (
+                    app.state.query_run.is_running
+                    and app.state.export_intent is original_intent
+                    and app.state.queued_run is original_queue
+                    and len(seen_requests) == 1
+                    and not attached_started.is_set()
+                )
+                deferred_intent_retained = app.state.export_intent is original_intent
+                deferred_queue_retained = app.state.queued_run is original_queue
+                request_count_during_deferral = len(seen_requests)
+                operation_still_running = app.state.operation_run.is_running
+                release_preservation.set()
+            else:
+                release_preservation.set()
+                for _ in range(150):
+                    await pilot.pause(0.02)
+                    if not app.state.query_run.is_running:
+                        break
+                deferred_intent_retained = app.state.export_intent is original_intent
+                deferred_queue_retained = app.state.queued_run is original_queue
+                request_count_during_deferral = len(seen_requests)
+                operation_still_running = app.state.operation_run.is_running
+
+                if unrelated_terminal == "cancel":
+                    await pilot.press("escape")
+                else:
+                    release_unrelated.set()
+            for _ in range(150):
+                await pilot.pause(0.02)
+                if attached_started.is_set():
+                    break
+            if attached_started.is_set():
+                assert app._active_operation_worker is not None
+                attached_worker.append(app._active_operation_worker)
+            release_attached.set()
+
+            for _ in range(300):
+                await pilot.pause(0.02)
+                if (
+                    queued_started.is_set()
+                    and not app.state.query_run.is_running
+                    and not app.state.operation_run.is_running
+                ):
+                    break
+            return (
+                deferred_intent_retained,
+                deferred_queue_retained,
+                request_count_during_deferral,
+                operation_still_running,
+                no_op_while_query_running,
+            )
+
+    (
+        deferred_intent_retained,
+        deferred_queue_retained,
+        request_count_during_deferral,
+        operation_still_running,
+        no_op_while_query_running,
+    ) = asyncio.run(_inner())
+
+    assert deferred_intent_retained is True
+    assert deferred_queue_retained is True
+    assert request_count_during_deferral == 1
+    assert operation_still_running is (unrelated_terminal != "success_before_query_terminal")
+    assert no_op_while_query_running is (unrelated_terminal == "success_before_query_terminal")
+    assert attached_started.is_set()
+    assert queued_started.is_set()
+    assert unrelated_finished_at_attached_start == [True]
+    assert attached_finished_at_queue_start == [True]
+    assert exported_paths == [manual_destination, attached_destination]
+    assert event_order.index("unrelated-export-terminal") < event_order.index(
+        "attached-export-start"
+    )
+    assert event_order.index("attached-export-finish") < event_order.index("query-3-start")
+    assert event_order.count("attached-export-start") == 1
+    assert event_order.count("query-3-start") == 1
+
+
+def test_export_intent_replacement_confirmation_cannot_replace_in_flight_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    preview_ready = threading.Event()
+    release_preservation = threading.Event()
+    export_started = threading.Event()
+    release_export = threading.Event()
+    queued_started = threading.Event()
+    seen_requests: list[TUIRunRequest] = []
+    exported_paths: list[Path] = []
+    original_destination = tmp_path / "original.csv"
+    replacement_destination = tmp_path / "replacement.csv"
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        seen_requests.append(request)
+        if len(seen_requests) == 1:
+            event_sink(
+                TUIPreviewReadyEvent(
+                    sequence=request.sequences[0],
+                    preview=BoundedQueryResult(
+                        columns=("value",),
+                        rows=((1,),),
+                        elapsed_ms=1.0,
+                        preview_payload_bytes=len(encode_row_payload((1,))),
+                        has_more_rows=True,
+                        truncation_reason="row_limit",
+                    ),
+                )
+            )
+            preview_ready.set()
+            assert release_preservation.wait(timeout=5.0)
+            completed = _store_complete_result(
+                result_store,
+                QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+                sequence=request.sequences[0],
+            )
+            event_sink(TUICompleteEvent(sequence=request.sequences[0], stored=completed))
+            return
+        queued_started.set()
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(columns=("value",), rows=((2,),), elapsed_ms=1.0),
+        )
+
+    def fake_export_last_result(
+        result: QueryResult,
+        path_value: str,
+        **kwargs: object,
+    ) -> Path:
+        del result, kwargs
+        destination = Path(path_value)
+        exported_paths.append(destination)
+        export_started.set()
+        assert release_export.wait(timeout=5.0)
+        return destination
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+    monkeypatch.setattr(tui_app_module, "export_last_result", fake_export_last_result)
+
+    async def _submit_export_path(
+        pilot: Pilot[None],
+        app: CSVQLMenuApp,
+        destination: Path,
+    ) -> None:
+        app.action_export_last_result()
+        for _ in range(100):
+            await pilot.pause(0.02)
+            if isinstance(app.screen, tui_app_module._PromptInputScreen):
+                break
+        app.screen.query_one("#export-path", Input).value = str(destination)
+        await pilot.press("enter")
+        await pilot.pause()
+
+    async def _inner() -> tuple[bool, bool, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT 1 AS value")
+            await pilot.press("f4")
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if preview_ready.is_set() and app.state.active_result_record is not None:
+                    break
+
+            await _submit_export_path(pilot, app, original_destination)
+            assert app.state.export_intent is not None
+            original_intent = app.state.export_intent
+
+            sql.load_text("SELECT 2 AS value")
+            app.action_run_selected_or_current_query()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if app.state.queued_run is not None:
+                    break
+            assert app.state.queued_run is not None
+
+            await _submit_export_path(pilot, app, replacement_destination)
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if isinstance(app.screen, tui_app_module._ConfirmationScreen):
+                    break
+            assert isinstance(app.screen, tui_app_module._ConfirmationScreen)
+
+            release_preservation.set()
+            for _ in range(150):
+                await pilot.pause(0.02)
+                if export_started.is_set():
+                    break
+            assert export_started.is_set()
+            in_flight_identity_preserved = app._attached_export_intent_in_flight is original_intent
+
+            await pilot.press("y")
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if not isinstance(app.screen, tui_app_module._ConfirmationScreen):
+                    break
+            assert not isinstance(app.screen, tui_app_module._ConfirmationScreen)
+            intent_after_confirmation_is_original = app.state.export_intent is original_intent
+            confirmation_status = app.query_one("#status", Static).content
+
+            release_export.set()
+            for _ in range(300):
+                await pilot.pause(0.02)
+                if (
+                    queued_started.is_set()
+                    and not app.state.query_run.is_running
+                    and not app.state.operation_run.is_running
+                ):
+                    break
+            return (
+                in_flight_identity_preserved,
+                intent_after_confirmation_is_original,
+                confirmation_status,
+            )
+
+    (
+        in_flight_identity_preserved,
+        intent_after_confirmation_is_original,
+        confirmation_status,
+    ) = asyncio.run(_inner())
+
+    assert in_flight_identity_preserved is True
+    assert intent_after_confirmation_is_original is True
+    assert "already started" in confirmation_status
+    assert str(original_destination) in confirmation_status
+    assert exported_paths == [original_destination]
+    assert queued_started.is_set()
+    assert len(seen_requests) == 2
+
+
+def test_export_intent_replacement_confirmation_is_identity_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    preview_ready = threading.Event()
+    release_preservation = threading.Event()
+    exported_paths: list[Path] = []
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        event_sink(
+            TUIPreviewReadyEvent(
+                sequence=request.sequences[0],
+                preview=BoundedQueryResult(
+                    columns=("value",),
+                    rows=((1,),),
+                    elapsed_ms=1.0,
+                    preview_payload_bytes=len(encode_row_payload((1,))),
+                    has_more_rows=True,
+                    truncation_reason="row_limit",
+                ),
+            )
+        )
+        preview_ready.set()
+        assert release_preservation.wait(timeout=5.0)
+        completed = _store_complete_result(
+            result_store,
+            QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+            sequence=request.sequences[0],
+        )
+        event_sink(TUICompleteEvent(sequence=request.sequences[0], stored=completed))
+
+    def fake_export_last_result(
+        result: QueryResult,
+        path_value: str,
+        **kwargs: object,
+    ) -> Path:
+        del result, kwargs
+        path = Path(path_value)
+        exported_paths.append(path)
+        return path
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+    monkeypatch.setattr(tui_app_module, "export_last_result", fake_export_last_result)
+    first = tmp_path / "first.csv"
+    cancelled = tmp_path / "cancelled.csv"
+    replacement = tmp_path / "replacement.csv"
+
+    async def _submit_export_path(
+        pilot: Pilot[None],
+        app: CSVQLMenuApp,
+        path: Path,
+    ) -> None:
+        app.action_export_last_result()
+        for _ in range(100):
+            await pilot.pause(0.02)
+            if isinstance(app.screen, tui_app_module._PromptInputScreen):
+                break
+        app.screen.query_one("#export-path", Input).value = str(path)
+        await pilot.press("enter")
+        for _ in range(100):
+            await pilot.pause(0.02)
+            if not isinstance(app.screen, tui_app_module._PromptInputScreen):
+                break
+
+    async def _inner() -> tuple[str, str, Path]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text("SELECT 1 AS value")
+            await pilot.press("f4")
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if preview_ready.is_set() and app.state.active_result_record is not None:
+                    break
+
+            await _submit_export_path(pilot, app, first)
+            assert app.state.export_intent is not None
+            original_intent = app.state.export_intent
+
+            await _submit_export_path(pilot, app, cancelled)
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if isinstance(app.screen, tui_app_module._ConfirmationScreen):
+                    break
+            cancel_prompt = app.screen.query_one("#confirm-text", Static).content
+            await pilot.press("n")
+            await pilot.pause()
+            assert app.state.export_intent is original_intent
+
+            await _submit_export_path(pilot, app, replacement)
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if isinstance(app.screen, tui_app_module._ConfirmationScreen):
+                    break
+            replace_prompt = app.screen.query_one("#confirm-text", Static).content
+            await pilot.press("y")
+            await pilot.pause()
+            assert app.state.export_intent is not None
+            attached_destination = app.state.export_intent.destination
+
+            release_preservation.set()
+            for _ in range(300):
+                await pilot.pause(0.02)
+                if (
+                    not app.state.query_run.is_running
+                    and not app.state.operation_run.is_running
+                    and app.state.export_intent is None
+                ):
+                    break
+            return cancel_prompt, replace_prompt, attached_destination
+
+    cancel_prompt, replace_prompt, attached_destination = asyncio.run(_inner())
+
+    assert str(first) in cancel_prompt
+    assert str(cancelled) in cancel_prompt
+    assert str(first) in replace_prompt
+    assert str(replacement) in replace_prompt
+    assert attached_destination == replacement
+    assert exported_paths == [replacement]
+
+
+def test_non_complete_preservation_rejects_attached_export_then_starts_queue_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    preview = BoundedQueryResult(
+        columns=("value",),
+        rows=((1,),),
+        elapsed_ms=1.0,
+        preview_payload_bytes=len(encode_row_payload((1,))),
+        has_more_rows=True,
+        truncation_reason="row_limit",
+    )
+    preview_ready = threading.Event()
+    release_preservation = threading.Event()
+    queued_started = threading.Event()
+    release_queued = threading.Event()
+    seen_requests: list[TUIRunRequest] = []
+    export_calls: list[object] = []
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        seen_requests.append(request)
+        if len(seen_requests) == 1:
+            event_sink(TUIPreviewReadyEvent(sequence=request.sequences[0], preview=preview))
+            preview_ready.set()
+            assert release_preservation.wait(timeout=5.0)
+            event_sink(
+                TUIPreviewOnlyEvent(
+                    sequence=request.sequences[0],
+                    preview=preview,
+                    reason="preservation_failed",
+                    stored=None,
+                )
+            )
+            return
+        queued_started.set()
+        assert release_queued.wait(timeout=5.0)
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(columns=("value",), rows=((2,),), elapsed_ms=1.0),
+        )
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+    monkeypatch.setattr(
+        tui_app_module,
+        "export_last_result",
+        lambda *args, **kwargs: export_calls.append((args, kwargs)),
+    )
+    destination = tmp_path / "must-not-start.csv"
+
+    async def _inner() -> tuple[str, int]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT 1 AS value")
+            await pilot.press("f4")
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if preview_ready.is_set() and app.state.active_result_record is not None:
+                    break
+
+            app.action_export_last_result()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if isinstance(app.screen, tui_app_module._PromptInputScreen):
+                    break
+            app.screen.query_one("#export-path", Input).value = str(destination)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.state.export_intent is not None
+
+            sql.load_text("SELECT 2 AS value")
+            app.action_run_selected_or_current_query()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if app.state.queued_run is not None:
+                    break
+            assert app.state.queued_run is not None
+
+            release_preservation.set()
+            for _ in range(150):
+                await pilot.pause(0.02)
+                if queued_started.is_set():
+                    break
+            assert queued_started.is_set()
+            assert app.state.export_intent is None
+            rejection_message = app.query_one("#results-message", Static).content
+            queued_sequence = seen_requests[1].sequences[0]
+            release_queued.set()
+            for _ in range(200):
+                await pilot.pause(0.02)
+                if not app.state.query_run.is_running:
+                    break
+            return rejection_message, queued_sequence
+
+    rejection_message, queued_sequence = asyncio.run(_inner())
+
+    assert "was not started" in rejection_message
+    assert "did not produce a complete result" in rejection_message
+    assert export_calls == []
+    assert queued_sequence == 2
+    assert [request.sequences[0] for request in seen_requests].count(2) == 1
 
 
 def test_unexpected_buffer_worker_failure_uses_active_sequence_and_clears_pending_metadata(

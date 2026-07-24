@@ -43,6 +43,7 @@ from csvql.source_operations import SourceOperations
 from csvql.table_mapping import parse_table_mapping, source_from_single_csv, validate_table_alias
 from csvql.tui_query_runner import TUIRunRequest
 from csvql.tui_state import (
+    TUIExportIntent,
     TUIQueryOutcome,
     TUIQueryRunMode,
     TUISessionState,
@@ -248,6 +249,23 @@ def build_tui_run_request(
         preview_policy=preview_policy,
         run_mode=run_mode,
         submission_order=submission_order,
+    )
+
+
+def build_tui_export_intent(
+    *,
+    result_sequence: int,
+    path_value: str,
+    export_format: ExportFormat,
+    base_dir: Path,
+) -> TUIExportIntent:
+    """Resolve one export destination without creating or staging it."""
+
+    destination = resolve_export_path(path_value, base_dir=base_dir, force=False)
+    return TUIExportIntent(
+        result_sequence=result_sequence,
+        destination=destination,
+        format=export_format,
     )
 
 

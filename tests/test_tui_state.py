@@ -985,6 +985,9 @@ def test_enqueue_run_requires_active_request_and_uses_identity_confirmation() ->
         state.replace_queued_run(stale)
 
     state.replace_queued_run(replacement)
+    with pytest.raises(RuntimeError, match="before the active query terminalizes"):
+        state.dequeue_run()
+    state.finish_query_run()
     assert state.dequeue_run().request is replacement_request
     assert state.dequeue_run() is None
 

@@ -25,6 +25,7 @@ from csvql.tui_result_store import TUIResultHandle
 from csvql.tui_state import TUISessionState, TUISource, TUISourceColumn
 from csvql.tui_workflows import (
     build_initial_state,
+    build_tui_export_intent,
     export_last_result,
     external_catalog_source_paths,
     inspect_source,
@@ -45,6 +46,24 @@ def _write_csv(path: Path, content: str = "id,value\n1,alpha\n") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path
+
+
+def test_build_tui_export_intent_resolves_without_touching_destination(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "queued.csv"
+
+    intent = build_tui_export_intent(
+        result_sequence=7,
+        path_value="queued.csv",
+        export_format=ExportFormat.csv,
+        base_dir=tmp_path,
+    )
+
+    assert intent.result_sequence == 7
+    assert intent.destination == destination
+    assert intent.format is ExportFormat.csv
+    assert destination.exists() is False
 
 
 def test_build_initial_state_without_catalog_or_args_returns_empty_state(

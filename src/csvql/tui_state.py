@@ -581,6 +581,8 @@ class TUISessionState:
         self.queued_run = replacement.proposed
 
     def dequeue_run(self) -> TUIQueuedRun | None:
+        if self.query_run.is_running:
+            raise RuntimeError("queued run cannot start before the active query terminalizes")
         queued = self.queued_run
         self.queued_run = None
         return queued
