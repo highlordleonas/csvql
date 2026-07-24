@@ -2328,6 +2328,23 @@ def _is_recovery_spill_name(name: str) -> bool:
     )
 
 
+def _is_private_tui_result_artifact(path: Path) -> bool:
+    """Return whether a path identifies a LocalQL-owned TUI result artifact."""
+
+    candidate_paths: tuple[Path, ...] = (path,)
+    try:
+        resolved_path = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        pass
+    else:
+        candidate_paths += (resolved_path,)
+    return any(
+        _TUI_RESULT_DIRECTORY_PATTERN.fullmatch(candidate.parent.name) is not None
+        and _is_recovery_spill_name(candidate.name)
+        for candidate in candidate_paths
+    )
+
+
 def _directory_mode_is_private(result: os.stat_result) -> bool:
     return os.name == "nt" or stat.S_IMODE(result.st_mode) == 0o700
 

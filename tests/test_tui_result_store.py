@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from csvql import tui_result_store
 from csvql.bounded_result import BoundedQueryResult, PreviewPolicy
 from csvql.result_codec import encode_row_payload
 from csvql.tui_result_store import (
@@ -92,6 +93,51 @@ def test_handle_exposes_only_opaque_registry_identity() -> None:
         "store_id",
         "nonce",
     )
+
+
+@pytest.mark.parametrize(
+    "artifact_name",
+    [
+        "query-1.result",
+        "preview-2.result",
+        f".query-3-{'b' * 16}.result.tmp",
+        f".preview-4-{'c' * 16}.result.tmp",
+    ],
+)
+def test_private_result_artifact_recognition_requires_exact_workspace_and_filename(
+    tmp_path: Path,
+    artifact_name: str,
+) -> None:
+    workspace = tmp_path / f"{TUI_RESULT_SESSION_PREFIX}{'a' * 32}"
+
+    assert tui_result_store._is_private_tui_result_artifact(workspace / artifact_name)
+    assert not tui_result_store._is_private_tui_result_artifact(tmp_path / artifact_name)
+    assert not tui_result_store._is_private_tui_result_artifact(workspace / "query-01.result")
+    assert not tui_result_store._is_private_tui_result_artifact(
+        tmp_path / f"{TUI_RESULT_SESSION_PREFIX}{'A' * 32}" / artifact_name
+    )
+
+
+def test_private_result_artifact_recognition_follows_resolvable_symlink_alias(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / f"{TUI_RESULT_SESSION_PREFIX}{'a' * 32}"
+    workspace.mkdir()
+    artifact = workspace / "query-1.result"
+    artifact.write_bytes(b"result")
+    alias = tmp_path / "result-alias"
+    alias.symlink_to(artifact)
+
+    assert tui_result_store._is_private_tui_result_artifact(alias)
+
+
+def test_private_result_artifact_recognition_ignores_unresolvable_symlink_alias(
+    tmp_path: Path,
+) -> None:
+    alias = tmp_path / "result-alias"
+    alias.symlink_to(alias)
+
+    assert not tui_result_store._is_private_tui_result_artifact(alias)
 
 
 def test_complete_result_round_trips_from_framed_storage(tmp_path: Path) -> None:

@@ -12,7 +12,11 @@ from csvql.export import ExportFormat
 from csvql.models import QueryResult, TableSource
 from csvql.table_mapping import validate_table_alias
 from csvql.tui_query_runner import TUIRunRequest
-from csvql.tui_result_store import TUIResultHandle, TUIResultReason
+from csvql.tui_result_store import (
+    TUIResultHandle,
+    TUIResultReason,
+    _is_private_tui_result_artifact,
+)
 
 SourceOrigin = Literal["argument", "catalog", "session", "derived"]
 SourceKind = Literal["csv"]
@@ -313,6 +317,11 @@ class TUISource:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", validate_table_alias(self.name))
+        if _is_private_tui_result_artifact(self.path):
+            raise TableMappingError(
+                "Private TUI result artifacts cannot be used as sources.",
+                suggestion="Use Save as source to create a normal CSV source.",
+            )
 
     def as_table_source(self) -> TableSource:
         """Convert the TUI source into a DuckDB registration source."""

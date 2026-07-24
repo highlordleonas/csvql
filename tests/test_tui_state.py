@@ -109,6 +109,29 @@ def test_private_result_handle_is_not_convertible_to_a_tui_source() -> None:
     assert not hasattr(handle, "as_table_source")
 
 
+@pytest.mark.parametrize(
+    "artifact_name",
+    [
+        "query-1.result",
+        "preview-2.result",
+        f".query-3-{'b' * 16}.result.tmp",
+        f".preview-4-{'c' * 16}.result.tmp",
+    ],
+)
+def test_tui_source_rejects_private_result_artifacts_before_state_admission(
+    tmp_path: Path,
+    artifact_name: str,
+) -> None:
+    private_path = tmp_path / f"localql-tui-v1-{'a' * 32}" / artifact_name
+
+    with pytest.raises(TableMappingError) as error:
+        TUISource(name="private_result", path=private_path, origin="session")
+
+    assert str(private_path) not in str(error.value)
+    assert error.value.message == "Private TUI result artifacts cannot be used as sources."
+    assert error.value.suggestion == "Use Save as source to create a normal CSV source."
+
+
 def test_session_add_source_preserves_order_and_selects_first_by_default(tmp_path: Path) -> None:
     state = TUISessionState()
     first = TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument")
