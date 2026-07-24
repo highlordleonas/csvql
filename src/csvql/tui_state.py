@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from csvql.bounded_result import TruncationReason
 from csvql.exceptions import TableMappingError
 from csvql.export import ExportFormat
 from csvql.models import QueryResult, TableSource
@@ -74,6 +75,7 @@ class TUIResultViewState:
     preview_row_cap: int = 1000
     cell_char_cap: int = 120
     is_truncated: bool = False
+    truncation_reason: TruncationReason | None = None
     source_result_sequence: int | None = None
 
 

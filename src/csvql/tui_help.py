@@ -35,12 +35,16 @@ History pane
 
 Results
   [ / ]               Previous/next buffer result when Results is focused
+  A bounded preview appears while the same execution preserves the full result.
+  Preservation reports rows, logical bytes, elapsed time, and remaining capacity.
+  Complete results enable full-result actions; Preview-only results name why those actions are
+  unavailable and LocalQL does not rerun SQL.
 
 General
   F1                  Help
   F7                  Export active result (.csv, .json, .md, .markdown, .txt)
   F9 / q              Quit outside text entry
-  Esc                 Close help or modal
+  Esc                 Cancel active execution or preservation; otherwise close help or modal
 
 Derived sources
   Ctrl+S              Save active result to .csvql/results/{alias}.csv

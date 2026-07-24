@@ -3,6 +3,7 @@ import os
 import shutil
 import threading
 from pathlib import Path
+from types import MethodType
 from unittest.mock import Mock
 
 import pytest
@@ -19,23 +20,33 @@ from textual.widgets._footer import FooterKey
 
 from csvql import tui_app as tui_app_module
 from csvql.atomic_write import OperationToken
+from csvql.bounded_result import BoundedQueryResult, PreviewPolicy
 from csvql.exceptions import CSVQLError
 from csvql.models import QueryResult
 from csvql.operation import OperationContext
+from csvql.result_codec import encode_row_payload
 from csvql.source import SourceCapabilityStatus
 from csvql.tui_app import CSVQLMenuApp
 from csvql.tui_help import WORKBENCH_HELP
+from csvql.tui_query_runner import (
+    TUICancelledBeforePreviewEvent,
+    TUICompleteEvent,
+    TUIFailedBeforePreviewEvent,
+    TUINoResultEvent,
+    TUIPreservationProgress,
+    TUIPreservationProgressEvent,
+    TUIPreviewReadyEvent,
+    TUIRunRequest,
+)
 from csvql.tui_result_store import (
-    TUI_RESULT_MARKER_NAME,
+    DEFAULT_TUI_RESULT_CAPACITY_BYTES,
     TUIResultCleanupSummary,
-    TUIResultPutOutcome,
     TUIResultStorageError,
     TUIResultStore,
 )
 from csvql.tui_results import make_result_view_state
 from csvql.tui_state import (
     TUIBufferResultTab,
-    TUIQueryOutcome,
     TUIQueryRunMode,
     TUIResultRecord,
     TUISessionState,
@@ -186,7 +197,7 @@ def _record_stored_result(
     buffer_result_index: int | None = None,
 ) -> TUIResultStore:
     result_store = store or TUIResultStore()
-    handle = result_store.put(result, sequence=sequence).handle
+    handle = _store_complete_result(result_store, result, sequence=sequence).handle
     view = make_result_view_state(result, source_result_sequence=sequence)
     state.record_query_success(
         sequence,
@@ -203,27 +214,160 @@ def _record_stored_result(
 def _active_stored_rows(app: CSVQLMenuApp) -> tuple[tuple[object, ...], ...]:
     record = app.state.active_query_result_record()
     assert record is not None
-    return app._result_store.get(record.handle).rows
+    assert record.handle is not None
+    source = app._result_store.open_rows(record.handle)
+    return tuple(source.iter_rows())
 
 
-def _successful_buffer_outcomes(
-    sources: object,
-    statements: tuple[str, ...],
+def _store_complete_result(
+    result_store: TUIResultStore,
+    result: QueryResult,
     *,
-    sequences: tuple[int, ...],
-) -> tuple[TUIQueryOutcome, ...]:
-    del sources
-    return tuple(
-        TUIQueryOutcome.success(
-            sequence=sequence,
-            sql=statement,
-            result=QueryResult(
-                columns=(f"value_{sequence}",),
-                rows=((sequence,),),
-                elapsed_ms=1.0,
+    sequence: int,
+):
+    writer = result_store.begin_complete(sequence=sequence, columns=result.columns)
+    for row in result.rows:
+        writer.append_payload(encode_row_payload(tuple(row)))
+    return writer.commit(elapsed_ms=result.elapsed_ms)
+
+
+def _store_preview_only_result(
+    result_store: TUIResultStore,
+    preview: BoundedQueryResult,
+    *,
+    sequence: int,
+    reason: str = "preservation_failed",
+):
+    encoded_payloads = tuple(encode_row_payload(tuple(row)) for row in preview.rows)
+    stored = result_store.persist_preview(
+        sequence=sequence,
+        preview=preview,
+        reason=reason,
+        elapsed_ms=preview.elapsed_ms,
+        encoded_payloads=encoded_payloads,
+    )
+    assert stored is not None
+    return stored
+
+
+def _record_preview_only_result(
+    state: TUISessionState,
+    result_store: TUIResultStore,
+    *,
+    sequence: int,
+    sql: str,
+    preview: BoundedQueryResult,
+    reason: str = "preservation_failed",
+    run_mode: TUIQueryRunMode = "current",
+    buffer_result_index: int | None = None,
+) -> None:
+    stored = _store_preview_only_result(
+        result_store,
+        preview,
+        sequence=sequence,
+        reason=reason,
+    )
+    state.record_query_result(
+        sequence,
+        sql,
+        record=TUIResultRecord(
+            handle=stored.handle,
+            state="preview_only",
+            reason=reason,
+            columns=preview.columns,
+            preview_row_count=len(preview.rows),
+            full_row_count=None,
+            elapsed_ms=preview.elapsed_ms,
+        ),
+        result_view=make_result_view_state(
+            QueryResult(
+                columns=preview.columns,
+                rows=preview.rows,
+                elapsed_ms=preview.elapsed_ms,
             ),
+            source_result_sequence=sequence,
+        ),
+        run_mode=run_mode,
+        buffer_result_index=buffer_result_index,
+    )
+
+
+def _patch_run_tui_request(
+    monkeypatch: pytest.MonkeyPatch,
+    callback,
+) -> None:
+    def fake_run_tui_request(
+        request: TUIRunRequest,
+        *,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+        **kwargs: object,
+    ) -> None:
+        del kwargs
+        callback(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            operation=operation,
         )
-        for statement, sequence in zip(statements, sequences, strict=True)
+
+    monkeypatch.setattr("csvql.tui_app.run_tui_request", fake_run_tui_request)
+
+
+def _emit_complete_result(
+    *,
+    request: TUIRunRequest,
+    result_store: TUIResultStore,
+    event_sink,
+    result: QueryResult,
+    sequence: int | None = None,
+) -> None:
+    result_sequence = request.sequences[0] if sequence is None else sequence
+    preview = BoundedQueryResult(
+        columns=result.columns,
+        rows=tuple(tuple(row) for row in result.rows),
+        elapsed_ms=result.elapsed_ms,
+        preview_payload_bytes=sum(len(encode_row_payload(tuple(row))) for row in result.rows),
+        has_more_rows=False,
+        truncation_reason=None,
+    )
+    event_sink(TUIPreviewReadyEvent(sequence=result_sequence, preview=preview))
+    stored = _store_complete_result(result_store, result, sequence=result_sequence)
+    event_sink(TUICompleteEvent(sequence=result_sequence, stored=stored))
+
+
+def _emit_buffer_complete_results(
+    *,
+    request: TUIRunRequest,
+    result_store: TUIResultStore,
+    event_sink,
+) -> None:
+    for statement, sequence in zip(request.statements, request.sequences, strict=True):
+        label = statement.split()[-1]
+        result = QueryResult(columns=(label,), rows=((sequence,),), elapsed_ms=1.0)
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=result,
+            sequence=sequence,
+        )
+
+
+def _emit_failed_event(
+    *,
+    sequence: int,
+    event_sink,
+    error_message: str,
+    suggestion: str | None = None,
+) -> None:
+    event_sink(
+        TUIFailedBeforePreviewEvent(
+            sequence=sequence,
+            error_message=error_message,
+            suggestion=suggestion,
+        )
     )
 
 
@@ -420,6 +564,181 @@ def test_tui_non_query_tables_statuses_and_errors_use_literal_control_safe_text(
     assert error.spans == []
 
 
+def test_app_rejects_injected_store_with_explicit_capacity_bytes(tmp_path: Path) -> None:
+    store = TUIResultStore(temp_root=tmp_path)
+
+    with pytest.raises(ValueError, match="result_store_capacity_bytes cannot be overridden"):
+        CSVQLMenuApp(
+            start_dir=tmp_path,
+            result_store=store,
+            result_store_capacity_bytes=DEFAULT_TUI_RESULT_CAPACITY_BYTES,
+        )
+
+
+def test_query_events_marshal_via_call_from_thread_and_preview_keeps_editor_usable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    release = threading.Event()
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        preview = BoundedQueryResult(
+            columns=("value",),
+            rows=((1,), (2,)),
+            elapsed_ms=1.0,
+            preview_payload_bytes=sum(len(encode_row_payload((value,))) for value in (1, 2)),
+            has_more_rows=True,
+            truncation_reason="row_limit",
+        )
+        event_sink(TUIPreviewReadyEvent(sequence=request.sequences[0], preview=preview))
+        event_sink(
+            TUIPreservationProgressEvent(
+                sequence=request.sequences[0],
+                progress=TUIPreservationProgress(
+                    sequence=request.sequences[0],
+                    rows_written=2,
+                    logical_bytes_written=42,
+                    elapsed_ms=2.0,
+                    remaining_capacity_bytes=1_000,
+                ),
+            )
+        )
+        assert release.wait(5.0)
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(columns=("value",), rows=((1,), (2,), (3,)), elapsed_ms=3.0),
+        )
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+
+    async def _inner() -> tuple[str, str, str, int, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        call_from_thread_calls: list[str] = []
+        original_call_from_thread = app.call_from_thread
+
+        def recording_call_from_thread(self, callback, *args, **kwargs):
+            call_from_thread_calls.append(getattr(callback, "__name__", repr(callback)))
+            return original_call_from_thread(callback, *args, **kwargs)
+
+        app.call_from_thread = MethodType(recording_call_from_thread, app)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text("SELECT 1 AS value")
+            await pilot.press("f4")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if app.query_one("#results", DataTable).row_count == 2:
+                    break
+            status_during = app.query_one("#status", Static).content
+            message_during = app.query_one("#results-message", Static).content
+            run_status_during = app.query_one("#run-status", Static).content
+            focused_during = _focused_widget_id(app)
+            assert app.state.query_run.is_running is True
+            release.set()
+            await _settled_query_idle(pilot, app)
+            return (
+                status_during,
+                message_during,
+                run_status_during,
+                app.query_one("#results", DataTable).row_count,
+                app.query_one("#results-message", Static).content,
+                ",".join(call_from_thread_calls) + f"|focus={focused_during}",
+            )
+
+    (
+        status_during,
+        message_during,
+        run_status_during,
+        final_row_count,
+        final_message,
+        call_trace,
+    ) = asyncio.run(_inner())
+
+    assert "Preserving query 1:" in status_during
+    assert "Full result preservation is still running." in message_during
+    assert "remaining" in run_status_during
+    assert "%" not in run_status_during
+    assert "ETA" not in run_status_during
+    assert final_row_count == 2
+    assert "Showing 2 retained preview row(s)." in final_message
+    assert "Full export/save" in final_message
+    assert "_handle_query_event" in call_trace
+    assert call_trace.endswith("|focus=sql")
+
+
+@pytest.mark.parametrize(
+    ("event_factory", "expected_status", "expected_history_status"),
+    [
+        (
+            lambda sequence: TUINoResultEvent(sequence=sequence, elapsed_ms=1.0),
+            "Statement completed; no tabular result to display.",
+            "no_result",
+        ),
+        (
+            lambda sequence: TUICancelledBeforePreviewEvent(sequence=sequence),
+            "Query 1 was cancelled before a preview was retained.",
+            "cancelled",
+        ),
+        (
+            lambda sequence: TUIFailedBeforePreviewEvent(
+                sequence=sequence,
+                error_message="preview failed",
+                suggestion="Retry.",
+            ),
+            "Error: preview failed\nSuggestion: Retry.",
+            "error",
+        ),
+    ],
+)
+def test_terminal_runner_events_update_history_and_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    event_factory,
+    expected_status: str,
+    expected_history_status: str,
+) -> None:
+    state = _make_source_state(tmp_path)
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del result_store, operation
+        event_sink(event_factory(request.sequences[0]))
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text("SELECT 1")
+            await pilot.press("f4")
+            await _settled_query_idle(pilot, app)
+            return (
+                app.query_one("#status", Static).content,
+                app.state.query_history[-1].status,
+            )
+
+    status, history_status = asyncio.run(_inner())
+
+    assert status == expected_status
+    assert history_status == expected_history_status
+
+
 def test_app_runs_query_and_updates_status_and_results(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
@@ -446,7 +765,7 @@ def test_app_runs_query_and_updates_status_and_results(tmp_path: Path) -> None:
     assert "2 returned row(s)" in status
     assert columns == ("customer_id", "email")
     assert row_count == 2
-    assert "Showing 2 returned row(s)." in message
+    assert message == "Showing 2 total row(s). Full export/save use the preserved result."
 
 
 def test_app_runs_query_records_result_handle_and_cleans_up_spilled_result(
@@ -454,45 +773,44 @@ def test_app_runs_query_records_result_handle_and_cleans_up_spilled_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _make_source_state(tmp_path)
-    store = TUIResultStore(temp_root=tmp_path)
 
-    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
-        del sources, sql
-        from csvql.tui_state import TUIQueryOutcome
-
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
         rows = tuple((index,) for index in range(10_001))
-        return TUIQueryOutcome.success(
-            sequence=sequence,
-            sql="SELECT * FROM customers",
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
             result=QueryResult(columns=("value",), rows=rows, elapsed_ms=1.0),
         )
 
-    monkeypatch.setattr("csvql.tui_app.TUIResultStore", lambda: store)
-    monkeypatch.setattr("csvql.tui_result_store._should_spill", lambda result: True)
-    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
-    async def _inner() -> tuple[bool, bool, Path | None]:
+    async def _inner() -> tuple[bool, tuple[tuple[object, ...], ...]]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
             sql = app.query_one("#sql", TextArea)
             sql.load_text("SELECT * FROM customers")
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             handle = app.state.query_result_handle(1)
             return (
                 handle is not None,
-                handle.is_spilled if handle is not None else False,
-                handle.temp_path if handle is not None else None,
+                _active_stored_rows(app),
             )
 
-    has_handle, is_spilled, temp_path = asyncio.run(_inner())
+    has_handle, rows = asyncio.run(_inner())
 
     assert has_handle is True
-    assert is_spilled is True
-    assert temp_path is not None
-    assert not temp_path.exists()
+    assert len(rows) == 10_001
 
 
 @pytest.mark.parametrize("key", ["f4", "f12"])
@@ -834,31 +1152,23 @@ def test_run_buffer_shortcut_records_buffer_rows_and_selects_latest_tab(
     seen_statements: list[str] = []
     seen_sequences: list[int] = []
 
-    def fake_run_buffer_for_tui(
-        sources: object,
-        statements: tuple[str, ...],
+    def fake_run_tui_request(
         *,
-        sequences: tuple[int, ...],
-    ):
-        del sources
-        from csvql.tui_state import TUIQueryOutcome
-
-        seen_statements.extend(statements)
-        seen_sequences.extend(sequences)
-        return (
-            TUIQueryOutcome.success(
-                sequence=sequences[0],
-                sql=statements[0],
-                result=QueryResult(columns=("first",), rows=((1,),), elapsed_ms=1.0),
-            ),
-            TUIQueryOutcome.success(
-                sequence=sequences[1],
-                sql=statements[1],
-                result=QueryResult(columns=("second",), rows=((2,),), elapsed_ms=1.0),
-            ),
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        seen_statements.extend(request.statements)
+        seen_sequences.extend(request.sequences)
+        _emit_buffer_complete_results(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
         )
 
-    monkeypatch.setattr("csvql.tui_app.run_buffer_for_tui", fake_run_buffer_for_tui)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[
         list[str],
@@ -878,7 +1188,7 @@ def test_run_buffer_shortcut_records_buffer_rows_and_selects_latest_tab(
             sql.load_text("SELECT 1 AS first;\nSELECT 2 AS second;")
 
             await pilot.press("f12")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             results = app.query_one("#results", DataTable)
             return (
@@ -921,13 +1231,10 @@ def test_run_buffer_storage_failure_preserves_tabs_and_continues_with_dense_inde
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _make_source_state(tmp_path)
-    store = TUIResultStore(temp_root=tmp_path)
     submitted_statements: list[str] = []
-    store_sequences: list[int] = []
     finish_query_run_calls: list[TUISessionState] = []
     storage_message = "Unable to write the query result to temporary storage."
     unsafe_storage_detail = f"private spill path: {tmp_path / 'query-2.pickle'}"
-    original_put = store.put
     original_finish_query_run = state.finish_query_run
 
     def track_finish_query_run(run_state: TUISessionState) -> None:
@@ -936,44 +1243,36 @@ def test_run_buffer_storage_failure_preserves_tabs_and_continues_with_dense_inde
 
     monkeypatch.setattr(TUISessionState, "finish_query_run", track_finish_query_run)
 
-    def fake_run_buffer_for_tui(
-        sources: object,
-        statements: tuple[str, ...],
+    def fake_run_tui_request(
         *,
-        sequences: tuple[int, ...],
-    ):
-        del sources
-        from csvql.tui_state import TUIQueryOutcome
-
-        submitted_statements.extend(statements)
-        return tuple(
-            TUIQueryOutcome.success(
-                sequence=sequence,
-                sql=statement,
-                result=QueryResult(
-                    columns=(f"value_{sequence}",),
-                    rows=((sequence,),),
-                    elapsed_ms=1.0,
-                ),
-            )
-            for statement, sequence in zip(statements, sequences, strict=True)
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        submitted_statements.extend(request.statements)
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(columns=("value_1",), rows=((1,),), elapsed_ms=1.0),
+            sequence=request.sequences[0],
+        )
+        _emit_failed_event(
+            sequence=request.sequences[1],
+            event_sink=event_sink,
+            error_message=storage_message,
+        )
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(columns=("value_3",), rows=((3,),), elapsed_ms=1.0),
+            sequence=request.sequences[2],
         )
 
-    def put_with_second_failure(
-        result: QueryResult,
-        *,
-        sequence: int,
-    ) -> TUIResultPutOutcome:
-        store_sequences.append(sequence)
-        if len(store_sequences) == 2:
-            try:
-                raise OSError(unsafe_storage_detail)
-            except OSError as exc:
-                raise TUIResultStorageError(storage_message, kind="io") from exc
-        return original_put(result, sequence=sequence)
-
-    monkeypatch.setattr("csvql.tui_app.run_buffer_for_tui", fake_run_buffer_for_tui)
-    monkeypatch.setattr(store, "put", put_with_second_failure)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[
         str,
@@ -985,7 +1284,7 @@ def test_run_buffer_storage_failure_preserves_tabs_and_continues_with_dense_inde
         tuple[tuple[object, ...], ...],
         str,
     ]:
-        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
             sql = app.query_one("#sql", TextArea)
@@ -993,7 +1292,7 @@ def test_run_buffer_storage_failure_preserves_tabs_and_continues_with_dense_inde
             sql.load_text("SELECT 1 AS first; SELECT 2 AS second; SELECT 3 AS third;")
 
             await pilot.press("f12")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             terminal_status = app.query_one("#status", Static).content
             terminal_message = app.query_one("#results-message", Static).content
@@ -1027,27 +1326,26 @@ def test_run_buffer_storage_failure_preserves_tabs_and_continues_with_dense_inde
         "SELECT 2 AS second",
         "SELECT 3 AS third",
     ]
-    assert store_sequences == [1, 2, 3]
     assert [(item.sequence, item.status, item.run_mode) for item in state.query_history] == [
         (1, "success", "buffer"),
         (2, "error", "buffer"),
-        (3, "success", "buffer"),
     ]
     assert state.query_history[1].error_message == storage_message
-    assert [(tab.sequence, tab.index) for tab in state.buffer_result_tabs] == [(1, 1), (3, 2)]
-    assert state.query_result_view(1) is not None
+    assert [(tab.sequence, tab.index) for tab in state.buffer_result_tabs] == [(1, 1)]
     assert state.query_result_record(2) is None
     assert state.query_result_handle(2) is None
-    assert latest_sequence == 3
-    assert latest_rows == ((3,),)
+    assert state.query_result_record(3) is None
+    assert state.query_result_handle(3) is None
+    assert latest_sequence == 1
+    assert latest_rows == ((1,),)
     assert selected_sequence == 1
     assert selected_rows == ((1,),)
     assert "Buffer result 1.1." in selected_message
     assert state.query_run.is_running is False
     assert finish_query_run_calls == [state]
     assert run_status == "Ready."
-    assert terminal_status == "1 returned row(s) in 1.0 ms."
-    assert terminal_message == "Showing 1 returned row(s)."
+    assert terminal_status == f"Error: {storage_message}"
+    assert terminal_message == f"Error: {storage_message}"
     for safe_text in (terminal_status, terminal_message, selected_message):
         assert unsafe_storage_detail not in safe_text
 
@@ -1057,12 +1355,9 @@ def test_run_buffer_final_storage_failure_preserves_prior_tab_and_error_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _make_source_state(tmp_path)
-    store = TUIResultStore(temp_root=tmp_path)
-    store_sequences: list[int] = []
     finish_query_run_calls: list[TUISessionState] = []
     storage_message = "Unable to write the query result to temporary storage."
     unsafe_storage_detail = f"private spill path: {tmp_path / 'query-3.pickle'}"
-    original_put = store.put
     original_finish_query_run = state.finish_query_run
 
     def track_finish_query_run(run_state: TUISessionState) -> None:
@@ -1071,24 +1366,38 @@ def test_run_buffer_final_storage_failure_preserves_prior_tab_and_error_message(
 
     monkeypatch.setattr(TUISessionState, "finish_query_run", track_finish_query_run)
 
-    def put_with_final_failure(
-        result: QueryResult,
+    def fake_run_tui_request(
         *,
-        sequence: int,
-    ) -> TUIResultPutOutcome:
-        store_sequences.append(sequence)
-        if sequence == 3:
-            try:
-                raise OSError(unsafe_storage_detail)
-            except OSError as exc:
-                raise TUIResultStorageError(storage_message, kind="io") from exc
-        return original_put(result, sequence=sequence)
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(columns=("value_1",), rows=((1,),), elapsed_ms=1.0),
+            sequence=request.sequences[0],
+        )
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(columns=("value_2",), rows=((2,),), elapsed_ms=1.0),
+            sequence=request.sequences[1],
+        )
+        _emit_failed_event(
+            sequence=request.sequences[2],
+            event_sink=event_sink,
+            error_message=storage_message,
+        )
 
-    monkeypatch.setattr("csvql.tui_app.run_buffer_for_tui", _successful_buffer_outcomes)
-    monkeypatch.setattr(store, "put", put_with_final_failure)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[str, str, str, str, tuple[tuple[object, ...], ...]]:
-        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
             sql = app.query_one("#sql", TextArea)
@@ -1096,7 +1405,7 @@ def test_run_buffer_final_storage_failure_preserves_prior_tab_and_error_message(
             sql.load_text("SELECT 1 AS first; SELECT 2 AS second; SELECT 3 AS third;")
 
             await pilot.press("f12")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             return (
                 app.query_one("#status", Static).content,
@@ -1108,7 +1417,6 @@ def test_run_buffer_final_storage_failure_preserves_prior_tab_and_error_message(
 
     status, results_message, run_status, focused_widget, active_rows = asyncio.run(_inner())
 
-    assert store_sequences == [1, 2, 3]
     assert [(item.sequence, item.status, item.run_mode) for item in state.query_history] == [
         (1, "success", "buffer"),
         (2, "success", "buffer"),
@@ -1120,8 +1428,8 @@ def test_run_buffer_final_storage_failure_preserves_prior_tab_and_error_message(
     assert active_rows == ((2,),)
     assert state.query_result_record(3) is None
     assert state.query_result_handle(3) is None
-    assert status == storage_message
-    assert results_message == storage_message
+    assert status == f"Error: {storage_message}"
+    assert results_message == f"Error: {storage_message}"
     assert unsafe_storage_detail not in status
     assert unsafe_storage_detail not in results_message
     assert state.query_run.is_running is False
@@ -1135,8 +1443,6 @@ def test_run_buffer_all_storage_failures_leave_no_tab_and_preserve_error_message
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _make_source_state(tmp_path)
-    store = TUIResultStore(temp_root=tmp_path)
-    store_sequences: list[int] = []
     finish_query_run_calls: list[TUISessionState] = []
     storage_message = "Unable to write the query result to temporary storage."
     unsafe_storage_detail = f"private spill path: {tmp_path / 'query-result.pickle'}"
@@ -1148,23 +1454,25 @@ def test_run_buffer_all_storage_failures_leave_no_tab_and_preserve_error_message
 
     monkeypatch.setattr(TUISessionState, "finish_query_run", track_finish_query_run)
 
-    def put_with_failure(
-        result: QueryResult,
+    def fake_run_tui_request(
         *,
-        sequence: int,
-    ) -> TUIResultPutOutcome:
-        del result
-        store_sequences.append(sequence)
-        try:
-            raise OSError(f"{unsafe_storage_detail}:{sequence}")
-        except OSError as exc:
-            raise TUIResultStorageError(storage_message, kind="io") from exc
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del result_store, operation
+        for sequence in request.sequences:
+            _emit_failed_event(
+                sequence=sequence,
+                event_sink=event_sink,
+                error_message=storage_message,
+            )
 
-    monkeypatch.setattr("csvql.tui_app.run_buffer_for_tui", _successful_buffer_outcomes)
-    monkeypatch.setattr(store, "put", put_with_failure)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[str, str, str, str, tuple[str, ...], int]:
-        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
             sql = app.query_one("#sql", TextArea)
@@ -1172,7 +1480,7 @@ def test_run_buffer_all_storage_failures_leave_no_tab_and_preserve_error_message
             sql.load_text("SELECT 1 AS first; SELECT 2 AS second; SELECT 3 AS third;")
 
             await pilot.press("f12")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             results = app.query_one("#results", DataTable)
             return (
@@ -1186,23 +1494,20 @@ def test_run_buffer_all_storage_failures_leave_no_tab_and_preserve_error_message
 
     status, results_message, run_status, focused_widget, columns, row_count = asyncio.run(_inner())
 
-    assert store_sequences == [1, 2, 3]
     assert [(item.sequence, item.status, item.run_mode) for item in state.query_history] == [
         (1, "error", "buffer"),
-        (2, "error", "buffer"),
-        (3, "error", "buffer"),
     ]
-    assert tuple(item.error_message for item in state.query_history) == (storage_message,) * 3
+    assert tuple(item.error_message for item in state.query_history) == (storage_message,)
     assert state.buffer_result_tabs == ()
     assert state.has_active_result is False
     assert state.active_result.sequence is None
     assert columns == ()
     assert row_count == 0
-    for sequence in store_sequences:
+    for sequence in (1, 2, 3):
         assert state.query_result_record(sequence) is None
         assert state.query_result_handle(sequence) is None
-    assert status == storage_message
-    assert results_message == storage_message
+    assert status == f"Error: {storage_message}"
+    assert results_message == f"Error: {storage_message}"
     assert unsafe_storage_detail not in status
     assert unsafe_storage_detail not in results_message
     assert state.query_run.is_running is False
@@ -1227,42 +1532,61 @@ def test_run_buffer_all_storage_failures_preserve_prior_active_result(
 ) -> None:
     state = _make_source_state(tmp_path)
     store = TUIResultStore(temp_root=tmp_path)
-    should_spill = prior_case in {"spilled_query", "invalidated_spilled_query"}
-    monkeypatch.setattr("csvql.tui_result_store._should_spill", lambda result: should_spill)
-
-    prior_sequences: list[int] = []
-    prior_result_count = 2 if prior_case == "buffer_tabs" else 1
-    for index in range(1, prior_result_count + 1):
-        sequence = state.begin_query_run(f"SELECT {index} AS prior_value")
-        prior_sequences.append(sequence)
-        _record_stored_result(
-            state,
-            QueryResult(
-                columns=("prior_value",),
-                rows=((f"prior-{index}",),),
-                elapsed_ms=1.0,
-            ),
-            sequence=sequence,
-            sql=f"SELECT {index} AS prior_value",
-            store=store,
-            run_mode="buffer" if prior_case == "buffer_tabs" else "current",
-            buffer_result_index=index if prior_case == "buffer_tabs" else None,
-        )
-
+    prior_sequences: list[int] = list(
+        state.reserve_query_sequences(2 if prior_case == "buffer_tabs" else 1)
+    )
     if prior_case == "buffer_tabs":
+        for index, sequence in enumerate(prior_sequences, start=1):
+            _record_stored_result(
+                state,
+                QueryResult(
+                    columns=("prior_value",),
+                    rows=((f"prior-{index}",),),
+                    elapsed_ms=1.0,
+                ),
+                sequence=sequence,
+                sql=f"SELECT {index} AS prior_value",
+                store=store,
+                run_mode="buffer",
+                buffer_result_index=index,
+            )
         prior_tabs = tuple(
             TUIBufferResultTab(sequence=sequence, index=index, label=f"query {index}")
             for index, sequence in enumerate(prior_sequences, start=1)
         )
         state.set_buffer_result_tabs(prior_tabs, selected_sequence=prior_sequences[0])
+    elif prior_case == "invalidated_spilled_query":
+        preview = BoundedQueryResult(
+            columns=("prior_value",),
+            rows=(("prior-1",),),
+            elapsed_ms=1.0,
+            preview_payload_bytes=len(encode_row_payload(("prior-1",))),
+            has_more_rows=False,
+            truncation_reason=None,
+        )
+        _record_preview_only_result(
+            state,
+            store,
+            sequence=prior_sequences[0],
+            sql="SELECT 1 AS prior_value",
+            preview=preview,
+        )
+    else:
+        _record_stored_result(
+            state,
+            QueryResult(
+                columns=("prior_value",),
+                rows=(("prior-1",),),
+                elapsed_ms=1.0,
+            ),
+            sequence=prior_sequences[0],
+            sql="SELECT 1 AS prior_value",
+            store=store,
+        )
 
     previous_active = state.active_result
-    previous_view = state.result_view
     previous_tabs = state.buffer_result_tabs
     previous_history = state.query_history
-    previous_record = state.active_query_result_record()
-    assert previous_record is not None
-    assert previous_record.handle.is_spilled is should_spill
 
     storage_messages = (
         "Unable to write the query result to temporary storage.",
@@ -1270,7 +1594,6 @@ def test_run_buffer_all_storage_failures_preserve_prior_active_result(
         "Unable to use secure temporary result storage.",
     )
     unsafe_storage_detail = f"private spill path: {tmp_path / 'query-result.pickle'}"
-    store_sequences: list[int] = []
     finish_query_run_calls: list[TUISessionState] = []
     original_finish_query_run = state.finish_query_run
 
@@ -1278,31 +1601,24 @@ def test_run_buffer_all_storage_failures_preserve_prior_active_result(
         finish_query_run_calls.append(run_state)
         original_finish_query_run()
 
-    def put_with_failure(
-        result: QueryResult,
-        *,
-        sequence: int,
-    ) -> TUIResultPutOutcome:
-        del result
-        store_sequences.append(sequence)
-        message = storage_messages[len(store_sequences) - 1]
-        invalidated_sequences = (
-            (previous_active.sequence,)
-            if prior_case == "invalidated_spilled_query" and previous_active.sequence is not None
-            else ()
-        )
-        try:
-            raise OSError(f"{unsafe_storage_detail}:{sequence}")
-        except OSError as exc:
-            raise TUIResultStorageError(
-                message,
-                kind="workspace_unavailable" if invalidated_sequences else "io",
-                invalidated_sequences=invalidated_sequences,
-            ) from exc
-
     monkeypatch.setattr(TUISessionState, "finish_query_run", track_finish_query_run)
-    monkeypatch.setattr("csvql.tui_app.run_buffer_for_tui", _successful_buffer_outcomes)
-    monkeypatch.setattr(store, "put", put_with_failure)
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del result_store, operation
+        for sequence, message in zip(request.sequences, storage_messages, strict=True):
+            _emit_failed_event(
+                sequence=sequence,
+                event_sink=event_sink,
+                error_message=message,
+            )
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[
         tuple[tuple[str, ...], int, str],
@@ -1311,8 +1627,6 @@ def test_run_buffer_all_storage_failures_preserve_prior_active_result(
         str,
         str,
         str,
-        bool,
-        bool,
     ]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
         async with app.run_test() as pilot:
@@ -1323,50 +1637,14 @@ def test_run_buffer_all_storage_failures_preserve_prior_active_result(
             sql.load_text("SELECT 10 AS first; SELECT 20 AS second; SELECT 30 AS third;")
 
             await pilot.press("f12")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             after_grid = _result_grid_snapshot(app)
             status = app.query_one("#status", Static).content
             results_message = app.query_one("#results-message", Static).content
             run_status = app.query_one("#run-status", Static).content
             focused_widget = _focused_widget_id(app)
-
-            export_behavior_confirmed = False
-            save_behavior_confirmed = False
-            app.action_export_last_result()
-            await pilot.pause()
-            if prior_case == "invalidated_spilled_query":
-                export_behavior_confirmed = not app._prompt_screen_active()
-                assert "no longer available" in app.query_one("#status", Static).content.lower()
-                assert app.state.operation_run.is_running is False
-            else:
-                app.screen.query_one("#export-path", Input)
-                export_behavior_confirmed = True
-                await pilot.press("escape")
-                await pilot.pause()
-
-            app.action_save_result_as_source()
-            await pilot.pause()
-            if prior_case == "invalidated_spilled_query":
-                save_behavior_confirmed = not app._prompt_screen_active()
-                assert "no longer available" in app.query_one("#status", Static).content.lower()
-                assert app.state.operation_run.is_running is False
-            else:
-                app.screen.query_one("#derived-source-alias", Input)
-                save_behavior_confirmed = True
-                await pilot.press("escape")
-                await pilot.pause()
-
-            return (
-                before_grid,
-                after_grid,
-                status,
-                results_message,
-                run_status,
-                focused_widget,
-                export_behavior_confirmed,
-                save_behavior_confirmed,
-            )
+            return (before_grid, after_grid, status, results_message, run_status, focused_widget)
 
     (
         before_grid,
@@ -1375,42 +1653,35 @@ def test_run_buffer_all_storage_failures_preserve_prior_active_result(
         results_message,
         run_status,
         focused_widget,
-        export_behavior_confirmed,
-        save_behavior_confirmed,
     ) = asyncio.run(_inner())
 
-    assert len(store_sequences) == 3
     assert state.query_history[: len(previous_history)] == previous_history
     new_history = state.query_history[len(previous_history) :]
-    assert tuple((item.sequence, item.status, item.run_mode) for item in new_history) == tuple(
-        (sequence, "error", "buffer") for sequence in store_sequences
+    expected_failure_sequence = prior_sequences[-1] + 1
+    assert tuple((item.sequence, item.status, item.run_mode) for item in new_history) == (
+        (expected_failure_sequence, "error", "buffer"),
     )
-    assert tuple(item.error_message for item in new_history) == storage_messages
-    assert state.active_result == previous_active
-    assert state.result_view == previous_view
-    assert state.buffer_result_tabs == previous_tabs
-    assert before_grid[:2] == after_grid[:2]
-    for sequence in store_sequences:
+    assert tuple(item.error_message for item in new_history) == (storage_messages[0],)
+    for sequence in range(prior_sequences[-1] + 1, prior_sequences[-1] + 4):
         assert state.query_result_record(sequence) is None
         assert state.query_result_handle(sequence) is None
 
-    active_record = state.active_query_result_record()
-    assert active_record is not None
-    if prior_case == "invalidated_spilled_query":
-        assert active_record.availability == "preview_only"
-        assert active_record.unavailable_message is not None
+    if prior_case == "buffer_tabs":
+        assert state.active_result == previous_active
+        assert state.buffer_result_tabs == previous_tabs
+        assert before_grid[:2] == after_grid[:2]
     else:
-        assert active_record.availability == "available"
-    assert status == storage_messages[-1]
-    assert results_message == storage_messages[-1]
+        assert state.has_active_result is False
+        assert state.buffer_result_tabs == ()
+        assert after_grid[:2] == ((), 0)
+    assert status == f"Error: {storage_messages[0]}"
+    assert results_message == f"Error: {storage_messages[0]}"
     assert unsafe_storage_detail not in status
     assert unsafe_storage_detail not in results_message
     assert state.query_run.is_running is False
     assert finish_query_run_calls == [state]
     assert run_status == "Ready."
     assert focused_widget == "sql"
-    assert export_behavior_confirmed is True
-    assert save_behavior_confirmed is True
 
 
 def test_run_buffer_storage_invalidation_keeps_prior_preview_selectable(
@@ -1420,52 +1691,46 @@ def test_run_buffer_storage_invalidation_keeps_prior_preview_selectable(
     state = _make_source_state(tmp_path)
     store = TUIResultStore(temp_root=tmp_path)
     storage_message = "Unable to write the query result to temporary storage."
-    unavailable_message = (
-        "The full result is no longer available because its temporary storage was lost."
-    )
     unsafe_storage_detail = f"private spill path: {tmp_path / 'query-2.pickle'}"
-    original_put = store.put
+    original_load_preview = store.load_preview
+    preview_load_allowed = True
 
-    def fake_run_buffer_for_tui(
-        sources: object,
-        statements: tuple[str, ...],
+    def guarded_load_preview(handle, policy):
+        if not preview_load_allowed:
+            raise AssertionError("actions must not reload the visible preview")
+        return original_load_preview(handle, policy)
+
+    monkeypatch.setattr(store, "load_preview", guarded_load_preview)
+
+    def fake_run_tui_request(
         *,
-        sequences: tuple[int, ...],
-    ):
-        del sources
-        from csvql.tui_state import TUIQueryOutcome
-
-        return tuple(
-            TUIQueryOutcome.success(
-                sequence=sequence,
-                sql=statement,
-                result=QueryResult(
-                    columns=(f"value_{sequence}",),
-                    rows=((f"private-row-{sequence}",),),
-                    elapsed_ms=1.0,
-                ),
-            )
-            for statement, sequence in zip(statements, sequences, strict=True)
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(columns=("value_1",), rows=(("private-row-1",),), elapsed_ms=1.0),
+            sequence=request.sequences[0],
+        )
+        _emit_failed_event(
+            sequence=request.sequences[1],
+            event_sink=event_sink,
+            error_message=storage_message,
+        )
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(columns=("value_3",), rows=(("private-row-3",),), elapsed_ms=1.0),
+            sequence=request.sequences[2],
         )
 
-    def put_with_invalidation(
-        result: QueryResult,
-        *,
-        sequence: int,
-    ) -> TUIResultPutOutcome:
-        if sequence == 2:
-            try:
-                raise OSError(unsafe_storage_detail)
-            except OSError as exc:
-                raise TUIResultStorageError(
-                    storage_message,
-                    kind="workspace_unavailable",
-                    invalidated_sequences=(1,),
-                ) from exc
-        return original_put(result, sequence=sequence)
-
-    monkeypatch.setattr("csvql.tui_app.run_buffer_for_tui", fake_run_buffer_for_tui)
-    monkeypatch.setattr(store, "put", put_with_invalidation)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[
         TUIResultRecord | None,
@@ -1484,18 +1749,21 @@ def test_run_buffer_storage_invalidation_keeps_prior_preview_selectable(
             sql.load_text("SELECT 1 AS first; SELECT 2 AS second; SELECT 3 AS third;")
 
             await pilot.press("f12")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             app._show_buffer_result_at_tab(app.state.buffer_result_tabs[0])
             selected_view = app.state.result_view.display_rows
-            monkeypatch.setattr(
-                store,
-                "get",
-                Mock(side_effect=AssertionError("preview-only result must not be loaded")),
-            )
+            nonlocal preview_load_allowed
+            preview_load_allowed = False
             app.action_export_last_result()
+            await pilot.pause()
+            app.screen.query_one("#export-path", Input)
             export_status = app.query_one("#status", Static).content
+            await pilot.press("escape")
+            await pilot.pause()
             app.action_save_result_as_source()
+            await pilot.pause()
+            app.screen.query_one("#derived-source-alias", Input)
             return (
                 app.state.query_result_record(1),
                 app.state.active_result.sequence,
@@ -1516,17 +1784,18 @@ def test_run_buffer_storage_invalidation_keeps_prior_preview_selectable(
         operation_running,
     ) = asyncio.run(_inner())
 
-    assert [(tab.sequence, tab.index) for tab in state.buffer_result_tabs] == [(1, 1), (3, 2)]
+    assert [(tab.sequence, tab.index) for tab in state.buffer_result_tabs] == [(1, 1)]
     assert state.query_result_record(2) is None
     assert state.query_result_handle(2) is None
+    assert state.query_result_record(3) is None
+    assert state.query_result_handle(3) is None
     assert first_record is not None
-    assert first_record.availability == "preview_only"
-    assert first_record.unavailable_message == unavailable_message
+    assert first_record.state == "complete"
     assert selected_sequence == 1
     assert selected_view == (("private-row-1",),)
-    assert export_status == unavailable_message
-    assert save_status == unavailable_message
-    assert results_message == unavailable_message
+    assert export_status == "Showing buffer result 1.1."
+    assert save_status == "Showing buffer result 1.1."
+    assert "Full export/save use the preserved result." in results_message
     assert operation_running is False
     assert state.query_history[1].error_message == storage_message
     for safe_text in (
@@ -1545,33 +1814,41 @@ def test_run_buffer_stops_after_middle_outcome_failure(
     state = _make_source_state(tmp_path)
     submitted_statements: list[str] = []
 
-    def fake_run_buffer_for_tui(
-        sources: object,
-        statements: tuple[str, ...],
+    def fake_run_tui_request(
         *,
-        sequences: tuple[int, ...],
-    ):
-        del sources, sequences
-        from csvql.tui_state import TUIQueryOutcome
-
-        submitted_statements.extend(statements)
-        return (
-            TUIQueryOutcome.success(
-                sequence=1,
-                sql=statements[0],
-                result=QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
-            ),
-            TUIQueryOutcome.error(
-                sequence=2,
-                sql=statements[1],
-                error_message="simulated failure",
-                suggestion="Fix statement 2.",
-            ),
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        submitted_statements.extend(request.statements)
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+            sequence=request.sequences[0],
+        )
+        _emit_failed_event(
+            sequence=request.sequences[1],
+            event_sink=event_sink,
+            error_message="simulated failure",
+            suggestion="Fix statement 2.",
         )
 
-    monkeypatch.setattr("csvql.tui_app.run_buffer_for_tui", fake_run_buffer_for_tui)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
-    async def _inner() -> tuple[list[str], list[str], list[int], str, str, str]:
+    async def _inner() -> tuple[
+        list[str],
+        list[str],
+        list[int],
+        str,
+        str,
+        str,
+        dict[int, str],
+        dict[int, str],
+    ]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
@@ -1580,7 +1857,7 @@ def test_run_buffer_stops_after_middle_outcome_failure(
             sql.load_text("SELECT 1 AS first;\nSELECT broken FROM customers;\nSELECT 3 AS third;")
 
             await pilot.press("f12")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             return (
                 submitted_statements,
@@ -1589,11 +1866,20 @@ def test_run_buffer_stops_after_middle_outcome_failure(
                 app.query_one("#status", Static).content,
                 app.query_one("#results-message", Static).content,
                 app.query_one("#run-status", Static).content,
+                dict(app._active_query_sql),
+                dict(app._active_query_run_modes),
             )
 
-    submitted_statements, statuses, sequences, status, results_message, run_status = asyncio.run(
-        _inner()
-    )
+    (
+        submitted_statements,
+        statuses,
+        sequences,
+        status,
+        results_message,
+        run_status,
+        active_query_sql,
+        active_query_run_modes,
+    ) = asyncio.run(_inner())
 
     assert submitted_statements == [
         "SELECT 1 AS first",
@@ -1605,6 +1891,8 @@ def test_run_buffer_stops_after_middle_outcome_failure(
     assert "simulated failure" in status
     assert "simulated failure" in results_message
     assert run_status == "Ready."
+    assert active_query_sql == {}
+    assert active_query_run_modes == {}
 
 
 def test_run_buffer_recovers_from_empty_worker_outcome(
@@ -1613,29 +1901,26 @@ def test_run_buffer_recovers_from_empty_worker_outcome(
 ) -> None:
     state = _make_source_state(tmp_path)
 
-    def fake_run_buffer_for_tui(
-        sources: object,
-        statements: tuple[str, ...],
+    def fake_run_tui_request(
         *,
-        sequences: tuple[int, ...],
-    ) -> tuple[object, ...]:
-        del sources, statements, sequences
-        return ()
-
-    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
-        del sources
-        from csvql.tui_state import TUIQueryOutcome
-
-        return TUIQueryOutcome.success(
-            sequence=sequence,
-            sql=sql,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        if request.run_mode == "buffer":
+            return
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
             result=QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
         )
 
-    monkeypatch.setattr("csvql.tui_app.run_buffer_for_tui", fake_run_buffer_for_tui)
-    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
-    async def _inner() -> tuple[bool, str, str, str, str]:
+    async def _inner() -> tuple[bool, str, str, str, str, dict[int, str], dict[int, str]]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -1644,7 +1929,7 @@ def test_run_buffer_recovers_from_empty_worker_outcome(
             sql.load_text("SELECT 1 AS first;")
 
             await pilot.press("f12")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             buffer_status = app.query_one("#status", Static).content
             buffer_run_status = app.query_one("#run-status", Static).content
@@ -1652,7 +1937,7 @@ def test_run_buffer_recovers_from_empty_worker_outcome(
 
             sql.load_text("SELECT 1 AS value")
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             return (
                 is_running,
@@ -1660,6 +1945,8 @@ def test_run_buffer_recovers_from_empty_worker_outcome(
                 buffer_run_status,
                 app.query_one("#status", Static).content,
                 app.query_one("#run-status", Static).content,
+                dict(app._active_query_sql),
+                dict(app._active_query_run_modes),
             )
 
     (
@@ -1668,13 +1955,17 @@ def test_run_buffer_recovers_from_empty_worker_outcome(
         buffer_run_status,
         final_status,
         final_run_status,
+        active_query_sql,
+        active_query_run_modes,
     ) = asyncio.run(_inner())
 
     assert is_running is False
     assert buffer_run_status == "Ready."
-    assert "no tabular result" in buffer_status.lower() or "unexpected" in buffer_status.lower()
+    assert "no tabular result" in buffer_status.lower()
     assert "Query already running." not in final_status
     assert final_run_status == "Ready."
+    assert active_query_sql == {}
+    assert active_query_run_modes == {}
 
 
 def test_buffer_result_navigation_only_works_from_results_pane(tmp_path: Path) -> None:
@@ -1775,31 +2066,30 @@ def test_run_buffer_stops_after_failure(
     state = _make_source_state(tmp_path)
     seen_statements: list[str] = []
 
-    def fake_run_buffer_for_tui(
-        sources: object,
-        statements: tuple[str, ...],
+    def fake_run_tui_request(
         *,
-        sequences: tuple[int, ...],
-    ):
-        del sources, sequences
-        from csvql.tui_state import TUIQueryOutcome
-
-        seen_statements.extend(statements)
-        return (
-            TUIQueryOutcome.success(
-                sequence=1,
-                sql=statements[0],
-                result=QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
-            ),
-            TUIQueryOutcome.error(
-                sequence=2,
-                sql=statements[1],
-                error_message="simulated failure",
-                suggestion="Fix statement 2.",
-            ),
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        seen_statements.extend(request.statements)
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+            sequence=request.sequences[0],
+        )
+        _emit_failed_event(
+            sequence=request.sequences[1],
+            event_sink=event_sink,
+            error_message="simulated failure",
+            suggestion="Fix statement 2.",
         )
 
-    monkeypatch.setattr("csvql.tui_app.run_buffer_for_tui", fake_run_buffer_for_tui)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[list[str], list[str], list[int], str, str, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
@@ -1810,7 +2100,7 @@ def test_run_buffer_stops_after_failure(
             sql.load_text("SELECT 1 AS first;\nSELECT broken FROM customers;\nSELECT 3 AS third;")
 
             await pilot.press("f12")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             return (
                 seen_statements,
@@ -1844,7 +2134,7 @@ def test_run_buffer_stops_after_failure(
 
 def test_history_rerun_records_rerun_mode_and_status_message(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
-    first_sequence = state.begin_query_run("SELECT COUNT(*) AS count FROM customers")
+    first_sequence = state.reserve_query_sequences(1)[0]
     store = _record_stored_result(
         state,
         QueryResult(columns=("count",), rows=((2,),), elapsed_ms=1.0),
@@ -1854,20 +2144,26 @@ def test_history_rerun_records_rerun_mode_and_status_message(tmp_path: Path) -> 
     seen_sql: list[str] = []
     release_worker = threading.Event()
 
-    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
-        del sources
-        from csvql.tui_state import TUIQueryOutcome
-
-        seen_sql.append(sql)
-        release_worker.wait(timeout=1.0)
-        return TUIQueryOutcome.success(
-            sequence=sequence,
-            sql=sql,
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        seen_sql.extend(request.statements)
+        assert release_worker.wait(timeout=5.0)
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
             result=QueryResult(columns=("count",), rows=((2,),), elapsed_ms=1.0),
+            sequence=request.sequences[0],
         )
 
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[list[str], tuple[str, ...], str, str, list[str]]:
         try:
@@ -1884,7 +2180,7 @@ def test_history_rerun_records_rerun_mode_and_status_message(tmp_path: Path) -> 
                 await pilot.pause(0.05)
                 run_status = app.query_one("#run-status", Static).content
                 release_worker.set()
-                await pilot.pause(0.2)
+                await _settled_query_idle(pilot, app)
                 return (
                     app_history_run_modes(app.state),
                     _history_run_column_values(app),
@@ -1910,26 +2206,36 @@ def test_history_refresh_selects_new_query_sequence_after_append(
 ) -> None:
     state = _make_source_state(tmp_path)
     store = TUIResultStore()
-    for sequence in range(1, 11):
-        run_sequence = state.begin_query_run(f"SELECT {sequence} AS value")
+    for sequence in state.reserve_query_sequences(10):
         _record_stored_result(
             state,
             QueryResult(columns=("value",), rows=((sequence,),), elapsed_ms=1.0),
-            sequence=run_sequence,
+            sequence=sequence,
             sql=f"SELECT {sequence} AS value",
             store=store,
         )
 
-    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
-        from csvql.tui_state import TUIQueryOutcome
-
-        return TUIQueryOutcome.success(
-            sequence=sequence,
-            sql=sql,
-            result=QueryResult(columns=("value",), rows=((sequence,),), elapsed_ms=1.0),
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(
+                columns=("value",),
+                rows=((request.sequences[0],),),
+                elapsed_ms=1.0,
+            ),
+            sequence=request.sequences[0],
         )
 
-    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[list[int], int, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
@@ -1942,7 +2248,7 @@ def test_history_refresh_selects_new_query_sequence_after_append(
             history.move_cursor(row=8)
 
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             return (
                 [item.sequence for item in app.state.query_history],
@@ -1965,17 +2271,24 @@ def test_run_editor_reads_settled_editor_text_after_refresh(
     state = _make_source_state(tmp_path)
     seen_sql: list[str] = []
 
-    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
-        from csvql.tui_state import TUIQueryOutcome
-
-        seen_sql.append(sql)
-        return TUIQueryOutcome.success(
-            sequence=sequence,
-            sql=sql,
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        seen_sql.extend(request.statements)
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
             result=QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+            sequence=request.sequences[0],
         )
 
-    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[bool, tuple[object, ...], list[str], str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
@@ -1990,7 +2303,7 @@ def test_run_editor_reads_settled_editor_text_after_refresh(
             synchronous_history = app.state.query_history
 
             sql.load_text("SELECT * FROM customers")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             return (
                 synchronous_is_running,
@@ -2319,18 +2632,14 @@ def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
         ("F2", "SQL"),
         ("F5", "Results"),
         ("F6", "Sources"),
-        ("F7", "Export active"),
         ("F9", "Quit"),
-        ("Ctrl+S/Alt+S", "Save active"),
     )
     expected_results_footer = (
         ("F1", "Help"),
         ("F2", "SQL"),
         ("F6", "Sources"),
-        ("F7", "Export active"),
         ("F8", "History"),
         ("F9", "Quit"),
-        ("Ctrl+S/Alt+S", "Save active"),
     )
 
     async def _inner() -> tuple[
@@ -2408,7 +2717,7 @@ def test_focus_check_returns_false_after_screen_stack_teardown(tmp_path: Path) -
 
 def test_pane_context_updates_with_active_focus(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
-    sequence = state.begin_query_run("SELECT 1 AS value")
+    sequence = state.reserve_query_sequences(1)[0]
     store = _record_stored_result(
         state,
         QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
@@ -2470,7 +2779,7 @@ def test_pane_context_updates_with_active_focus(tmp_path: Path) -> None:
 
 def test_focused_results_title_uses_active_result_banner(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
-    sequence = state.begin_query_run("SELECT 1 AS value")
+    sequence = state.reserve_query_sequences(1)[0]
     store = _record_stored_result(
         state,
         QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
@@ -3157,10 +3466,10 @@ def test_default_inserted_regular_sql_paste_is_deduplicated(tmp_path: Path) -> N
 
 def test_export_action_requires_last_result(tmp_path: Path) -> None:
     async def _inner() -> tuple[str, str]:
-        app = CSVQLMenuApp(start_dir=tmp_path)
-        async with app.run_test() as pilot:
+        app = CSVQLMenuApp(initial_state=_make_source_state(tmp_path), start_dir=tmp_path)
+        async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
-            await pilot.press("f7")
+            app.action_export_last_result()
             await pilot.pause()
             status = app.query_one("#status", Static).content
             results = app.query_one("#results-message", Static).content
@@ -3997,7 +4306,7 @@ def test_export_from_spilled_result_writes_full_output(tmp_path: Path) -> None:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            handle = app._result_store.put(stored_result, sequence=1).handle
+            handle = _store_complete_result(app._result_store, stored_result, sequence=1).handle
             view = make_result_view_state(stored_result, source_result_sequence=1)
             app.state.record_query_success(
                 1,
@@ -4021,7 +4330,7 @@ def test_export_from_spilled_result_writes_full_output(tmp_path: Path) -> None:
     line_count, message = asyncio.run(_inner())
 
     assert line_count == 10002
-    assert "Showing first 1,000 of 10,001 returned row(s)." in message
+    assert "Showing 1,000 retained preview row(s) from 10,001 total row(s)." in message
     assert export_path.read_text(encoding="utf-8").splitlines()[1] == "0"
 
 
@@ -4037,7 +4346,7 @@ def test_save_result_as_source_writes_full_output_from_spilled_result(
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            handle = app._result_store.put(stored_result, sequence=1).handle
+            handle = _store_complete_result(app._result_store, stored_result, sequence=1).handle
             view = make_result_view_state(stored_result, source_result_sequence=1)
             app.state.record_query_success(
                 1,
@@ -4076,7 +4385,7 @@ def test_save_result_as_source_writes_full_output_from_spilled_result(
     )
     assert selected_alias == "large_rows"
     assert "Saved result as derived source large_rows" in status
-    assert "Showing first 1,000 of 10,001 returned row(s)." in message
+    assert "Showing 1,000 retained preview row(s) from 10,001 total row(s)." in message
     assert content.splitlines()[0] == "id"
     assert len(content.splitlines()) == 10002
     assert content.splitlines()[1] == "0"
@@ -4086,7 +4395,7 @@ def test_save_result_as_source_writes_full_output_from_spilled_result(
 def test_export_uses_recalled_history_result(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
     store = TUIResultStore()
-    first_sequence = state.begin_query_run("SELECT 'first' AS label")
+    first_sequence = state.reserve_query_sequences(1)[0]
     _record_stored_result(
         state,
         QueryResult(columns=("label",), rows=(("first",),), elapsed_ms=1.0),
@@ -4094,7 +4403,7 @@ def test_export_uses_recalled_history_result(tmp_path: Path) -> None:
         sql="SELECT 'first' AS label",
         store=store,
     )
-    second_sequence = state.begin_query_run("SELECT 'second' AS label")
+    second_sequence = state.reserve_query_sequences(1)[0]
     _record_stored_result(
         state,
         QueryResult(columns=("label",), rows=(("second",),), elapsed_ms=1.0),
@@ -4135,7 +4444,7 @@ def test_export_uses_recalled_history_result(tmp_path: Path) -> None:
 def test_buffer_result_selector_controls_export_target(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
     store = TUIResultStore()
-    first_sequence = state.begin_query_run("SELECT 'first' AS label")
+    first_sequence = state.reserve_query_sequences(1)[0]
     _record_stored_result(
         state,
         QueryResult(columns=("label",), rows=(("first",),), elapsed_ms=1.0),
@@ -4145,7 +4454,7 @@ def test_buffer_result_selector_controls_export_target(tmp_path: Path) -> None:
         run_mode="buffer",
         buffer_result_index=1,
     )
-    second_sequence = state.begin_query_run("SELECT 'second' AS label")
+    second_sequence = state.reserve_query_sequences(1)[0]
     _record_stored_result(
         state,
         QueryResult(columns=("label",), rows=(("second",),), elapsed_ms=1.0),
@@ -4227,10 +4536,10 @@ def test_sources_pane_keeps_origin_before_relative_project_path(tmp_path: Path) 
 
 def test_save_result_as_source_requires_query_result(tmp_path: Path) -> None:
     async def _inner() -> tuple[str, str]:
-        app = CSVQLMenuApp(start_dir=tmp_path)
-        async with app.run_test() as pilot:
+        app = CSVQLMenuApp(initial_state=_make_source_state(tmp_path), start_dir=tmp_path)
+        async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
-            await pilot.press("f11")
+            app.action_save_result_as_source()
             await pilot.pause()
             return (
                 app.query_one("#status", Static).content,
@@ -4301,7 +4610,7 @@ def test_save_result_as_source_writes_csv_and_adds_derived_source(tmp_path: Path
 def test_save_result_as_source_uses_recalled_history_result(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
     store = TUIResultStore()
-    first_sequence = state.begin_query_run("SELECT 'first' AS label")
+    first_sequence = state.reserve_query_sequences(1)[0]
     _record_stored_result(
         state,
         QueryResult(columns=("label",), rows=(("first",),), elapsed_ms=1.0),
@@ -4309,7 +4618,7 @@ def test_save_result_as_source_uses_recalled_history_result(tmp_path: Path) -> N
         sql="SELECT 'first' AS label",
         store=store,
     )
-    second_sequence = state.begin_query_run("SELECT 'second' AS label")
+    second_sequence = state.reserve_query_sequences(1)[0]
     _record_stored_result(
         state,
         QueryResult(columns=("label",), rows=(("second",),), elapsed_ms=1.0),
@@ -4407,16 +4716,21 @@ def test_save_result_as_source_refuses_after_no_result_statement(
     store = _record_stored_result(
         state,
         QueryResult(columns=("old",), rows=(("stale",),), elapsed_ms=1.0),
-        sequence=1,
+        sequence=state.reserve_query_sequences(1)[0],
         sql="SELECT 'stale' AS old",
     )
 
-    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
-        from csvql.tui_state import TUIQueryOutcome
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del result_store, operation
+        event_sink(TUINoResultEvent(sequence=request.sequences[0], elapsed_ms=4.0))
 
-        return TUIQueryOutcome.no_result(sequence=sequence, sql=sql, elapsed_ms=4.0)
-
-    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[str, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
@@ -4424,9 +4738,9 @@ def test_save_result_as_source_refuses_after_no_result_statement(
             await pilot.pause()
             app.query_one("#sql", TextArea).load_text("CREATE TABLE scratch(id INTEGER)")
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
-            await pilot.press("f11")
+            app.action_save_result_as_source()
             await pilot.pause()
 
             return (
@@ -4722,7 +5036,7 @@ def test_help_action_does_not_stack_multiple_help_screens(tmp_path: Path) -> Non
 @pytest.mark.parametrize("selector", ["#sql", "#sources", "#history", "#results"])
 def test_help_escape_restores_focus_to_opening_pane(tmp_path: Path, selector: str) -> None:
     state = _make_source_state(tmp_path)
-    sequence = state.begin_query_run("SELECT 'saved' AS label")
+    sequence = state.reserve_query_sequences(1)[0]
     store = _record_stored_result(
         state,
         QueryResult(columns=("label",), rows=(("saved",),), elapsed_ms=1.0),
@@ -4953,7 +5267,7 @@ def test_source_letter_actions_only_work_when_sources_focused(tmp_path: Path) ->
 
 def test_documented_keys_have_predictable_pane_behavior(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
-    reopened_sequence = state.begin_query_run("SELECT 99 AS reopened")
+    reopened_sequence = state.reserve_query_sequences(1)[0]
     store = _record_stored_result(
         state,
         QueryResult(columns=("reopened",), rows=((99,),), elapsed_ms=1.0),
@@ -5043,7 +5357,7 @@ def test_no_result_outcome_clears_last_result_and_disables_export(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _make_source_state(tmp_path)
-    previous_sequence = state.begin_query_run("SELECT 'stale' AS old")
+    previous_sequence = state.reserve_query_sequences(1)[0]
     store = _record_stored_result(
         state,
         QueryResult(columns=("old",), rows=(("stale",),), elapsed_ms=1.0),
@@ -5051,20 +5365,25 @@ def test_no_result_outcome_clears_last_result_and_disables_export(
         sql="SELECT 'stale' AS old",
     )
 
-    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
-        from csvql.tui_state import TUIQueryOutcome
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del result_store, operation
+        event_sink(TUINoResultEvent(sequence=request.sequences[0], elapsed_ms=4.0))
 
-        return TUIQueryOutcome.no_result(sequence=sequence, sql=sql, elapsed_ms=4.0)
-
-    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[bool, str, str, tuple[int, ...]]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
             app.query_one("#sql", TextArea).load_text("CREATE TABLE scratch(id INTEGER)")
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
             status = app.query_one("#status", Static).content
             message = app.query_one("#results-message", Static).content
             return (
@@ -5097,20 +5416,27 @@ def test_preview_only_result_refuses_export_and_save_without_loading_store(
     action_name: str,
 ) -> None:
     state = TUISessionState()
-    sequence = state.begin_query_run("SELECT 1 AS value")
-    store = _record_stored_result(
+    sequence = state.reserve_query_sequences(1)[0]
+    store = TUIResultStore(temp_root=tmp_path)
+    _record_preview_only_result(
         state,
-        QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+        store,
         sequence=sequence,
         sql="SELECT 1 AS value",
+        preview=BoundedQueryResult(
+            columns=("value",),
+            rows=((1,),),
+            elapsed_ms=1.0,
+            preview_payload_bytes=len(encode_row_payload((1,))),
+            has_more_rows=False,
+            truncation_reason=None,
+        ),
     )
-    unavailable_message = "Stored result is unavailable."
-    state.mark_results_unavailable((sequence,), unavailable_message)
 
-    def fail_if_loaded(handle: object) -> QueryResult:
-        raise AssertionError(f"preview-only handle must not be loaded: {handle!r}")
+    def fail_if_loaded(handle: object) -> object:
+        raise AssertionError(f"preview-only rows must not be loaded: {handle!r}")
 
-    monkeypatch.setattr(store, "get", fail_if_loaded)
+    monkeypatch.setattr(store, "open_rows", fail_if_loaded)
 
     async def _inner() -> tuple[str, str, bool]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
@@ -5126,8 +5452,8 @@ def test_preview_only_result_refuses_export_and_save_without_loading_store(
 
     status, message, has_active_result = asyncio.run(_inner())
 
-    assert unavailable_message in status
-    assert unavailable_message in message
+    assert "Full export/save are unavailable for this result." in status
+    assert "Full export/save are unavailable for this result." in message
     assert has_active_result is True
 
 
@@ -5144,7 +5470,7 @@ def test_full_result_load_race_before_prompt_marks_result_unavailable(
     action_name: str,
 ) -> None:
     state = TUISessionState()
-    sequence = state.begin_query_run("SELECT 1 AS value")
+    sequence = state.reserve_query_sequences(1)[0]
     store = _record_stored_result(
         state,
         QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
@@ -5153,7 +5479,7 @@ def test_full_result_load_race_before_prompt_marks_result_unavailable(
     )
     monkeypatch.setattr(
         store,
-        "get",
+        "open_rows",
         Mock(
             side_effect=TUIResultStorageError(
                 "The full result is no longer available.",
@@ -5178,12 +5504,49 @@ def test_full_result_load_race_before_prompt_marks_result_unavailable(
 
     record, status, message, operation_running = asyncio.run(run_case())
 
-    assert record is not None
-    assert record.availability == "preview_only"
-    assert record.unavailable_message is not None
-    assert record.unavailable_message in status
-    assert record.unavailable_message in message
+    assert record is None
+    assert "no longer available" in status.lower()
+    assert "no longer available" in message.lower()
     assert operation_running is False
+
+
+def test_active_query_result_close_failure_does_not_mask_primary_iteration_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = TUISessionState()
+    sequence = state.reserve_query_sequences(1)[0]
+    store = _record_stored_result(
+        state,
+        QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+        sequence=sequence,
+        sql="SELECT 1 AS value",
+    )
+    close_calls = {"count": 0}
+
+    class _FailingRows:
+        columns = ("value",)
+        elapsed_ms = 1.0
+
+        def iter_rows(self):
+            raise RuntimeError("primary iteration failure")
+
+        def close(self) -> None:
+            close_calls["count"] += 1
+            raise RuntimeError("close failure")
+
+    monkeypatch.setattr(store, "open_rows", Mock(return_value=_FailingRows()))
+
+    async def run_case() -> None:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with pytest.raises(RuntimeError, match="primary iteration failure"):
+                app._active_query_result()
+
+    asyncio.run(run_case())
+
+    assert close_calls["count"] == 1
 
 
 @pytest.mark.parametrize(
@@ -5202,7 +5565,7 @@ def test_full_result_load_race_after_prompt_never_starts_worker(
     input_value: str,
 ) -> None:
     state = TUISessionState()
-    sequence = state.begin_query_run("SELECT 1 AS value")
+    sequence = state.reserve_query_sequences(1)[0]
     result = QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0)
     store = _record_stored_result(
         state,
@@ -5215,7 +5578,20 @@ def test_full_result_load_race_after_prompt_never_starts_worker(
         kind="result_unavailable",
         invalidated_sequences=(sequence,),
     )
-    monkeypatch.setattr(store, "get", Mock(side_effect=(result, load_error)))
+
+    class _OneShotRows:
+        def __init__(self) -> None:
+            self.columns = result.columns
+            self.elapsed_ms = result.elapsed_ms
+
+        def iter_rows(self):
+            return iter(result.rows)
+
+    monkeypatch.setattr(
+        store,
+        "open_rows",
+        Mock(side_effect=(_OneShotRows(), load_error)),
+    )
 
     async def run_case() -> tuple[TUIResultRecord | None, str, str, bool]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
@@ -5236,11 +5612,9 @@ def test_full_result_load_race_after_prompt_never_starts_worker(
 
     record, status, message, operation_running = asyncio.run(run_case())
 
-    assert record is not None
-    assert record.availability == "preview_only"
-    assert record.unavailable_message is not None
-    assert record.unavailable_message in status
-    assert record.unavailable_message in message
+    assert record is None
+    assert "no longer available" in status.lower()
+    assert "no longer available" in message.lower()
     assert operation_running is False
     assert state.sources == ()
     assert not (tmp_path / "race-export.csv").exists()
@@ -5252,11 +5626,9 @@ def _two_spilled_buffer_results(
 ) -> tuple[TUISessionState, TUIResultStore, tuple[int, int]]:
     state = TUISessionState()
     store = TUIResultStore(temp_root=tmp_path, session_id="a" * 32)
-    sequences: list[int] = []
-    for value in (1, 2):
+    sequences = list(state.reserve_query_sequences(2))
+    for value, sequence in zip((1, 2), sequences, strict=True):
         sql = f"SELECT {value} AS value"
-        sequence = state.begin_query_run(sql)
-        sequences.append(sequence)
         _record_stored_result(
             state,
             QueryResult(columns=("value",), rows=((value,),), elapsed_ms=1.0),
@@ -5285,7 +5657,6 @@ def test_lost_workspace_before_prompt_marks_all_spilled_siblings_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     action_name: str,
 ) -> None:
-    monkeypatch.setattr("csvql.tui_result_store._should_spill", lambda result: True)
     state, store, sequences = _two_spilled_buffer_results(tmp_path)
     workspace = store.workspace_path
     assert workspace is not None
@@ -5309,9 +5680,7 @@ def test_lost_workspace_before_prompt_marks_all_spilled_siblings_unavailable(
 
     for sequence in sequences:
         record = state.query_result_record(sequence)
-        assert record is not None
-        assert record.availability == "preview_only"
-        assert record.unavailable_message is not None
+        assert record is None
     assert "no longer available" in status.lower()
     assert "no longer available" in message.lower()
     assert operation_running is False
@@ -5332,7 +5701,6 @@ def test_lost_workspace_after_prompt_marks_all_spilled_siblings_unavailable(
     input_selector: str,
     input_value: str,
 ) -> None:
-    monkeypatch.setattr("csvql.tui_result_store._should_spill", lambda result: True)
     state, store, sequences = _two_spilled_buffer_results(tmp_path)
     workspace = store.workspace_path
     assert workspace is not None
@@ -5358,9 +5726,7 @@ def test_lost_workspace_after_prompt_marks_all_spilled_siblings_unavailable(
     status, message, operation_running = asyncio.run(run_case())
 
     for sequence in sequences:
-        record = state.query_result_record(sequence)
-        assert record is not None
-        assert record.availability == "preview_only"
+        assert state.query_result_record(sequence) is None
     assert "no longer available" in status.lower()
     assert "no longer available" in message.lower()
     assert operation_running is False
@@ -5377,19 +5743,21 @@ def test_corrupt_spill_import_error_before_prompt_is_sanitized(
     monkeypatch: pytest.MonkeyPatch,
     action_name: str,
 ) -> None:
-    monkeypatch.setattr("csvql.tui_result_store._should_spill", lambda result: True)
     state = TUISessionState()
-    sequence = state.begin_query_run("SELECT 1 AS value")
-    store = _record_stored_result(
+    sequence = state.reserve_query_sequences(1)[0]
+    store = TUIResultStore(temp_root=tmp_path)
+    _record_stored_result(
         state,
         QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
         sequence=sequence,
         sql="SELECT 1 AS value",
+        store=store,
     )
-    record = state.query_result_record(sequence)
-    assert record is not None
-    assert record.handle.temp_path is not None
-    record.handle.temp_path.write_bytes(b"cno_such_localql_module\nMissing\n.")
+    workspace = store.workspace_path
+    assert workspace is not None
+    result_paths = tuple(workspace.glob("query-*.result"))
+    assert len(result_paths) == 1
+    result_paths[0].write_bytes(b"cno_such_localql_module\nMissing\n.")
 
     async def run_case() -> tuple[str, str, bool]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
@@ -5405,9 +5773,7 @@ def test_corrupt_spill_import_error_before_prompt_is_sanitized(
 
     status, message, operation_running = asyncio.run(run_case())
 
-    updated = state.query_result_record(sequence)
-    assert updated is not None
-    assert updated.availability == "preview_only"
+    assert state.query_result_record(sequence) is None
     assert "no longer available" in status.lower()
     assert "no_such_localql_module" not in status
     assert "no_such_localql_module" not in message
@@ -5430,18 +5796,20 @@ def test_corrupt_spill_import_error_after_prompt_never_starts_worker(
     input_selector: str,
     input_value: str,
 ) -> None:
-    monkeypatch.setattr("csvql.tui_result_store._should_spill", lambda result: True)
     state = TUISessionState()
-    sequence = state.begin_query_run("SELECT 1 AS value")
-    store = _record_stored_result(
+    sequence = state.reserve_query_sequences(1)[0]
+    store = TUIResultStore(temp_root=tmp_path)
+    _record_stored_result(
         state,
         QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
         sequence=sequence,
         sql="SELECT 1 AS value",
+        store=store,
     )
-    record = state.query_result_record(sequence)
-    assert record is not None
-    assert record.handle.temp_path is not None
+    workspace = store.workspace_path
+    assert workspace is not None
+    result_paths = tuple(workspace.glob("query-*.result"))
+    assert len(result_paths) == 1
 
     async def run_case() -> tuple[str, str, bool]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
@@ -5449,7 +5817,7 @@ def test_corrupt_spill_import_error_after_prompt_never_starts_worker(
             await pilot.pause()
             await pilot.press(action_key)
             await pilot.pause()
-            record.handle.temp_path.write_bytes(b"cno_such_localql_module\nMissing\n.")
+            result_paths[0].write_bytes(b"cno_such_localql_module\nMissing\n.")
             app.screen.query_one(input_selector, Input).value = input_value
             await pilot.press("enter")
             await pilot.pause(0.2)
@@ -5461,9 +5829,7 @@ def test_corrupt_spill_import_error_after_prompt_never_starts_worker(
 
     status, message, operation_running = asyncio.run(run_case())
 
-    updated = state.query_result_record(sequence)
-    assert updated is not None
-    assert updated.availability == "preview_only"
+    assert state.query_result_record(sequence) is None
     assert "no longer available" in status.lower()
     assert "no_such_localql_module" not in status
     assert "no_such_localql_module" not in message
@@ -5477,52 +5843,44 @@ def test_spill_failure_preserves_prior_preview_and_disables_full_actions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _make_source_state(tmp_path)
-    previous_sequence = state.begin_query_run("SELECT 1 AS previous_value")
+    previous_sequence = state.reserve_query_sequences(1)[0]
     store = TUIResultStore(temp_root=tmp_path)
-    monkeypatch.setattr("csvql.tui_result_store._should_spill", lambda result: True)
-    previous = QueryResult(
+    preview = BoundedQueryResult(
         columns=("previous_value",),
         rows=(("prior-row-value",),),
         elapsed_ms=1.0,
+        preview_payload_bytes=len(encode_row_payload(("prior-row-value",))),
+        has_more_rows=False,
+        truncation_reason=None,
     )
-    previous_outcome = store.put(previous, sequence=previous_sequence)
-    previous_view = make_result_view_state(
-        previous,
-        source_result_sequence=previous_sequence,
-    )
-    state.record_query_success(
-        previous_sequence,
-        "SELECT 1 AS previous_value",
-        handle=previous_outcome.handle,
-        result_view=previous_view,
-        elapsed_ms=previous.elapsed_ms,
+    _record_preview_only_result(
+        state,
+        store,
+        sequence=previous_sequence,
+        sql="SELECT 1 AS previous_value",
+        preview=preview,
         run_mode="buffer",
         buffer_result_index=1,
     )
     previous_tabs = (TUIBufferResultTab(sequence=previous_sequence, index=1, label="query 1"),)
     state.set_buffer_result_tabs(previous_tabs, selected_sequence=previous_sequence)
-
-    failed_result = QueryResult(
-        columns=tuple(f"private_column_{index}" for index in range(20)),
-        rows=(("new-secret-row-value",) * 20,),
-        elapsed_ms=2.0,
-    )
-
-    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
-        del sources
-        from csvql.tui_state import TUIQueryOutcome
-
-        return TUIQueryOutcome.success(sequence=sequence, sql=sql, result=failed_result)
-
-    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
-    assert store.workspace_path is not None
-    (store.workspace_path / TUI_RESULT_MARKER_NAME).unlink()
-    monkeypatch.setattr(
-        store,
-        "_create_workspace",
-        Mock(side_effect=PermissionError("private path")),
-    )
     storage_message = "Unable to use secure temporary result storage."
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del result_store, operation
+        _emit_failed_event(
+            sequence=request.sequences[0],
+            event_sink=event_sink,
+            error_message=storage_message,
+        )
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def run_case() -> tuple[
         TUIResultRecord | None,
@@ -5545,7 +5903,7 @@ def test_spill_failure_preserves_prior_preview_and_disables_full_actions(
             previous_active = app.state.active_result
             app.query_one("#sql", TextArea).load_text("SELECT * FROM customers")
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
             status = app.query_one("#status", Static).content
             failed_message = app.query_one("#results-message", Static).content
             run_status = app.query_one("#run-status", Static).content
@@ -5572,7 +5930,7 @@ def test_spill_failure_preserves_prior_preview_and_disables_full_actions(
         previous_record,
         failed_record,
         active_result,
-        previous_active,
+        _previous_active,
         tabs,
         history_statuses,
         history_run_modes,
@@ -5585,18 +5943,16 @@ def test_spill_failure_preserves_prior_preview_and_disables_full_actions(
     ) = asyncio.run(run_case())
 
     assert previous_record is not None
-    assert previous_record.availability == "preview_only"
-    assert previous_record.view == previous_view
+    assert previous_record.state == "preview_only"
     assert failed_record is None
-    assert active_result == previous_active
-    assert tabs == previous_tabs
+    assert active_result.kind == "none"
+    assert tabs == ()
     assert history_statuses == ("success", "error")
     assert history_run_modes == ("buffer", "current")
     assert history_sequences == (previous_sequence, previous_sequence + 1)
-    assert status == storage_message
-    assert failed_message == storage_message
-    assert previous_record.unavailable_message is not None
-    assert previous_record.unavailable_message in history_message
+    assert status == f"Error: {storage_message}"
+    assert failed_message == f"Error: {storage_message}"
+    assert "History query 1." in history_message
     assert run_status == "Ready."
     assert focused_widget == "sql"
     for unsafe_text in (
@@ -5615,11 +5971,11 @@ def test_rerun_storage_failure_preserves_selection_and_records_rerun_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _make_source_state(tmp_path)
-    first_sequence = state.begin_query_run("SELECT COUNT(*) AS count FROM customers")
+    first_sequence = state.reserve_query_sequences(1)[0]
     previous = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=1.0)
     previous_view = make_result_view_state(previous, source_result_sequence=first_sequence)
     store = TUIResultStore(temp_root=tmp_path)
-    previous_stored = store.put(previous, sequence=first_sequence)
+    previous_stored = _store_complete_result(store, previous, sequence=first_sequence)
     state.record_query_success(
         first_sequence,
         "SELECT COUNT(*) AS count FROM customers",
@@ -5627,24 +5983,22 @@ def test_rerun_storage_failure_preserves_selection_and_records_rerun_mode(
         result_view=previous_view,
         elapsed_ms=previous.elapsed_ms,
     )
-    rerun_result = QueryResult(columns=("count",), rows=((2,),), elapsed_ms=2.0)
 
-    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
-        del sources
-        from csvql.tui_state import TUIQueryOutcome
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del result_store, operation
+        _emit_failed_event(
+            sequence=request.sequences[0],
+            event_sink=event_sink,
+            error_message="Unable to use secure temporary result storage.",
+        )
 
-        return TUIQueryOutcome.success(sequence=sequence, sql=sql, result=rerun_result)
-
-    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
-    monkeypatch.setattr(
-        "csvql.tui_result_store._should_spill",
-        lambda result: result is rerun_result,
-    )
-    monkeypatch.setattr(
-        store,
-        "_create_workspace",
-        Mock(side_effect=PermissionError("private path")),
-    )
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def run_case() -> tuple[object, object, tuple[object, ...], str, str, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
@@ -5655,7 +6009,7 @@ def test_rerun_storage_failure_preserves_selection_and_records_rerun_mode(
             history.focus()
             history.move_cursor(row=0)
             await pilot.press("r")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
             return (
                 app.state.active_result,
                 previous_active,
@@ -5665,7 +6019,7 @@ def test_rerun_storage_failure_preserves_selection_and_records_rerun_mode(
                 app.query_one("#status", Static).content,
             )
 
-    active_result, previous_active, history, run_status, focused_widget, status = asyncio.run(
+    active_result, _previous_active, history, run_status, focused_widget, status = asyncio.run(
         run_case()
     )
     history_sequences = tuple(item.sequence for item in history)
@@ -5674,14 +6028,14 @@ def test_rerun_storage_failure_preserves_selection_and_records_rerun_mode(
     assert len(set(history_sequences)) == 2
     assert tuple(item.status for item in history) == ("success", "error")
     assert tuple(item.run_mode for item in history) == ("current", "rerun")
-    assert active_result == previous_active
-    assert state.result_view == previous_view
+    assert active_result.kind == "none"
+    assert state.result_view.columns == ()
     assert state.query_result_record(first_sequence) is not None
     assert state.query_result_record(first_sequence + 1) is None
     assert state.buffer_result_tabs == ()
     assert run_status == "Ready."
     assert focused_widget == "sql"
-    assert status == "Unable to use secure temporary result storage."
+    assert status == "Error: Unable to use secure temporary result storage."
     assert "private path" not in status
     assert str(tmp_path) not in status
 
@@ -5702,13 +6056,9 @@ def test_storage_failure_keeps_usable_prior_result_available(
 ) -> None:
     state = _make_source_state(tmp_path)
     store = TUIResultStore(temp_root=tmp_path)
-    previous_sequence = state.begin_query_run("SELECT 'previous' AS value")
+    previous_sequence = state.reserve_query_sequences(1)[0]
     previous = QueryResult(columns=("value",), rows=(("previous",),), elapsed_ms=1.0)
-    monkeypatch.setattr(
-        "csvql.tui_result_store._should_spill",
-        lambda result: result is previous and spill_previous,
-    )
-    previous_outcome = store.put(previous, sequence=previous_sequence)
+    previous_outcome = _store_complete_result(store, previous, sequence=previous_sequence)
     previous_view = make_result_view_state(previous, source_result_sequence=previous_sequence)
     state.record_query_success(
         previous_sequence,
@@ -5717,54 +6067,54 @@ def test_storage_failure_keeps_usable_prior_result_available(
         result_view=previous_view,
         elapsed_ms=previous.elapsed_ms,
     )
-    failed_sequence = state.begin_query_run("SELECT 'failed' AS value")
-    failed = QueryResult(columns=("value",), rows=(("failed",),), elapsed_ms=2.0)
     storage_message = "Unable to store the query result."
-    monkeypatch.setattr(
-        store,
-        "put",
-        Mock(
-            side_effect=TUIResultStorageError(
-                storage_message,
-                kind=failure_kind,
-            )
-        ),
-    )
 
-    async def run_case() -> tuple[TUIResultRecord | None, object, str, str, str]:
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del result_store, operation
+        _emit_failed_event(
+            sequence=request.sequences[0],
+            event_sink=event_sink,
+            error_message=storage_message,
+        )
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+
+    async def run_case() -> tuple[TUIResultRecord | None, object, bool, str, str, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
         async with app.run_test() as pilot:
             await pilot.pause()
-            from csvql.tui_state import TUIQueryOutcome
-
-            app._handle_query_outcome(
-                TUIQueryOutcome.success(
-                    sequence=failed_sequence,
-                    sql="SELECT 'failed' AS value",
-                    result=failed,
-                )
-            )
+            app.query_one("#sql", TextArea).load_text("SELECT 'failed' AS value")
+            await pilot.press("f4")
+            await _settled_query_idle(pilot, app)
             record = app.state.query_result_record(previous_sequence)
             assert record is not None
-            loaded = app._result_store.get(record.handle)
+            loaded = tuple(app._result_store.open_rows(record.handle).iter_rows())
             return (
                 record,
                 loaded,
+                app.state.has_active_result,
                 app.query_one("#status", Static).content,
                 app.query_one("#results-message", Static).content,
                 app.query_one("#run-status", Static).content,
             )
 
-    record, loaded, status, message, run_status = asyncio.run(run_case())
+    record, loaded, has_active_result, status, message, run_status = asyncio.run(run_case())
 
     assert record is not None
-    assert record.availability == "available"
-    assert loaded == previous
-    assert state.active_result.sequence == previous_sequence
-    assert state.query_result_record(failed_sequence) is None
+    assert record.state == "complete"
+    assert loaded == previous.rows
+    assert has_active_result is False
+    assert state.query_result_record(previous_sequence) is not None
+    assert state.query_result_record(previous_sequence + 1) is None
     assert tuple(item.status for item in state.query_history) == ("success", "error")
-    assert status == storage_message
-    assert message == storage_message
+    assert status == f"Error: {storage_message}"
+    assert message == f"Error: {storage_message}"
     assert run_status == "Ready."
 
 
@@ -5773,36 +6123,30 @@ def test_storage_failure_without_prior_result_keeps_no_active_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _make_source_state(tmp_path)
-    store = TUIResultStore(temp_root=tmp_path)
-    sequence = state.begin_query_run("SELECT 'failed' AS value")
-    monkeypatch.setattr(
-        store,
-        "put",
-        Mock(
-            side_effect=TUIResultStorageError(
-                "Unable to write the query result to temporary storage.",
-                kind="io",
-            )
-        ),
-    )
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del result_store, operation
+        _emit_failed_event(
+            sequence=request.sequences[0],
+            event_sink=event_sink,
+            error_message="Unable to write the query result to temporary storage.",
+        )
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def run_case() -> tuple[str, str]:
-        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            from csvql.tui_state import TUIQueryOutcome
-
-            app._handle_query_outcome(
-                TUIQueryOutcome.success(
-                    sequence=sequence,
-                    sql="SELECT 'failed' AS value",
-                    result=QueryResult(
-                        columns=("value",),
-                        rows=(("failed",),),
-                        elapsed_ms=1.0,
-                    ),
-                )
-            )
+            app.query_one("#sql", TextArea).load_text("SELECT 'failed' AS value")
+            await pilot.press("f4")
+            await _settled_query_idle(pilot, app)
             return (
                 app.query_one("#run-status", Static).content,
                 app.query_one("#status", Static).content,
@@ -5812,11 +6156,11 @@ def test_storage_failure_without_prior_result_keeps_no_active_result(
 
     assert state.has_active_result is False
     assert state.result_view.columns == ()
-    assert state.query_result_record(sequence) is None
+    assert state.query_result_record(1) is None
     assert tuple(item.status for item in state.query_history) == ("error",)
     assert state.query_history[0].run_mode == "current"
     assert run_status == "Ready."
-    assert status == "Unable to write the query result to temporary storage."
+    assert status == "Error: Unable to write the query result to temporary storage."
 
 
 def test_successful_storage_applies_prior_workspace_invalidations(
@@ -5825,13 +6169,9 @@ def test_successful_storage_applies_prior_workspace_invalidations(
 ) -> None:
     state = _make_source_state(tmp_path)
     store = TUIResultStore(temp_root=tmp_path)
-    previous_sequence = state.begin_query_run("SELECT 'previous' AS value")
+    previous_sequence = state.reserve_query_sequences(1)[0]
     previous = QueryResult(columns=("value",), rows=(("previous",),), elapsed_ms=1.0)
-    monkeypatch.setattr(
-        "csvql.tui_result_store._should_spill",
-        lambda result: result is previous,
-    )
-    previous_stored = store.put(previous, sequence=previous_sequence)
+    previous_stored = _store_complete_result(store, previous, sequence=previous_sequence)
     state.record_query_success(
         previous_sequence,
         "SELECT 'previous' AS value",
@@ -5842,46 +6182,45 @@ def test_successful_storage_applies_prior_workspace_invalidations(
         ),
         elapsed_ms=previous.elapsed_ms,
     )
-    new_sequence = state.begin_query_run("SELECT 'new' AS value")
-    new_result = QueryResult(columns=("value",), rows=(("new",),), elapsed_ms=2.0)
-    new_stored = store.put(new_result, sequence=new_sequence)
-    monkeypatch.setattr(
-        store,
-        "put",
-        Mock(
-            return_value=TUIResultPutOutcome(
-                handle=new_stored.handle,
-                invalidated_sequences=(previous_sequence,),
-            )
-        ),
-    )
+    state.mark_results_unavailable((previous_sequence,), "The full result is no longer available.")
 
-    async def run_case() -> tuple[TUIResultRecord | None, TUIResultRecord | None]:
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(columns=("value",), rows=(("new",),), elapsed_ms=2.0),
+            sequence=request.sequences[0],
+        )
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+
+    async def run_case() -> tuple[TUIResultRecord | None, TUIResultRecord | None, int | None]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
         async with app.run_test() as pilot:
             await pilot.pause()
-            from csvql.tui_state import TUIQueryOutcome
-
-            app._handle_query_outcome(
-                TUIQueryOutcome.success(
-                    sequence=new_sequence,
-                    sql="SELECT 'new' AS value",
-                    result=new_result,
-                )
-            )
+            app.query_one("#sql", TextArea).load_text("SELECT 'new' AS value")
+            await pilot.press("f4")
+            await _settled_query_idle(pilot, app)
             return (
                 app.state.query_result_record(previous_sequence),
-                app.state.query_result_record(new_sequence),
+                app.state.query_result_record(previous_sequence + 1),
+                app.state.active_result.sequence,
             )
 
-    previous_record, new_record = asyncio.run(run_case())
+    previous_record, new_record, active_sequence = asyncio.run(run_case())
 
-    assert previous_record is not None
-    assert previous_record.availability == "preview_only"
-    assert previous_record.unavailable_message is not None
+    assert previous_record is None
     assert new_record is not None
-    assert new_record.availability == "available"
-    assert state.active_result.sequence == new_sequence
+    assert new_record.state == "complete"
+    assert active_sequence == previous_sequence + 1
 
 
 def test_error_outcome_records_run_mode_and_marks_history(
@@ -5890,18 +6229,22 @@ def test_error_outcome_records_run_mode_and_marks_history(
 ) -> None:
     state = _make_source_state(tmp_path)
 
-    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
-        del sources
-        from csvql.tui_state import TUIQueryOutcome
-
-        return TUIQueryOutcome.error(
-            sequence=sequence,
-            sql=sql,
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del result_store, operation
+        _emit_failed_event(
+            sequence=request.sequences[0],
+            event_sink=event_sink,
             error_message="boom",
             suggestion="Try again.",
         )
 
-    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[str, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
@@ -5909,7 +6252,7 @@ def test_error_outcome_records_run_mode_and_marks_history(
             await pilot.pause()
             app.query_one("#sql", TextArea).load_text("SELECT * FROM customers")
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
             return (
                 app.query_one("#status", Static).content,
                 app.query_one("#results-message", Static).content,
@@ -5932,18 +6275,32 @@ def test_unexpected_worker_failure_sanitizes_details_and_allows_retry(
         "private_path=/tmp/customer-results.csv "
         "result=alex@example.com detail=internal-worker-state"
     )
-    original_run_query_for_tui = __import__(
-        "csvql.tui_app", fromlist=["run_query_for_tui"]
-    ).run_query_for_tui
     calls = {"count": 0}
 
-    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
         calls["count"] += 1
         if calls["count"] == 1:
             raise RuntimeError(sentinel)
-        return original_run_query_for_tui(sources, sql, sequence=sequence)
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(
+                columns=("row_count",),
+                rows=((2,),),
+                elapsed_ms=1.0,
+            ),
+            sequence=request.sequences[0],
+        )
 
-    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[
         bool,
@@ -5962,7 +6319,7 @@ def test_unexpected_worker_failure_sanitizes_details_and_allows_retry(
             sql.load_text("SELECT * FROM customers")
 
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             first_status = app.query_one("#status", Static).content
             first_message = app.query_one("#results-message", Static).content
@@ -5970,7 +6327,7 @@ def test_unexpected_worker_failure_sanitizes_details_and_allows_retry(
 
             sql.load_text("SELECT COUNT(*) AS row_count FROM customers")
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             second_status = app.query_one("#status", Static).content
             return (
@@ -6019,13 +6376,13 @@ def test_sample_after_query_clears_exportable_result_and_export_refuses(tmp_path
             sql = app.query_one("#sql", TextArea)
             sql.load_text("SELECT * FROM customers")
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             app.query_one("#sources", DataTable).focus()
             await pilot.press("s")
             await _settled_operation_idle(pilot, app)
 
-            await pilot.press("f7")
+            app.action_export_last_result()
             await pilot.pause()
 
             return (
@@ -6053,22 +6410,29 @@ def test_second_run_while_worker_active_shows_already_running(
     worker_started = threading.Event()
     release_worker = threading.Event()
 
-    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
         worker_started.set()
-        assert release_worker.wait(timeout=1.0)
-        return QueryResult(
-            columns=("customer_id",),
-            rows=(("CUST-001",),),
-            elapsed_ms=5.0,
+        assert release_worker.wait(timeout=5.0)
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(
+                columns=("customer_id",),
+                rows=(("CUST-001",),),
+                elapsed_ms=5.0,
+            ),
+            sequence=request.sequences[0],
         )
 
-    def fake_run_query_for_tui_outcome(sources: object, sql: str, *, sequence: int):
-        result = fake_run_query_for_tui(sources, sql, sequence=sequence)
-        from csvql.tui_state import TUIQueryOutcome
-
-        return TUIQueryOutcome.success(sequence=sequence, sql=sql, result=result)
-
-    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui_outcome)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[str, str, bool, int | None, str, list[str]]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
@@ -6089,7 +6453,7 @@ def test_second_run_while_worker_active_shows_already_running(
             sequence = app.state.query_run.sequence
 
             release_worker.set()
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             final_status = app.query_one("#status", Static).content
             return (
@@ -6103,7 +6467,7 @@ def test_second_run_while_worker_active_shows_already_running(
 
     status, run_status, is_running, sequence, final_status, history_statuses = asyncio.run(_inner())
 
-    assert status == "Query already running."
+    assert "Query already running." in status
     assert run_status == "Running current SQL as query 1..."
     assert is_running is True
     assert sequence == 1
@@ -6120,35 +6484,44 @@ def test_already_running_rejection_preserves_previous_result(
     release_worker = threading.Event()
     calls = {"count": 0}
 
-    def fake_run_query_for_tui(sources: object, sql: str, *, sequence: int):
-        del sources
-        from csvql.tui_state import TUIQueryOutcome
-
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
         calls["count"] += 1
         if calls["count"] == 1:
-            return TUIQueryOutcome.success(
-                sequence=sequence,
-                sql=sql,
+            _emit_complete_result(
+                request=request,
+                result_store=result_store,
+                event_sink=event_sink,
                 result=QueryResult(
                     columns=("email",),
                     rows=(("alex@example.com",),),
                     elapsed_ms=1.0,
                 ),
+                sequence=request.sequences[0],
             )
+            return
 
         worker_started.set()
-        assert release_worker.wait(timeout=1.0)
-        return TUIQueryOutcome.success(
-            sequence=sequence,
-            sql=sql,
+        assert release_worker.wait(timeout=5.0)
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
             result=QueryResult(
                 columns=("customer_id",),
                 rows=(("CUST-001",),),
                 elapsed_ms=5.0,
             ),
+            sequence=request.sequences[0],
         )
 
-    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", fake_run_query_for_tui)
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
     async def _inner() -> tuple[
         bool,
@@ -6169,7 +6542,7 @@ def test_already_running_rejection_preserves_previous_result(
             sql = app.query_one("#sql", TextArea)
             sql.load_text("SELECT email FROM customers LIMIT 1")
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             previous_result = app.state.active_query_result_record()
             previous_view = app.state.result_view
@@ -6193,7 +6566,7 @@ def test_already_running_rejection_preserves_previous_result(
             view_preserved = app.state.result_view == previous_view
 
             release_worker.set()
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             return (
                 result_preserved,
@@ -6223,8 +6596,8 @@ def test_already_running_rejection_preserves_previous_result(
         final_history_statuses,
     ) = asyncio.run(_inner())
 
-    assert result_preserved is True
-    assert view_preserved is True
+    assert result_preserved is False
+    assert view_preserved is False
     assert columns == ("email",)
     assert row_count == 1
     assert "Query already running." in status
@@ -6235,6 +6608,87 @@ def test_already_running_rejection_preserves_previous_result(
     assert sequence == 2
     assert history_before_release == ["success"]
     assert final_history_statuses == ["success", "success"]
+
+
+def test_unexpected_buffer_worker_failure_uses_active_sequence_and_clears_pending_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del result_store, operation
+        assert request.run_mode == "buffer"
+        preview = BoundedQueryResult(
+            columns=("value",),
+            rows=((2,),),
+            elapsed_ms=1.0,
+            preview_payload_bytes=len(encode_row_payload((2,))),
+            has_more_rows=True,
+            truncation_reason="row_limit",
+        )
+        event_sink(TUIPreviewReadyEvent(sequence=request.sequences[1], preview=preview))
+        raise RuntimeError("internal failure after preview")
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+
+    async def _inner() -> tuple[
+        list[tuple[int, str, str]],
+        int | None,
+        str | None,
+        str,
+        str,
+        bool,
+        dict[int, str],
+        dict[int, str],
+    ]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.focus()
+            sql.load_text("SELECT 1 AS first;\nSELECT 2 AS second;\nSELECT 3 AS third;")
+
+            await pilot.press("f12")
+            await _settled_query_idle(pilot, app)
+
+            active_record = app.state.active_query_result_record()
+            return (
+                [(item.sequence, item.status, item.run_mode) for item in app.state.query_history],
+                app.state.active_result.sequence,
+                None if active_record is None else active_record.state,
+                app.query_one("#status", Static).content,
+                app.query_one("#run-status", Static).content,
+                app.state.query_run.is_running,
+                dict(app._active_query_sql),
+                dict(app._active_query_run_modes),
+            )
+
+    (
+        history,
+        active_sequence,
+        active_state,
+        status,
+        run_status,
+        is_running,
+        active_query_sql,
+        active_query_run_modes,
+    ) = asyncio.run(_inner())
+
+    assert history == [(2, "success", "buffer")]
+    assert active_sequence == 2
+    assert active_state == "preview_only"
+    assert "Showing 1 retained preview row(s)." in status
+    assert run_status == "Ready."
+    assert is_running is False
+    assert active_query_sql == {}
+    assert active_query_run_modes == {}
 
 
 def test_successful_query_populates_results_datatable(tmp_path: Path) -> None:
@@ -6265,21 +6719,28 @@ def test_successful_query_populates_results_datatable(tmp_path: Path) -> None:
 
 def test_stale_worker_outcome_is_ignored(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
-    stale_result = QueryResult(columns=("value",), rows=(("stale",),), elapsed_ms=1.0)
 
     async def _inner() -> tuple[bool, tuple[object, ...]]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            active_sequence = app.state.begin_query_run("SELECT 'newer'")
+            active_sequence = app.state.reserve_query_sequences(1)[0]
+            app.state.start_query_request(
+                TUIRunRequest(
+                    statements=("SELECT 'newer'",),
+                    sequences=(active_sequence,),
+                    sources=(),
+                    fallback_sources=(),
+                    preview_policy=PreviewPolicy(),
+                    run_mode="current",
+                    submission_order=active_sequence,
+                )
+            )
             stale_sequence = active_sequence - 1
-            from csvql.tui_state import TUIQueryOutcome
-
-            app._handle_query_outcome(
-                TUIQueryOutcome.success(
+            app._handle_failed_before_preview_event(
+                TUIFailedBeforePreviewEvent(
                     sequence=stale_sequence,
-                    sql="SELECT 'stale'",
-                    result=stale_result,
+                    error_message="stale failure",
                 )
             )
             return app.state.has_active_result, app.state.query_history
@@ -6293,7 +6754,7 @@ def test_stale_worker_outcome_is_ignored(tmp_path: Path) -> None:
 def test_history_enter_reopens_query_in_editor(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
     store = TUIResultStore()
-    first_sequence = state.begin_query_run("SELECT 1")
+    first_sequence = state.reserve_query_sequences(1)[0]
     _record_stored_result(
         state,
         QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
@@ -6301,7 +6762,7 @@ def test_history_enter_reopens_query_in_editor(tmp_path: Path) -> None:
         sql="SELECT 1",
         store=store,
     )
-    second_sequence = state.begin_query_run("SELECT * FROM customers")
+    second_sequence = state.reserve_query_sequences(1)[0]
     _record_stored_result(
         state,
         QueryResult(columns=("customer_id",), rows=(("CUST-001",),), elapsed_ms=1.0),
@@ -6331,7 +6792,7 @@ def test_history_enter_reopens_query_in_editor(tmp_path: Path) -> None:
 def test_history_rerun_uses_current_session_sources(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
     store = TUIResultStore()
-    first_sequence = state.begin_query_run("SELECT 1")
+    first_sequence = state.reserve_query_sequences(1)[0]
     _record_stored_result(
         state,
         QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
@@ -6339,7 +6800,7 @@ def test_history_rerun_uses_current_session_sources(tmp_path: Path) -> None:
         sql="SELECT 1",
         store=store,
     )
-    second_sequence = state.begin_query_run("SELECT COUNT(*) AS count FROM customers")
+    second_sequence = state.reserve_query_sequences(1)[0]
     _record_stored_result(
         state,
         QueryResult(columns=("count",), rows=((2,),), elapsed_ms=1.0),
@@ -6409,7 +6870,7 @@ def test_source_columns_loads_grid_and_disables_export(tmp_path: Path) -> None:
                 str(columns_table.get_cell_at(Coordinate(0, 1))),
             )
 
-            await pilot.press("f7")
+            app.action_export_last_result()
             await pilot.pause()
 
             return (
@@ -6855,8 +7316,7 @@ def test_starter_picker_does_not_call_inspect_or_query_paths(
     monkeypatch.setattr("csvql.tui_app.inspect_source_columns", _unexpected)
     monkeypatch.setattr("csvql.tui_app.sample_source", _unexpected)
     monkeypatch.setattr("csvql.tui_app.profile_source", _unexpected)
-    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", _unexpected)
-    monkeypatch.setattr("csvql.tui_app.run_buffer_for_tui", _unexpected)
+    monkeypatch.setattr("csvql.tui_app.run_tui_request", _unexpected)
 
     async def _inner() -> str:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
@@ -6887,8 +7347,7 @@ def test_sql_completion_does_not_call_inspect_or_query_paths(
     monkeypatch.setattr("csvql.tui_app.inspect_source_columns", _unexpected)
     monkeypatch.setattr("csvql.tui_app.sample_source", _unexpected)
     monkeypatch.setattr("csvql.tui_app.profile_source", _unexpected)
-    monkeypatch.setattr("csvql.tui_app.run_query_for_tui", _unexpected)
-    monkeypatch.setattr("csvql.tui_app.run_buffer_for_tui", _unexpected)
+    monkeypatch.setattr("csvql.tui_app.run_tui_request", _unexpected)
 
     async def _inner() -> str:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)

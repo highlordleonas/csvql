@@ -7,10 +7,14 @@ from typer.testing import CliRunner
 
 import csvql.tui_launcher as tui_launcher
 from csvql import __version__
+from csvql.bounded_result import MAX_PREVIEW_PAYLOAD_BYTES, PreviewPolicy
 from csvql.cli import app
 from csvql.exceptions import CSVQLError
 from csvql.tui_launcher import run_menu_command
-from csvql.tui_result_store import TUIResultCleanupSummary
+from csvql.tui_result_store import (
+    DEFAULT_TUI_RESULT_CAPACITY_BYTES,
+    TUIResultCleanupSummary,
+)
 
 runner = CliRunner()
 
@@ -37,8 +41,11 @@ def test_menu_help_keeps_csv_path_and_table_contract_before_session_options() ->
     assert "Usage:" in result.output
     assert "[CSV_PATH]" in result.output
     assert "--table" in result.output
-    assert "--limit" not in result.output
-    assert "--spool-capacity-mib" not in result.output
+    assert "--limit" in result.output
+    assert "--spool-capacity-mib" in result.output
+    assert result.output.index("[CSV_PATH]") < result.output.index("--table")
+    assert result.output.index("--table") < result.output.index("--limit")
+    assert result.output.index("--limit") < result.output.index("--spool-capacity-mib")
 
 
 def test_menu_delegates_startup_args(
@@ -49,11 +56,18 @@ def test_menu_delegates_startup_args(
     captured: dict[str, object] = {}
 
     def fake_run_menu_command(
-        *, csv_path: str | None, table_mappings: tuple[str, ...], start_dir: Path
+        *,
+        csv_path: str | None,
+        table_mappings: tuple[str, ...],
+        start_dir: Path,
+        preview_policy: PreviewPolicy,
+        result_store_capacity_bytes: int,
     ) -> None:
         captured["csv_path"] = csv_path
         captured["table_mappings"] = table_mappings
         captured["start_dir"] = start_dir
+        captured["preview_policy"] = preview_policy
+        captured["result_store_capacity_bytes"] = result_store_capacity_bytes
 
     monkeypatch.setattr("csvql.cli.run_menu_command", fake_run_menu_command)
 
@@ -76,6 +90,11 @@ def test_menu_delegates_startup_args(
         f"orders={tmp_path / 'orders.csv'}",
     )
     assert captured["start_dir"] == Path.cwd()
+    assert captured["preview_policy"] == PreviewPolicy(
+        row_limit=1_000,
+        payload_limit_bytes=MAX_PREVIEW_PAYLOAD_BYTES,
+    )
+    assert captured["result_store_capacity_bytes"] == DEFAULT_TUI_RESULT_CAPACITY_BYTES
 
 
 def test_menu_without_startup_args_forwards_empty_values(
@@ -84,11 +103,18 @@ def test_menu_without_startup_args_forwards_empty_values(
     captured: dict[str, object] = {}
 
     def fake_run_menu_command(
-        *, csv_path: str | None, table_mappings: tuple[str, ...], start_dir: Path
+        *,
+        csv_path: str | None,
+        table_mappings: tuple[str, ...],
+        start_dir: Path,
+        preview_policy: PreviewPolicy,
+        result_store_capacity_bytes: int,
     ) -> None:
         captured["csv_path"] = csv_path
         captured["table_mappings"] = table_mappings
         captured["start_dir"] = start_dir
+        captured["preview_policy"] = preview_policy
+        captured["result_store_capacity_bytes"] = result_store_capacity_bytes
 
     monkeypatch.setattr("csvql.cli.run_menu_command", fake_run_menu_command)
 
@@ -98,6 +124,11 @@ def test_menu_without_startup_args_forwards_empty_values(
     assert captured["csv_path"] is None
     assert captured["table_mappings"] == ()
     assert captured["start_dir"] == Path.cwd()
+    assert captured["preview_policy"] == PreviewPolicy(
+        row_limit=1_000,
+        payload_limit_bytes=MAX_PREVIEW_PAYLOAD_BYTES,
+    )
+    assert captured["result_store_capacity_bytes"] == DEFAULT_TUI_RESULT_CAPACITY_BYTES
 
 
 def test_menu_csv_path_precedes_repeated_table_mappings_in_launcher_contract(
@@ -108,9 +139,19 @@ def test_menu_csv_path_precedes_repeated_table_mappings_in_launcher_contract(
     observed_calls: list[tuple[str | None, tuple[str, ...], Path]] = []
 
     def fake_run_menu_command(
-        *, csv_path: str | None, table_mappings: tuple[str, ...], start_dir: Path
+        *,
+        csv_path: str | None,
+        table_mappings: tuple[str, ...],
+        start_dir: Path,
+        preview_policy: PreviewPolicy,
+        result_store_capacity_bytes: int,
     ) -> None:
         observed_calls.append((csv_path, table_mappings, start_dir))
+        assert preview_policy == PreviewPolicy(
+            row_limit=1_000,
+            payload_limit_bytes=MAX_PREVIEW_PAYLOAD_BYTES,
+        )
+        assert result_store_capacity_bytes == DEFAULT_TUI_RESULT_CAPACITY_BYTES
 
     monkeypatch.setattr("csvql.cli.run_menu_command", fake_run_menu_command)
 
@@ -143,7 +184,12 @@ def test_menu_csv_path_precedes_repeated_table_mappings_in_launcher_contract(
 
 def test_menu_uses_existing_cli_error_path() -> None:
     def fake_run_menu_command(
-        *, csv_path: str | None, table_mappings: tuple[str, ...], start_dir: Path
+        *,
+        csv_path: str | None,
+        table_mappings: tuple[str, ...],
+        start_dir: Path,
+        preview_policy: PreviewPolicy,
+        result_store_capacity_bytes: int,
     ) -> None:
         raise CSVQLError(
             "CSVQL TUI dependency is not installed.",
@@ -161,7 +207,12 @@ def test_menu_uses_existing_cli_error_path() -> None:
 
 def test_cli_errors_render_control_safe_literal_text() -> None:
     def fake_run_menu_command(
-        *, csv_path: str | None, table_mappings: tuple[str, ...], start_dir: Path
+        *,
+        csv_path: str | None,
+        table_mappings: tuple[str, ...],
+        start_dir: Path,
+        preview_policy: PreviewPolicy,
+        result_store_capacity_bytes: int,
     ) -> None:
         raise CSVQLError(
             "\x1b]0;spoof\x07[red]message[/red]\x00",
@@ -190,6 +241,109 @@ def test_version_flag_reports_version() -> None:
     assert result.output.strip() == __version__
 
 
+def test_menu_forwards_session_only_limit_and_capacity_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_run_menu_command(
+        *,
+        csv_path: str | None,
+        table_mappings: tuple[str, ...],
+        start_dir: Path,
+        preview_policy: PreviewPolicy,
+        result_store_capacity_bytes: int,
+    ) -> None:
+        captured["csv_path"] = csv_path
+        captured["table_mappings"] = table_mappings
+        captured["start_dir"] = start_dir
+        captured["preview_policy"] = preview_policy
+        captured["result_store_capacity_bytes"] = result_store_capacity_bytes
+
+    monkeypatch.setattr("csvql.cli.run_menu_command", fake_run_menu_command)
+
+    result = runner.invoke(
+        app,
+        [
+            "menu",
+            str(tmp_path / "customers.csv"),
+            "--table",
+            f"customers={tmp_path / 'customers.csv'}",
+            "--limit",
+            "7",
+            "--spool-capacity-mib",
+            "64",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["csv_path"] == str(tmp_path / "customers.csv")
+    assert captured["table_mappings"] == (f"customers={tmp_path / 'customers.csv'}",)
+    assert captured["start_dir"] == tmp_path
+    assert captured["preview_policy"] == PreviewPolicy(
+        row_limit=7,
+        payload_limit_bytes=MAX_PREVIEW_PAYLOAD_BYTES,
+    )
+    assert captured["result_store_capacity_bytes"] == 64 * 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected_message"),
+    [
+        ("0", "is not in the range x>=1"),
+        ("-1", "is not in the range x>=1"),
+        ("1.5", "is not a valid integer"),
+        ("8796093022208", "must be at most 8796093022207"),
+    ],
+)
+def test_menu_rejects_invalid_spool_capacity_values(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_value: str,
+    expected_message: str,
+) -> None:
+    run_calls: list[object] = []
+
+    def fake_run_menu_command(**kwargs: object) -> None:
+        run_calls.append(kwargs)
+
+    monkeypatch.setattr("csvql.cli.run_menu_command", fake_run_menu_command)
+
+    result = runner.invoke(app, ["menu", "--spool-capacity-mib", raw_value])
+
+    assert result.exit_code == 2, result.output
+    assert expected_message in result.output
+    assert run_calls == []
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected_message"),
+    [
+        ("0", "is not in the range x>=1"),
+        ("-1", "is not in the range x>=1"),
+        ("1.5", "is not a valid integer"),
+    ],
+)
+def test_menu_rejects_invalid_limit_values(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_value: str,
+    expected_message: str,
+) -> None:
+    run_calls: list[object] = []
+
+    def fake_run_menu_command(**kwargs: object) -> None:
+        run_calls.append(kwargs)
+
+    monkeypatch.setattr("csvql.cli.run_menu_command", fake_run_menu_command)
+
+    result = runner.invoke(app, ["menu", "--limit", raw_value])
+
+    assert result.exit_code == 2, result.output
+    assert expected_message in result.output
+    assert run_calls == []
+
+
 def test_menu_launcher_raises_helpful_error_when_textual_is_missing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -205,7 +359,13 @@ def test_menu_launcher_raises_helpful_error_when_textual_is_missing(
     monkeypatch.setattr("csvql.tui_launcher.import_module", missing_textual_import)
 
     with pytest.raises(CSVQLError) as exc_info:
-        run_menu_command(csv_path=None, table_mappings=(), start_dir=tmp_path)
+        run_menu_command(
+            csv_path=None,
+            table_mappings=(),
+            start_dir=tmp_path,
+            preview_policy=PreviewPolicy(),
+            result_store_capacity_bytes=DEFAULT_TUI_RESULT_CAPACITY_BYTES,
+        )
 
     assert exc_info.value.message == "CSVQL TUI dependency is not installed."
     assert (
@@ -243,10 +403,19 @@ def test_launcher_recovers_once_before_constructing_app(
         raising=False,
     )
 
-    run_menu_command(csv_path=None, table_mappings=(), start_dir=tmp_path)
+    preview_policy = PreviewPolicy(row_limit=9, payload_limit_bytes=MAX_PREVIEW_PAYLOAD_BYTES)
+    run_menu_command(
+        csv_path=None,
+        table_mappings=(),
+        start_dir=tmp_path,
+        preview_policy=preview_policy,
+        result_store_capacity_bytes=32 * 1024 * 1024,
+    )
 
     assert events == ["recover", "construct", "run"]
     assert captured["initial_cleanup_summary"] is recovery_summary
+    assert captured["preview_policy"] == preview_policy
+    assert captured["result_store_capacity_bytes"] == 32 * 1024 * 1024
 
 
 def test_launcher_emits_one_sanitized_cleanup_warning(
@@ -273,6 +442,8 @@ def test_launcher_emits_one_sanitized_cleanup_warning(
         csv_path=str(sensitive_path),
         table_mappings=(f"private={sensitive_path}",),
         start_dir=tmp_path,
+        preview_policy=PreviewPolicy(),
+        result_store_capacity_bytes=DEFAULT_TUI_RESULT_CAPACITY_BYTES,
     )
 
     assert capsys.readouterr().err == (
@@ -297,7 +468,13 @@ def test_launcher_is_silent_when_cleanup_succeeds(
         raising=False,
     )
 
-    run_menu_command(csv_path=None, table_mappings=(), start_dir=tmp_path)
+    run_menu_command(
+        csv_path=None,
+        table_mappings=(),
+        start_dir=tmp_path,
+        preview_policy=PreviewPolicy(),
+        result_store_capacity_bytes=DEFAULT_TUI_RESULT_CAPACITY_BYTES,
+    )
 
     assert capsys.readouterr().err == ""
 
@@ -320,6 +497,12 @@ def test_launcher_does_not_warn_when_app_run_raises(
     )
 
     with pytest.raises(RuntimeError, match="private failure details"):
-        run_menu_command(csv_path=None, table_mappings=(), start_dir=tmp_path)
+        run_menu_command(
+            csv_path=None,
+            table_mappings=(),
+            start_dir=tmp_path,
+            preview_policy=PreviewPolicy(),
+            result_store_capacity_bytes=DEFAULT_TUI_RESULT_CAPACITY_BYTES,
+        )
 
     assert capsys.readouterr().err == ""

@@ -9,6 +9,7 @@ from rich.console import Console
 from csvql import __version__
 from csvql.bounded_result import (
     DEFAULT_INTERACTIVE_ROW_LIMIT,
+    MAX_PREVIEW_PAYLOAD_BYTES,
     PreviewPolicy,
     collect_bounded_preview,
 )
@@ -59,6 +60,7 @@ from csvql.sql_file import load_sql_file
 from csvql.streaming_export import write_streaming_export
 from csvql.terminal_text import literal_terminal_text, terminal_safe_text
 from csvql.tui_launcher import run_menu_command
+from csvql.tui_result_store import DEFAULT_TUI_RESULT_CAPACITY_BYTES
 
 app = typer.Typer(
     add_completion=False,
@@ -71,12 +73,25 @@ _JSON_LIMIT_MESSAGE = (
 _JSON_LIMIT_SUGGESTION = "Remove --limit or use --output table."
 _INTERRUPTED_QUERY_MESSAGE = "Query interrupted."
 _INTERRUPTED_QUERY_SUGGESTION = "Retry the query when ready."
+_MEBIBYTE = 1024 * 1024
+_MAX_TUI_RESULT_CAPACITY_BYTES = (2**63) - 1
+_MAX_TUI_RESULT_CAPACITY_MIB = _MAX_TUI_RESULT_CAPACITY_BYTES // _MEBIBYTE
 
 
 def _version_callback(value: bool) -> None:
     if value:
         typer.echo(__version__)
         raise typer.Exit()
+
+
+def _capacity_bytes_from_mib(capacity_mib: int) -> int:
+    if type(capacity_mib) is not int:
+        raise typer.BadParameter("must be a valid integer.")
+    if capacity_mib <= 0:
+        raise typer.BadParameter("must be at least 1.")
+    if capacity_mib > _MAX_TUI_RESULT_CAPACITY_MIB:
+        raise typer.BadParameter(f"must be at most {_MAX_TUI_RESULT_CAPACITY_MIB}.")
+    return capacity_mib * _MEBIBYTE
 
 
 @app.callback(invoke_without_command=True)
@@ -215,14 +230,36 @@ def menu(
             help="Table mapping in name=path form. Repeat for multiple CSV files.",
         ),
     ] = None,
+    limit: Annotated[
+        int,
+        typer.Option(
+            "--limit",
+            min=1,
+            help="Maximum number of preview rows to retain in the session.",
+        ),
+    ] = DEFAULT_INTERACTIVE_ROW_LIMIT,
+    spool_capacity_mib: Annotated[
+        int,
+        typer.Option(
+            "--spool-capacity-mib",
+            min=1,
+            help="Per-session TUI result capacity in MiB.",
+        ),
+    ] = DEFAULT_TUI_RESULT_CAPACITY_BYTES // _MEBIBYTE,
 ) -> None:
     """Open the interactive CSVQL terminal menu."""
 
     try:
+        result_store_capacity_bytes = _capacity_bytes_from_mib(spool_capacity_mib)
         run_menu_command(
             csv_path=csv_path,
             table_mappings=tuple(table or ()),
             start_dir=Path.cwd(),
+            preview_policy=PreviewPolicy(
+                row_limit=limit,
+                payload_limit_bytes=MAX_PREVIEW_PAYLOAD_BYTES,
+            ),
+            result_store_capacity_bytes=result_store_capacity_bytes,
         )
     except CSVQLError as exc:
         _exit_with_error(exc)

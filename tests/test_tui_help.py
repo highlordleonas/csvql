@@ -27,12 +27,20 @@ def test_workbench_help_freezes_current_keymap_and_export_language() -> None:
 def test_workbench_help_keeps_sql_completion_and_source_intelligence_wording() -> None:
     assert "Tab                 Complete SQL if available, otherwise indent" in WORKBENCH_HELP
     assert (
-        "Ctrl+Space          Alternate SQL completion where terminal supports it"
-        in WORKBENCH_HELP
+        "Ctrl+Space          Alternate SQL completion where terminal supports it" in WORKBENCH_HELP
     )
     assert "i                   Inspect selected source and load columns" in WORKBENCH_HELP
     assert "c                   Load/show selected source columns" in WORKBENCH_HELP
     assert "x                   Open starter SQL templates" in WORKBENCH_HELP
+
+
+def test_workbench_help_explains_bounded_preview_and_preservation_lifecycle() -> None:
+    assert "bounded preview appears while the same execution preserves" in WORKBENCH_HELP
+    assert "rows, logical bytes, elapsed time, and remaining capacity" in WORKBENCH_HELP
+    assert "Complete" in WORKBENCH_HELP
+    assert "Preview-only" in WORKBENCH_HELP
+    assert "does not rerun SQL" in WORKBENCH_HELP
+    assert "Esc                 Cancel active execution or preservation" in WORKBENCH_HELP
 
 
 def test_tui_docs_freeze_run_labels_and_menu_entry_points() -> None:

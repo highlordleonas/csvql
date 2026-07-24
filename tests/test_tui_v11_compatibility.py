@@ -7,11 +7,17 @@ import pytest
 from typer.testing import CliRunner
 
 import csvql.tui_launcher as tui_launcher
+from csvql.bounded_result import PreviewPolicy
 from csvql.cli import app
 from csvql.exceptions import CSVQLError
 from csvql.models import QueryResult
 from csvql.tui_launcher import run_menu_command
-from csvql.tui_result_store import TUIResultCleanupSummary, TUIResultHandle
+from csvql.tui_result_store import (
+    DEFAULT_TUI_RESULT_CAPACITY_BYTES,
+    TUIResultCleanupSummary,
+    TUIResultHandle,
+)
+from csvql.tui_results import make_result_view_state
 from csvql.tui_state import TUIBufferResultTab, TUISessionState, TUISource
 from csvql.tui_workflows import (
     build_initial_state,
@@ -34,6 +40,14 @@ def _write_csv(path: Path, content: str = "id,value\n1,alpha\n") -> Path:
 def _compat_source(tmp_path: Path) -> TUISource:
     csv_path = _write_csv(tmp_path / "customers.csv", "customer_id,email\nCUST-001,a@example.com\n")
     return TUISource(name="customers", path=csv_path.resolve(), origin="argument")
+
+
+def _compat_handle(sequence: int) -> TUIResultHandle:
+    return TUIResultHandle(
+        sequence=sequence,
+        store_id=f"store-{sequence}",
+        nonce=f"{sequence:032x}"[-32:],
+    )
 
 
 def _assert_source_preload_and_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -61,22 +75,25 @@ def _assert_run_modes_and_history_recall(
     state = TUISessionState()
     state.add_source(_compat_source(tmp_path))
 
-    sequence = state.begin_query_run("SELECT 1 AS current_value")
+    sequence = state.reserve_query_sequences(1)[0]
     state.record_query_success(
         sequence,
         "SELECT 1 AS current_value",
-        handle=TUIResultHandle(sequence=sequence, is_spilled=False),
-        result_view=state.result_view,
+        handle=_compat_handle(sequence),
+        result_view=make_result_view_state(
+            QueryResult(columns=("current_value",), rows=((1,),), elapsed_ms=1.0),
+            source_result_sequence=sequence,
+        ),
         elapsed_ms=1.0,
     )
-    buffer_sequence = state.begin_query_run("SELECT 2 AS buffered_value")
+    buffer_sequence = state.reserve_query_sequences(1)[0]
     state.record_query_no_result(
         buffer_sequence,
         "SELECT 2 AS buffered_value",
         elapsed_ms=2.0,
         run_mode="buffer",
     )
-    rerun_sequence = state.begin_query_run("SELECT * FROM missing")
+    rerun_sequence = state.reserve_query_sequences(1)[0]
     state.record_query_error(
         rerun_sequence,
         "SELECT * FROM missing",
@@ -98,23 +115,29 @@ def _assert_buffer_tabs_order_and_selection(
     state = TUISessionState()
     state.add_source(_compat_source(tmp_path))
 
-    first_sequence = state.begin_query_run("SELECT 1 AS first")
-    first_view = state.result_view
+    first_sequence = state.reserve_query_sequences(1)[0]
+    first_view = make_result_view_state(
+        QueryResult(columns=("first",), rows=((1,),), elapsed_ms=1.0),
+        source_result_sequence=first_sequence,
+    )
     state.record_query_success(
         first_sequence,
         "SELECT 1 AS first",
-        handle=TUIResultHandle(sequence=first_sequence, is_spilled=False),
+        handle=_compat_handle(first_sequence),
         result_view=first_view,
         elapsed_ms=1.0,
         run_mode="buffer",
         buffer_result_index=1,
     )
-    second_sequence = state.begin_query_run("SELECT 2 AS second")
-    second_view = state.result_view
+    second_sequence = state.reserve_query_sequences(1)[0]
+    second_view = make_result_view_state(
+        QueryResult(columns=("second",), rows=((2,),), elapsed_ms=1.0),
+        source_result_sequence=second_sequence,
+    )
     state.record_query_success(
         second_sequence,
         "SELECT 2 AS second",
-        handle=TUIResultHandle(sequence=second_sequence, is_spilled=False),
+        handle=_compat_handle(second_sequence),
         result_view=second_view,
         elapsed_ms=1.0,
         run_mode="buffer",
@@ -145,7 +168,8 @@ def _assert_buffer_tabs_order_and_selection(
     assert state.select_buffer_result(second_sequence) is True
     assert state.active_result.sequence == second_sequence
     assert state.active_result.buffer_result_index == 2
-    assert state.result_view is second_view
+    assert state.result_view.source_result_sequence is None
+    assert state.result_view.display_rows == ()
 
 
 def _assert_source_introspection_surface(
@@ -200,7 +224,13 @@ def _assert_optional_textual_import_behavior(
     monkeypatch.setattr("csvql.tui_launcher.import_module", missing_textual_import)
 
     with pytest.raises(CSVQLError) as exc_info:
-        run_menu_command(csv_path=None, table_mappings=(), start_dir=tmp_path)
+        run_menu_command(
+            csv_path=None,
+            table_mappings=(),
+            start_dir=tmp_path,
+            preview_policy=PreviewPolicy(),
+            result_store_capacity_bytes=DEFAULT_TUI_RESULT_CAPACITY_BYTES,
+        )
 
     assert exc_info.value.message == "CSVQL TUI dependency is not installed."
     assert exc_info.value.suggestion == (
@@ -215,9 +245,14 @@ def _assert_terminal_control_safety(
     del tmp_path
 
     def fake_run_menu_command(
-        *, csv_path: str | None, table_mappings: tuple[str, ...], start_dir: Path
+        *,
+        csv_path: str | None,
+        table_mappings: tuple[str, ...],
+        start_dir: Path,
+        preview_policy: PreviewPolicy,
+        result_store_capacity_bytes: int,
     ) -> None:
-        del csv_path, table_mappings, start_dir
+        del csv_path, table_mappings, start_dir, preview_policy, result_store_capacity_bytes
         raise CSVQLError(
             "\x1b]0;spoof\x07[red]message[/red]\x00",
             suggestion="\x1b[31m[link=https://example.invalid]suggestion[/link]\x9b",
