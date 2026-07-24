@@ -945,6 +945,7 @@ class TUIResultStore:
         elapsed_ms: float,
     ) -> TUIStoredResult:
         with self._lock:
+            self._require_available()
             if writer._stored_result is not None:
                 return writer._stored_result
             self._require_active_writer(writer)

@@ -504,7 +504,10 @@ def test_cleanup_retries_after_one_shot_late_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = TUIResultStore(temp_root=tmp_path, session_id="8" * 32)
-    stored = _commit(store)
+    committed_writer = store.begin_complete(sequence=1, columns=("value",))
+    committed_writer.append_payload(encode_row_payload(("alpha",)))
+    stored = committed_writer.commit(elapsed_ms=1.0)
+    assert committed_writer.commit(elapsed_ms=2.0) is stored
     active_writer = store.begin_complete(sequence=2, columns=("value",))
     active_writer.append_payload(encode_row_payload(("pending",)))
     workspace = store.workspace_path
@@ -563,6 +566,7 @@ def test_cleanup_retries_after_one_shot_late_failure(
     assert_result_unavailable(lambda: store.open_rows(stored.handle))
     assert_result_unavailable(lambda: store.load_preview(stored.handle, PreviewPolicy()))
     assert_result_unavailable(lambda: store.remove(stored.handle))
+    assert_result_unavailable(lambda: committed_writer.commit(elapsed_ms=2.0))
     assert_result_unavailable(lambda: active_writer.append_payload(encode_row_payload(("late",))))
     assert_result_unavailable(lambda: active_writer.progress)
     assert_result_unavailable(lambda: active_writer.commit(elapsed_ms=2.0))
@@ -593,6 +597,7 @@ def test_cleanup_retries_after_one_shot_late_failure(
     assert close_calls == 2
     with pytest.raises(TUIResultStorageError, match="no longer available"):
         store.open_rows(stored.handle)
+    assert_result_unavailable(lambda: committed_writer.commit(elapsed_ms=3.0))
 
 
 def test_writer_queued_behind_late_cleanup_failure_cannot_replace_workspace(
