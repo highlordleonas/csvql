@@ -27,6 +27,7 @@ from csvql.tui_result_store import (
     TUIResultStorageError,
     TUIResultStore,
     TUIResultWriter,
+    TUIStoredResult,
 )
 from csvql.tui_state import TUISource
 from csvql.tui_workflows import build_tui_run_request
@@ -249,10 +250,25 @@ def test_capacity_after_preview_rolls_back_full_spool_and_persists_preview_only(
 
 def test_cancellation_after_preview_persists_preview_only(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[object] = []
     operation = OperationContext(OperationToken())
     store = TUIResultStore(temp_root=tmp_path)
+    runner_encoded_rows: list[tuple[object, ...]] = []
+    store_encoded_rows: list[tuple[object, ...]] = []
+    real_encode = encode_row_payload
+
+    def runner_encode(row: tuple[object, ...]) -> bytes:
+        runner_encoded_rows.append(row)
+        return real_encode(row)
+
+    def store_encode(row: tuple[object, ...]) -> bytes:
+        store_encoded_rows.append(row)
+        return real_encode(row)
+
+    monkeypatch.setattr("csvql.tui_query_runner.encode_row_payload", runner_encode)
+    monkeypatch.setattr("csvql.tui_result_store.encode_row_payload", store_encode)
 
     def emit(event: object) -> None:
         events.append(event)
@@ -274,6 +290,135 @@ def test_cancellation_after_preview_persists_preview_only(
     assert preview_only.reason == "user_cancelled"
     assert preview_only.stored is not None
     assert not any(isinstance(event, TUICompleteEvent) for event in events)
+    assert runner_encoded_rows == [(0,), (1,)]
+    assert store_encoded_rows == []
+
+
+@pytest.mark.parametrize(
+    "failing_event_type",
+    [TUIPreservationProgressEvent, TUICompleteEvent],
+)
+def test_callback_failure_after_commit_propagates_without_false_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failing_event_type: type[object],
+) -> None:
+    class SinkFailure(RuntimeError):
+        pass
+
+    committed: list[TUIStoredResult] = []
+    events: list[object] = []
+    store = TUIResultStore(temp_root=tmp_path)
+    real_commit = TUIResultWriter.commit
+
+    def record_commit(
+        writer: TUIResultWriter,
+        *,
+        elapsed_ms: float,
+    ) -> TUIStoredResult:
+        stored = real_commit(writer, elapsed_ms=elapsed_ms)
+        committed.append(stored)
+        return stored
+
+    monkeypatch.setattr(TUIResultWriter, "commit", record_commit)
+
+    def emit(event: object) -> None:
+        events.append(event)
+        if isinstance(event, failing_event_type):
+            raise SinkFailure("event delivery failed")
+
+    with pytest.raises(SinkFailure, match="event delivery failed"):
+        run_tui_request(
+            _request("SELECT 1 AS value"),
+            result_store=store,
+            event_sink=emit,
+            operation=OperationContext(OperationToken()),
+            progress_row_interval=10_000,
+            progress_interval_seconds=60.0,
+        )
+
+    assert len(committed) == 1
+    assert not any(isinstance(event, TUIFailedBeforePreviewEvent) for event in events)
+    assert not any(isinstance(event, TUIPreviewOnlyEvent) for event in events)
+    with pytest.raises(TUIResultStorageError, match="no longer available"):
+        store.open_rows(committed[0].handle)
+
+
+def test_buffer_callback_failure_is_not_relabelled_as_first_sequence_failure(
+    tmp_path: Path,
+) -> None:
+    class SinkFailure(RuntimeError):
+        pass
+
+    events: list[object] = []
+    store = TUIResultStore(temp_root=tmp_path)
+
+    def emit(event: object) -> None:
+        events.append(event)
+        if isinstance(event, TUICompleteEvent) and event.sequence == 11:
+            raise SinkFailure("second completion delivery failed")
+
+    with pytest.raises(SinkFailure, match="second completion delivery failed"):
+        run_tui_request(
+            _request(
+                "SELECT 10 AS value",
+                "SELECT 11 AS value",
+                sequences=(10, 11),
+            ),
+            result_store=store,
+            event_sink=emit,
+            operation=OperationContext(OperationToken()),
+        )
+
+    assert any(isinstance(event, TUICompleteEvent) and event.sequence == 10 for event in events)
+    assert any(isinstance(event, TUICompleteEvent) and event.sequence == 11 for event in events)
+    assert not any(isinstance(event, TUIFailedBeforePreviewEvent) for event in events)
+    assert not any(isinstance(event, TUIPreviewOnlyEvent) for event in events)
+    first_complete = next(
+        event for event in events if isinstance(event, TUICompleteEvent) and event.sequence == 10
+    )
+    rejected_complete = next(
+        event for event in events if isinstance(event, TUICompleteEvent) and event.sequence == 11
+    )
+    assert tuple(store.open_rows(first_complete.stored.handle).iter_rows()) == ((10,),)
+    with pytest.raises(TUIResultStorageError, match="no longer available"):
+        store.open_rows(rejected_complete.stored.handle)
+
+
+def test_preview_only_callback_failure_removes_rejected_snapshot(
+    tmp_path: Path,
+) -> None:
+    class SinkFailure(RuntimeError):
+        pass
+
+    events: list[object] = []
+    operation = OperationContext(OperationToken())
+    store = TUIResultStore(temp_root=tmp_path)
+
+    def emit(event: object) -> None:
+        events.append(event)
+        if isinstance(event, TUIPreviewReadyEvent):
+            operation.request_cancel()
+        if isinstance(event, TUIPreviewOnlyEvent):
+            raise SinkFailure("preview-only delivery failed")
+
+    with pytest.raises(SinkFailure, match="preview-only delivery failed"):
+        run_tui_request(
+            _request(
+                "SELECT range AS value FROM range(10)",
+                policy=PreviewPolicy(row_limit=1, payload_limit_bytes=1_024),
+            ),
+            result_store=store,
+            event_sink=emit,
+            operation=operation,
+            fetch_batch_size=1,
+        )
+
+    rejected = next(event for event in events if isinstance(event, TUIPreviewOnlyEvent))
+    assert rejected.stored is not None
+    assert not any(isinstance(event, TUIFailedBeforePreviewEvent) for event in events)
+    with pytest.raises(TUIResultStorageError, match="no longer available"):
+        store.load_preview(rejected.stored.handle, _DEFAULT_TEST_POLICY)
 
 
 def test_pre_cancelled_request_emits_cancelled_before_preview_without_workspace(

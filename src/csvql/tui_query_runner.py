@@ -146,6 +146,14 @@ class TUIFailedBeforePreviewEvent:
     )
 
 
+class _EventSinkFailure(Exception):
+    """Carry an event callback failure through runner cleanup without relabelling it."""
+
+    def __init__(self, cause: BaseException) -> None:
+        super().__init__("The TUI event sink rejected an event.")
+        self.cause = cause
+
+
 TUIQueryEvent: TypeAlias = (
     TUIPreviewReadyEvent
     | TUIPreservationProgressEvent
@@ -162,6 +170,9 @@ _Now: TypeAlias = Callable[[], float]
 _DEFAULT_FETCH_BATCH_SIZE = 256
 _DEFAULT_PROGRESS_ROW_INTERVAL = 256
 _DEFAULT_PROGRESS_INTERVAL_SECONDS = 0.1
+_EVENT_DELIVERY_CLEANUP_UNCERTAINTY_NOTE = (
+    "LocalQL could not confirm result cleanup after a TUI event delivery failure."
+)
 
 
 def run_tui_request(
@@ -187,6 +198,7 @@ def run_tui_request(
 
     first_sequence = request.sequences[0]
     attempted_aliases = {source.spec.alias.casefold() for source in request.sources}
+    statement_started = False
     try:
         with engine_factory(operation=operation) as engine:
             operation.checkpoint()
@@ -196,6 +208,7 @@ def run_tui_request(
                 request.sequences,
                 strict=True,
             ):
+                statement_started = True
                 if not _run_statement(
                     engine=engine,
                     statement=statement,
@@ -212,9 +225,15 @@ def run_tui_request(
                     now=now,
                 ):
                     return
+    except _EventSinkFailure as exc:
+        raise exc.cause from exc
     except OperationCancelled:
+        if statement_started:
+            raise
         event_sink(TUICancelledBeforePreviewEvent(sequence=first_sequence))
     except BaseException as exc:
+        if statement_started:
+            raise
         message, suggestion = _public_failure(exc)
         event_sink(
             TUIFailedBeforePreviewEvent(
@@ -243,7 +262,11 @@ def _run_statement(
 ) -> bool:
     stream: ResultStream | None = None
     writer = None
+    stored: TUIStoredResult | None = None
     preview: BoundedQueryResult | None = None
+    retained_payloads: list[bytes] = []
+    stream_active = False
+    writer_committed = False
     try:
         operation.checkpoint()
         stream = _start_statement_stream(
@@ -253,13 +276,16 @@ def _run_statement(
             attempted_aliases=attempted_aliases,
             operation=operation,
         )
+        stream_active = True
         if not stream.columns:
             _close_stream(stream, primary=None, interrupt=False)
-            event_sink(
+            stream_active = False
+            _publish_event(
+                event_sink,
                 TUINoResultEvent(
                     sequence=sequence,
                     elapsed_ms=stream.elapsed_ms,
-                )
+                ),
             )
             return True
 
@@ -286,14 +312,17 @@ def _run_statement(
                 payload = encode_row_payload(row)
                 writer.append_payload(payload)
                 retained = accumulator.consider(row, payload)
+                if retained:
+                    retained_payloads.append(payload)
                 if not retained and preview is None:
                     accumulator.elapsed_ms = stream.elapsed_ms
                     preview = accumulator.finish()
-                    event_sink(
+                    _publish_event(
+                        event_sink,
                         TUIPreviewReadyEvent(
                             sequence=sequence,
                             preview=preview,
-                        )
+                        ),
                     )
                     operation.checkpoint()
 
@@ -318,25 +347,43 @@ def _run_statement(
             accumulator.elapsed_ms = stream.elapsed_ms
             if preview is None:
                 preview = accumulator.finish()
-                event_sink(
+                _publish_event(
+                    event_sink,
                     TUIPreviewReadyEvent(
                         sequence=sequence,
                         preview=preview,
-                    )
+                    ),
                 )
                 operation.checkpoint()
             _close_stream(stream, primary=None, interrupt=False)
+            stream_active = False
             stored = writer.commit(elapsed_ms=stream.elapsed_ms)
+            writer_committed = True
             _emit_progress(
                 sequence=sequence,
                 elapsed_ms=stored.elapsed_ms,
                 writer_progress=writer.progress,
                 event_sink=event_sink,
             )
-            event_sink(TUICompleteEvent(sequence=sequence, stored=stored))
+            _publish_event(
+                event_sink,
+                TUICompleteEvent(sequence=sequence, stored=stored),
+            )
             return True
+    except _EventSinkFailure as exc:
+        if stream is not None and stream_active:
+            _close_stream(stream, primary=exc.cause, interrupt=True)
+        if writer is not None and not writer_committed:
+            writer.rollback()
+        if stored is not None:
+            _remove_rejected_stored_result(
+                result_store=result_store,
+                stored=stored,
+                failure=exc,
+            )
+        raise
     except OperationCancelled as exc:
-        if stream is not None:
+        if stream is not None and stream_active:
             _close_stream(stream, primary=exc, interrupt=True)
         if writer is not None:
             writer.rollback()
@@ -348,12 +395,13 @@ def _run_statement(
                 preview=preview,
                 reason="user_cancelled",
                 elapsed_ms=_elapsed_ms(stream),
+                encoded_payloads=tuple(retained_payloads),
                 result_store=result_store,
                 event_sink=event_sink,
             )
         return False
     except TUIResultStorageError as exc:
-        if stream is not None:
+        if stream is not None and stream_active:
             _close_stream(stream, primary=exc, interrupt=True)
         if writer is not None:
             writer.rollback()
@@ -366,19 +414,21 @@ def _run_statement(
                 preview=preview,
                 reason=reason,
                 elapsed_ms=_elapsed_ms(stream),
+                encoded_payloads=tuple(retained_payloads),
                 result_store=result_store,
                 event_sink=event_sink,
             )
         else:
-            event_sink(
+            _publish_event(
+                event_sink,
                 TUIFailedBeforePreviewEvent(
                     sequence=sequence,
                     error_message=exc.user_message,
-                )
+                ),
             )
         return False
     except BaseException as exc:
-        if stream is not None:
+        if stream is not None and stream_active:
             _close_stream(stream, primary=exc, interrupt=True)
         if writer is not None:
             writer.rollback()
@@ -388,17 +438,19 @@ def _run_statement(
                 preview=preview,
                 reason="preservation_failed",
                 elapsed_ms=_elapsed_ms(stream),
+                encoded_payloads=tuple(retained_payloads),
                 result_store=result_store,
                 event_sink=event_sink,
             )
         else:
             message, suggestion = _public_failure(exc)
-            event_sink(
+            _publish_event(
+                event_sink,
                 TUIFailedBeforePreviewEvent(
                     sequence=sequence,
                     error_message=message,
                     suggestion=suggestion,
-                )
+                ),
             )
         return False
 
@@ -444,6 +496,7 @@ def _emit_preview_only(
     preview: BoundedQueryResult,
     reason: TUIResultReason,
     elapsed_ms: float,
+    encoded_payloads: tuple[bytes, ...],
     result_store: TUIResultStore,
     event_sink: TUIQueryEventSink,
 ) -> None:
@@ -452,15 +505,26 @@ def _emit_preview_only(
         preview=preview,
         reason=reason,
         elapsed_ms=elapsed_ms,
+        encoded_payloads=encoded_payloads,
     )
-    event_sink(
-        TUIPreviewOnlyEvent(
-            sequence=sequence,
-            preview=preview,
-            reason=reason,
-            stored=stored,
+    try:
+        _publish_event(
+            event_sink,
+            TUIPreviewOnlyEvent(
+                sequence=sequence,
+                preview=preview,
+                reason=reason,
+                stored=stored,
+            ),
         )
-    )
+    except _EventSinkFailure as exc:
+        if stored is not None:
+            _remove_rejected_stored_result(
+                result_store=result_store,
+                stored=stored,
+                failure=exc,
+            )
+        raise
 
 
 def _emit_progress(
@@ -477,12 +541,40 @@ def _emit_progress(
         elapsed_ms=elapsed_ms,
         remaining_capacity_bytes=writer_progress.remaining_capacity_bytes,
     )
-    event_sink(
+    _publish_event(
+        event_sink,
         TUIPreservationProgressEvent(
             sequence=sequence,
             progress=progress,
-        )
+        ),
     )
+
+
+def _publish_event(
+    event_sink: TUIQueryEventSink,
+    event: TUIQueryEvent,
+) -> None:
+    try:
+        event_sink(event)
+    except BaseException as exc:
+        raise _EventSinkFailure(exc) from exc
+
+
+def _remove_rejected_stored_result(
+    *,
+    result_store: TUIResultStore,
+    stored: TUIStoredResult,
+    failure: _EventSinkFailure,
+) -> None:
+    try:
+        result_store.remove(stored.handle)
+    except BaseException:
+        if _EVENT_DELIVERY_CLEANUP_UNCERTAINTY_NOTE not in getattr(
+            failure.cause,
+            "__notes__",
+            (),
+        ):
+            failure.cause.add_note(_EVENT_DELIVERY_CLEANUP_UNCERTAINTY_NOTE)
 
 
 def _close_stream(

@@ -23,7 +23,7 @@ from csvql.bounded_result import (
     PreviewPolicy,
     TruncationReason,
 )
-from csvql.result_codec import encode_row_payload
+from csvql.result_codec import decode_row_payload, encode_row_payload
 from csvql.result_spool import ResultSpoolError, ResultSpoolReader, ResultSpoolWriter
 from csvql.streaming_export import ExportRowSource
 
@@ -527,6 +527,7 @@ class TUIResultStore:
         preview: BoundedQueryResult,
         reason: TUIResultReason,
         elapsed_ms: float,
+        encoded_payloads: tuple[bytes, ...] | None = None,
     ) -> TUIStoredResult | None:
         """Persist only retained preview rows, returning ``None`` on capacity."""
 
@@ -536,12 +537,26 @@ class TUIResultStore:
             raise ValueError("preview columns must be an immutable tuple.")
         payloads: list[bytes] = []
         try:
-            for row in preview.rows:
+            if encoded_payloads is not None and len(encoded_payloads) != len(preview.rows):
+                raise ValueError("preview payloads must match the retained rows.")
+            for index, row in enumerate(preview.rows):
                 if len(row) != len(preview.columns):
                     raise ValueError("preview row does not match its columns.")
-                payloads.append(encode_row_payload(row))
+                if encoded_payloads is None:
+                    payload = encode_row_payload(row)
+                else:
+                    payload = encoded_payloads[index]
+                    if not isinstance(payload, bytes):
+                        raise ValueError("preview payloads must be immutable bytes.")
+                    if len(decode_row_payload(payload)) != len(preview.columns):
+                        raise ValueError("preview payload does not match its columns.")
+                payloads.append(payload)
+            if sum(len(payload) for payload in payloads) != preview.preview_payload_bytes:
+                raise ValueError("preview payload bytes do not match the retained preview.")
         except Exception as exc:
-            if isinstance(exc, ValueError) and str(exc).startswith("preview row"):
+            if isinstance(exc, ValueError) and str(exc).startswith(
+                ("preview row", "preview payload")
+            ):
                 raise
             raise TUIResultStorageError(
                 "Unable to serialize the query result for temporary storage.",
