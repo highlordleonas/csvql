@@ -15,24 +15,6 @@ from csvql.tui_result_store import (
 from csvql.tui_results import make_bounded_result_view_state
 from csvql.tui_state import TUIQueryHistoryItem, TUIResultRecord, TUISessionState
 
-_HEADER_PREFIX_BYTES = 14
-_LENGTH_BYTES = 8
-_FRAME_PREFIX_BYTES = 9
-_FOOTER_BYTES = 9
-
-
-def _artifact_bytes(columns: tuple[str, ...], payloads: tuple[bytes, ...]) -> int:
-    header_bytes = (
-        _HEADER_PREFIX_BYTES
-        + _LENGTH_BYTES
-        + sum(_LENGTH_BYTES + len(column.encode("utf-8")) for column in columns)
-    )
-    return (
-        header_bytes
-        + sum(_FRAME_PREFIX_BYTES + len(payload) for payload in payloads)
-        + _FOOTER_BYTES
-    )
-
 
 def _large_result_payloads(sequence: int) -> tuple[bytes, ...]:
     return tuple(
@@ -65,9 +47,15 @@ def test_many_large_results_remain_bounded_without_eviction_or_preview_multiplic
 ) -> None:
     columns = ("row_index", "payload")
     payloads_by_sequence = {sequence: _large_result_payloads(sequence) for sequence in range(1, 9)}
-    capacity_bytes = sum(
-        _artifact_bytes(columns, payloads) for payloads in payloads_by_sequence.values()
+    calibration_store = TUIResultStore(temp_root=tmp_path)
+    calibration = _commit_payloads(
+        calibration_store,
+        sequence=1,
+        columns=columns,
+        payloads=payloads_by_sequence[1],
     )
+    capacity_bytes = calibration.logical_bytes * len(payloads_by_sequence)
+    calibration_store.cleanup()
     assert capacity_bytes < 1_000_000
     store = TUIResultStore(
         temp_root=tmp_path,
@@ -171,6 +159,9 @@ def test_many_large_results_remain_bounded_without_eviction_or_preview_multiplic
         + _complete_artifact_path(store, replacement.handle.sequence).stat().st_size
         == capacity_bytes
     )
+    with pytest.raises(TUIResultStorageError) as capacity_error:
+        store.begin_complete(sequence=10, columns=columns)
+    assert capacity_error.value.kind == "capacity"
     for stored in stored_results:
         if stored is selected:
             continue

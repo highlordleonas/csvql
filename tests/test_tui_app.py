@@ -5032,7 +5032,10 @@ def test_full_tui_export_streams_preserved_rows_once_without_rerunning_sql(
     source_stat_before = source_path.stat()
     export_path = tmp_path / "exports" / "ordered.csv"
     export_path.parent.mkdir()
-    sql = "SELECT range AS id FROM range(2501) ORDER BY id"
+    sql = (
+        "SELECT range AS id FROM (SELECT customer_id FROM customers "
+        "WHERE customer_id = 'CUST-001') AS customer CROSS JOIN range(2501) ORDER BY id"
+    )
     executed_sql: list[str] = []
     opened_handles: list[object] = []
     real_stream = CSVQLEngine.stream
