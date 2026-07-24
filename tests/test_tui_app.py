@@ -2,6 +2,7 @@ import asyncio
 import os
 import shutil
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from types import MethodType
 from unittest.mock import Mock
@@ -509,7 +510,7 @@ def test_direct_app_construction_does_not_recover_abandoned_workspaces(
 
     assert app.cleanup_summary == TUIResultCleanupSummary()
     recovery.assert_not_called()
-    app.on_unmount()
+    asyncio.run(app.on_unmount())
 
 
 def test_unmount_merges_recovery_and_store_cleanup_summaries_once(
@@ -526,11 +527,395 @@ def test_unmount_merges_recovery_and_store_cleanup_summaries_once(
         initial_cleanup_summary=recovery,
     )
 
-    app.on_unmount()
-    app.on_unmount()
+    asyncio.run(app.on_unmount())
+    asyncio.run(app.on_unmount())
 
     assert app.cleanup_summary.warning_count == 3
     store.cleanup.assert_called_once_with()
+
+
+@pytest.mark.parametrize("work_kind", ["query", "operation"])
+def test_unmount_cancels_and_drains_thread_callable_before_store_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    work_kind: str,
+) -> None:
+    started = threading.Event()
+    cancellation_requested = threading.Event()
+    event_loop_callback_handled = threading.Event()
+    callable_terminal = threading.Event()
+    cleanup_observations: list[bool] = []
+    store = Mock(spec=TUIResultStore)
+    store.cleanup.side_effect = lambda: (
+        cleanup_observations.append(callable_terminal.is_set()) or TUIResultCleanupSummary()
+    )
+
+    def wait_for_shutdown(
+        operation: OperationContext,
+        shutdown_callback: Callable[[], None] | None = None,
+    ) -> None:
+        operation.attach_interrupt(cancellation_requested.set)
+        started.set()
+        if not cancellation_requested.wait(timeout=2.0):
+            return
+        if shutdown_callback is not None:
+            shutdown_callback()
+
+    def fake_run_tui_request(
+        request: TUIRunRequest,
+        *,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+        **kwargs: object,
+    ) -> None:
+        del request, result_store, kwargs
+        try:
+            wait_for_shutdown(
+                operation,
+                lambda: event_sink(
+                    TUICancelledBeforePreviewEvent(
+                        sequence=1,
+                    )
+                ),
+            )
+        finally:
+            callable_terminal.set()
+
+    monkeypatch.setattr(tui_app_module, "run_tui_request", fake_run_tui_request)
+
+    async def _inner() -> None:
+        nonlocal app
+        app = CSVQLMenuApp(
+            initial_state=TUISessionState(),
+            start_dir=tmp_path,
+            result_store=store,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            if work_kind == "query":
+                monkeypatch.setattr(
+                    app,
+                    "_handle_query_event",
+                    lambda event: event_loop_callback_handled.set(),
+                )
+                app._start_query_worker(
+                    TUIRunRequest(
+                        statements=("SELECT 1",),
+                        sequences=(1,),
+                        sources=(),
+                        fallback_sources=(),
+                        preview_policy=PreviewPolicy(),
+                        run_mode="current",
+                        submission_order=1,
+                    )
+                )
+            else:
+                assert app._start_operation_worker(
+                    kind="inspect",
+                    label="Inspecting source",
+                    work=lambda operation: (
+                        wait_for_shutdown(operation),
+                        callable_terminal.set(),
+                    ),
+                )
+            assert await asyncio.to_thread(started.wait, 2.0)
+
+    app: CSVQLMenuApp
+    asyncio.run(_inner())
+
+    assert cancellation_requested.is_set()
+    if work_kind == "query":
+        assert event_loop_callback_handled.is_set()
+    assert callable_terminal.is_set()
+    assert cleanup_observations == [True]
+
+
+def test_unmount_drains_query_and_operation_callables_before_store_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancellation_requested = {
+        "query": threading.Event(),
+        "operation": threading.Event(),
+    }
+    started = {
+        "query": threading.Event(),
+        "operation": threading.Event(),
+    }
+    terminal = {
+        "query": threading.Event(),
+        "operation": threading.Event(),
+    }
+    cleanup_observations: list[tuple[bool, bool]] = []
+    store = Mock(spec=TUIResultStore)
+    store.cleanup.side_effect = lambda: (
+        cleanup_observations.append((terminal["query"].is_set(), terminal["operation"].is_set()))
+        or TUIResultCleanupSummary()
+    )
+
+    def wait_for_shutdown(kind: str, operation: OperationContext) -> None:
+        operation.attach_interrupt(cancellation_requested[kind].set)
+        started[kind].set()
+        try:
+            assert cancellation_requested[kind].wait(timeout=2.0)
+        finally:
+            terminal[kind].set()
+
+    monkeypatch.setattr(
+        tui_app_module,
+        "run_tui_request",
+        lambda request, *, result_store, event_sink, operation, **kwargs: wait_for_shutdown(
+            "query", operation
+        ),
+    )
+
+    async def _inner() -> None:
+        app = CSVQLMenuApp(
+            initial_state=TUISessionState(),
+            start_dir=tmp_path,
+            result_store=store,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._start_query_worker(
+                TUIRunRequest(
+                    statements=("SELECT 1",),
+                    sequences=(1,),
+                    sources=(),
+                    fallback_sources=(),
+                    preview_policy=PreviewPolicy(),
+                    run_mode="current",
+                    submission_order=1,
+                )
+            )
+            assert app._start_operation_worker(
+                kind="inspect",
+                label="Inspecting source",
+                work=lambda operation: wait_for_shutdown("operation", operation),
+            )
+            assert await asyncio.to_thread(started["query"].wait, 2.0)
+            assert await asyncio.to_thread(started["operation"].wait, 2.0)
+
+    asyncio.run(_inner())
+
+    assert cancellation_requested["query"].is_set()
+    assert cancellation_requested["operation"].is_set()
+    assert cleanup_observations == [(True, True)]
+
+
+def test_unmount_prevents_query_and_operation_callables_cancelled_before_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_work: list[Callable[[], object]] = []
+    executed: list[str] = []
+    store = Mock(spec=TUIResultStore)
+    store.cleanup.return_value = TUIResultCleanupSummary()
+
+    async def _inner() -> None:
+        app = CSVQLMenuApp(
+            initial_state=TUISessionState(),
+            start_dir=tmp_path,
+            result_store=store,
+        )
+        monkeypatch.setattr(app, "_set_status", lambda message: None)
+
+        def capture_worker(work: Callable[[], object], **kwargs: object) -> Mock:
+            worker = Mock()
+            worker.is_finished = False
+            worker.name = str(kwargs.get("name", ""))
+            captured_work.append(work)
+            return worker
+
+        monkeypatch.setattr(app, "run_worker", capture_worker)
+        app._start_query_worker(
+            TUIRunRequest(
+                statements=("SELECT 1",),
+                sequences=(1,),
+                sources=(),
+                fallback_sources=(),
+                preview_policy=PreviewPolicy(),
+                run_mode="current",
+                submission_order=1,
+            )
+        )
+        assert app._start_operation_worker(
+            kind="inspect",
+            label="Inspecting source",
+            work=lambda operation: executed.append("operation"),
+        )
+
+        await app.on_unmount()
+        for work in captured_work:
+            work()
+
+    monkeypatch.setattr(
+        tui_app_module,
+        "run_tui_request",
+        lambda *args, **kwargs: executed.append("query"),
+    )
+
+    asyncio.run(_inner())
+
+    assert len(captured_work) == 2
+    assert executed == []
+    store.cleanup.assert_called_once_with()
+
+
+def test_thread_callable_tracking_retains_unwinding_work_and_prunes_terminal_work(
+    tmp_path: Path,
+) -> None:
+    first_started = threading.Event()
+    first_cancellation_requested = threading.Event()
+    release_first_cleanup = threading.Event()
+    first_terminal = threading.Event()
+    second_started = threading.Event()
+    second_cancellation_requested = threading.Event()
+    second_terminal = threading.Event()
+    cleanup_observations: list[tuple[bool, bool]] = []
+    store = Mock(spec=TUIResultStore)
+    store.cleanup.side_effect = lambda: (
+        cleanup_observations.append((first_terminal.is_set(), second_terminal.is_set()))
+        or TUIResultCleanupSummary()
+    )
+
+    def first_work(operation: OperationContext) -> None:
+        operation.attach_interrupt(first_cancellation_requested.set)
+        first_started.set()
+        try:
+            assert first_cancellation_requested.wait(timeout=2.0)
+            assert release_first_cleanup.wait(timeout=2.0)
+        finally:
+            first_terminal.set()
+
+    def second_work(operation: OperationContext) -> None:
+        operation.attach_interrupt(second_cancellation_requested.set)
+        second_started.set()
+        try:
+            assert second_cancellation_requested.wait(timeout=2.0)
+        finally:
+            second_terminal.set()
+
+    async def _inner() -> None:
+        app = CSVQLMenuApp(
+            initial_state=TUISessionState(),
+            start_dir=tmp_path,
+            result_store=store,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._start_operation_worker(
+                kind="inspect",
+                label="First operation",
+                work=first_work,
+            )
+            assert await asyncio.to_thread(first_started.wait, 2.0)
+
+            app.action_cancel_operation()
+            assert first_cancellation_requested.is_set()
+            assert len(app._thread_callables) == 1
+
+            assert app._start_operation_worker(
+                kind="sample",
+                label="Second operation",
+                work=second_work,
+            )
+            assert await asyncio.to_thread(second_started.wait, 2.0)
+            assert len(app._thread_callables) == 2
+
+            release_first_cleanup.set()
+            assert await asyncio.to_thread(first_terminal.wait, 2.0)
+            for _ in range(20):
+                await pilot.pause()
+                if len(app._thread_callables) == 1:
+                    break
+            assert len(app._thread_callables) == 1
+
+    asyncio.run(_inner())
+
+    assert second_cancellation_requested.is_set()
+    assert cleanup_observations == [(True, True)]
+
+
+def test_unmount_tracks_distinct_callables_with_aliased_operation_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared_operation = OperationContext(OperationToken())
+    cancellation_requested = threading.Event()
+    shared_operation.attach_interrupt(cancellation_requested.set)
+    query_started = threading.Event()
+    operation_started = threading.Event()
+    query_terminal = threading.Event()
+    operation_terminal = threading.Event()
+    cleanup_observations: list[tuple[bool, bool]] = []
+    store = Mock(spec=TUIResultStore)
+    store.cleanup.side_effect = lambda: (
+        cleanup_observations.append((query_terminal.is_set(), operation_terminal.is_set()))
+        or TUIResultCleanupSummary()
+    )
+    monkeypatch.setattr(
+        tui_app_module,
+        "OperationContext",
+        lambda token: shared_operation,
+    )
+
+    def wait_for_shutdown(
+        started: threading.Event,
+        terminal: threading.Event,
+    ) -> None:
+        started.set()
+        try:
+            assert cancellation_requested.wait(timeout=2.0)
+        finally:
+            terminal.set()
+
+    monkeypatch.setattr(
+        tui_app_module,
+        "run_tui_request",
+        lambda request, *, result_store, event_sink, operation, **kwargs: wait_for_shutdown(
+            query_started, query_terminal
+        ),
+    )
+
+    async def _inner() -> None:
+        app = CSVQLMenuApp(
+            initial_state=TUISessionState(),
+            start_dir=tmp_path,
+            result_store=store,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._start_query_worker(
+                TUIRunRequest(
+                    statements=("SELECT 1",),
+                    sequences=(1,),
+                    sources=(),
+                    fallback_sources=(),
+                    preview_policy=PreviewPolicy(),
+                    run_mode="current",
+                    submission_order=1,
+                )
+            )
+            assert app._start_operation_worker(
+                kind="inspect",
+                label="Inspecting source",
+                work=lambda operation: wait_for_shutdown(
+                    operation_started,
+                    operation_terminal,
+                ),
+            )
+            assert app._active_query_operation is shared_operation
+            assert app._active_operation_context is shared_operation
+            assert await asyncio.to_thread(query_started.wait, 2.0)
+            assert await asyncio.to_thread(operation_started.wait, 2.0)
+            assert len(app._thread_callables) == 2
+
+    asyncio.run(_inner())
+
+    assert cancellation_requested.is_set()
+    assert cleanup_observations == [(True, True)]
 
 
 def test_tui_non_query_tables_statuses_and_errors_use_literal_control_safe_text() -> None:

@@ -1,8 +1,10 @@
 """Minimal Textual shell for the CSVQL menu TUI."""
 
+import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import ClassVar
 
 from textual import events
@@ -372,6 +374,47 @@ class _OrderedFooter(Footer):
         return _FOOTER_KEY_ORDER
 
 
+class _TrackedThreadCallable:
+    """Track the real lifetime of one executor callable."""
+
+    def __init__(
+        self,
+        operation: OperationContext,
+        terminal: asyncio.Future[None],
+    ) -> None:
+        self.operation = operation
+        self.terminal = terminal
+        self._state = "pending"
+        self._lock = Lock()
+
+    def try_start(self) -> bool:
+        """Claim pending work for execution unless shutdown already cancelled it."""
+
+        with self._lock:
+            if self._state != "pending":
+                return False
+            self._state = "running"
+            return True
+
+    def cancel_before_start(self) -> bool:
+        """Terminalize pending work so a later executor dispatch becomes a no-op."""
+
+        with self._lock:
+            if self._state != "pending":
+                return False
+            self._state = "terminal"
+            return True
+
+    def finish(self) -> bool:
+        """Record actual callable terminalization once."""
+
+        with self._lock:
+            if self._state == "terminal":
+                return False
+            self._state = "terminal"
+            return True
+
+
 class CSVQLMenuApp(App[None]):
     """Minimal interactive menu for loading sources and running SQL."""
 
@@ -542,6 +585,7 @@ class CSVQLMenuApp(App[None]):
             self._result_store = result_store
         self._cleanup_summary = initial_cleanup_summary or TUIResultCleanupSummary()
         self._did_cleanup = False
+        self._thread_callables: set[_TrackedThreadCallable] = set()
 
     @property
     def cleanup_summary(self) -> TUIResultCleanupSummary:
@@ -579,11 +623,45 @@ class CSVQLMenuApp(App[None]):
         self._apply_terminal_size_warning(width=self.size.width, height=self.size.height)
         self._terminal_size_warning_initialized = True
 
-    def on_unmount(self) -> None:
+    async def on_unmount(self) -> None:
         if self._did_cleanup:
             return
         self._did_cleanup = True
+        while self._thread_callables:
+            callables = tuple(self._thread_callables)
+            for tracked in callables:
+                tracked.operation.request_cancel()
+            for tracked in callables:
+                if tracked.cancel_before_start():
+                    self._finish_thread_callable(tracked)
+            await asyncio.gather(*(asyncio.shield(tracked.terminal) for tracked in callables))
         self._cleanup_summary = self._cleanup_summary.merge(self._result_store.cleanup())
+
+    def _track_thread_callable(
+        self,
+        operation: OperationContext,
+        work: Callable[[], object],
+    ) -> Callable[[], object | None]:
+        loop = asyncio.get_running_loop()
+        tracked = _TrackedThreadCallable(operation, loop.create_future())
+        self._thread_callables.add(tracked)
+
+        def run() -> object | None:
+            if not tracked.try_start():
+                return None
+            try:
+                operation.checkpoint()
+                return work()
+            finally:
+                if tracked.finish():
+                    loop.call_soon_threadsafe(self._finish_thread_callable, tracked)
+
+        return run
+
+    def _finish_thread_callable(self, tracked: _TrackedThreadCallable) -> None:
+        if not tracked.terminal.done():
+            tracked.terminal.set_result(None)
+        self._thread_callables.discard(tracked)
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         del event
@@ -1208,11 +1286,14 @@ class CSVQLMenuApp(App[None]):
         self._active_query_operation = operation
 
         self._active_query_worker = self.run_worker(
-            lambda: run_tui_request(
-                request,
-                result_store=self._result_store,
-                event_sink=self._schedule_query_event,
-                operation=operation,
+            self._track_thread_callable(
+                operation,
+                lambda: run_tui_request(
+                    request,
+                    result_store=self._result_store,
+                    event_sink=self._schedule_query_event,
+                    operation=operation,
+                ),
             ),
             name=f"query-{request.sequences[0]}",
             group="query",
@@ -1514,7 +1595,7 @@ class CSVQLMenuApp(App[None]):
         self._active_operation_worker_name = worker_name
         self._next_operation_worker_id += 1
         worker = self.run_worker(
-            lambda: work(operation),
+            self._track_thread_callable(operation, lambda: work(operation)),
             name=worker_name,
             group="operation",
             thread=True,
