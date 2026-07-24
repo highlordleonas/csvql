@@ -8356,12 +8356,18 @@ def test_preserving_export_prompt_reserves_order_until_identity_bound_resolution
             preview_ready.set()
             assert release_preservation.wait(timeout=5.0)
             if resolution == "non_complete":
+                preview_only = _store_preview_only_result(
+                    result_store,
+                    preview,
+                    sequence=request.sequences[0],
+                    reason="preservation_failed",
+                )
                 event_sink(
                     TUIPreviewOnlyEvent(
                         sequence=request.sequences[0],
                         preview=preview,
                         reason="preservation_failed",
-                        stored=None,
+                        stored=preview_only,
                     )
                 )
             else:
@@ -8726,12 +8732,18 @@ def test_non_complete_preservation_rejects_attached_export_then_starts_queue_onc
             event_sink(TUIPreviewReadyEvent(sequence=request.sequences[0], preview=preview))
             preview_ready.set()
             assert release_preservation.wait(timeout=5.0)
+            preview_only = _store_preview_only_result(
+                result_store,
+                preview,
+                sequence=request.sequences[0],
+                reason="preservation_failed",
+            )
             event_sink(
                 TUIPreviewOnlyEvent(
                     sequence=request.sequences[0],
                     preview=preview,
                     reason="preservation_failed",
-                    stored=None,
+                    stored=preview_only,
                 )
             )
             return

@@ -24,6 +24,7 @@ from csvql.tui_result_store import (
     TUIResultStorageError,
     TUIResultStore,
     TUIResultStoreProgress,
+    TUIResultWriter,
     TUIStoredResult,
 )
 
@@ -116,6 +117,11 @@ class TUIPreviewOnlyEvent:
     preview: BoundedQueryResult
     reason: TUIResultReason
     stored: TUIStoredResult | None
+    primary_error_message: str | None = None
+    primary_suggestion: str | None = None
+    persistence_error_message: str | None = None
+    persistence_suggestion: str | None = None
+    cleanup_notes: tuple[str, ...] = field(default_factory=tuple)
     kind: Literal["preview_only"] = field(init=False, default="preview_only")
 
 
@@ -129,6 +135,7 @@ class TUINoResultEvent:
 @dataclass(frozen=True, slots=True)
 class TUICancelledBeforePreviewEvent:
     sequence: int
+    cleanup_notes: tuple[str, ...] = field(default_factory=tuple)
     kind: Literal["cancelled_before_preview"] = field(
         init=False,
         default="cancelled_before_preview",
@@ -140,6 +147,7 @@ class TUIFailedBeforePreviewEvent:
     sequence: int
     error_message: str
     suggestion: str | None = None
+    cleanup_notes: tuple[str, ...] = field(default_factory=tuple)
     kind: Literal["failed_before_preview"] = field(
         init=False,
         default="failed_before_preview",
@@ -152,6 +160,39 @@ class _EventSinkFailure(Exception):
     def __init__(self, cause: BaseException) -> None:
         super().__init__("The TUI event sink rejected an event.")
         self.cause = cause
+
+
+class _CleanupCarrier(Exception):
+    """Collect cleanup notes without replacing a primary terminal outcome."""
+
+
+@dataclass(frozen=True, slots=True)
+class _DeferredPreviewOnlyOutcome:
+    sequence: int
+    preview: BoundedQueryResult
+    reason: TUIResultReason
+    elapsed_ms: float
+    encoded_payloads: tuple[bytes, ...]
+    primary_error_message: str | None = None
+    primary_suggestion: str | None = None
+    persistence_error_message: str | None = None
+    persistence_suggestion: str | None = None
+    publish_preview_ready: bool = False
+    cleanup_notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _DeferredCancelledBeforePreviewOutcome:
+    sequence: int
+    cleanup_notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _DeferredFailedBeforePreviewOutcome:
+    sequence: int
+    error_message: str
+    suggestion: str | None
+    cleanup_notes: tuple[str, ...] = ()
 
 
 TUIQueryEvent: TypeAlias = (
@@ -172,6 +213,28 @@ _DEFAULT_PROGRESS_ROW_INTERVAL = 256
 _DEFAULT_PROGRESS_INTERVAL_SECONDS = 0.1
 _EVENT_DELIVERY_CLEANUP_UNCERTAINTY_NOTE = (
     "LocalQL could not confirm result cleanup after a TUI event delivery failure."
+)
+_RESULT_ROLLBACK_CLEANUP_UNCERTAINTY_NOTE = (
+    "Cleanup uncertainty: the incomplete preserved result could not be fully removed."
+)
+_BINDING_CLEANUP_UNCERTAINTY_NOTE = (
+    "Cleanup uncertainty: one or more source bindings could not be closed."
+)
+_CONNECTION_CLEANUP_UNCERTAINTY_NOTE = (
+    "Cleanup uncertainty: the engine connection could not be closed."
+)
+_SANITIZED_CLEANUP_NOTES = frozenset(
+    {
+        CURSOR_CLEANUP_UNCERTAINTY_NOTE,
+        _RESULT_ROLLBACK_CLEANUP_UNCERTAINTY_NOTE,
+        _BINDING_CLEANUP_UNCERTAINTY_NOTE,
+        _CONNECTION_CLEANUP_UNCERTAINTY_NOTE,
+    }
+)
+_DeferredTerminalOutcome: TypeAlias = (
+    _DeferredPreviewOnlyOutcome
+    | _DeferredCancelledBeforePreviewOutcome
+    | _DeferredFailedBeforePreviewOutcome
 )
 
 
@@ -199,39 +262,62 @@ def run_tui_request(
     first_sequence = request.sequences[0]
     attempted_aliases = {source.spec.alias.casefold() for source in request.sources}
     statement_started = False
+    deferred_terminal: _DeferredTerminalOutcome | None = None
+    engine_entered = False
+    engine_context: object | None = None
     try:
-        with engine_factory(operation=operation) as engine:
-            operation.checkpoint()
-            engine.prepare_sources(request.sources)
-            for statement, sequence in zip(
-                request.statements,
-                request.sequences,
-                strict=True,
-            ):
-                statement_started = True
-                if not _run_statement(
-                    engine=engine,
-                    statement=statement,
-                    sequence=sequence,
-                    fallback_sources=request.fallback_sources,
-                    attempted_aliases=attempted_aliases,
-                    preview_policy=request.preview_policy,
-                    result_store=result_store,
-                    event_sink=event_sink,
-                    operation=operation,
-                    fetch_batch_size=fetch_batch_size,
-                    progress_row_interval=progress_row_interval,
-                    progress_interval_seconds=progress_interval_seconds,
-                    now=now,
-                ):
-                    return
+        engine_context = engine_factory(operation=operation)
+        engine = engine_context.__enter__()
+        engine_entered = True
+        operation.checkpoint()
+        engine.prepare_sources(request.sources)
+        for statement, sequence in zip(
+            request.statements,
+            request.sequences,
+            strict=True,
+        ):
+            statement_started = True
+            statement_result = _run_statement(
+                engine=engine,
+                statement=statement,
+                sequence=sequence,
+                fallback_sources=request.fallback_sources,
+                attempted_aliases=attempted_aliases,
+                preview_policy=request.preview_policy,
+                result_store=result_store,
+                event_sink=event_sink,
+                operation=operation,
+                fetch_batch_size=fetch_batch_size,
+                progress_row_interval=progress_row_interval,
+                progress_interval_seconds=progress_interval_seconds,
+                now=now,
+            )
+            if statement_result is not True:
+                deferred_terminal = statement_result
+                break
     except _EventSinkFailure as exc:
+        if engine_entered:
+            assert engine_context is not None
+            _exit_engine_context(
+                engine_context, type(exc.cause), exc.cause, exc.cause.__traceback__
+            )
         raise exc.cause from exc
-    except OperationCancelled:
+    except OperationCancelled as exc:
+        if engine_entered:
+            assert engine_context is not None
+            _exit_engine_context(engine_context, type(exc), exc, exc.__traceback__)
         if statement_started:
             raise
-        event_sink(TUICancelledBeforePreviewEvent(sequence=first_sequence))
+        event_sink(
+            TUICancelledBeforePreviewEvent(
+                sequence=first_sequence,
+                cleanup_notes=_notes_tuple(exc),
+            )
+        )
     except BaseException as exc:
+        if engine_entered:
+            assert engine_context is not None
+            _exit_engine_context(engine_context, type(exc), exc, exc.__traceback__)
         if statement_started:
             raise
         message, suggestion = _public_failure(exc)
@@ -240,8 +326,35 @@ def run_tui_request(
                 sequence=first_sequence,
                 error_message=message,
                 suggestion=suggestion,
+                cleanup_notes=_notes_tuple(exc),
             )
         )
+    else:
+        if engine_entered:
+            assert engine_context is not None
+            if deferred_terminal is None:
+                _exit_engine_context(engine_context, None, None, None)
+            else:
+                cleanup_carrier = _CleanupCarrier()
+                _exit_engine_context(
+                    engine_context,
+                    _CleanupCarrier,
+                    cleanup_carrier,
+                    cleanup_carrier.__traceback__,
+                )
+                deferred_terminal = _with_cleanup_notes(
+                    deferred_terminal,
+                    _notes_tuple(cleanup_carrier),
+                )
+    if deferred_terminal is not None:
+        try:
+            _publish_deferred_terminal(
+                deferred_terminal,
+                result_store=result_store,
+                event_sink=event_sink,
+            )
+        except _EventSinkFailure as exc:
+            raise exc.cause from exc
 
 
 def _run_statement(
@@ -259,14 +372,17 @@ def _run_statement(
     progress_row_interval: int,
     progress_interval_seconds: float,
     now: _Now,
-) -> bool:
+) -> Literal[True] | _DeferredTerminalOutcome:
     stream: ResultStream | None = None
     writer = None
     stored: TUIStoredResult | None = None
     preview: BoundedQueryResult | None = None
+    accumulator: PreviewAccumulator | None = None
     retained_payloads: list[bytes] = []
     stream_active = False
     writer_committed = False
+    preview_ready_emitted = False
+    stop_after_preview_reason: TUIResultReason | None = None
     try:
         operation.checkpoint()
         stream = _start_statement_stream(
@@ -289,10 +405,16 @@ def _run_statement(
             )
             return True
 
-        writer = result_store.begin_complete(
-            sequence=sequence,
-            columns=stream.columns,
-        )
+        try:
+            writer = result_store.begin_complete(
+                sequence=sequence,
+                columns=stream.columns,
+            )
+        except TUIResultStorageError as exc:
+            if exc.kind == "capacity":
+                stop_after_preview_reason = "session_spool_limit"
+            else:
+                raise
         accumulator = PreviewAccumulator(
             columns=stream.columns,
             elapsed_ms=stream.elapsed_ms,
@@ -310,7 +432,6 @@ def _run_statement(
                 operation.checkpoint()
                 row = tuple(raw_row)
                 payload = encode_row_payload(row)
-                writer.append_payload(payload)
                 retained = accumulator.consider(row, payload)
                 if retained:
                     retained_payloads.append(payload)
@@ -324,22 +445,38 @@ def _run_statement(
                             preview=preview,
                         ),
                     )
+                    preview_ready_emitted = True
                     operation.checkpoint()
+                    if stop_after_preview_reason is not None:
+                        cleanup_carrier = _CleanupCarrier()
+                        _close_stream(stream, primary=cleanup_carrier, interrupt=True)
+                        stream_active = False
+                        return _DeferredPreviewOnlyOutcome(
+                            sequence=sequence,
+                            preview=preview,
+                            reason=stop_after_preview_reason,
+                            elapsed_ms=_elapsed_ms(stream),
+                            encoded_payloads=tuple(retained_payloads),
+                            cleanup_notes=_notes_tuple(cleanup_carrier),
+                        )
+                if writer is not None:
+                    writer.append_payload(payload)
 
                 current_time = now()
-                progress = writer.progress
-                if (
-                    progress.rows_written - last_progress_rows >= progress_row_interval
-                    or current_time - last_progress_at >= progress_interval_seconds
-                ):
-                    _emit_progress(
-                        sequence=sequence,
-                        elapsed_ms=stream.elapsed_ms,
-                        writer_progress=progress,
-                        event_sink=event_sink,
-                    )
-                    last_progress_rows = progress.rows_written
-                    last_progress_at = current_time
+                if writer is not None:
+                    progress = writer.progress
+                    if (
+                        progress.rows_written - last_progress_rows >= progress_row_interval
+                        or current_time - last_progress_at >= progress_interval_seconds
+                    ):
+                        _emit_progress(
+                            sequence=sequence,
+                            elapsed_ms=stream.elapsed_ms,
+                            writer_progress=progress,
+                            event_sink=event_sink,
+                        )
+                        last_progress_rows = progress.rows_written
+                        last_progress_at = current_time
 
             if not batch.exhausted:
                 continue
@@ -354,9 +491,23 @@ def _run_statement(
                         preview=preview,
                     ),
                 )
+                preview_ready_emitted = True
                 operation.checkpoint()
+            if stop_after_preview_reason is not None:
+                cleanup_carrier = _CleanupCarrier()
+                _close_stream(stream, primary=cleanup_carrier, interrupt=False)
+                stream_active = False
+                return _DeferredPreviewOnlyOutcome(
+                    sequence=sequence,
+                    preview=preview,
+                    reason=stop_after_preview_reason,
+                    elapsed_ms=_elapsed_ms(stream),
+                    encoded_payloads=tuple(retained_payloads),
+                    cleanup_notes=_notes_tuple(cleanup_carrier),
+                )
             _close_stream(stream, primary=None, interrupt=False)
             stream_active = False
+            assert writer is not None
             stored = writer.commit(elapsed_ms=stream.elapsed_ms)
             writer_committed = True
             _emit_progress(
@@ -374,7 +525,7 @@ def _run_statement(
         if stream is not None and stream_active:
             _close_stream(stream, primary=exc.cause, interrupt=True)
         if writer is not None and not writer_committed:
-            writer.rollback()
+            _rollback_writer_preserving_primary(writer, primary=exc.cause)
         if stored is not None:
             _remove_rejected_stored_result(
                 result_store=result_store,
@@ -385,74 +536,134 @@ def _run_statement(
     except OperationCancelled as exc:
         if stream is not None and stream_active:
             _close_stream(stream, primary=exc, interrupt=True)
-        if writer is not None:
-            writer.rollback()
+        cleanup_notes = _rollback_writer_preserving_primary(writer, primary=exc)
         if preview is None:
-            event_sink(TUICancelledBeforePreviewEvent(sequence=sequence))
-        else:
-            _emit_preview_only(
+            return _DeferredCancelledBeforePreviewOutcome(
                 sequence=sequence,
-                preview=preview,
-                reason="user_cancelled",
-                elapsed_ms=_elapsed_ms(stream),
-                encoded_payloads=tuple(retained_payloads),
-                result_store=result_store,
-                event_sink=event_sink,
+                cleanup_notes=_notes_tuple(exc, cleanup_notes),
             )
-        return False
+        return _DeferredPreviewOnlyOutcome(
+            sequence=sequence,
+            preview=preview,
+            reason="user_cancelled",
+            elapsed_ms=_elapsed_ms(stream),
+            encoded_payloads=tuple(retained_payloads),
+            persistence_error_message=None,
+            persistence_suggestion=None,
+            publish_preview_ready=False,
+            cleanup_notes=_notes_tuple(exc, cleanup_notes),
+        )
     except TUIResultStorageError as exc:
         if stream is not None and stream_active:
             _close_stream(stream, primary=exc, interrupt=True)
-        if writer is not None:
-            writer.rollback()
+        cleanup_notes = _rollback_writer_preserving_primary(writer, primary=exc)
+        if (
+            preview is None
+            and exc.kind == "capacity"
+            and accumulator is not None
+            and retained_payloads
+        ):
+            preview = _finish_capacity_interrupted_preview(
+                accumulator,
+                elapsed_ms=_elapsed_ms(stream),
+            )
         if preview is not None:
             reason: TUIResultReason = (
                 "session_spool_limit" if exc.kind == "capacity" else "preservation_failed"
             )
-            _emit_preview_only(
+            return _DeferredPreviewOnlyOutcome(
                 sequence=sequence,
                 preview=preview,
                 reason=reason,
                 elapsed_ms=_elapsed_ms(stream),
                 encoded_payloads=tuple(retained_payloads),
-                result_store=result_store,
-                event_sink=event_sink,
+                primary_error_message=None if exc.kind == "capacity" else exc.user_message,
+                persistence_error_message=None,
+                persistence_suggestion=None,
+                publish_preview_ready=exc.kind == "capacity" and not preview_ready_emitted,
+                cleanup_notes=_notes_tuple(exc, cleanup_notes),
             )
-        else:
-            _publish_event(
-                event_sink,
-                TUIFailedBeforePreviewEvent(
-                    sequence=sequence,
-                    error_message=exc.user_message,
-                ),
-            )
-        return False
+        return _DeferredFailedBeforePreviewOutcome(
+            sequence=sequence,
+            error_message=exc.user_message,
+            suggestion=None,
+            cleanup_notes=_notes_tuple(exc, cleanup_notes),
+        )
     except BaseException as exc:
         if stream is not None and stream_active:
             _close_stream(stream, primary=exc, interrupt=True)
-        if writer is not None:
-            writer.rollback()
+        cleanup_notes = _rollback_writer_preserving_primary(writer, primary=exc)
         if preview is not None:
-            _emit_preview_only(
+            message, suggestion = _public_failure(exc)
+            return _DeferredPreviewOnlyOutcome(
                 sequence=sequence,
                 preview=preview,
                 reason="preservation_failed",
                 elapsed_ms=_elapsed_ms(stream),
                 encoded_payloads=tuple(retained_payloads),
-                result_store=result_store,
-                event_sink=event_sink,
+                primary_error_message=message,
+                primary_suggestion=suggestion,
+                persistence_error_message=None,
+                persistence_suggestion=None,
+                cleanup_notes=_notes_tuple(exc, cleanup_notes),
             )
-        else:
-            message, suggestion = _public_failure(exc)
+        message, suggestion = _public_failure(exc)
+        return _DeferredFailedBeforePreviewOutcome(
+            sequence=sequence,
+            error_message=message,
+            suggestion=suggestion,
+            cleanup_notes=_notes_tuple(exc, cleanup_notes),
+        )
+
+
+def _publish_deferred_terminal(
+    outcome: _DeferredTerminalOutcome,
+    *,
+    result_store: TUIResultStore,
+    event_sink: TUIQueryEventSink,
+) -> None:
+    if isinstance(outcome, _DeferredPreviewOnlyOutcome):
+        if outcome.publish_preview_ready:
             _publish_event(
                 event_sink,
-                TUIFailedBeforePreviewEvent(
-                    sequence=sequence,
-                    error_message=message,
-                    suggestion=suggestion,
+                TUIPreviewReadyEvent(
+                    sequence=outcome.sequence,
+                    preview=outcome.preview,
                 ),
             )
-        return False
+        _emit_preview_only(
+            sequence=outcome.sequence,
+            preview=outcome.preview,
+            reason=outcome.reason,
+            elapsed_ms=outcome.elapsed_ms,
+            encoded_payloads=outcome.encoded_payloads,
+            primary_error_message=outcome.primary_error_message,
+            primary_suggestion=outcome.primary_suggestion,
+            persistence_error_message=outcome.persistence_error_message,
+            persistence_suggestion=outcome.persistence_suggestion,
+            cleanup_notes=outcome.cleanup_notes,
+            result_store=result_store,
+            event_sink=event_sink,
+        )
+        return
+    if isinstance(outcome, _DeferredCancelledBeforePreviewOutcome):
+        _publish_event(
+            event_sink,
+            TUICancelledBeforePreviewEvent(
+                sequence=outcome.sequence,
+                cleanup_notes=outcome.cleanup_notes,
+            ),
+        )
+        return
+    _publish_event(
+        event_sink,
+        TUIFailedBeforePreviewEvent(
+            sequence=outcome.sequence,
+            error_message=outcome.error_message,
+            suggestion=outcome.suggestion,
+            cleanup_notes=outcome.cleanup_notes,
+        ),
+    )
 
 
 def _start_statement_stream(
@@ -497,16 +708,34 @@ def _emit_preview_only(
     reason: TUIResultReason,
     elapsed_ms: float,
     encoded_payloads: tuple[bytes, ...],
+    primary_error_message: str | None,
+    primary_suggestion: str | None,
+    persistence_error_message: str | None,
+    persistence_suggestion: str | None,
+    cleanup_notes: tuple[str, ...],
     result_store: TUIResultStore,
     event_sink: TUIQueryEventSink,
 ) -> None:
-    stored = result_store.persist_preview(
-        sequence=sequence,
-        preview=preview,
-        reason=reason,
-        elapsed_ms=elapsed_ms,
-        encoded_payloads=encoded_payloads,
-    )
+    persisted_cleanup_notes = cleanup_notes
+    effective_persistence_error_message = persistence_error_message
+    effective_persistence_suggestion = persistence_suggestion
+    try:
+        stored = result_store.persist_preview(
+            sequence=sequence,
+            preview=preview,
+            reason=reason,
+            elapsed_ms=elapsed_ms,
+            encoded_payloads=encoded_payloads,
+        )
+    except BaseException as exc:
+        stored = None
+        message, suggestion = _public_failure(exc)
+        if isinstance(exc, TUIResultStorageError):
+            message = exc.user_message
+            suggestion = None
+        effective_persistence_error_message = message
+        effective_persistence_suggestion = suggestion
+        persisted_cleanup_notes = _merge_cleanup_notes(cleanup_notes, _notes_tuple(exc))
     try:
         _publish_event(
             event_sink,
@@ -515,6 +744,11 @@ def _emit_preview_only(
                 preview=preview,
                 reason=reason,
                 stored=stored,
+                primary_error_message=primary_error_message,
+                primary_suggestion=primary_suggestion,
+                persistence_error_message=effective_persistence_error_message,
+                persistence_suggestion=effective_persistence_suggestion,
+                cleanup_notes=persisted_cleanup_notes,
             ),
         )
     except _EventSinkFailure as exc:
@@ -560,6 +794,15 @@ def _publish_event(
         raise _EventSinkFailure(exc) from exc
 
 
+def _exit_engine_context(
+    engine_context: object,
+    exc_type: type[BaseException] | None,
+    exc: BaseException | None,
+    traceback: object,
+) -> None:
+    engine_context.__exit__(exc_type, exc, traceback)  # type: ignore[attr-defined]
+
+
 def _remove_rejected_stored_result(
     *,
     result_store: TUIResultStore,
@@ -602,6 +845,22 @@ def _elapsed_ms(stream: ResultStream | None) -> float:
     return 0.0 if stream is None else stream.elapsed_ms
 
 
+def _finish_capacity_interrupted_preview(
+    accumulator: PreviewAccumulator,
+    *,
+    elapsed_ms: float,
+) -> BoundedQueryResult:
+    finished = accumulator.finish()
+    return BoundedQueryResult(
+        columns=finished.columns,
+        rows=finished.rows,
+        elapsed_ms=elapsed_ms,
+        preview_payload_bytes=finished.preview_payload_bytes,
+        has_more_rows=True,
+        truncation_reason=finished.truncation_reason,
+    )
+
+
 def _public_failure(error: BaseException) -> tuple[str, str | None]:
     if isinstance(error, CSVQLError):
         return (error.message, error.suggestion)
@@ -614,3 +873,92 @@ def _public_failure(error: BaseException) -> tuple[str, str | None]:
 def _add_cleanup_note(primary: BaseException) -> None:
     if CURSOR_CLEANUP_UNCERTAINTY_NOTE not in getattr(primary, "__notes__", ()):
         primary.add_note(CURSOR_CLEANUP_UNCERTAINTY_NOTE)
+
+
+def _rollback_writer_preserving_primary(
+    writer: TUIResultWriter | None,
+    *,
+    primary: BaseException,
+) -> tuple[str, ...]:
+    if writer is None:
+        return ()
+    try:
+        cleanup_notes = writer.rollback()
+    except BaseException:
+        _add_note_once(primary, _RESULT_ROLLBACK_CLEANUP_UNCERTAINTY_NOTE)
+        return (_RESULT_ROLLBACK_CLEANUP_UNCERTAINTY_NOTE,)
+    sanitized_notes = _sanitize_cleanup_notes(cleanup_notes)
+    for note in sanitized_notes:
+        _add_note_once(primary, note)
+    return sanitized_notes
+
+
+def _notes_tuple(
+    primary: BaseException,
+    extra_notes: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    notes = list(_sanitize_cleanup_notes(getattr(primary, "__notes__", ())))
+    for note in extra_notes:
+        if note not in notes:
+            notes.append(note)
+    return tuple(notes)
+
+
+def _with_cleanup_notes(
+    outcome: _DeferredTerminalOutcome,
+    cleanup_notes: tuple[str, ...],
+) -> _DeferredTerminalOutcome:
+    if not cleanup_notes:
+        return outcome
+    if isinstance(outcome, _DeferredPreviewOnlyOutcome):
+        return _DeferredPreviewOnlyOutcome(
+            sequence=outcome.sequence,
+            preview=outcome.preview,
+            reason=outcome.reason,
+            elapsed_ms=outcome.elapsed_ms,
+            encoded_payloads=outcome.encoded_payloads,
+            primary_error_message=outcome.primary_error_message,
+            primary_suggestion=outcome.primary_suggestion,
+            persistence_error_message=outcome.persistence_error_message,
+            persistence_suggestion=outcome.persistence_suggestion,
+            publish_preview_ready=outcome.publish_preview_ready,
+            cleanup_notes=_merge_cleanup_notes(outcome.cleanup_notes, cleanup_notes),
+        )
+    if isinstance(outcome, _DeferredCancelledBeforePreviewOutcome):
+        return _DeferredCancelledBeforePreviewOutcome(
+            sequence=outcome.sequence,
+            cleanup_notes=_merge_cleanup_notes(outcome.cleanup_notes, cleanup_notes),
+        )
+    return _DeferredFailedBeforePreviewOutcome(
+        sequence=outcome.sequence,
+        error_message=outcome.error_message,
+        suggestion=outcome.suggestion,
+        cleanup_notes=_merge_cleanup_notes(outcome.cleanup_notes, cleanup_notes),
+    )
+
+
+def _merge_cleanup_notes(
+    existing: tuple[str, ...],
+    incoming: tuple[str, ...],
+) -> tuple[str, ...]:
+    merged = list(existing)
+    for note in incoming:
+        if note not in merged:
+            merged.append(note)
+    return tuple(merged)
+
+
+def _add_note_once(primary: BaseException, note: str) -> None:
+    if note not in getattr(primary, "__notes__", ()):
+        primary.add_note(note)
+
+
+def _sanitize_cleanup_notes(notes: tuple[str, ...] | list[str] | object) -> tuple[str, ...]:
+    sanitized: list[str] = []
+    for note in notes if isinstance(notes, (tuple, list)) else ():
+        if not isinstance(note, str):
+            continue
+        if note in _SANITIZED_CLEANUP_NOTES:
+            if note not in sanitized:
+                sanitized.append(note)
+    return tuple(sanitized)

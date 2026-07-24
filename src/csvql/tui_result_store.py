@@ -454,10 +454,10 @@ class TUIResultWriter:
 
         return self._store._commit_writer(self, elapsed_ms=elapsed_ms)
 
-    def rollback(self) -> None:
-        """Delete incomplete staging and release its reserved capacity."""
+    def rollback(self) -> tuple[str, ...]:
+        """Delete incomplete staging, release reserved capacity, and report cleanup uncertainty."""
 
-        self._store._rollback_writer(self)
+        return self._store._rollback_writer(self)
 
 
 class TUIResultStore:
@@ -578,12 +578,24 @@ class TUIResultStore:
                     writer.append_payload(payload)
                 return writer.commit(elapsed_ms=elapsed_ms)
             except TUIResultStorageError as exc:
-                writer.rollback()
+                rollback_notes = writer.rollback()
+                if exc.kind == "capacity" and rollback_notes:
+                    replacement = TUIResultStorageError(
+                        "Unable to serialize the query result for temporary storage.",
+                        kind="io",
+                    )
+                    for note in rollback_notes:
+                        replacement.add_note(note)
+                    raise replacement from exc
+                for note in rollback_notes:
+                    exc.add_note(note)
                 if exc.kind == "capacity":
                     return None
                 raise
-            except BaseException:
-                writer.rollback()
+            except BaseException as exc:
+                rollback_notes = writer.rollback()
+                for note in rollback_notes:
+                    exc.add_note(note)
                 raise
         except TUIResultStorageError as exc:
             if exc.kind == "capacity":
@@ -1015,13 +1027,13 @@ class TUIResultStore:
             writer._stored_result = stored
             return stored
 
-    def _rollback_writer(self, writer: TUIResultWriter) -> None:
+    def _rollback_writer(self, writer: TUIResultWriter) -> tuple[str, ...]:
         with self._lock:
             if writer._stored_result is not None or writer._closed:
-                return
+                return ()
             if self._active_writer is not writer:
                 writer._closed = True
-                return
+                return ()
             cleanup_failed = False
             try:
                 writer._spool_writer.rollback()
@@ -1037,6 +1049,12 @@ class TUIResultStore:
                 self._cleanup_uncertainties += 1
             self._active_writer = None
             writer._closed = True
+            if cleanup_failed:
+                return (
+                    "Cleanup uncertainty: the incomplete preserved result could not be fully "
+                    "removed.",
+                )
+            return ()
 
     def _reserve_bytes(self, amount: int) -> None:
         if self._allocated_bytes + amount > self._capacity_bytes:

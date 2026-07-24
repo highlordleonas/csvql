@@ -10,8 +10,10 @@ import pytest
 
 from csvql.bounded_result import PreviewPolicy
 from csvql.engine import CSVQLEngine
+from csvql.exceptions import CSVQLError
 from csvql.operation import OperationContext, OperationToken
 from csvql.result_codec import encode_row_payload
+from csvql.result_stream import CURSOR_CLEANUP_UNCERTAINTY_NOTE, ResultBatch
 from csvql.tui_query_runner import (
     TUICancelledBeforePreviewEvent,
     TUICompleteEvent,
@@ -37,6 +39,8 @@ _LENGTH_BYTES = 8
 _FRAME_PREFIX_BYTES = 9
 _FOOTER_BYTES = 9
 _DEFAULT_TEST_POLICY = PreviewPolicy(row_limit=2, payload_limit_bytes=1_024)
+_BINDING_CLEANUP_NOTE = "Cleanup uncertainty: one or more source bindings could not be closed."
+_CONNECTION_CLEANUP_NOTE = "Cleanup uncertainty: the engine connection could not be closed."
 
 
 def _request(
@@ -85,8 +89,11 @@ class _RecordingEngine(CSVQLEngine):
         return super().stream(sql, params)
 
     def close(self) -> None:
+        super().close()
+
+    def __exit__(self, *exc_info: object) -> None:
         try:
-            super().close()
+            super().__exit__(*exc_info)
         finally:
             self._recorded_closed.append(True)
 
@@ -103,6 +110,64 @@ def _recording_engine_factory(
         )
 
     return factory
+
+
+class _StaticStream:
+    def __init__(
+        self,
+        batches: list[ResultBatch],
+        *,
+        elapsed_ms: float = 1.0,
+        close_error: BaseException | None = None,
+        interrupt_error: BaseException | None = None,
+    ) -> None:
+        self.columns = ("value",)
+        self.elapsed_ms = elapsed_ms
+        self._batches = list(batches)
+        self._close_error = close_error
+        self._interrupt_error = interrupt_error
+
+    def fetch_rows(self, _max_rows: int) -> ResultBatch:
+        return self._batches.pop(0)
+
+    def request_interrupt(self) -> None:
+        if self._interrupt_error is not None:
+            raise self._interrupt_error
+
+    def close(self) -> None:
+        if self._close_error is not None:
+            raise self._close_error
+
+
+class _StaticEngine:
+    def __init__(
+        self,
+        stream: _StaticStream,
+        *,
+        exit_notes: tuple[str, ...] = (),
+    ) -> None:
+        self._stream = stream
+        self._exit_notes = exit_notes
+
+    def __enter__(self) -> _StaticEngine:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        _tb: object,
+    ) -> None:
+        if exc is not None:
+            for note in self._exit_notes:
+                exc.add_note(note)
+
+    def prepare_sources(self, sources: object) -> None:
+        assert sources == ()
+
+    def stream(self, sql: str) -> _StaticStream:
+        assert sql
+        return self._stream
 
 
 def test_run_request_and_events_are_frozen_value_snapshots() -> None:
@@ -248,6 +313,162 @@ def test_capacity_after_preview_rolls_back_full_spool_and_persists_preview_only(
     ).rows == ((0,),)
 
 
+def test_initial_full_spool_capacity_shortfall_still_yields_same_execution_preview_only(
+    tmp_path: Path,
+) -> None:
+    events: list[tuple[object, list[bool]]] = []
+    statements: list[str] = []
+    closed: list[bool] = []
+    columns = ("value",)
+    store = TUIResultStore(
+        temp_root=tmp_path,
+        capacity_bytes=_header_bytes(columns) + _FOOTER_BYTES - 1,
+    )
+
+    def emit(event: object) -> None:
+        events.append((event, closed.copy()))
+
+    run_tui_request(
+        _request(
+            "SELECT range AS value FROM range(10)",
+            policy=PreviewPolicy(row_limit=1, payload_limit_bytes=1_024),
+        ),
+        result_store=store,
+        event_sink=emit,
+        operation=OperationContext(OperationToken()),
+        engine_factory=_recording_engine_factory(statements, closed),
+        fetch_batch_size=1,
+    )
+
+    preview = next(event for event, _closed in events if isinstance(event, TUIPreviewReadyEvent))
+    preview_only, closed_at_preview_only = next(
+        (event, event_closed)
+        for event, event_closed in events
+        if isinstance(event, TUIPreviewOnlyEvent)
+    )
+    assert isinstance(preview, TUIPreviewReadyEvent)
+    assert isinstance(preview_only, TUIPreviewOnlyEvent)
+    assert statements == ["SELECT range AS value FROM range(10)"]
+    assert preview.preview.rows == ((0,),)
+    assert preview_only.reason == "session_spool_limit"
+    assert preview_only.preview.rows == ((0,),)
+    assert preview_only.stored is None
+    assert closed_at_preview_only == [True]
+    assert not any(isinstance(event, TUIFailedBeforePreviewEvent) for event, _ in events)
+
+
+def test_mid_spool_capacity_before_preview_finalization_keeps_same_execution_preview_only(
+    tmp_path: Path,
+) -> None:
+    events: list[object] = []
+    columns = ("value",)
+    store = TUIResultStore(
+        temp_root=tmp_path,
+        capacity_bytes=_header_bytes(columns) + _FOOTER_BYTES,
+    )
+
+    run_tui_request(
+        _request(
+            "SELECT range AS value FROM range(10)",
+            policy=PreviewPolicy(row_limit=10, payload_limit_bytes=1_024),
+        ),
+        result_store=store,
+        event_sink=events.append,
+        operation=OperationContext(OperationToken()),
+        fetch_batch_size=1,
+    )
+
+    preview_only = next(event for event in events if isinstance(event, TUIPreviewOnlyEvent))
+    assert preview_only.reason == "session_spool_limit"
+    assert preview_only.preview.rows == ((0,),)
+    assert preview_only.preview.has_more_rows is True
+    assert preview_only.preview.truncation_reason is None
+    assert preview_only.stored is None
+    assert not any(isinstance(event, TUIFailedBeforePreviewEvent) for event in events)
+
+
+def test_initial_capacity_preview_only_carries_interrupt_cleanup_note(tmp_path: Path) -> None:
+    events: list[object] = []
+    columns = ("value",)
+    store = TUIResultStore(
+        temp_root=tmp_path,
+        capacity_bytes=_header_bytes(columns) + _FOOTER_BYTES - 1,
+    )
+    stream = _StaticStream(
+        [
+            ResultBatch(rows=((0,),), exhausted=False),
+            ResultBatch(rows=((1,),), exhausted=False),
+        ],
+        interrupt_error=RuntimeError("private interrupt detail"),
+    )
+
+    run_tui_request(
+        _request(
+            "SELECT range AS value FROM range(10)",
+            policy=PreviewPolicy(row_limit=1, payload_limit_bytes=1_024),
+        ),
+        result_store=store,
+        event_sink=events.append,
+        operation=OperationContext(OperationToken()),
+        engine_factory=lambda **_kwargs: _StaticEngine(stream),  # type: ignore[arg-type]
+        fetch_batch_size=1,
+    )
+
+    preview_only = next(event for event in events if isinstance(event, TUIPreviewOnlyEvent))
+    assert preview_only.reason == "session_spool_limit"
+    assert preview_only.cleanup_notes == (CURSOR_CLEANUP_UNCERTAINTY_NOTE,)
+
+
+def test_mid_spool_capacity_before_preview_finalization_persists_preview_only_when_it_fits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[object] = []
+    store = TUIResultStore(temp_root=tmp_path)
+    complete_payload_calls = 0
+    real_append = TUIResultWriter.append_payload
+    statements: list[str] = []
+    closed: list[bool] = []
+
+    def fail_first_complete_row_after_retention(
+        writer: TUIResultWriter,
+        payload: bytes,
+    ) -> None:
+        nonlocal complete_payload_calls
+        if writer._kind == "complete":
+            complete_payload_calls += 1
+            if complete_payload_calls == 1:
+                raise TUIResultStorageError(
+                    "Unable to store the query result because session result storage is full.",
+                    kind="capacity",
+                )
+        real_append(writer, payload)
+
+    monkeypatch.setattr(TUIResultWriter, "append_payload", fail_first_complete_row_after_retention)
+
+    run_tui_request(
+        _request(
+            "SELECT range AS value FROM range(10)",
+            policy=PreviewPolicy(row_limit=10, payload_limit_bytes=1_024),
+        ),
+        result_store=store,
+        event_sink=events.append,
+        operation=OperationContext(OperationToken()),
+        engine_factory=_recording_engine_factory(statements, closed),
+        fetch_batch_size=1,
+    )
+
+    preview_only = next(event for event in events if isinstance(event, TUIPreviewOnlyEvent))
+    assert statements == ["SELECT range AS value FROM range(10)"]
+    assert closed == [True]
+    assert preview_only.reason == "session_spool_limit"
+    assert preview_only.preview.rows == ((0,),)
+    assert preview_only.preview.has_more_rows is True
+    assert preview_only.preview.truncation_reason is None
+    assert preview_only.stored is not None
+    assert preview_only.stored.kind == "preview_only"
+
+
 def test_cancellation_after_preview_persists_preview_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -269,6 +490,8 @@ def test_cancellation_after_preview_persists_preview_only(
 
     monkeypatch.setattr("csvql.tui_query_runner.encode_row_payload", runner_encode)
     monkeypatch.setattr("csvql.tui_result_store.encode_row_payload", store_encode)
+    statements: list[str] = []
+    closed: list[bool] = []
 
     def emit(event: object) -> None:
         events.append(event)
@@ -283,6 +506,7 @@ def test_cancellation_after_preview_persists_preview_only(
         result_store=store,
         event_sink=emit,
         operation=operation,
+        engine_factory=_recording_engine_factory(statements, closed),
         fetch_batch_size=1,
     )
 
@@ -292,6 +516,40 @@ def test_cancellation_after_preview_persists_preview_only(
     assert not any(isinstance(event, TUICompleteEvent) for event in events)
     assert runner_encoded_rows == [(0,), (1,)]
     assert store_encoded_rows == []
+    assert closed == [True]
+
+
+def test_cancelled_preview_only_carries_close_cleanup_note(tmp_path: Path) -> None:
+    events: list[object] = []
+    operation = OperationContext(OperationToken())
+    stream = _StaticStream(
+        [
+            ResultBatch(rows=((0,),), exhausted=False),
+            ResultBatch(rows=((1,),), exhausted=False),
+        ],
+        close_error=RuntimeError("private close detail"),
+    )
+
+    def emit(event: object) -> None:
+        events.append(event)
+        if isinstance(event, TUIPreviewReadyEvent):
+            operation.request_cancel()
+
+    run_tui_request(
+        _request(
+            "SELECT range AS value FROM range(10)",
+            policy=PreviewPolicy(row_limit=1, payload_limit_bytes=1_024),
+        ),
+        result_store=TUIResultStore(temp_root=tmp_path),
+        event_sink=emit,
+        operation=operation,
+        engine_factory=lambda **_kwargs: _StaticEngine(stream),  # type: ignore[arg-type]
+        fetch_batch_size=1,
+    )
+
+    preview_only = next(event for event in events if isinstance(event, TUIPreviewOnlyEvent))
+    assert preview_only.reason == "user_cancelled"
+    assert preview_only.cleanup_notes == (CURSOR_CLEANUP_UNCERTAINTY_NOTE,)
 
 
 @pytest.mark.parametrize(
@@ -421,6 +679,42 @@ def test_preview_only_callback_failure_removes_rejected_snapshot(
         store.load_preview(rejected.stored.handle, _DEFAULT_TEST_POLICY)
 
 
+def test_preview_event_delivery_failure_preserves_primary_when_rollback_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SinkFailure(RuntimeError):
+        pass
+
+    store = TUIResultStore(temp_root=tmp_path)
+    real_rollback = TUIResultWriter.rollback
+
+    def failing_rollback(writer: TUIResultWriter) -> tuple[str, ...]:
+        real_rollback(writer)
+        raise RuntimeError("private rollback detail")
+
+    monkeypatch.setattr(TUIResultWriter, "rollback", failing_rollback)
+
+    def emit(event: object) -> None:
+        if isinstance(event, TUIPreviewReadyEvent):
+            raise SinkFailure("preview delivery failed")
+
+    with pytest.raises(SinkFailure, match="preview delivery failed") as captured:
+        run_tui_request(
+            _request(
+                "SELECT range AS value FROM range(10)",
+                policy=PreviewPolicy(row_limit=1, payload_limit_bytes=1_024),
+            ),
+            result_store=store,
+            event_sink=emit,
+            operation=OperationContext(OperationToken()),
+            fetch_batch_size=1,
+        )
+
+    notes = "\n".join(getattr(captured.value, "__notes__", ()))
+    assert "incomplete preserved result could not be fully removed" in notes
+
+
 def test_pre_cancelled_request_emits_cancelled_before_preview_without_workspace(
     tmp_path: Path,
 ) -> None:
@@ -438,6 +732,97 @@ def test_pre_cancelled_request_emits_cancelled_before_preview_without_workspace(
 
     assert [type(event) for event in events] == [TUICancelledBeforePreviewEvent]
     assert store.workspace_path is None
+
+
+def test_factory_construction_failure_emits_failed_before_preview(tmp_path: Path) -> None:
+    events: list[object] = []
+
+    def fail_factory(*, operation: OperationContext) -> CSVQLEngine:
+        del operation
+        raise CSVQLError("Factory failed.", suggestion="Retry after reinitializing.")
+
+    run_tui_request(
+        _request("SELECT 1"),
+        result_store=TUIResultStore(temp_root=tmp_path),
+        event_sink=events.append,
+        operation=OperationContext(OperationToken()),
+        engine_factory=fail_factory,
+    )
+
+    failed = events[0]
+    assert isinstance(failed, TUIFailedBeforePreviewEvent)
+    assert failed.error_message == "Factory failed."
+    assert failed.suggestion == "Retry after reinitializing."
+
+
+def test_prepare_cancellation_preserves_cancelled_terminal_cleanup_notes(tmp_path: Path) -> None:
+    events: list[object] = []
+    operation = OperationContext(OperationToken())
+    operation.request_cancel()
+
+    class PrepareCancelledEngine:
+        def __enter__(self) -> PrepareCancelledEngine:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            _tb: object,
+        ) -> None:
+            if exc is not None:
+                exc.add_note(_BINDING_CLEANUP_NOTE)
+
+        def prepare_sources(self, sources: object) -> None:
+            assert sources == ()
+            operation.checkpoint()
+
+    run_tui_request(
+        _request("SELECT 1"),
+        result_store=TUIResultStore(temp_root=tmp_path),
+        event_sink=events.append,
+        operation=operation,
+        engine_factory=lambda **_kwargs: PrepareCancelledEngine(),  # type: ignore[arg-type]
+    )
+
+    cancelled = events[0]
+    assert isinstance(cancelled, TUICancelledBeforePreviewEvent)
+    assert cancelled.cleanup_notes == (_BINDING_CLEANUP_NOTE,)
+
+
+def test_prepare_failure_preserves_failed_terminal_cleanup_notes(tmp_path: Path) -> None:
+    events: list[object] = []
+
+    class PrepareFailureEngine:
+        def __enter__(self) -> PrepareFailureEngine:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            _tb: object,
+        ) -> None:
+            if exc is not None:
+                exc.add_note(_CONNECTION_CLEANUP_NOTE)
+
+        def prepare_sources(self, sources: object) -> None:
+            assert sources == ()
+            raise CSVQLError("Prepare failed.", suggestion="Fix the source.")
+
+    run_tui_request(
+        _request("SELECT 1"),
+        result_store=TUIResultStore(temp_root=tmp_path),
+        event_sink=events.append,
+        operation=OperationContext(OperationToken()),
+        engine_factory=lambda **_kwargs: PrepareFailureEngine(),  # type: ignore[arg-type]
+    )
+
+    failed = events[0]
+    assert isinstance(failed, TUIFailedBeforePreviewEvent)
+    assert failed.error_message == "Prepare failed."
+    assert failed.suggestion == "Fix the source."
+    assert failed.cleanup_notes == (_CONNECTION_CLEANUP_NOTE,)
 
 
 def test_run_buffer_is_sequential_in_one_session_and_stops_on_sql_failure(
@@ -481,6 +866,8 @@ def test_failure_after_preview_rolls_back_and_persists_preview_only(
 ) -> None:
     events: list[object] = []
     store = TUIResultStore(temp_root=tmp_path)
+    statements: list[str] = []
+    closed: list[bool] = []
     real_append = TUIResultWriter.append_payload
     complete_payload_calls = 0
 
@@ -512,6 +899,7 @@ def test_failure_after_preview_rolls_back_and_persists_preview_only(
         result_store=store,
         event_sink=events.append,
         operation=OperationContext(OperationToken()),
+        engine_factory=_recording_engine_factory(statements, closed),
         fetch_batch_size=1,
     )
 
@@ -521,6 +909,171 @@ def test_failure_after_preview_rolls_back_and_persists_preview_only(
     assert preview_only.stored.kind == "preview_only"
     assert preview_only.preview.rows == ((0,),)
     assert not any(isinstance(event, TUICompleteEvent) for event in events)
+    assert closed == [True]
+
+
+def test_preservation_failure_carries_real_rollback_cleanup_note(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[object] = []
+    store = TUIResultStore(temp_root=tmp_path)
+    real_append = TUIResultWriter.append_payload
+    complete_payload_calls = 0
+    real_remove_staging_file = TUIResultStore._remove_staging_file
+
+    def fail_third_complete_payload(
+        writer: TUIResultWriter,
+        payload: bytes,
+    ) -> None:
+        nonlocal complete_payload_calls
+        if writer._kind == "complete":
+            complete_payload_calls += 1
+            if complete_payload_calls == 3:
+                raise TUIResultStorageError(
+                    "Sanitized preservation failure.",
+                    kind="io",
+                )
+        real_append(writer, payload)
+
+    def fail_staging_removal(store_: TUIResultStore, path: Path) -> bool:
+        return False if path.name.endswith(".tmp") else real_remove_staging_file(store_, path)
+
+    monkeypatch.setattr(TUIResultWriter, "append_payload", fail_third_complete_payload)
+    monkeypatch.setattr(TUIResultStore, "_remove_staging_file", fail_staging_removal)
+
+    run_tui_request(
+        _request(
+            "SELECT range AS value FROM range(10)",
+            policy=PreviewPolicy(row_limit=1, payload_limit_bytes=1_024),
+        ),
+        result_store=store,
+        event_sink=events.append,
+        operation=OperationContext(OperationToken()),
+        fetch_batch_size=1,
+    )
+
+    preview_only = next(event for event in events if isinstance(event, TUIPreviewOnlyEvent))
+    assert preview_only.reason == "preservation_failed"
+    assert preview_only.cleanup_notes == (
+        "Cleanup uncertainty: the incomplete preserved result could not be fully removed.",
+    )
+
+
+def test_engine_exit_cleanup_notes_attach_to_preserved_terminal_event(tmp_path: Path) -> None:
+    events: list[object] = []
+    columns = ("value",)
+    store = TUIResultStore(
+        temp_root=tmp_path,
+        capacity_bytes=_header_bytes(columns) + _FOOTER_BYTES - 1,
+    )
+    stream = _StaticStream(
+        [
+            ResultBatch(rows=((0,),), exhausted=False),
+            ResultBatch(rows=((1,),), exhausted=False),
+        ]
+    )
+
+    run_tui_request(
+        _request(
+            "SELECT range AS value FROM range(10)",
+            policy=PreviewPolicy(row_limit=1, payload_limit_bytes=1_024),
+        ),
+        result_store=store,
+        event_sink=events.append,
+        operation=OperationContext(OperationToken()),
+        engine_factory=lambda **_kwargs: _StaticEngine(  # type: ignore[arg-type]
+            stream,
+            exit_notes=(_BINDING_CLEANUP_NOTE, _CONNECTION_CLEANUP_NOTE, "private detail"),
+        ),
+        fetch_batch_size=1,
+    )
+
+    preview_only = next(event for event in events if isinstance(event, TUIPreviewOnlyEvent))
+    assert preview_only.reason == "session_spool_limit"
+    assert preview_only.cleanup_notes == (_BINDING_CLEANUP_NOTE, _CONNECTION_CLEANUP_NOTE)
+
+
+def test_preview_persist_capacity_none_keeps_primary_reason_without_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[object] = []
+    operation = OperationContext(OperationToken())
+    store = TUIResultStore(temp_root=tmp_path)
+
+    def persist_none(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        return None
+
+    monkeypatch.setattr(store, "persist_preview", persist_none)
+
+    def emit(event: object) -> None:
+        events.append(event)
+        if isinstance(event, TUIPreviewReadyEvent):
+            operation.request_cancel()
+
+    run_tui_request(
+        _request(
+            "SELECT range AS value FROM range(10)",
+            policy=PreviewPolicy(row_limit=1, payload_limit_bytes=1_024),
+        ),
+        result_store=store,
+        event_sink=emit,
+        operation=operation,
+        fetch_batch_size=1,
+    )
+
+    preview_only = next(event for event in events if isinstance(event, TUIPreviewOnlyEvent))
+    assert preview_only.reason == "user_cancelled"
+    assert preview_only.stored is None
+    assert preview_only.primary_error_message is None
+
+
+def test_preview_persist_failure_keeps_reason_and_reports_primary_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[object] = []
+    operation = OperationContext(OperationToken())
+    store = TUIResultStore(temp_root=tmp_path)
+    persist_error = TUIResultStorageError(
+        "Unable to serialize the query result for temporary storage.",
+        kind="serialization",
+    )
+    persist_error.add_note(_CONNECTION_CLEANUP_NOTE)
+    persist_error.add_note("private detail")
+
+    def raise_persist_error(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise persist_error
+
+    monkeypatch.setattr(store, "persist_preview", raise_persist_error)
+
+    def emit(event: object) -> None:
+        events.append(event)
+        if isinstance(event, TUIPreviewReadyEvent):
+            operation.request_cancel()
+
+    run_tui_request(
+        _request(
+            "SELECT range AS value FROM range(10)",
+            policy=PreviewPolicy(row_limit=1, payload_limit_bytes=1_024),
+        ),
+        result_store=store,
+        event_sink=emit,
+        operation=operation,
+        fetch_batch_size=1,
+    )
+
+    preview_only = next(event for event in events if isinstance(event, TUIPreviewOnlyEvent))
+    assert preview_only.reason == "user_cancelled"
+    assert preview_only.stored is None
+    assert preview_only.primary_error_message is None
+    assert preview_only.persistence_error_message == (
+        "Unable to serialize the query result for temporary storage."
+    )
+    assert preview_only.cleanup_notes == (_CONNECTION_CLEANUP_NOTE,)
 
 
 def test_no_column_stream_closes_without_creating_result_artifact(

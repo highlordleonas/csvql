@@ -913,6 +913,35 @@ class TUISessionState:
             self.export_intent = None
         return None if record is None else record.handle
 
+    def bind_preview_only_result_handle(
+        self,
+        sequence: int,
+        *,
+        handle: TUIResultHandle,
+    ) -> TUIResultRecord:
+        """Attach a durable handle to the active preview-only result without rerunning SQL."""
+
+        record = self._active_result_record if self.active_result.sequence == sequence else None
+        if (
+            record is None
+            or record.state != "preview_only"
+            or record.handle is not None
+            or record.reason is None
+        ):
+            raise RuntimeError("only the active handleless preview-only result can be rebound")
+        updated = TUIResultRecord(
+            handle=handle,
+            state="preview_only",
+            reason=record.reason,
+            columns=record.columns,
+            preview_row_count=record.preview_row_count,
+            full_row_count=None,
+            elapsed_ms=record.elapsed_ms,
+        )
+        self._active_result_record = updated
+        self._query_result_records[sequence] = updated
+        return updated
+
     def attach_export_intent(self, intent: TUIExportIntent) -> TUIExportIntentReplacement | None:
         self._require_active_preserving_result(intent.result_sequence)
         if self.export_intent is None:

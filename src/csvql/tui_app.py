@@ -16,7 +16,7 @@ from textual.widgets import DataTable, Footer, Input, Static, TextArea
 from textual.widgets._footer import FooterKey
 from textual.worker import Worker, WorkerState
 
-from csvql.bounded_result import PreviewPolicy
+from csvql.bounded_result import BoundedQueryResult, PreviewPolicy
 from csvql.exceptions import CSVQLError
 from csvql.export import ExportFormat
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
@@ -283,6 +283,18 @@ class _PendingExportPrompt:
     expected_existing_intent: TUIExportIntent | None
 
 
+@dataclass(frozen=True, slots=True)
+class _TransientPreviewOnlyResult:
+    sequence: int
+    preview: BoundedQueryResult
+    reason: str
+    primary_error_message: str | None = None
+    primary_suggestion: str | None = None
+    persistence_error_message: str | None = None
+    persistence_suggestion: str | None = None
+    cleanup_notes: tuple[str, ...] = ()
+
+
 class _SQLAssistPickerScreen(ModalScreen[str | None]):
     """Picker screen for SQL templates and completion items."""
 
@@ -502,6 +514,7 @@ class CSVQLMenuApp(App[None]):
         self._query_terminal_event_sequence: int | None = None
         self._attached_export_intent_in_flight: TUIExportIntent | None = None
         self._pending_export_prompt: _PendingExportPrompt | None = None
+        self._transient_preview_only_result: _TransientPreviewOnlyResult | None = None
         self._cancelled_operation_names: set[str] = set()
         self._sql_assist_choices: dict[str, SQLTemplateOption | SQLCompletionItem] = {}
         self._preview_policy = preview_policy or PreviewPolicy()
@@ -762,6 +775,14 @@ class CSVQLMenuApp(App[None]):
         self._refresh_history_table()
         self._refresh_results_display()
         self._refresh_pane_context()
+        if expected_handle is None:
+            self._clear_transient_preview_only(sequence)
+            self._set_status(f"Deleted preserved result {sequence}.")
+            if self._continue_after_query_worker_terminalized():
+                return
+            return
+        if self._offer_paused_preview_retry(sequence):
+            return
         self._set_status(f"Deleted preserved result {sequence}.")
 
     def action_inspect_source(self) -> None:
@@ -770,6 +791,8 @@ class CSVQLMenuApp(App[None]):
             return
         if self.state.query_run.is_running:
             self._set_status("Query already running. Wait for the current query to finish.")
+            return
+        if self._reject_result_replacing_action_for_transient_preview():
             return
 
         source = self.state.selected_source()
@@ -791,6 +814,8 @@ class CSVQLMenuApp(App[None]):
             return
         if self.state.query_run.is_running:
             self._set_status("Query already running. Wait for the current query to finish.")
+            return
+        if self._reject_result_replacing_action_for_transient_preview():
             return
 
         source = self.state.selected_source()
@@ -816,6 +841,8 @@ class CSVQLMenuApp(App[None]):
         if self.state.query_run.is_running:
             self._set_status("Query already running. Wait for the current query to finish.")
             return
+        if self._reject_result_replacing_action_for_transient_preview():
+            return
 
         source = self.state.selected_source()
         if source is None:
@@ -840,7 +867,8 @@ class CSVQLMenuApp(App[None]):
         if self.state.query_run.is_running:
             self._set_status("Query already running. Wait for the current query to finish.")
             return
-
+        if self._reject_result_replacing_action_for_transient_preview():
+            return
         self.state.clear_last_result()
         source = self.state.selected_source()
         if source is None:
@@ -877,7 +905,7 @@ class CSVQLMenuApp(App[None]):
     def action_insert_source_alias(self) -> None:
         source = self.state.selected_source()
         if source is None:
-            self.state.clear_last_result()
+            self._clear_last_result_unless_transient_preview_active()
             self._show_error(CSVQLError("No source selected."))
             return
 
@@ -887,7 +915,7 @@ class CSVQLMenuApp(App[None]):
     def action_insert_starter_select(self) -> None:
         source = self.state.selected_source()
         if source is None:
-            self.state.clear_last_result()
+            self._clear_last_result_unless_transient_preview_active()
             self._show_error(CSVQLError("No source selected."))
             return
 
@@ -993,6 +1021,10 @@ class CSVQLMenuApp(App[None]):
 
     def _run_buffer_from_editor(self) -> None:
         self._run_editor_pending = False
+        paused_preview_message = self._active_transient_preview_pause_message()
+        if paused_preview_message is not None:
+            self._show_rejected_run(CSVQLError(paused_preview_message))
+            return
         sql_widget = self.query_one("#sql", TextArea)
         statements = all_sql_statements(sql_widget.text)
         if not statements:
@@ -1126,6 +1158,7 @@ class CSVQLMenuApp(App[None]):
         run_label: str | None = None,
         rerun_source_sequence: int | None = None,
     ) -> None:
+        self._transient_preview_only_result = None
         self._query_terminal_event_sequence = None
         self.state.start_query_request(request)
         if request.run_mode != "buffer":
@@ -1261,6 +1294,10 @@ class CSVQLMenuApp(App[None]):
         run_mode: TUIQueryRunMode,
         rerun_source_sequence: int | None = None,
     ) -> None:
+        paused_preview_message = self._active_transient_preview_pause_message()
+        if paused_preview_message is not None:
+            self._show_rejected_run(CSVQLError(paused_preview_message))
+            return
         if not sql:
             self._show_rejected_run(
                 CSVQLError(
@@ -1821,6 +1858,11 @@ class CSVQLMenuApp(App[None]):
             self._set_status(message)
             self._update_static_text("#results-message", message)
 
+        paused_preview = self._paused_preview_only_sequence()
+        if paused_preview is not None:
+            self._set_status(self._paused_preview_status_message(paused_preview))
+            return True
+
         return self._start_next_queued_request()
 
     def _start_attached_export(
@@ -2204,6 +2246,8 @@ class CSVQLMenuApp(App[None]):
         *,
         message: str,
     ) -> None:
+        if self._reject_result_replacing_action_for_transient_preview():
+            return
         self.state.clear_last_result()
         results_table = self.query_one("#results", DataTable)
         results_table.clear(columns=True)
@@ -2832,6 +2876,10 @@ class CSVQLMenuApp(App[None]):
         self._show_history_item_result(item)
 
     def _show_history_item_result(self, item: TUIQueryHistoryItem) -> None:
+        transient_sequence = self._active_transient_preview_only_sequence()
+        if transient_sequence is not None and item.sequence != transient_sequence:
+            self._set_status(self._paused_preview_status_message(transient_sequence))
+            return
         if item.status == "success":
             if not self.state.restore_query_result(item.sequence):
                 self._set_status(_FULL_RESULT_UNAVAILABLE_MESSAGE)
@@ -2900,6 +2948,10 @@ class CSVQLMenuApp(App[None]):
         return None
 
     def _show_buffer_result_at_tab(self, tab: TUIBufferResultTab) -> None:
+        if self._reject_result_replacing_action_for_transient_preview(
+            allowed_sequence=tab.sequence
+        ):
+            return
         if not self.state.select_buffer_result(tab.sequence):
             return
 
@@ -3125,7 +3177,17 @@ class CSVQLMenuApp(App[None]):
             )
             self._append_latest_history_row_preserving_selection()
             self._update_static_text("#run-status", "Finalizing query...")
-            self._set_status(_error_message(CSVQLError(message)), already_safe=True)
+            self._set_status(
+                _status_with_terminal_warnings(
+                    _error_message(CSVQLError(message)),
+                    primary_error_message=event.primary_error_message,
+                    primary_suggestion=event.primary_suggestion,
+                    persistence_error_message=event.persistence_error_message,
+                    persistence_suggestion=event.persistence_suggestion,
+                    cleanup_notes=event.cleanup_notes,
+                ),
+                already_safe=True,
+            )
             self.query_one("#sql", TextArea).focus()
             return
         view = None
@@ -3155,15 +3217,193 @@ class CSVQLMenuApp(App[None]):
             assert view is not None
             populate_result_table(self.query_one("#results", DataTable), view)
             self._refresh_results_display()
-            self._set_status(result_preview_message(view, record=record))
+            self._set_status(
+                _status_with_terminal_warnings(
+                    result_preview_message(view, record=record),
+                    primary_error_message=event.primary_error_message,
+                    primary_suggestion=event.primary_suggestion,
+                    persistence_error_message=event.persistence_error_message,
+                    persistence_suggestion=event.persistence_suggestion,
+                    cleanup_notes=event.cleanup_notes,
+                )
+            )
         else:
-            self._set_status(f"Query {event.sequence} finished with a retained preview only.")
+            self._set_status(
+                _status_with_terminal_warnings(
+                    f"Query {event.sequence} finished with a retained preview only.",
+                    primary_error_message=event.primary_error_message,
+                    primary_suggestion=event.primary_suggestion,
+                    persistence_error_message=event.persistence_error_message,
+                    persistence_suggestion=event.persistence_suggestion,
+                    cleanup_notes=event.cleanup_notes,
+                )
+            )
         if preserve_active_result:
             self._append_latest_history_row_preserving_selection()
         else:
             self._refresh_history_table()
+        if event.stored is None and not preserve_active_result:
+            self._transient_preview_only_result = _TransientPreviewOnlyResult(
+                sequence=event.sequence,
+                preview=event.preview,
+                reason=event.reason,
+                primary_error_message=event.primary_error_message,
+                primary_suggestion=event.primary_suggestion,
+                persistence_error_message=event.persistence_error_message,
+                persistence_suggestion=event.persistence_suggestion,
+                cleanup_notes=event.cleanup_notes,
+            )
+        else:
+            self._clear_transient_preview_only(event.sequence)
         self._update_static_text("#run-status", "Finalizing query...")
         self.query_one("#sql", TextArea).focus()
+
+    def _reject_result_replacing_action_for_transient_preview(
+        self,
+        *,
+        allowed_sequence: int | None = None,
+    ) -> bool:
+        sequence = self._active_transient_preview_only_sequence()
+        if sequence is None or sequence == allowed_sequence:
+            return False
+        self._set_status(self._paused_preview_status_message(sequence))
+        return True
+
+    def _clear_last_result_unless_transient_preview_active(self) -> None:
+        if self._active_transient_preview_only_sequence() is not None:
+            return
+        self.state.clear_last_result()
+
+    def _active_transient_preview_only_sequence(self) -> int | None:
+        sequence = self.state.active_result.sequence
+        record = self.state.active_query_result_record()
+        transient = self._transient_preview_only_result
+        if (
+            sequence is None
+            or record is None
+            or record.state != "preview_only"
+            or record.handle is not None
+            or transient is None
+            or transient.sequence != sequence
+        ):
+            return None
+        return sequence
+
+    def _active_transient_preview_pause_message(self) -> str | None:
+        sequence = self._active_transient_preview_only_sequence()
+        if sequence is None:
+            return None
+        return self._paused_preview_status_message(sequence)
+
+    def _paused_preview_only_sequence(self) -> int | None:
+        sequence = self._active_transient_preview_only_sequence()
+        if sequence is None or self.state.queued_run is None:
+            return None
+        return sequence
+
+    def _retry_paused_preview_persistence(self) -> bool:
+        sequence = self._active_transient_preview_only_sequence()
+        if sequence is None:
+            return False
+        record = self.state.active_query_result_record()
+        transient = self._transient_preview_only_result
+        preview = None if transient is None or transient.sequence != sequence else transient.preview
+        if record is None or record.reason is None or preview is None:
+            return False
+        try:
+            stored = self._result_store.persist_preview(
+                sequence=sequence,
+                preview=preview,
+                reason=record.reason,
+                elapsed_ms=preview.elapsed_ms,
+            )
+        except BaseException as exc:
+            self._record_transient_preview_persistence_failure(sequence, exc)
+            self._set_status(self._paused_preview_status_message(sequence))
+            return False
+        if stored is None:
+            self._set_status(self._paused_preview_status_message(sequence))
+            return False
+        self._clear_transient_preview_only(sequence)
+        updated_record = self.state.bind_preview_only_result_handle(sequence, handle=stored.handle)
+        self._refresh_history_table()
+        self._refresh_results_display()
+        self._refresh_pane_context()
+        if not self._continue_after_query_worker_terminalized():
+            self._set_status(result_preview_message(self.state.result_view, record=updated_record))
+        return True
+
+    def _offer_paused_preview_retry(self, deleted_sequence: int) -> bool:
+        paused_sequence = self._active_transient_preview_only_sequence()
+        if paused_sequence is None or paused_sequence == deleted_sequence:
+            return False
+        self.push_screen(
+            _ConfirmationScreen(
+                f"Retry preview preservation for query {paused_sequence} now that result "
+                f"{deleted_sequence} was deleted? Press y to retry or n to keep "
+                "the preview in memory."
+            ),
+            callback=lambda confirmed: self._handle_paused_preview_retry_confirmation(
+                paused_sequence,
+                confirmed,
+            ),
+        )
+        return True
+
+    def _handle_paused_preview_retry_confirmation(
+        self,
+        sequence: int,
+        confirmed: bool | None,
+    ) -> None:
+        if self._active_transient_preview_only_sequence() != sequence:
+            self._show_error(CSVQLError("The paused preview is no longer available."))
+            return
+        if not confirmed:
+            self._set_status(self._paused_preview_status_message(sequence))
+            return
+        if not self._retry_paused_preview_persistence():
+            self._set_status(self._paused_preview_status_message(sequence))
+
+    def _clear_transient_preview_only(self, sequence: int) -> None:
+        transient = self._transient_preview_only_result
+        if transient is not None and transient.sequence == sequence:
+            self._transient_preview_only_result = None
+
+    def _paused_preview_status_message(self, sequence: int) -> str:
+        transient = self._transient_preview_only_result
+        if transient is None or transient.sequence != sequence:
+            return _non_durable_preview_pause_message(sequence, reason="session_spool_limit")
+        return _status_with_terminal_warnings(
+            _non_durable_preview_pause_message(sequence, reason=transient.reason),
+            primary_error_message=transient.primary_error_message,
+            primary_suggestion=transient.primary_suggestion,
+            persistence_error_message=transient.persistence_error_message,
+            persistence_suggestion=transient.persistence_suggestion,
+            cleanup_notes=transient.cleanup_notes,
+        )
+
+    def _record_transient_preview_persistence_failure(
+        self,
+        sequence: int,
+        error: BaseException,
+    ) -> None:
+        transient = self._transient_preview_only_result
+        if transient is None or transient.sequence != sequence:
+            return
+        message, suggestion = _public_persistence_failure(error)
+        self._transient_preview_only_result = _TransientPreviewOnlyResult(
+            sequence=transient.sequence,
+            preview=transient.preview,
+            reason=transient.reason,
+            primary_error_message=transient.primary_error_message,
+            primary_suggestion=transient.primary_suggestion,
+            persistence_error_message=message,
+            persistence_suggestion=suggestion,
+            cleanup_notes=_merge_cleanup_notes(
+                transient.cleanup_notes,
+                _sanitize_cleanup_notes(getattr(error, "__notes__", ())),
+            ),
+        )
 
     def _handle_no_result_event(self, event: TUINoResultEvent) -> None:
         if not self.state.is_current_query_sequence(event.sequence):
@@ -3229,7 +3469,16 @@ class CSVQLMenuApp(App[None]):
             self._refresh_results_title()
             self._refresh_result_tabs()
         message = f"Query {event.sequence} was cancelled before a preview was retained."
-        self._set_status(message)
+        self._set_status(
+            _status_with_terminal_warnings(
+                message,
+                primary_error_message=None,
+                primary_suggestion=None,
+                persistence_error_message=None,
+                persistence_suggestion=None,
+                cleanup_notes=event.cleanup_notes,
+            )
+        )
         if not preserve_active_result:
             self._update_static_text("#results-message", message)
         self._update_static_text("#run-status", "Finalizing query...")
@@ -3267,11 +3516,28 @@ class CSVQLMenuApp(App[None]):
         self._update_static_text("#run-status", "Finalizing query...")
         if preserve_active_result:
             self._set_status(
-                _error_message(CSVQLError(event.error_message, suggestion=event.suggestion)),
+                _status_with_cleanup_notes(
+                    _error_message(CSVQLError(event.error_message, suggestion=event.suggestion)),
+                    event.cleanup_notes,
+                ),
                 already_safe=True,
             )
         else:
             self._show_error(CSVQLError(event.error_message, suggestion=event.suggestion))
+            if event.cleanup_notes:
+                self._set_status(
+                    _status_with_terminal_warnings(
+                        _error_message(
+                            CSVQLError(event.error_message, suggestion=event.suggestion)
+                        ),
+                        primary_error_message=None,
+                        primary_suggestion=None,
+                        persistence_error_message=None,
+                        persistence_suggestion=None,
+                        cleanup_notes=event.cleanup_notes,
+                    ),
+                    already_safe=True,
+                )
         self.query_one("#sql", TextArea).focus()
 
     def _handle_query_worker_failure(
@@ -3725,6 +3991,93 @@ def _with_previous_result_suggestion(error: CSVQLError) -> CSVQLError:
     else:
         suggestion = _PREVIOUS_RESULT_AVAILABLE
     return CSVQLError(error.message, suggestion=suggestion)
+
+
+def _non_durable_preview_pause_message(sequence: int, *, reason: str) -> str:
+    if reason == "session_spool_limit":
+        detail = "session result storage is full"
+    elif reason == "user_cancelled":
+        detail = "preview preservation did not complete after cancellation"
+    else:
+        detail = "preview preservation did not complete after a preservation failure"
+    return (
+        f"Query {sequence} kept only its active preview because {detail}. "
+        "Remove older stored results and retry preview preservation, or delete this preview to "
+        "continue the queued run."
+    )
+
+
+def _status_with_cleanup_notes(message: str, cleanup_notes: tuple[str, ...]) -> str:
+    if not cleanup_notes:
+        return message
+    return f"{message} {' '.join(cleanup_notes)}"
+
+
+def _status_with_terminal_warnings(
+    message: str,
+    *,
+    primary_error_message: str | None,
+    primary_suggestion: str | None,
+    persistence_error_message: str | None,
+    persistence_suggestion: str | None,
+    cleanup_notes: tuple[str, ...],
+) -> str:
+    warning_parts: list[str] = []
+    if primary_error_message is not None:
+        warning_parts.append(
+            _error_message(
+                CSVQLError(primary_error_message, suggestion=primary_suggestion),
+            )
+        )
+    if persistence_error_message is not None:
+        warning_parts.append(
+            _error_message(
+                CSVQLError(
+                    persistence_error_message,
+                    suggestion=persistence_suggestion,
+                ),
+            )
+        )
+    warning_parts.extend(cleanup_notes)
+    return _status_with_cleanup_notes(message, tuple(warning_parts))
+
+
+def _public_persistence_failure(error: BaseException) -> tuple[str, str | None]:
+    if isinstance(error, CSVQLError):
+        return (error.message, error.suggestion)
+    if isinstance(error, TUIResultStorageError):
+        return (error.user_message, None)
+    return (
+        "Unable to serialize the query result for temporary storage.",
+        None,
+    )
+
+
+def _sanitize_cleanup_notes(notes: object) -> tuple[str, ...]:
+    sanitized_allowlist = frozenset(
+        {
+            "Cleanup uncertainty: the active result cursor could not be closed.",
+            "Cleanup uncertainty: the incomplete preserved result could not be fully removed.",
+            "Cleanup uncertainty: one or more source bindings could not be closed.",
+            "Cleanup uncertainty: the engine connection could not be closed.",
+        }
+    )
+    sanitized: list[str] = []
+    for note in notes if isinstance(notes, (tuple, list)) else ():
+        if isinstance(note, str) and note in sanitized_allowlist and note not in sanitized:
+            sanitized.append(note)
+    return tuple(sanitized)
+
+
+def _merge_cleanup_notes(
+    existing: tuple[str, ...],
+    incoming: tuple[str, ...],
+) -> tuple[str, ...]:
+    merged = list(existing)
+    for note in incoming:
+        if note not in merged:
+            merged.append(note)
+    return tuple(merged)
 
 
 def _one_line_sql(sql: str) -> str:
