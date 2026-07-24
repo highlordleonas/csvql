@@ -1854,6 +1854,142 @@ def test_displaced_preview_only_without_handle_retains_transient_owner_and_pause
     assert preserved_sequence == 1
 
 
+def test_unexpected_worker_failure_after_preview_retains_owner_and_pauses_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    store = _record_stored_result(
+        state,
+        QueryResult(columns=("prior",), rows=(("prior-row",),), elapsed_ms=1.0),
+        sequence=1,
+        sql="SELECT prior",
+    )
+    release = threading.Event()
+    queued_started = threading.Event()
+    seen_requests: list[TUIRunRequest] = []
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        seen_requests.append(request)
+        if len(seen_requests) > 1:
+            queued_started.set()
+            _emit_complete_result(
+                request=request,
+                result_store=result_store,
+                event_sink=event_sink,
+                result=QueryResult(
+                    columns=("queued",),
+                    rows=(("queued-row",),),
+                    elapsed_ms=1.0,
+                ),
+            )
+            return
+        preview = BoundedQueryResult(
+            columns=("value",),
+            rows=(("preview-row",),),
+            elapsed_ms=1.0,
+            preview_payload_bytes=len(encode_row_payload(("preview-row",))),
+            has_more_rows=True,
+            truncation_reason="row_limit",
+        )
+        event_sink(TUIPreviewReadyEvent(sequence=request.sequences[0], preview=preview))
+        assert release.wait(5.0)
+        raise RuntimeError("private worker failure after preview")
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+
+    async def _inner() -> tuple[
+        str,
+        str,
+        int | None,
+        tuple[tuple[object, ...], ...] | None,
+        str | None,
+        bool,
+        bool,
+        bool,
+        tuple[tuple[object, ...], ...] | None,
+        bool,
+    ]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text("SELECT preview_then_fail")
+            await pilot.press("f4")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                active = app.state.active_query_result_record()
+                if active is not None and active.state == "preserving":
+                    break
+            app.query_one("#sql", TextArea).load_text("SELECT queued")
+            app.action_run_selected_or_current_query()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if app.state.queued_run is not None:
+                    break
+            assert app.state.queued_run is not None
+            release.set()
+            await _settled_query_idle(pilot, app)
+            await pilot.pause()
+            transient = app._transient_preview_only_result
+            active = app.state.active_query_result_record()
+            paused_status = app.query_one("#status", Static).content
+            paused_message = app.query_one("#results-message", Static).content
+            queued_started_early = queued_started.is_set()
+            queued_remains = app.state.queued_run is not None
+            retry_succeeded = app._retry_paused_preview_persistence()
+            await _settled_query_idle(pilot, app)
+            preview_record = app.state.query_result_record(2)
+            restored_rows = (
+                None
+                if preview_record is None or preview_record.handle is None
+                else store.load_preview(preview_record.handle, PreviewPolicy()).rows
+            )
+            return (
+                paused_status,
+                paused_message,
+                None if transient is None else transient.sequence,
+                None if transient is None else transient.preview.rows,
+                None if active is None else active.reason,
+                queued_started_early,
+                queued_remains,
+                retry_succeeded,
+                restored_rows,
+                queued_started.is_set(),
+            )
+
+    (
+        status,
+        results_message,
+        transient_sequence,
+        transient_rows,
+        active_reason,
+        queued_started_early,
+        queued_remains,
+        retry_succeeded,
+        restored_rows,
+        queued_started_after_retry,
+    ) = asyncio.run(_inner())
+
+    assert "preview preservation did not complete after a preservation failure" in status
+    assert "Unable to complete the query" in status
+    assert "Showing 1 retained preview row(s)." in results_message
+    assert transient_sequence == 2
+    assert transient_rows == (("preview-row",),)
+    assert active_reason == "preservation_failed"
+    assert queued_started_early is False
+    assert queued_remains is True
+    assert retry_succeeded is True
+    assert restored_rows == (("preview-row",),)
+    assert queued_started_after_retry is True
+
+
 def test_source_columns_empty_outcome_during_query_preserves_visible_preview(
     tmp_path: Path,
 ) -> None:

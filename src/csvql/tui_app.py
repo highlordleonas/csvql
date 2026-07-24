@@ -179,6 +179,14 @@ _UNEXPECTED_QUERY_WORKER_FAILURE_MESSAGE = "Unable to complete the query. Try ru
 _UNEXPECTED_OPERATION_WORKER_FAILURE_MESSAGE = "Unable to complete this action. Try again."
 
 
+class _QueryWorkerFailure(RuntimeError):
+    """Carry the last exact bounded preview across an unexpected worker failure."""
+
+    def __init__(self, preview_event: TUIPreviewReadyEvent | None) -> None:
+        super().__init__(_UNEXPECTED_QUERY_WORKER_FAILURE_MESSAGE)
+        self.preview_event = preview_event
+
+
 class _PromptInputScreen(ModalScreen[str | None]):
     """Generic modal prompt for one-line TUI input."""
 
@@ -1315,18 +1323,53 @@ class CSVQLMenuApp(App[None]):
         self._active_query_worker = self.run_worker(
             self._track_thread_callable(
                 operation,
-                lambda: run_tui_request(
-                    request,
-                    result_store=self._result_store,
-                    event_sink=self._schedule_query_event,
-                    operation=operation,
-                ),
+                lambda: self._run_query_worker(request=request, operation=operation),
             ),
             name=f"query-{request.sequences[0]}",
             group="query",
             thread=True,
             exit_on_error=False,
         )
+
+    def _run_query_worker(
+        self,
+        *,
+        request: TUIRunRequest,
+        operation: OperationContext,
+    ) -> None:
+        preview_event: TUIPreviewReadyEvent | None = None
+
+        def forward_event(event: TUIQueryEvent) -> None:
+            nonlocal preview_event
+            terminalizes_preview = (
+                preview_event is not None
+                and event.sequence == preview_event.sequence
+                and isinstance(
+                    event,
+                    (
+                        TUICompleteEvent,
+                        TUIPreviewOnlyEvent,
+                        TUINoResultEvent,
+                        TUICancelledBeforePreviewEvent,
+                        TUIFailedBeforePreviewEvent,
+                    ),
+                )
+            )
+            self._schedule_query_event(event)
+            if isinstance(event, TUIPreviewReadyEvent):
+                preview_event = event
+            elif terminalizes_preview:
+                preview_event = None
+
+        try:
+            run_tui_request(
+                request,
+                result_store=self._result_store,
+                event_sink=forward_event,
+                operation=operation,
+            )
+        except BaseException as exc:
+            raise _QueryWorkerFailure(preview_event) from exc
 
     def _schedule_query_event(self, event: TUIQueryEvent) -> None:
         self.call_from_thread(self._handle_query_event, event)
@@ -3630,11 +3673,17 @@ class CSVQLMenuApp(App[None]):
         worker: Worker[object],
         error: BaseException | None,
     ) -> None:
-        del error
         sequence = self._failure_sequence_from_worker(worker)
         if sequence is None or not self.state.is_current_query_sequence(sequence):
             return
 
+        preview_event = (
+            error.preview_event
+            if isinstance(error, _QueryWorkerFailure)
+            and error.preview_event is not None
+            and error.preview_event.sequence == sequence
+            else None
+        )
         sql = self._active_query_sql.pop(sequence, "<unknown>")
         run_mode = self._active_query_run_modes.pop(sequence, "current")
         self._clear_remaining_request_metadata(excluding=(sequence,))
@@ -3647,7 +3696,14 @@ class CSVQLMenuApp(App[None]):
         preserve_active_result = self._preserve_unrelated_active_result(sequence)
         self._active_query_records.pop(sequence, None)
 
-        if active_record is not None and active_record.state == "preserving":
+        if (
+            active_record is not None
+            and active_record.state == "preserving"
+            and preview_event is not None
+            and preview_event.preview.columns == active_record.columns
+            and len(preview_event.preview.rows) == active_record.preview_row_count
+            and self.state.result_view.source_result_sequence == sequence
+        ):
             preview_only_record = TUIResultRecord(
                 handle=None,
                 state="preview_only",
@@ -3666,11 +3722,24 @@ class CSVQLMenuApp(App[None]):
                 buffer_result_index=self._buffer_result_index(sequence),
                 complete_run=True,
             )
+            self._transient_preview_only_result = _TransientPreviewOnlyResult(
+                sequence=sequence,
+                preview=preview_event.preview,
+                reason="preservation_failed",
+                primary_error_message=error_message,
+            )
             self._refresh_history_table_selecting(sequence)
             self._refresh_results_display()
             self._update_static_text("#run-status", "Ready.")
             self._set_status(
-                result_preview_message(self.state.result_view, record=preview_only_record)
+                _status_with_terminal_warnings(
+                    result_preview_message(self.state.result_view, record=preview_only_record),
+                    primary_error_message=error_message,
+                    primary_suggestion=None,
+                    persistence_error_message=None,
+                    persistence_suggestion=None,
+                    cleanup_notes=(),
+                )
             )
             self.query_one("#sql", TextArea).focus()
             return
