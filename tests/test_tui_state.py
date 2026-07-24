@@ -467,6 +467,20 @@ def test_non_preview_terminalization_rejects_an_active_preview() -> None:
         state.record_query_failed(1, "SELECT 1", "failed")
 
 
+def test_active_query_result_record_returns_the_active_memory_record() -> None:
+    state = TUISessionState()
+    state.set_active_result_record(1, _record("executing"))
+    state.set_active_result_record(
+        1,
+        _record("preserving", columns=("value",), preview_row_count=1),
+        result_view=_view(1, (("preview",),)),
+    )
+
+    assert state.query_result_record(1) is None
+    assert state.active_query_result_record() is state.active_result_record
+    assert state.active_query_result_record().state == "preserving"
+
+
 def test_restore_query_result_clears_stale_view_and_sets_matching_record() -> None:
     state = TUISessionState()
     state.record_query_result(
@@ -563,6 +577,8 @@ def test_buffer_result_tabs_reset_stale_active_result_when_cleared_or_replaced()
     state.set_buffer_result_tabs((TUIBufferResultTab(sequence=3, index=1, label="query 3"),))
 
     assert state.active_result == TUIActiveResultState()
+    assert state.active_result_record is None
+    assert state.result_view == TUIResultViewState()
 
 
 def test_storage_error_preserves_active_preview_and_uses_error_history_status() -> None:
@@ -575,7 +591,8 @@ def test_storage_error_preserves_active_preview_and_uses_error_history_status() 
         result_view=view,
         elapsed_ms=1.0,
     )
-    sequence = state.begin_query_run("SELECT * FROM large")
+    sequence = 2
+    state.start_query_request(_run_request(sequence))
 
     state.record_query_storage_error(
         sequence,
@@ -588,9 +605,7 @@ def test_storage_error_preserves_active_preview_and_uses_error_history_status() 
     assert state.query_history[-1].status == "error"
 
 
-def test_mark_results_unavailable_drops_durable_record_and_keeps_only_active_memory_preview() -> (
-    None
-):
+def test_mark_results_unavailable_drops_durable_record_without_inventing_preview_state() -> None:
     state = TUISessionState()
     view = _view(1, (("1",),))
     state.record_query_success(
@@ -604,9 +619,41 @@ def test_mark_results_unavailable_drops_durable_record_and_keeps_only_active_mem
     state.mark_results_unavailable((1,), "The full result is no longer available.")
 
     assert state.query_result_record(1) is None
+    assert state.active_result == TUIActiveResultState()
+    assert state.active_result_record is None
+    assert state.result_view == TUIResultViewState()
+
+
+def test_mark_results_unavailable_does_not_drop_an_existing_memory_only_preview() -> None:
+    state = TUISessionState()
+    view = _view(1, (("1",),))
+    state.set_active_result_record(1, _record("executing"))
+    state.set_active_result_record(
+        1,
+        _record(
+            "preserving",
+            columns=("value",),
+            preview_row_count=1,
+        ),
+        result_view=view,
+    )
+    state.set_active_result_record(
+        1,
+        _record(
+            "preview_only",
+            reason="session_spool_limit",
+            columns=("value",),
+            preview_row_count=1,
+        ),
+        result_view=view,
+    )
+
+    state.mark_results_unavailable((1,), "Unrelated durable storage was invalidated.")
+
+    assert state.active_result.sequence == 1
     assert state.active_result_record is not None
     assert state.active_result_record.state == "preview_only"
-    assert state.active_result_record.handle is None
+    assert state.active_result_record.reason == "session_spool_limit"
     assert state.result_view is view
 
 
@@ -653,31 +700,36 @@ def test_remove_memory_only_preview_discards_the_active_view() -> None:
     assert [item.sequence for item in state.query_history] == [1]
 
 
-def test_begin_query_run_prevents_overlapping_runs() -> None:
+def test_start_query_request_prevents_overlapping_runs() -> None:
     state = TUISessionState()
-    sequence = state.begin_query_run("SELECT * FROM orders")
+    request = _run_request(*state.reserve_query_sequences(1))
+    state.start_query_request(request)
 
-    assert sequence == 1
+    assert state.query_run.request is request
     assert state.query_run.sequence == 1
 
     with pytest.raises(RuntimeError, match="query is already running"):
-        state.begin_query_run("SELECT COUNT\\(\\*\\) FROM orders")
+        state.start_query_request(_run_request(*state.reserve_query_sequences(1)))
 
 
-def test_begin_query_batch_reserves_contiguous_sequences() -> None:
+def test_start_query_request_tracks_contiguous_batch_sequences() -> None:
     state = TUISessionState()
-    sequences = state.begin_query_batch(("SELECT 1", "SELECT 2", "SELECT 3"))
+    sequences = state.reserve_query_sequences(3)
+    request = _run_request(*sequences)
+    state.start_query_request(request)
 
     assert sequences == (1, 2, 3)
+    assert state.query_run.request is request
     assert state.query_run.sequence == 1
+    assert state.query_run.sequences == sequences
 
 
-def test_reserve_query_sequences_does_not_start_run_and_begin_uses_next_sequence() -> None:
+def test_reserve_query_sequences_does_not_start_run() -> None:
     state = TUISessionState()
 
     assert state.reserve_query_sequences(2) == (1, 2)
     assert state.query_run.is_running is False
-    assert state.begin_query_run("SELECT 3") == 3
+    assert state.reserve_query_sequences(1) == (3,)
 
 
 def test_start_query_request_tracks_all_sequences_in_active_request() -> None:
@@ -707,18 +759,21 @@ def test_active_and_queued_requests_reject_reused_sequence_ids() -> None:
         state.enqueue_run(_run_request(2))
 
 
-def test_query_run_state_rejects_request_identity_mismatches() -> None:
+def test_query_run_state_derives_all_live_identity_from_the_request() -> None:
     request = _run_request(1, 2)
+    run = TUIQueryRunState(request=request)
 
-    with pytest.raises(ValueError, match="request sequence does not match"):
-        TUIQueryRunState(sequence=2, request=request)
-    with pytest.raises(ValueError, match="request sequences do not match"):
-        TUIQueryRunState(sequences=(1,), request=request)
+    assert tuple(TUIQueryRunState.__dataclass_fields__) == ("request",)
+    assert run.is_running is True
+    assert run.sequence == 1
+    assert run.sequences == (1, 2)
+    assert run.request is request
 
 
 def test_batch_outcomes_finish_only_after_batch_completion() -> None:
     state = TUISessionState()
-    sequences = state.begin_query_batch(("SELECT 1", "SELECT 2"))
+    sequences = state.reserve_query_sequences(2)
+    state.start_query_request(_run_request(*sequences))
 
     state.record_query_success(
         sequences[0],
@@ -766,11 +821,6 @@ def test_enqueue_run_requires_active_request_and_uses_identity_confirmation() ->
 
     with pytest.raises(RuntimeError, match="queued run requires an active query request"):
         state.enqueue_run(_run_request(2))
-
-    state.begin_query_run("SELECT 1")
-    with pytest.raises(RuntimeError, match="queued run requires an active query request"):
-        state.enqueue_run(_run_request(2))
-    state.finish_query_run()
 
     active_request = _run_request(*state.reserve_query_sequences(1))
     state.start_query_request(active_request)

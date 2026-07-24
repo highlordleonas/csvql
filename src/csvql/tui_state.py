@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -225,27 +224,19 @@ class TUIExportIntentReplacement:
 class TUIQueryRunState:
     """Current query-worker state, including the active immutable request snapshot."""
 
-    is_running: bool = False
-    sequence: int | None = None
     request: TUIRunRequest | None = None
-    sequences: tuple[int, ...] = ()
 
-    def __post_init__(self) -> None:
-        if self.request is not None:
-            if self.sequence not in {None, self.request.sequences[0]}:
-                raise ValueError("request sequence does not match the active run")
-            if self.sequences and self.sequences != self.request.sequences:
-                raise ValueError("request sequences do not match the active run")
-            object.__setattr__(self, "sequences", self.request.sequences)
-            object.__setattr__(self, "sequence", self.request.sequences[0])
-            object.__setattr__(self, "is_running", True)
-        elif self.is_running:
-            if self.sequence is None:
-                raise ValueError("running query state requires a sequence")
-            if not self.sequences:
-                object.__setattr__(self, "sequences", (self.sequence,))
-        elif self.sequence is not None or self.sequences or self.request is not None:
-            raise ValueError("idle query state cannot retain a sequence, request, or reservations")
+    @property
+    def is_running(self) -> bool:
+        return self.request is not None
+
+    @property
+    def sequence(self) -> int | None:
+        return None if self.request is None else self.request.sequences[0]
+
+    @property
+    def sequences(self) -> tuple[int, ...]:
+        return () if self.request is None else self.request.sequences
 
 
 @dataclass(frozen=True, slots=True)
@@ -485,8 +476,7 @@ class TUISessionState:
         return self.active_result.sequence is not None
 
     def active_query_result_record(self) -> TUIResultRecord | None:
-        sequence = self.active_result.sequence
-        return self.query_result_record(sequence) if sequence is not None else None
+        return self._active_result_record
 
     def active_result_capabilities(self) -> TUIResultCapabilities:
         if self._active_result_record is None:
@@ -510,13 +500,14 @@ class TUISessionState:
                 return
             self.active_result = TUIActiveResultState()
             self._active_result_record = None
+            self.result_view = TUIResultViewState()
             return
         if previous.kind == "buffer" and previous.sequence is not None:
             if self.select_buffer_result(previous.sequence):
                 return
-        self.active_result = TUIActiveResultState()
-        if previous.kind == "buffer":
+            self.active_result = TUIActiveResultState()
             self._active_result_record = None
+            self.result_view = TUIResultViewState()
 
     def clear_buffer_result_tabs(self) -> None:
         self._buffer_result_tabs.clear()
@@ -563,22 +554,6 @@ class TUISessionState:
         start = self._next_query_sequence
         sequences = tuple(range(start, start + count))
         self._next_query_sequence += count
-        return sequences
-
-    def begin_query_run(self, sql: str) -> int:
-        return self.begin_query_batch((sql,))[0]
-
-    def begin_query_batch(self, statements: Sequence[str]) -> tuple[int, ...]:
-        if self.query_run.is_running:
-            raise RuntimeError("A query is already running.")
-        if not statements:
-            raise ValueError("At least one statement is required.")
-        sequences = self.reserve_query_sequences(len(statements))
-        self.query_run = TUIQueryRunState(
-            is_running=True,
-            sequence=sequences[0],
-            sequences=sequences,
-        )
         return sequences
 
     def start_query_request(self, request: TUIRunRequest) -> None:
@@ -890,28 +865,13 @@ class TUISessionState:
         del message
         for sequence in sequences:
             record = self._query_result_records.pop(sequence, None)
-            if record is None:
-                continue
             self._buffer_result_tabs = [
                 tab for tab in self._buffer_result_tabs if tab.sequence != sequence
             ]
-            if self.active_result.sequence == sequence:
-                if self.result_view.source_result_sequence == sequence:
-                    preview_columns = record.columns or self.result_view.columns
-                    preview_rows = len(self.result_view.display_rows)
-                    self._active_result_record = TUIResultRecord(
-                        handle=None,
-                        state="preview_only",
-                        reason="preservation_failed",
-                        columns=preview_columns,
-                        preview_row_count=preview_rows,
-                        full_row_count=None,
-                        elapsed_ms=record.elapsed_ms,
-                    )
-                else:
-                    self.active_result = TUIActiveResultState()
-                    self._active_result_record = None
-                    self.result_view = TUIResultViewState()
+            if record is not None and self.active_result.sequence == sequence:
+                self.active_result = TUIActiveResultState()
+                self._active_result_record = None
+                self.result_view = TUIResultViewState()
             if self.export_intent is not None and self.export_intent.result_sequence == sequence:
                 self.export_intent = None
 
