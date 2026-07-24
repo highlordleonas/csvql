@@ -78,6 +78,8 @@ TUIResultReason = Literal[
     "preservation_failed",
 ]
 _RecoveryMatchState = Literal["matching", "missing", "uncertain"]
+_RegisteredPathState = Literal["matching", "missing", "foreign", "uncertain"]
+_RegisteredPathRemovalState = Literal["removed", "missing", "foreign", "uncertain"]
 
 
 class TUIResultStorageError(RuntimeError):
@@ -635,25 +637,34 @@ class TUIResultStore:
 
         with self._lock:
             record = self._record_for_handle(handle)
-            self._ensure_registered_workspace(handle.sequence)
+            self._ensure_registered_workspace(
+                handle.sequence,
+                allowed_missing_result=record.path,
+            )
             path_state = self._registered_path_state(record)
-            if path_state != "matching":
-                self._drop_record(record, release_bytes=True)
-                raise _result_unavailable_error(handle.sequence)
-            try:
-                record.path.unlink()
-            except FileNotFoundError as exc:
-                self._drop_record(record, release_bytes=True)
-                raise _result_unavailable_error(handle.sequence) from exc
-            except OSError as exc:
-                raise self._storage_error_from_os_error(exc) from exc
-            release_bytes = True
-            if record.staging_alias is not None and not self._remove_staging_file(
-                record.staging_alias
-            ):
-                self._pending_cleanup_bytes[record.staging_alias] = record.stored.logical_bytes
-                release_bytes = False
+            if path_state == "matching":
+                removal_state, unlink_error = self._unlink_matching_record_path(record)
+                if unlink_error is not None:
+                    raise self._storage_error_from_os_error(unlink_error) from unlink_error
+                if removal_state == "removed":
+                    release_bytes = self._remove_record_staging_alias(
+                        record,
+                        release_bytes=True,
+                    )
+                    self._drop_record(record, release_bytes=release_bytes)
+                    return
+                path_state = removal_state
+            release_bytes = path_state in {"missing", "foreign"}
+            if path_state == "uncertain":
+                self._retain_record_path_capacity(record)
+            release_bytes = self._remove_record_staging_alias(
+                record,
+                release_bytes=release_bytes,
+            )
+            if path_state == "foreign" and not release_bytes:
+                self._track_record_path_for_cleanup(record)
             self._drop_record(record, release_bytes=release_bytes)
+            raise _result_unavailable_error(handle.sequence)
 
     def cleanup(self) -> TUIResultCleanupSummary:
         """Remove exact registered artifacts and terminalize the result store."""
@@ -1067,9 +1078,14 @@ class TUIResultStore:
             raise _result_unavailable_error(sequence)
         return reader
 
-    def _ensure_registered_workspace(self, sequence: int) -> None:
+    def _ensure_registered_workspace(
+        self,
+        sequence: int,
+        *,
+        allowed_missing_result: Path | None = None,
+    ) -> None:
         try:
-            self._ensure_workspace()
+            self._ensure_workspace(allowed_missing_result=allowed_missing_result)
         except TUIResultStorageError as exc:
             invalidated = self._abandon_lost_workspace()
             raise _results_unavailable_error(invalidated or (sequence,)) from exc
@@ -1079,25 +1095,43 @@ class TUIResultStore:
             nonce = record.stored.handle.nonce
             if self._records_by_nonce.get(nonce) is not record:
                 return
-            state = self._registered_path_state(record)
-            released = state != "matching"
-            if state == "matching":
-                try:
-                    record.path.unlink()
-                except FileNotFoundError:
-                    released = True
-                except OSError:
-                    self._pending_cleanup_paths.add(record.path)
-                    self._pending_cleanup_identities[record.path] = record.identity
-                    self._pending_cleanup_bytes[record.path] = record.stored.logical_bytes
-                else:
-                    released = True
-            if record.staging_alias is not None and not self._remove_staging_file(
-                record.staging_alias
-            ):
-                self._pending_cleanup_bytes[record.staging_alias] = record.stored.logical_bytes
-                released = False
+            observed_state = self._registered_path_state(record)
+            state: _RegisteredPathRemovalState
+            if observed_state == "matching":
+                state, _unlink_error = self._unlink_matching_record_path(record)
+            else:
+                state = observed_state
+            released = state in {"removed", "missing", "foreign"}
+            if state == "uncertain":
+                self._retain_record_path_capacity(record)
+            released = self._remove_record_staging_alias(
+                record,
+                release_bytes=released,
+            )
+            if state == "foreign" and not released:
+                self._track_record_path_for_cleanup(record)
             self._drop_record(record, release_bytes=released)
+
+    def _retain_record_path_capacity(self, record: _StoredResultRecord) -> None:
+        self._track_record_path_for_cleanup(record)
+        self._pending_cleanup_bytes[record.path] = record.stored.logical_bytes
+
+    def _track_record_path_for_cleanup(self, record: _StoredResultRecord) -> None:
+        self._pending_cleanup_paths.add(record.path)
+        self._pending_cleanup_identities[record.path] = record.identity
+
+    def _remove_record_staging_alias(
+        self,
+        record: _StoredResultRecord,
+        *,
+        release_bytes: bool,
+    ) -> bool:
+        staging_alias = record.staging_alias
+        if staging_alias is None or self._remove_staging_file(staging_alias):
+            return release_bytes
+        if release_bytes:
+            self._pending_cleanup_bytes[staging_alias] = record.stored.logical_bytes
+        return False
 
     def _drop_record(self, record: _StoredResultRecord, *, release_bytes: bool) -> None:
         handle = record.stored.handle
@@ -1112,14 +1146,43 @@ class TUIResultStore:
                 self._allocated_bytes - record.stored.logical_bytes,
             )
 
-    def _registered_path_state(self, record: _StoredResultRecord) -> _RecoveryMatchState:
+    def _registered_path_state(self, record: _StoredResultRecord) -> _RegisteredPathState:
         try:
             result = record.path.lstat()
         except FileNotFoundError:
             return "missing"
         except OSError:
             return "uncertain"
-        return "matching" if self._stat_matches_record(result, record) else "uncertain"
+        if self._stat_matches_record(result, record):
+            return "matching"
+        current_identity = _usable_stat_identity(result)
+        if current_identity is not None and current_identity != record.identity:
+            return "foreign"
+        return "uncertain"
+
+    def _unlink_matching_record_path(
+        self,
+        record: _StoredResultRecord,
+    ) -> tuple[_RegisteredPathRemovalState, OSError | None]:
+        path_state = self._registered_path_state(record)
+        if path_state != "matching":
+            return (path_state, None)
+        workspace = self._workspace_path
+        workspace_identity = self._workspace_identity
+        if (
+            workspace is None
+            or workspace_identity is None
+            or record.path.parent != workspace
+            or not _is_owned_workspace(workspace, identity=workspace_identity)
+        ):
+            return ("uncertain", None)
+        try:
+            record.path.unlink()
+        except FileNotFoundError:
+            return ("missing", None)
+        except OSError as exc:
+            return ("uncertain", exc)
+        return ("removed", None)
 
     @staticmethod
     def _stat_matches_record(
@@ -1268,7 +1331,7 @@ class TUIResultStore:
         _set_and_verify_posix_mode(marker_path, 0o600)
         _set_and_verify_posix_mode(lease_path, 0o600)
 
-    def _ensure_workspace(self) -> Path:
+    def _ensure_workspace(self, *, allowed_missing_result: Path | None = None) -> Path:
         if self._workspace_path is None:
             return self._create_workspace()
         workspace = self._workspace_path
@@ -1285,7 +1348,12 @@ class TUIResultStore:
                 *(record.path.name for record in self._records_by_nonce.values()),
                 *(path.name for path in self._pending_cleanup_paths),
             }
-            if {path.name for path in workspace.iterdir()} != expected_names:
+            observed_names = {path.name for path in workspace.iterdir()}
+            allowed_missing_names = {path.name for path in self._pending_cleanup_paths}
+            if allowed_missing_result is not None and allowed_missing_result.parent == workspace:
+                allowed_missing_names.add(allowed_missing_result.name)
+            required_names = expected_names - allowed_missing_names
+            if not required_names <= observed_names <= expected_names:
                 raise FileNotFoundError(workspace)
         except OSError as exc:
             raise TUIResultStorageError(

@@ -575,6 +575,376 @@ def test_remove_cleans_retained_staging_alias_before_releasing_capacity(
     replacement.rollback()
 
 
+def test_remove_missing_final_cleans_retained_staging_alias_before_releasing_capacity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    columns = ("value",)
+    exact_bytes = _artifact_bytes(columns, ())
+    store = TUIResultStore(temp_root=tmp_path, capacity_bytes=exact_bytes)
+    real_unlink = Path.unlink
+    retained_once = False
+
+    def retain_staging_once(path: Path, missing_ok: bool = False) -> None:
+        nonlocal retained_once
+        if path.name.endswith(".result.tmp") and not retained_once:
+            retained_once = True
+            raise OSError(errno.EBUSY, "staging busy")
+        real_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", retain_staging_once)
+    stored = _commit_rows(store, sequence=1, rows=())
+    assert store.workspace_path is not None
+    retained = tuple(store.workspace_path.glob(".query-1-*.result.tmp"))
+    assert len(retained) == 1
+    final_path = store.workspace_path / "query-1.result"
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    final_path.unlink()
+
+    with pytest.raises(TUIResultStorageError) as error:
+        store.remove(stored.handle)
+
+    assert error.value.kind == "result_unavailable"
+    assert not retained[0].exists()
+    replacement = store.begin_complete(sequence=2, columns=columns)
+    replacement.rollback()
+
+
+def test_remove_final_disappears_after_matching_observation_cleans_owned_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    columns = ("value",)
+    exact_bytes = _artifact_bytes(columns, ())
+    store = TUIResultStore(temp_root=tmp_path, capacity_bytes=exact_bytes)
+    real_unlink = Path.unlink
+    retained_once = False
+
+    def retain_staging_once(path: Path, missing_ok: bool = False) -> None:
+        nonlocal retained_once
+        if path.name.endswith(".result.tmp") and not retained_once:
+            retained_once = True
+            raise OSError(errno.EBUSY, "staging busy")
+        real_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", retain_staging_once)
+    stored = _commit_rows(store, sequence=1, rows=())
+    assert store.workspace_path is not None
+    retained = tuple(store.workspace_path.glob(".query-1-*.result.tmp"))
+    assert len(retained) == 1
+    final_path = store.workspace_path / "query-1.result"
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    real_lstat = Path.lstat
+    disappear_once = True
+
+    def disappear_after_matching_lstat(path: Path) -> os.stat_result:
+        nonlocal disappear_once
+        result = real_lstat(path)
+        if path == final_path and disappear_once:
+            disappear_once = False
+            real_unlink(path)
+        return result
+
+    monkeypatch.setattr(Path, "lstat", disappear_after_matching_lstat)
+    with pytest.raises(TUIResultStorageError) as error:
+        store.remove(stored.handle)
+
+    assert error.value.kind == "result_unavailable"
+    assert not retained[0].exists()
+    replacement = store.begin_complete(sequence=2, columns=columns)
+    replacement.rollback()
+
+
+def test_remove_foreign_final_cleans_owned_alias_and_preserves_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    columns = ("value",)
+    exact_bytes = _artifact_bytes(columns, ())
+    store = TUIResultStore(temp_root=tmp_path, capacity_bytes=exact_bytes)
+    real_unlink = Path.unlink
+    retained_once = False
+
+    def retain_staging_once(path: Path, missing_ok: bool = False) -> None:
+        nonlocal retained_once
+        if path.name.endswith(".result.tmp") and not retained_once:
+            retained_once = True
+            raise OSError(errno.EBUSY, "staging busy")
+        real_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", retain_staging_once)
+    stored = _commit_rows(store, sequence=1, rows=())
+    assert store.workspace_path is not None
+    retained = tuple(store.workspace_path.glob(".query-1-*.result.tmp"))
+    assert len(retained) == 1
+    final_path = store.workspace_path / "query-1.result"
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    final_path.unlink()
+    foreign_content = b"foreign replacement"
+    final_path.write_bytes(foreign_content)
+
+    with pytest.raises(TUIResultStorageError) as error:
+        store.remove(stored.handle)
+
+    assert error.value.kind == "result_unavailable"
+    assert not retained[0].exists()
+    assert final_path.read_bytes() == foreign_content
+    replacement = store.begin_complete(sequence=2, columns=columns)
+    replacement.rollback()
+
+
+def test_remove_revalidates_identity_before_unlinking_a_matching_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    columns = ("value",)
+    exact_bytes = _artifact_bytes(columns, ())
+    store = TUIResultStore(temp_root=tmp_path, capacity_bytes=exact_bytes)
+    stored = _commit_rows(store, sequence=1, rows=())
+    assert store.workspace_path is not None
+    final_path = store.workspace_path / "query-1.result"
+    real_lstat = Path.lstat
+    real_unlink = Path.unlink
+    foreign_content = b"foreign replacement"
+    replace_once = True
+
+    def replace_after_matching_lstat(path: Path) -> os.stat_result:
+        nonlocal replace_once
+        result = real_lstat(path)
+        if path == final_path and replace_once:
+            replace_once = False
+            real_unlink(path)
+            path.write_bytes(foreign_content)
+        return result
+
+    monkeypatch.setattr(Path, "lstat", replace_after_matching_lstat)
+    with pytest.raises(TUIResultStorageError) as error:
+        store.remove(stored.handle)
+
+    assert error.value.kind == "result_unavailable"
+    assert final_path.read_bytes() == foreign_content
+    replacement = store.begin_complete(sequence=2, columns=columns)
+    replacement.rollback()
+
+
+def test_read_invalidation_revalidates_identity_before_unlinking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    columns = ("value",)
+    exact_bytes = _artifact_bytes(columns, ())
+    store = TUIResultStore(temp_root=tmp_path, capacity_bytes=exact_bytes)
+    stored = _commit_rows(store, sequence=1, rows=())
+    assert store.workspace_path is not None
+    final_path = store.workspace_path / "query-1.result"
+    with final_path.open("r+b") as artifact:
+        artifact.write(b"X")
+    real_lstat = Path.lstat
+    real_unlink = Path.unlink
+    foreign_content = b"foreign replacement"
+    result_observations = 0
+
+    def replace_during_invalidation_lstat(path: Path) -> os.stat_result:
+        nonlocal result_observations
+        result = real_lstat(path)
+        if path == final_path:
+            result_observations += 1
+            if result_observations == 2:
+                real_unlink(path)
+                path.write_bytes(foreign_content)
+        return result
+
+    monkeypatch.setattr(Path, "lstat", replace_during_invalidation_lstat)
+    with pytest.raises(TUIResultStorageError) as error:
+        store.load_preview(stored.handle, PreviewPolicy())
+
+    assert error.value.kind == "result_unavailable"
+    assert final_path.read_bytes() == foreign_content
+    replacement = store.begin_complete(sequence=2, columns=columns)
+    replacement.rollback()
+
+
+def test_remove_same_identity_size_mismatch_retains_capacity_until_cleanup(
+    tmp_path: Path,
+) -> None:
+    columns = ("value",)
+    exact_bytes = _artifact_bytes(columns, ())
+    store = TUIResultStore(temp_root=tmp_path, capacity_bytes=exact_bytes)
+    stored = _commit_rows(store, sequence=1, rows=())
+    assert store.workspace_path is not None
+    final_path = store.workspace_path / "query-1.result"
+    with final_path.open("ab") as artifact:
+        artifact.write(b"X")
+
+    with pytest.raises(TUIResultStorageError) as error:
+        store.remove(stored.handle)
+
+    assert error.value.kind == "result_unavailable"
+    with pytest.raises(TUIResultStorageError) as capacity_error:
+        store.begin_complete(sequence=2, columns=columns)
+    assert capacity_error.value.kind == "capacity"
+
+    cleanup = store.cleanup()
+
+    assert cleanup.warning_count == 0
+    assert not final_path.exists()
+
+
+def test_remove_foreign_final_alias_cleanup_failure_remains_capacity_accounted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    columns = ("value",)
+    exact_bytes = _artifact_bytes(columns, ())
+    store = TUIResultStore(temp_root=tmp_path, capacity_bytes=exact_bytes)
+    real_unlink = Path.unlink
+
+    def retain_staging(path: Path, missing_ok: bool = False) -> None:
+        if path.name.endswith(".result.tmp"):
+            raise OSError(errno.EBUSY, "staging busy")
+        real_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", retain_staging)
+    stored = _commit_rows(store, sequence=1, rows=())
+    assert store.workspace_path is not None
+    retained = tuple(store.workspace_path.glob(".query-1-*.result.tmp"))
+    assert len(retained) == 1
+    final_path = store.workspace_path / "query-1.result"
+    final_path.unlink()
+    foreign_content = b"foreign replacement"
+    final_path.write_bytes(foreign_content)
+
+    with pytest.raises(TUIResultStorageError) as error:
+        store.remove(stored.handle)
+
+    assert error.value.kind == "result_unavailable"
+    assert retained[0].exists()
+    assert final_path.read_bytes() == foreign_content
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    with pytest.raises(TUIResultStorageError) as capacity_error:
+        store.begin_complete(sequence=2, columns=columns)
+    assert capacity_error.value.kind == "capacity"
+
+    store.cleanup()
+
+    assert not retained[0].exists()
+    assert final_path.read_bytes() == foreign_content
+
+
+def test_remove_uncertain_missing_final_and_alias_cleanup_failure_retains_capacity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    columns = ("value",)
+    exact_bytes = _artifact_bytes(columns, ())
+    store = TUIResultStore(temp_root=tmp_path, capacity_bytes=exact_bytes)
+    real_unlink = Path.unlink
+
+    def retain_staging(path: Path, missing_ok: bool = False) -> None:
+        if path.name.endswith(".result.tmp"):
+            raise OSError(errno.EBUSY, "staging busy")
+        real_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", retain_staging)
+    stored = _commit_rows(store, sequence=1, rows=())
+    assert store.workspace_path is not None
+    retained = tuple(store.workspace_path.glob(".query-1-*.result.tmp"))
+    assert len(retained) == 1
+    final_path = store.workspace_path / "query-1.result"
+    final_path.unlink()
+    real_lstat = Path.lstat
+
+    def fail_result_lstat(path: Path) -> os.stat_result:
+        if path == final_path:
+            raise OSError(errno.EIO, "result observation failed")
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", fail_result_lstat)
+    with pytest.raises(TUIResultStorageError) as error:
+        store.remove(stored.handle)
+
+    assert error.value.kind == "result_unavailable"
+    assert retained[0].exists()
+    monkeypatch.setattr(Path, "lstat", real_lstat)
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    with pytest.raises(TUIResultStorageError) as capacity_error:
+        store.begin_complete(sequence=2, columns=columns)
+    assert capacity_error.value.kind == "capacity"
+
+    cleanup = store.cleanup()
+
+    assert cleanup.warning_count == 0
+    assert not retained[0].exists()
+
+
+def test_remove_lstat_uncertainty_retains_capacity_until_owned_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    columns = ("value",)
+    exact_bytes = _artifact_bytes(columns, ())
+    store = TUIResultStore(temp_root=tmp_path, capacity_bytes=exact_bytes)
+    stored = _commit_rows(store, sequence=1, rows=())
+    assert store.workspace_path is not None
+    final_path = store.workspace_path / "query-1.result"
+    real_lstat = Path.lstat
+
+    def fail_result_lstat(path: Path) -> os.stat_result:
+        if path == final_path:
+            raise OSError(errno.EIO, "result observation failed")
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", fail_result_lstat)
+    with pytest.raises(TUIResultStorageError) as error:
+        store.remove(stored.handle)
+
+    assert error.value.kind == "result_unavailable"
+    monkeypatch.setattr(Path, "lstat", real_lstat)
+    assert final_path.exists()
+    with pytest.raises(TUIResultStorageError) as capacity_error:
+        store.begin_complete(sequence=2, columns=columns)
+    assert capacity_error.value.kind == "capacity"
+
+    cleanup = store.cleanup()
+
+    assert cleanup.warning_count == 0
+    assert not final_path.exists()
+
+
+def test_read_invalidation_lstat_uncertainty_retains_capacity_until_owned_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    columns = ("value",)
+    exact_bytes = _artifact_bytes(columns, ())
+    store = TUIResultStore(temp_root=tmp_path, capacity_bytes=exact_bytes)
+    stored = _commit_rows(store, sequence=1, rows=())
+    assert store.workspace_path is not None
+    final_path = store.workspace_path / "query-1.result"
+    real_lstat = Path.lstat
+
+    def fail_result_lstat(path: Path) -> os.stat_result:
+        if path == final_path:
+            raise OSError(errno.EIO, "result observation failed")
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", fail_result_lstat)
+    with pytest.raises(TUIResultStorageError) as error:
+        store.load_preview(stored.handle, PreviewPolicy())
+
+    assert error.value.kind == "result_unavailable"
+    monkeypatch.setattr(Path, "lstat", real_lstat)
+    assert final_path.exists()
+    with pytest.raises(TUIResultStorageError) as capacity_error:
+        store.begin_complete(sequence=2, columns=columns)
+    assert capacity_error.value.kind == "capacity"
+
+    cleanup = store.cleanup()
+
+    assert cleanup.warning_count == 0
+    assert not final_path.exists()
+
+
 def test_footer_or_fsync_failure_releases_reserved_capacity_after_rollback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
