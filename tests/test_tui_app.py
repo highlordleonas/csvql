@@ -1138,7 +1138,7 @@ def test_buffer_completion_preserves_selected_prior_tab_while_later_result_finis
     assert "Buffer result 2.2." in reopened_message
 
 
-def test_displaced_preview_only_without_handle_becomes_error_not_false_reopenable_success(
+def test_displaced_preview_only_without_handle_retains_transient_owner_and_pauses_queue(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1150,6 +1150,9 @@ def test_displaced_preview_only_without_handle_becomes_error_not_false_reopenabl
         sql="SELECT prior",
     )
     release = threading.Event()
+    queued_started = threading.Event()
+    release_queued = threading.Event()
+    seen_requests: list[TUIRunRequest] = []
 
     def fake_run_tui_request(
         *,
@@ -1159,6 +1162,17 @@ def test_displaced_preview_only_without_handle_becomes_error_not_false_reopenabl
         operation: OperationContext,
     ) -> None:
         del result_store, operation
+        seen_requests.append(request)
+        if len(seen_requests) > 1:
+            queued_started.set()
+            assert release_queued.wait(timeout=5.0)
+            _emit_complete_result(
+                request=request,
+                result_store=store,
+                event_sink=event_sink,
+                result=QueryResult(columns=("queued",), rows=(("queued-row",),), elapsed_ms=1.0),
+            )
+            return
         preview = BoundedQueryResult(
             columns=("value",),
             rows=(("preview-row",),),
@@ -1180,7 +1194,15 @@ def test_displaced_preview_only_without_handle_becomes_error_not_false_reopenabl
 
     _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
-    async def _inner() -> tuple[str, list[str], str, int | None]:
+    async def _inner() -> tuple[
+        str,
+        list[str],
+        str,
+        int | None,
+        int | None,
+        bool,
+        int | None,
+    ]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -1195,6 +1217,13 @@ def test_displaced_preview_only_without_handle_becomes_error_not_false_reopenabl
                     break
             app.query_one("#history", DataTable).focus()
             app._show_history_result_at_row(0)
+            app.query_one("#sql", TextArea).load_text("SELECT queued")
+            app.action_run_selected_or_current_query()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if app.state.queued_run is not None:
+                    break
+            assert app.state.queued_run is not None
             release.set()
             await _settled_query_idle(pilot, app)
             await pilot.pause()
@@ -1203,22 +1232,41 @@ def test_displaced_preview_only_without_handle_becomes_error_not_false_reopenabl
                 app_history_statuses(app.state),
                 app.query_one("#results-message", Static).content,
                 (
-                    app.state.query_result_record(2).handle.sequence
-                    if app.state.query_result_record(2) is not None
-                    and app.state.query_result_record(2).handle is not None
-                    else None
+                    None
+                    if app._transient_preview_only_result is None
+                    else app._transient_preview_only_result.sequence
+                ),
+                app.state.active_result.sequence,
+                queued_started.is_set(),
+                (
+                    None
+                    if app.state.query_result_record(1) is None
+                    or app.state.query_result_record(1).handle is None
+                    else app.state.query_result_record(1).handle.sequence
                 ),
             )
 
-    status, history_statuses, results_message, stored_sequence = asyncio.run(_inner())
+    (
+        status,
+        history_statuses,
+        results_message,
+        transient_sequence,
+        active_sequence,
+        queued_started_early,
+        preserved_sequence,
+    ) = asyncio.run(_inner())
 
     assert status == (
-        "Error: Query 2 finished with a preview-only result, "
-        "but that preview was discarded because another result remained selected."
+        "Query 2 kept only its active preview because preview preservation did not complete "
+        "after a preservation failure. Remove older stored results and retry preview "
+        "preservation, or delete this preview to continue the queued run."
     )
-    assert history_statuses == ["success", "error"]
-    assert "History query 1." in results_message
-    assert stored_sequence is None
+    assert history_statuses == ["success", "success"]
+    assert "Showing 1 retained preview row(s)." in results_message
+    assert transient_sequence == 2
+    assert active_sequence == 2
+    assert queued_started_early is False
+    assert preserved_sequence == 1
 
 
 def test_source_columns_empty_outcome_during_query_preserves_visible_preview(

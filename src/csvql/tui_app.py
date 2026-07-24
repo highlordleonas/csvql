@@ -3148,7 +3148,9 @@ class CSVQLMenuApp(App[None]):
         buffer_result_index = (
             self._ensure_buffer_tab(event.sequence) if run_mode == "buffer" else None
         )
-        preserve_active_result = self._preserve_unrelated_active_result(event.sequence)
+        preserve_active_result = (
+            self._preserve_unrelated_active_result(event.sequence) and event.stored is not None
+        )
         metadata = self._take_preserving_metadata(
             event.sequence,
             expected_columns=event.preview.columns,
@@ -3162,34 +3164,6 @@ class CSVQLMenuApp(App[None]):
             )
             return
         sql = self._active_query_sql.pop(event.sequence, "<unknown>")
-        if preserve_active_result and event.stored is None:
-            message = (
-                f"Query {event.sequence} finished with a preview-only result, "
-                "but that preview was discarded because another result remained selected."
-            )
-            self.state.record_query_error(
-                event.sequence,
-                sql,
-                message,
-                run_mode=run_mode,
-                complete_run=False,
-                preserve_active_result=True,
-            )
-            self._append_latest_history_row_preserving_selection()
-            self._update_static_text("#run-status", "Finalizing query...")
-            self._set_status(
-                _status_with_terminal_warnings(
-                    _error_message(CSVQLError(message)),
-                    primary_error_message=event.primary_error_message,
-                    primary_suggestion=event.primary_suggestion,
-                    persistence_error_message=event.persistence_error_message,
-                    persistence_suggestion=event.persistence_suggestion,
-                    cleanup_notes=event.cleanup_notes,
-                ),
-                already_safe=True,
-            )
-            self.query_one("#sql", TextArea).focus()
-            return
         view = None
         if not preserve_active_result:
             view = make_bounded_result_view_state(
@@ -3241,7 +3215,10 @@ class CSVQLMenuApp(App[None]):
         if preserve_active_result:
             self._append_latest_history_row_preserving_selection()
         else:
-            self._refresh_history_table()
+            if event.stored is None:
+                self._refresh_history_table_selecting(event.sequence)
+            else:
+                self._refresh_history_table()
         if event.stored is None and not preserve_active_result:
             self._transient_preview_only_result = _TransientPreviewOnlyResult(
                 sequence=event.sequence,
