@@ -661,7 +661,7 @@ class TUIResultStore:
                 record,
                 release_bytes=release_bytes,
             )
-            if path_state == "foreign" and not release_bytes:
+            if path_state == "foreign":
                 self._track_record_path_for_cleanup(record)
             self._drop_record(record, release_bytes=release_bytes)
             raise _result_unavailable_error(handle.sequence)
@@ -1108,7 +1108,7 @@ class TUIResultStore:
                 record,
                 release_bytes=released,
             )
-            if state == "foreign" and not released:
+            if state == "foreign":
                 self._track_record_path_for_cleanup(record)
             self._drop_record(record, release_bytes=released)
 

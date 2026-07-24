@@ -693,6 +693,70 @@ def test_remove_foreign_final_cleans_owned_alias_and_preserves_replacement(
     replacement.rollback()
 
 
+def test_remove_foreign_result_preserves_unrelated_handle_and_workspace(
+    tmp_path: Path,
+) -> None:
+    columns = ("value",)
+    payload = encode_row_payload((1,))
+    exact_bytes = _artifact_bytes(columns, (payload,))
+    store = TUIResultStore(temp_root=tmp_path, capacity_bytes=exact_bytes * 2)
+    first = _commit_rows(store, sequence=1, rows=((1,),))
+    second = _commit_rows(store, sequence=2, rows=((2,),))
+    assert store.workspace_path is not None
+    workspace = store.workspace_path
+    foreign_path = workspace / "query-1.result"
+    foreign_path.unlink()
+    foreign_content = b"foreign replacement"
+    foreign_path.write_bytes(foreign_content)
+
+    with pytest.raises(TUIResultStorageError) as error:
+        store.remove(first.handle)
+
+    assert error.value.kind == "result_unavailable"
+    assert store.load_preview(second.handle, PreviewPolicy()).rows == ((2,),)
+    assert tuple(store.open_rows(second.handle).iter_rows()) == ((2,),)
+    replacement = store.begin_complete(sequence=3, columns=columns)
+    replacement.append_payload(encode_row_payload((3,)))
+    replacement.commit(elapsed_ms=1.0)
+
+    assert store.workspace_path == workspace
+    assert foreign_path.read_bytes() == foreign_content
+    store.cleanup()
+    assert foreign_path.read_bytes() == foreign_content
+
+
+def test_read_invalidation_foreign_result_preserves_unrelated_handle_and_workspace(
+    tmp_path: Path,
+) -> None:
+    columns = ("value",)
+    payload = encode_row_payload((1,))
+    exact_bytes = _artifact_bytes(columns, (payload,))
+    store = TUIResultStore(temp_root=tmp_path, capacity_bytes=exact_bytes * 2)
+    first = _commit_rows(store, sequence=1, rows=((1,),))
+    second = _commit_rows(store, sequence=2, rows=((2,),))
+    assert store.workspace_path is not None
+    workspace = store.workspace_path
+    foreign_path = workspace / "query-1.result"
+    foreign_path.unlink()
+    foreign_content = b"foreign replacement"
+    foreign_path.write_bytes(foreign_content)
+
+    with pytest.raises(TUIResultStorageError) as error:
+        store.load_preview(first.handle, PreviewPolicy())
+
+    assert error.value.kind == "result_unavailable"
+    assert store.load_preview(second.handle, PreviewPolicy()).rows == ((2,),)
+    assert tuple(store.open_rows(second.handle).iter_rows()) == ((2,),)
+    replacement = store.begin_complete(sequence=3, columns=columns)
+    replacement.append_payload(encode_row_payload((3,)))
+    replacement.commit(elapsed_ms=1.0)
+
+    assert store.workspace_path == workspace
+    assert foreign_path.read_bytes() == foreign_content
+    store.cleanup()
+    assert foreign_path.read_bytes() == foreign_content
+
+
 def test_remove_revalidates_identity_before_unlinking_a_matching_observation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
