@@ -32,6 +32,7 @@ History pane
   highlight           Recall selected query result
   Enter               Reopen selected query
   r                   Rerun selected query with current session sources
+  Delete              Delete selected preserved result after confirmation
 
 Results
   [ / ]               Previous/next buffer result when Results is focused
@@ -39,6 +40,8 @@ Results
   Preservation reports rows, logical bytes, elapsed time, and remaining capacity.
   Complete results enable full-result actions; Preview-only results name why those actions are
   unavailable and LocalQL does not rerun SQL.
+  Queued exports run before the next queued query starts.
+  Delete removes only the confirmed preserved result.
 
 General
   F1                  Help

@@ -48,6 +48,7 @@ from csvql.tui_result_store import (
 )
 from csvql.tui_results import make_result_view_state
 from csvql.tui_state import (
+    TUIActiveResultState,
     TUIBufferResultTab,
     TUIQueryRunMode,
     TUIResultRecord,
@@ -186,6 +187,11 @@ def _result_grid_snapshot(app: CSVQLMenuApp) -> tuple[tuple[str, ...], int, str]
         results.row_count,
         app.query_one("#results-message", Static).content,
     )
+
+
+def _reject_query_execution(*args: object, **kwargs: object) -> None:
+    del args, kwargs
+    raise AssertionError("result export must not execute SQL")
 
 
 def _record_stored_result(
@@ -4919,12 +4925,17 @@ def test_export_last_result_writes_text_when_path_ends_txt(tmp_path: Path) -> No
     assert "1 row(s) in 12.35 ms" in content
 
 
-def test_export_from_spilled_result_writes_full_output(tmp_path: Path) -> None:
+def test_export_from_spilled_result_writes_full_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     export_path = tmp_path / "exports" / "large.csv"
     export_path.parent.mkdir()
     rows = tuple((index,) for index in range(10001))
     stored_result = QueryResult(columns=("id",), rows=rows, elapsed_ms=1.0)
     state = TUISessionState()
+    monkeypatch.setattr("csvql.tui_app.run_tui_request", _reject_query_execution)
+    monkeypatch.setattr("csvql.tui_workflows.CSVQLEngine", _reject_query_execution)
 
     async def _inner() -> tuple[int, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
@@ -4960,11 +4971,14 @@ def test_export_from_spilled_result_writes_full_output(tmp_path: Path) -> None:
 
 def test_save_result_as_source_writes_full_output_from_spilled_result(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     export_path = tmp_path / ".csvql" / "results" / "large_rows.csv"
     rows = tuple((index,) for index in range(10001))
     stored_result = QueryResult(columns=("id",), rows=rows, elapsed_ms=1.0)
     state = TUISessionState()
+    monkeypatch.setattr("csvql.tui_app.run_tui_request", _reject_query_execution)
+    monkeypatch.setattr("csvql.tui_workflows.CSVQLEngine", _reject_query_execution)
 
     async def _inner() -> tuple[tuple[TUISource, ...], str | None, str, str, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
@@ -5272,11 +5286,12 @@ def test_save_result_as_source_uses_recalled_history_result(tmp_path: Path) -> N
             return (
                 app.state.sources,
                 app.query_one("#status", Static).content,
-                output_path.read_text(encoding="utf-8"),
+                output_path.read_text(encoding="utf-8") if output_path.exists() else "",
             )
 
     sources, status, content = asyncio.run(_inner())
 
+    assert content, status
     assert sources[-1] == TUISource(
         name="recalled_first",
         path=(tmp_path / ".csvql" / "results" / "recalled_first.csv").resolve(),
@@ -6082,17 +6097,313 @@ def test_preview_only_result_refuses_export_and_save_without_loading_store(
     assert has_active_result is True
 
 
+@pytest.mark.parametrize("focus", ["results", "history"])
+def test_delete_result_requires_confirmed_identity_and_preserves_other_handles(
+    tmp_path: Path,
+    focus: str,
+) -> None:
+    state = _make_source_state(tmp_path)
+    store = TUIResultStore(temp_root=tmp_path)
+    first_sequence = state.reserve_query_sequences(1)[0]
+    _record_stored_result(
+        state,
+        QueryResult(columns=("label",), rows=(("first",),), elapsed_ms=1.0),
+        sequence=first_sequence,
+        sql="SELECT 'first' AS label",
+        store=store,
+    )
+    second_sequence = state.reserve_query_sequences(1)[0]
+    _record_stored_result(
+        state,
+        QueryResult(columns=("label",), rows=(("second",),), elapsed_ms=1.0),
+        sequence=second_sequence,
+        sql="SELECT 'second' AS label",
+        store=store,
+    )
+
+    target_sequence = first_sequence if focus == "history" else second_sequence
+    preserved_sequence = second_sequence if focus == "history" else first_sequence
+
+    async def _inner() -> tuple[bool, bool, tuple[tuple[object, ...], ...] | None, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            if focus == "history":
+                history = app.query_one("#history", DataTable)
+                history.focus()
+                history.move_cursor(row=0)
+                app._show_history_result_at_row(0)
+            else:
+                results = app.query_one("#results", DataTable)
+                results.focus()
+            await pilot.pause()
+
+            app.action_delete_result()
+            await pilot.pause()
+            confirmation = app.screen.query_one("#confirm-text", Static).content
+
+            if focus == "history":
+                history = app.query_one("#history", DataTable)
+                history.move_cursor(row=1)
+                app._show_history_result_at_row(1)
+            await pilot.press("y")
+            await pilot.pause()
+
+            remaining = app.state.query_result_record(preserved_sequence)
+            preserved_rows = None
+            if remaining is not None and remaining.handle is not None:
+                source = app._result_store.open_rows(remaining.handle)
+                preserved_rows = tuple(source.iter_rows())
+            return (
+                app.state.query_result_record(target_sequence) is None,
+                remaining is not None,
+                preserved_rows,
+                confirmation,
+            )
+
+    removed, preserved, preserved_rows, confirmation = asyncio.run(_inner())
+
+    assert removed is True
+    assert preserved is True
+    expected_rows = (("second",),) if focus == "history" else (("first",),)
+    assert preserved_rows == expected_rows
+    assert str(target_sequence) in confirmation
+
+
+def test_delete_result_cancel_keeps_selected_record_and_store_handle(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+    store = TUIResultStore(temp_root=tmp_path)
+    sequence = state.reserve_query_sequences(1)[0]
+    _record_stored_result(
+        state,
+        QueryResult(columns=("label",), rows=(("first",),), elapsed_ms=1.0),
+        sequence=sequence,
+        sql="SELECT 'first' AS label",
+        store=store,
+    )
+
+    async def _inner() -> tuple[bool, tuple[tuple[object, ...], ...] | None]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_delete_result()
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            record = app.state.query_result_record(sequence)
+            if record is None or record.handle is None:
+                return False, None
+            source = app._result_store.open_rows(record.handle)
+            return True, tuple(source.iter_rows())
+
+    kept, rows = asyncio.run(_inner())
+
+    assert kept is True
+    assert rows == (("first",),)
+
+
+def test_delete_key_does_not_remove_results_while_sources_is_focused(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+    store = _record_stored_result(
+        state,
+        QueryResult(columns=("label",), rows=(("first",),), elapsed_ms=1.0),
+        sequence=state.reserve_query_sequences(1)[0],
+        sql="SELECT 'first' AS label",
+    )
+
+    async def _inner() -> tuple[str, bool, int]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sources", DataTable).focus()
+            await pilot.pause()
+            await pilot.press("delete")
+            await pilot.pause()
+            return (
+                type(app.screen).__name__,
+                app.state.active_query_result_record() is not None,
+                app.query_one("#sources", DataTable).row_count,
+            )
+
+    screen_name, has_active_result, source_count = asyncio.run(_inner())
+
+    assert screen_name == "Screen"
+    assert has_active_result is True
+    assert source_count == 1
+
+
+@pytest.mark.parametrize("lifecycle_state", ["executing", "preserving"])
+def test_delete_result_is_disabled_for_non_terminal_result_lifecycle(
+    tmp_path: Path,
+    lifecycle_state: str,
+) -> None:
+    state = TUISessionState()
+    sequence = state.reserve_query_sequences(1)[0]
+    executing = TUIResultRecord(
+        handle=None,
+        state="executing",
+        reason=None,
+        columns=(),
+        preview_row_count=0,
+        full_row_count=None,
+        elapsed_ms=0.0,
+    )
+    state.set_active_result_record(sequence, executing)
+    if lifecycle_state == "preserving":
+        preview_result = QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0)
+        preserving = TUIResultRecord(
+            handle=None,
+            state="preserving",
+            reason=None,
+            columns=preview_result.columns,
+            preview_row_count=len(preview_result.rows),
+            full_row_count=None,
+            elapsed_ms=preview_result.elapsed_ms,
+        )
+        state.set_active_result_record(
+            sequence,
+            preserving,
+            result_view=make_result_view_state(
+                preview_result,
+                source_result_sequence=sequence,
+            ),
+        )
+
+    async def _inner() -> tuple[bool, str, str | None]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#results", DataTable).focus()
+            await pilot.pause()
+            enabled = app.check_action("delete_result", ())
+            app.action_delete_result()
+            await pilot.pause()
+            record = app.state.active_query_result_record()
+            return enabled, type(app.screen).__name__, None if record is None else record.state
+
+    enabled, screen_name, observed_state = asyncio.run(_inner())
+
+    assert enabled is False
+    assert screen_name == "Screen"
+    assert observed_state == lifecycle_state
+
+
+def test_delete_result_discards_memory_only_preview_without_store_remove(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = TUISessionState()
+    sequence = state.reserve_query_sequences(1)[0]
+    preview = BoundedQueryResult(
+        columns=("value",),
+        rows=((1,),),
+        elapsed_ms=1.0,
+        preview_payload_bytes=len(encode_row_payload((1,))),
+        has_more_rows=False,
+        truncation_reason=None,
+    )
+    state.active_result = TUIActiveResultState(
+        kind="query",
+        label=f"Active result: query {sequence}",
+        sequence=sequence,
+    )
+    state._active_result_record = TUIResultRecord(
+        handle=None,
+        state="preview_only",
+        reason="preservation_failed",
+        columns=preview.columns,
+        preview_row_count=len(preview.rows),
+        full_row_count=None,
+        elapsed_ms=preview.elapsed_ms,
+    )
+    state.result_view = make_result_view_state(
+        QueryResult(columns=preview.columns, rows=preview.rows, elapsed_ms=preview.elapsed_ms),
+        source_result_sequence=sequence,
+    )
+    remove_calls: list[object] = []
+    store = TUIResultStore(temp_root=tmp_path)
+    monkeypatch.setattr(store, "remove", lambda handle: remove_calls.append(handle))
+
+    async def _inner() -> tuple[bool, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#results", DataTable).focus()
+            await pilot.pause()
+            app.action_delete_result()
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+            return app.state.active_query_result_record() is None, app.query_one(
+                "#status", Static
+            ).content
+
+    deleted, status = asyncio.run(_inner())
+
+    assert deleted is True
+    assert remove_calls == []
+    assert "Deleted preserved result" in status
+
+
+def test_delete_result_storage_failure_marks_result_unavailable_truthfully(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = TUISessionState()
+    store = _record_stored_result(
+        state,
+        QueryResult(columns=("label",), rows=(("first",),), elapsed_ms=1.0),
+        sequence=state.reserve_query_sequences(1)[0],
+        sql="SELECT 'first' AS label",
+    )
+    record = state.active_query_result_record()
+    assert record is not None and record.handle is not None
+
+    def fail_remove(handle: object) -> None:
+        del handle
+        raise TUIResultStorageError(
+            "The full result is no longer available because its temporary storage was lost.",
+            kind="result_unavailable",
+            invalidated_sequences=(record.handle.sequence,),
+        )
+
+    monkeypatch.setattr(store, "remove", fail_remove)
+
+    async def _inner() -> tuple[bool, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#results", DataTable).focus()
+            await pilot.pause()
+            app.action_delete_result()
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+            return (
+                app.state.active_query_result_record() is None,
+                app.query_one("#status", Static).content,
+                app.query_one("#results-message", Static).content,
+            )
+
+    deleted, status, message = asyncio.run(_inner())
+
+    assert deleted is True
+    assert "temporary storage was lost" in status
+    assert "temporary storage was lost" in message
+
+
 @pytest.mark.parametrize(
-    "action_name",
+    ("action_name", "input_selector"),
     [
-        "action_export_last_result",
-        "action_save_result_as_source",
+        ("action_export_last_result", "#export-path"),
+        ("action_save_result_as_source", "#derived-source-alias"),
     ],
 )
-def test_full_result_load_race_before_prompt_marks_result_unavailable(
+def test_full_result_rows_are_not_opened_before_prompt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     action_name: str,
+    input_selector: str,
 ) -> None:
     state = TUISessionState()
     sequence = state.reserve_query_sequences(1)[0]
@@ -6114,28 +6425,29 @@ def test_full_result_load_race_before_prompt_marks_result_unavailable(
         ),
     )
 
-    async def run_case() -> tuple[TUIResultRecord | None, str, str, bool]:
+    async def run_case() -> tuple[TUIResultRecord | None, bool, int]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
         async with app.run_test() as pilot:
             await pilot.pause()
             getattr(app, action_name)()
             await pilot.pause()
+            app.screen.query_one(input_selector, Input)
+            await pilot.press("escape")
+            await pilot.pause()
             return (
                 app.state.query_result_record(sequence),
-                app.query_one("#status", Static).content,
-                app.query_one("#results-message", Static).content,
                 app.state.operation_run.is_running,
+                store.open_rows.call_count,  # type: ignore[attr-defined]
             )
 
-    record, status, message, operation_running = asyncio.run(run_case())
+    record, operation_running, open_calls = asyncio.run(run_case())
 
-    assert record is None
-    assert "no longer available" in status.lower()
-    assert "no longer available" in message.lower()
+    assert record is not None
     assert operation_running is False
+    assert open_calls == 0
 
 
-def test_active_query_result_close_failure_does_not_mask_primary_iteration_error(
+def test_streaming_export_close_failure_does_not_mask_primary_iteration_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6149,29 +6461,47 @@ def test_active_query_result_close_failure_does_not_mask_primary_iteration_error
     )
     close_calls = {"count": 0}
 
-    class _FailingRows:
-        columns = ("value",)
-        elapsed_ms = 1.0
+    class _FailingIterator:
+        def __iter__(self):
+            return self
 
-        def iter_rows(self):
+        def __next__(self):
             raise RuntimeError("primary iteration failure")
 
         def close(self) -> None:
             close_calls["count"] += 1
             raise RuntimeError("close failure")
 
+    class _FailingRows:
+        columns = ("value",)
+        elapsed_ms = 1.0
+
+        def iter_rows(self):
+            return _FailingIterator()
+
     monkeypatch.setattr(store, "open_rows", Mock(return_value=_FailingRows()))
 
-    async def run_case() -> None:
+    async def run_case() -> tuple[bool, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
         async with app.run_test() as pilot:
             await pilot.pause()
-            with pytest.raises(RuntimeError, match="primary iteration failure"):
-                app._active_query_result()
+            await pilot.press("f7")
+            await pilot.pause()
+            app.screen.query_one("#export-path", Input).value = "failed-export.csv"
+            await pilot.press("enter")
+            await _settled_operation_idle(pilot, app)
+            return (
+                app.state.query_result_record(sequence) is not None,
+                app.query_one("#status", Static).content,
+            )
 
-    asyncio.run(run_case())
+    preserved, status = asyncio.run(run_case())
 
     assert close_calls["count"] == 1
+    assert preserved is True
+    assert "Unable to complete this action" in status
+    assert "close failure" not in status
+    assert not (tmp_path / "failed-export.csv").exists()
 
 
 @pytest.mark.parametrize(
@@ -6182,7 +6512,7 @@ def test_active_query_result_close_failure_does_not_mask_primary_iteration_error
     ],
     ids=("export", "save-result"),
 )
-def test_full_result_load_race_after_prompt_never_starts_worker(
+def test_full_result_load_failure_during_stream_marks_result_unavailable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     action_key: str,
@@ -6191,10 +6521,9 @@ def test_full_result_load_race_after_prompt_never_starts_worker(
 ) -> None:
     state = TUISessionState()
     sequence = state.reserve_query_sequences(1)[0]
-    result = QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0)
     store = _record_stored_result(
         state,
-        result,
+        QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
         sequence=sequence,
         sql="SELECT 1 AS value",
     )
@@ -6204,19 +6533,8 @@ def test_full_result_load_race_after_prompt_never_starts_worker(
         invalidated_sequences=(sequence,),
     )
 
-    class _OneShotRows:
-        def __init__(self) -> None:
-            self.columns = result.columns
-            self.elapsed_ms = result.elapsed_ms
-
-        def iter_rows(self):
-            return iter(result.rows)
-
-    monkeypatch.setattr(
-        store,
-        "open_rows",
-        Mock(side_effect=(_OneShotRows(), load_error)),
-    )
+    open_rows = Mock(side_effect=load_error)
+    monkeypatch.setattr(store, "open_rows", open_rows)
 
     async def run_case() -> tuple[TUIResultRecord | None, str, str, bool]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
@@ -6227,7 +6545,7 @@ def test_full_result_load_race_after_prompt_never_starts_worker(
             prompt_input = app.screen.query_one(input_selector, Input)
             prompt_input.value = input_value
             await pilot.press("enter")
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
             return (
                 app.state.query_result_record(sequence),
                 app.query_one("#status", Static).content,
@@ -6241,6 +6559,7 @@ def test_full_result_load_race_after_prompt_never_starts_worker(
     assert "no longer available" in status.lower()
     assert "no longer available" in message.lower()
     assert operation_running is False
+    assert open_rows.call_count == 1
     assert state.sources == ()
     assert not (tmp_path / "race-export.csv").exists()
     assert not (tmp_path / ".csvql" / "results" / "race_saved_result.csv").exists()
@@ -6274,13 +6593,17 @@ def _two_spilled_buffer_results(
 
 
 @pytest.mark.parametrize(
-    "action_name",
-    ["action_export_last_result", "action_save_result_as_source"],
+    ("action_name", "input_selector"),
+    [
+        ("action_export_last_result", "#export-path"),
+        ("action_save_result_as_source", "#derived-source-alias"),
+    ],
 )
-def test_lost_workspace_before_prompt_marks_all_spilled_siblings_unavailable(
+def test_lost_workspace_is_not_inspected_before_prompt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     action_name: str,
+    input_selector: str,
 ) -> None:
     state, store, sequences = _two_spilled_buffer_results(tmp_path)
     workspace = store.workspace_path
@@ -6289,25 +6612,22 @@ def test_lost_workspace_before_prompt_marks_all_spilled_siblings_unavailable(
         assert store._close_active_lease()
     shutil.rmtree(workspace)
 
-    async def run_case() -> tuple[str, str, bool]:
+    async def run_case() -> bool:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
         async with app.run_test() as pilot:
             await pilot.pause()
             getattr(app, action_name)()
             await pilot.pause()
-            return (
-                app.query_one("#status", Static).content,
-                app.query_one("#results-message", Static).content,
-                app.state.operation_run.is_running,
-            )
+            app.screen.query_one(input_selector, Input)
+            await pilot.press("escape")
+            await pilot.pause()
+            return app.state.operation_run.is_running
 
-    status, message, operation_running = asyncio.run(run_case())
+    operation_running = asyncio.run(run_case())
 
     for sequence in sequences:
         record = state.query_result_record(sequence)
-        assert record is None
-    assert "no longer available" in status.lower()
-    assert "no longer available" in message.lower()
+        assert record is not None
     assert operation_running is False
 
 
@@ -6341,7 +6661,7 @@ def test_lost_workspace_after_prompt_marks_all_spilled_siblings_unavailable(
             shutil.rmtree(workspace)
             app.screen.query_one(input_selector, Input).value = input_value
             await pilot.press("enter")
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
             return (
                 app.query_one("#status", Static).content,
                 app.query_one("#results-message", Static).content,
@@ -6360,13 +6680,19 @@ def test_lost_workspace_after_prompt_marks_all_spilled_siblings_unavailable(
 
 
 @pytest.mark.parametrize(
-    "action_name",
-    ["action_export_last_result", "action_save_result_as_source"],
+    ("action_key", "input_selector", "input_value"),
+    [
+        ("f7", "#export-path", "corrupt-before-prompt.csv"),
+        ("f11", "#derived-source-alias", "corrupt_before_prompt_result"),
+    ],
+    ids=("export", "save-result"),
 )
 def test_corrupt_spill_import_error_before_prompt_is_sanitized(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    action_name: str,
+    action_key: str,
+    input_selector: str,
+    input_value: str,
 ) -> None:
     state = TUISessionState()
     sequence = state.reserve_query_sequences(1)[0]
@@ -6388,8 +6714,11 @@ def test_corrupt_spill_import_error_before_prompt_is_sanitized(
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
         async with app.run_test() as pilot:
             await pilot.pause()
-            getattr(app, action_name)()
+            await pilot.press(action_key)
             await pilot.pause()
+            app.screen.query_one(input_selector, Input).value = input_value
+            await pilot.press("enter")
+            await _settled_operation_idle(pilot, app)
             return (
                 app.query_one("#status", Static).content,
                 app.query_one("#results-message", Static).content,
@@ -6404,6 +6733,8 @@ def test_corrupt_spill_import_error_before_prompt_is_sanitized(
     assert "no_such_localql_module" not in message
     assert str(tmp_path) not in status
     assert operation_running is False
+    assert not (tmp_path / "corrupt-before-prompt.csv").exists()
+    assert not (tmp_path / ".csvql" / "results" / "corrupt_before_prompt_result.csv").exists()
 
 
 @pytest.mark.parametrize(
@@ -6414,7 +6745,7 @@ def test_corrupt_spill_import_error_before_prompt_is_sanitized(
     ],
     ids=("export", "save-result"),
 )
-def test_corrupt_spill_import_error_after_prompt_never_starts_worker(
+def test_corrupt_spill_import_error_after_prompt_is_sanitized(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     action_key: str,
@@ -6445,7 +6776,7 @@ def test_corrupt_spill_import_error_after_prompt_never_starts_worker(
             result_paths[0].write_bytes(b"cno_such_localql_module\nMissing\n.")
             app.screen.query_one(input_selector, Input).value = input_value
             await pilot.press("enter")
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
             return (
                 app.query_one("#status", Static).content,
                 app.query_one("#results-message", Static).content,
@@ -7396,16 +7727,19 @@ def test_attached_export_terminalizes_before_queued_query_and_keeps_bound_result
         event_order.append(f"query-{request.sequences[0]}-return")
 
     def fake_export_last_result(
-        result: QueryResult,
+        result_store: TUIResultStore,
+        handle,
         path_value: str,
         *,
         export_format: ExportFormat,
         base_dir: Path,
         force: bool = False,
         token: OperationToken | None = None,
+        **kwargs: object,
     ) -> Path:
-        del export_format, base_dir, force
-        exported_rows.append(result.rows)
+        del export_format, base_dir, force, kwargs
+        source = result_store.open_rows(handle)
+        exported_rows.append(tuple(source.iter_rows()))
         exported_paths.append(Path(path_value))
         event_order.append("export-start")
         first_worker_finished_at_export_start.append(
@@ -7633,13 +7967,16 @@ def test_attached_export_waits_for_unrelated_result_operation_before_queued_quer
         event_order.append(f"query-{request.sequences[0]}-return")
 
     def fake_export_last_result(
-        result: QueryResult,
+        result_store: TUIResultStore,
+        handle,
         path_value: str,
         *,
         token: OperationToken | None = None,
         **kwargs: object,
     ) -> Path:
-        del result, kwargs
+        del kwargs
+        source = result_store.open_rows(handle)
+        assert tuple(source.iter_rows())
         destination = Path(path_value)
         exported_paths.append(destination)
         if destination == manual_destination:
@@ -7863,11 +8200,14 @@ def test_export_intent_replacement_confirmation_cannot_replace_in_flight_intent(
         )
 
     def fake_export_last_result(
-        result: QueryResult,
+        result_store: TUIResultStore,
+        handle,
         path_value: str,
         **kwargs: object,
     ) -> Path:
-        del result, kwargs
+        del kwargs
+        source = result_store.open_rows(handle)
+        assert tuple(source.iter_rows())
         destination = Path(path_value)
         exported_paths.append(destination)
         export_started.set()
@@ -8043,11 +8383,14 @@ def test_preserving_export_prompt_reserves_order_until_identity_bound_resolution
         event_order.append(f"query-{request.sequences[0]}-return")
 
     def fake_export_last_result(
-        result: QueryResult,
+        result_store: TUIResultStore,
+        handle,
         path_value: str,
         **kwargs: object,
     ) -> Path:
-        del result, kwargs
+        del kwargs
+        source = result_store.open_rows(handle)
+        assert tuple(source.iter_rows())
         destination = Path(path_value)
         exported_paths.append(destination)
         event_order.append(f"export-{destination.name}-start")
@@ -8258,11 +8601,14 @@ def test_export_intent_replacement_confirmation_is_identity_bound(
         event_sink(TUICompleteEvent(sequence=request.sequences[0], stored=completed))
 
     def fake_export_last_result(
-        result: QueryResult,
+        result_store: TUIResultStore,
+        handle,
         path_value: str,
         **kwargs: object,
     ) -> Path:
-        del result, kwargs
+        del kwargs
+        source = result_store.open_rows(handle)
+        assert tuple(source.iter_rows())
         path = Path(path_value)
         exported_paths.append(path)
         return path

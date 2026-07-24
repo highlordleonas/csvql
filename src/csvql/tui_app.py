@@ -135,6 +135,7 @@ _MODAL_BLOCKED_APP_ACTIONS = {
     "profile_source",
     "quit",
     "quit_from_non_editor",
+    "delete_result",
     "remove_source",
     "reopen_history",
     "rerun_history",
@@ -457,6 +458,7 @@ class CSVQLMenuApp(App[None]):
         Binding("p", "profile_source", "Profile", show=False),
         Binding("a", "add_source", "Add source", show=False),
         Binding("d", "remove_source", "Remove source", show=False),
+        Binding("delete", "delete_result", "Delete result", show=False),
         Binding("w", "save_sources", "Save sources", show=False),
         Binding("c", "show_source_columns", "Columns", show=False),
         Binding("l", "insert_source_alias", "Insert alias", show=False),
@@ -493,6 +495,7 @@ class CSVQLMenuApp(App[None]):
         self._active_operation_worker: Worker[object] | None = None
         self._active_operation_context: OperationContext | None = None
         self._active_operation_token: OperationToken | None = None
+        self._active_operation_result_sequence: int | None = None
         self._active_operation_worker_name: str | None = None
         self._active_query_worker: Worker[object] | None = None
         self._active_query_operation: OperationContext | None = None
@@ -697,6 +700,69 @@ class CSVQLMenuApp(App[None]):
         self._refresh_sources_table()
         self._set_status(f"Removed source {removed_source.name}. {self._status_message()}")
         self.query_one("#sources", DataTable).focus()
+
+    def action_delete_result(self) -> None:
+        if self._input_or_confirmation_screen_active():
+            return
+        sequence = self._selected_result_sequence_for_delete()
+        if sequence is None:
+            self._show_error(CSVQLError("No preserved result selected."))
+            return
+        record = self._result_record_for_sequence(sequence)
+        if record is None:
+            self._show_error(CSVQLError("No preserved result selected."))
+            return
+        self.push_screen(
+            _ConfirmationScreen(
+                f"Delete preserved result {sequence}? Press y to delete or n to keep it."
+            ),
+            callback=lambda confirmed: self._handle_delete_result_confirmation(
+                sequence,
+                record.handle,
+                record.state,
+                confirmed,
+            ),
+        )
+
+    def _handle_delete_result_confirmation(
+        self,
+        sequence: int,
+        expected_handle: TUIResultHandle | None,
+        expected_state: str,
+        confirmed: bool | None,
+    ) -> None:
+        if not confirmed:
+            self._set_status("Result deletion cancelled.")
+            return
+        record = self._result_record_for_sequence(sequence)
+        if (
+            record is None
+            or record.state not in {"complete", "preview_only"}
+            or expected_state not in {"complete", "preview_only"}
+            or record.handle != expected_handle
+            or record.state != expected_state
+        ):
+            self._show_error(CSVQLError("The selected preserved result is no longer available."))
+            return
+        if record.handle is not None:
+            try:
+                self._result_store.remove(record.handle)
+            except TUIResultStorageError as exc:
+                invalidated_sequences = tuple(sorted({sequence, *exc.invalidated_sequences}))
+                self.state.mark_results_unavailable(
+                    invalidated_sequences,
+                    exc.user_message,
+                )
+                self._refresh_history_table()
+                self._refresh_results_display()
+                self._refresh_pane_context()
+                self._show_error(CSVQLError(exc.user_message))
+                return
+        self.state.remove_query_result(sequence)
+        self._refresh_history_table()
+        self._refresh_results_display()
+        self._refresh_pane_context()
+        self._set_status(f"Deleted preserved result {sequence}.")
 
     def action_inspect_source(self) -> None:
         if self._operation_running():
@@ -1261,12 +1327,6 @@ class CSVQLMenuApp(App[None]):
         ):
             self._show_error(CSVQLError("Run a query before exporting."))
             return
-        if record.state == "complete" and self._query_result_for_sequence(result_sequence) is None:
-            if self._show_active_result_unavailable():
-                return
-            self._show_error(CSVQLError("Run a query before exporting."))
-            return
-
         prompt = _PromptInputScreen(
             (
                 "Export active result to path "
@@ -1312,8 +1372,14 @@ class CSVQLMenuApp(App[None]):
             self._show_selected_history_result()
         if self._show_active_result_unavailable():
             return
-        result = self._active_query_result()
-        if result is None:
+        record = self.state.active_query_result_record()
+        result_sequence = self.state.active_result.sequence
+        if (
+            record is None
+            or result_sequence is None
+            or record.state != "complete"
+            or record.handle is None
+        ):
             if self._show_active_result_unavailable():
                 return
             if self.state.last_result_status == "no_result":
@@ -1327,7 +1393,11 @@ class CSVQLMenuApp(App[None]):
                 "Enter a derived source alias.",
                 input_id="derived-source-alias",
             ),
-            callback=self._handle_save_result_as_source,
+            callback=lambda alias: self._handle_save_result_as_source(
+                alias,
+                result_sequence=result_sequence,
+                expected_handle=record.handle,
+            ),
         )
 
     def action_save_sources(self) -> None:
@@ -1389,6 +1459,7 @@ class CSVQLMenuApp(App[None]):
         *,
         kind: TUIOperationKind,
         label: str,
+        result_sequence: int | None = None,
         work: Callable[[OperationContext], object],
     ) -> bool:
         if self._operation_running():
@@ -1401,6 +1472,7 @@ class CSVQLMenuApp(App[None]):
         token = operation.token
         self._active_operation_context = operation
         self._active_operation_token = token
+        self._active_operation_result_sequence = result_sequence
         worker_name = f"operation-{kind}-{self._next_operation_worker_id}"
         self._active_operation_worker_name = worker_name
         self._next_operation_worker_id += 1
@@ -1470,6 +1542,7 @@ class CSVQLMenuApp(App[None]):
                 self._active_operation_worker_name = None
                 self._active_operation_context = None
                 self._active_operation_token = None
+                self._active_operation_result_sequence = None
             if self._active_operation_worker is worker:
                 self._active_operation_worker = None
                 self.state.operation_run = TUIOperationRunState()
@@ -1487,6 +1560,10 @@ class CSVQLMenuApp(App[None]):
             self._active_operation_worker_name = None
             self._active_operation_context = None
             self._active_operation_token = None
+            operation_result_sequence = self._active_operation_result_sequence
+            self._active_operation_result_sequence = None
+        else:
+            operation_result_sequence = None
 
         if state == WorkerState.CANCELLED:
             if attached_intent is not None:
@@ -1499,7 +1576,11 @@ class CSVQLMenuApp(App[None]):
                 self._resume_deferred_attached_export()
             return
         if state == WorkerState.ERROR:
-            self._handle_operation_worker_failure(worker.error, operation_label=operation_label)
+            self._handle_operation_worker_failure(
+                worker.error,
+                operation_label=operation_label,
+                operation_result_sequence=operation_result_sequence,
+            )
             if attached_intent is not None:
                 self._finish_attached_export(attached_intent)
             else:
@@ -1618,8 +1699,22 @@ class CSVQLMenuApp(App[None]):
         error: BaseException | None,
         *,
         operation_label: str,
+        operation_result_sequence: int | None = None,
     ) -> None:
         if isinstance(error, OperationCancelled):
+            return
+        if isinstance(error, TUIResultStorageError):
+            invalidated_sequences = set(error.invalidated_sequences)
+            if operation_result_sequence is not None:
+                invalidated_sequences.add(operation_result_sequence)
+            self.state.mark_results_unavailable(
+                tuple(sorted(invalidated_sequences)),
+                error.user_message,
+            )
+            self._refresh_history_table()
+            self._refresh_results_display()
+            self._refresh_pane_context()
+            self._show_error(CSVQLError(error.user_message))
             return
         if self.state.query_run.is_running:
             self._set_status(
@@ -1737,6 +1832,9 @@ class CSVQLMenuApp(App[None]):
             raise RuntimeError("an attached export is already active")
         if self._operation_running():
             return True
+        handle = record.handle
+        if record.state != "complete" or handle is None:
+            raise RuntimeError("attached export requires a complete preserved result")
         self._attached_export_intent_in_flight = intent
         started = self._start_operation_worker(
             kind="export",
@@ -1744,10 +1842,14 @@ class CSVQLMenuApp(App[None]):
                 f"Exporting preserved query {intent.result_sequence} to "
                 f"{_display_path(intent.destination, self.start_dir)}"
             ),
+            result_sequence=handle.sequence,
             work=lambda operation: _ExportOutcome(
                 path=export_last_result(
-                    self._materialize_result_record(record),
+                    self._result_store,
+                    handle,
                     str(intent.destination),
+                    columns=record.columns,
+                    elapsed_ms=record.elapsed_ms,
                     export_format=intent.format,
                     base_dir=self.start_dir,
                     force=False,
@@ -1836,6 +1938,7 @@ class CSVQLMenuApp(App[None]):
         if action in _RESULTS_ONLY_ACTIONS and not self._is_focused("#results"):
             return False
         operation_actions = {
+            "delete_result",
             "inspect_source",
             "sample_source",
             "profile_source",
@@ -1856,6 +1959,7 @@ class CSVQLMenuApp(App[None]):
         if isinstance(self.focused, TextArea):
             text_entry_actions = {
                 "quit_from_non_editor",
+                "delete_result",
                 "inspect_source",
                 "sample_source",
                 "profile_source",
@@ -1893,6 +1997,8 @@ class CSVQLMenuApp(App[None]):
             ) or self.state.active_result_capabilities().can_export_full
         if action == "save_result_as_source":
             return self.state.active_result_capabilities().can_save_as_source
+        if action == "delete_result":
+            return self._selected_result_sequence_for_delete() is not None
         return True
 
     def _app_action_blocked_by_modal(self, action: str) -> bool:
@@ -2457,20 +2563,24 @@ class CSVQLMenuApp(App[None]):
                 self._confirm_export_intent_replacement(replacement)
                 return
 
-            result = self._query_result_for_sequence(result_sequence)
-            if result is None:
+            if record is None or record.state != "complete" or record.handle is None:
                 if self._show_active_result_unavailable():
                     return
                 self._show_error(CSVQLError("Run a query before exporting."))
                 return
+            handle = record.handle
             if not self.call_after_refresh(
                 lambda: self._start_operation_worker(
                     kind="export",
                     label="Exporting active result",
+                    result_sequence=handle.sequence,
                     work=lambda operation: _ExportOutcome(
                         path=export_last_result(
-                            result,
+                            self._result_store,
+                            handle,
                             export_path_value,
+                            columns=record.columns,
+                            elapsed_ms=record.elapsed_ms,
                             export_format=export_format,
                             base_dir=self.start_dir,
                             force=False,
@@ -2549,15 +2659,26 @@ class CSVQLMenuApp(App[None]):
         self._update_static_text("#results-message", f"Saved sources to {display_path}.")
         self.query_one("#sources", DataTable).focus()
 
-    def _handle_save_result_as_source(self, alias: str | None) -> None:
+    def _handle_save_result_as_source(
+        self,
+        alias: str | None,
+        *,
+        result_sequence: int,
+        expected_handle: TUIResultHandle,
+    ) -> None:
         if alias is None:
             return
 
-        result = self._active_query_result()
-        if result is None:
+        record = self._result_record_for_sequence(result_sequence)
+        if (
+            record is None
+            or record.state != "complete"
+            or record.handle is None
+            or record.handle != expected_handle
+        ):
             if self._show_active_result_unavailable():
                 return
-            self._show_error(CSVQLError("Run a query before saving a result as a source."))
+            self._show_error(CSVQLError("The selected preserved result is no longer available."))
             return
 
         if any(source.name.casefold() == alias.casefold() for source in self.state.sources):
@@ -2569,15 +2690,20 @@ class CSVQLMenuApp(App[None]):
             )
             return
 
+        handle = record.handle
         try:
             if not self.call_after_refresh(
                 lambda: self._start_operation_worker(
                     kind="save_result",
                     label="Saving active result as source",
+                    result_sequence=handle.sequence,
                     work=lambda operation: _SaveResultSourceOutcome(
                         source=save_derived_result_source(
-                            result,
+                            self._result_store,
+                            handle,
                             alias,
+                            columns=record.columns,
+                            elapsed_ms=record.elapsed_ms,
                             existing_sources=self.state.sources,
                             start_dir=self.start_dir,
                             token=operation.token,
@@ -2625,8 +2751,19 @@ class CSVQLMenuApp(App[None]):
             return None
         return item.sequence
 
-    def _active_query_result(self) -> QueryResult | None:
-        return self._query_result_for_sequence(self.state.active_result.sequence)
+    def _selected_result_sequence_for_delete(self) -> int | None:
+        if self._is_focused("#history"):
+            sequence = self._selected_history_sequence()
+        elif self._is_focused("#results"):
+            sequence = self.state.active_result.sequence
+        else:
+            return None
+        if sequence is None:
+            return None
+        record = self._result_record_for_sequence(sequence)
+        if record is None or record.state not in {"complete", "preview_only"}:
+            return None
+        return sequence
 
     def _result_record_for_sequence(
         self,
@@ -2639,49 +2776,6 @@ class CSVQLMenuApp(App[None]):
             if active_record is not None:
                 return active_record
         return self.state.query_result_record(sequence)
-
-    def _query_result_for_sequence(self, sequence: int | None) -> QueryResult | None:
-        record = self._result_record_for_sequence(sequence)
-        if record is None or record.state != "complete" or record.handle is None:
-            return None
-        try:
-            return self._materialize_result_record(record)
-        except TUIResultStorageError as exc:
-            invalidated_sequences = tuple(
-                sorted({record.handle.sequence, *exc.invalidated_sequences})
-            )
-            self.state.mark_results_unavailable(
-                invalidated_sequences,
-                _FULL_RESULT_UNAVAILABLE_MESSAGE,
-            )
-            self._set_status(_FULL_RESULT_UNAVAILABLE_MESSAGE)
-            self._update_static_text("#results-message", _FULL_RESULT_UNAVAILABLE_MESSAGE)
-            return None
-
-    def _materialize_result_record(self, record: TUIResultRecord) -> QueryResult:
-        if record.state != "complete" or record.handle is None:
-            raise ValueError("only complete result records can be materialized")
-        source = None
-        primary_error: BaseException | None = None
-        try:
-            source = self._result_store.open_rows(record.handle)
-            rows = tuple(source.iter_rows())
-            return QueryResult(
-                columns=source.columns,
-                rows=rows,
-                elapsed_ms=source.elapsed_ms,
-            )
-        except BaseException as exc:
-            primary_error = exc
-            raise
-        finally:
-            close = getattr(source, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    if primary_error is None:
-                        raise
 
     def _show_active_result_unavailable(self) -> bool:
         record = self.state.active_query_result_record()
@@ -3708,11 +3802,14 @@ def _pane_context(active_pane: TUIFocusPane) -> str:
         )
     if active_pane == "history":
         return (
-            "History: selected row | Enter reopen | r rerun | F7 export active | "
-            "Ctrl+S/Alt+S save active"
+            "History: selected row | Enter reopen | r rerun | Delete remove preserved | "
+            "F7 export active | Ctrl+S/Alt+S save active"
         )
     if active_pane == "results":
-        return "Result target: active result. Export and save use the active result shown above."
+        return (
+            "Result target: active result. Delete removes the selected preserved result. "
+            "Export and save use the active result shown above."
+        )
     return "Editor target: current SQL buffer. Buffer run keeps statements in one DuckDB session."
 
 

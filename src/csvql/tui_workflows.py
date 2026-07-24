@@ -2,7 +2,7 @@
 
 import os
 import shlex
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -12,12 +12,7 @@ from csvql.bounded_result import PreviewPolicy
 from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import CSVQLError, ExportError, ProjectConfigError, TableMappingError
-from csvql.export import (
-    ExportFormat,
-    format_query_result_for_export,
-    resolve_export_path,
-    write_export_file,
-)
+from csvql.export import ExportFormat, resolve_export_path
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
 from csvql.operation import OperationCancelled, OperationContext, OperationToken
 from csvql.project_config import (
@@ -40,8 +35,10 @@ from csvql.source import (
     source_spec_from_tui_source,
 )
 from csvql.source_operations import SourceOperations
+from csvql.streaming_export import write_streaming_export
 from csvql.table_mapping import parse_table_mapping, source_from_single_csv, validate_table_alias
 from csvql.tui_query_runner import TUIRunRequest
+from csvql.tui_result_store import TUIResultHandle, TUIResultStore
 from csvql.tui_state import (
     TUIExportIntent,
     TUIQueryOutcome,
@@ -344,35 +341,58 @@ def run_query_for_tui(
 
 
 def export_last_result(
-    result: QueryResult,
+    result_store: TUIResultStore,
+    handle: TUIResultHandle,
     path_value: str,
     *,
+    columns: tuple[str, ...],
+    elapsed_ms: float,
     export_format: ExportFormat,
     base_dir: Path,
     force: bool = False,
     token: OperationToken | None = None,
 ) -> Path:
-    """Export the selected TUI query result using the existing export helpers."""
+    """Export one preserved TUI result without materializing all rows in memory."""
 
+    export_source = _StoredResultExportSource(
+        result_store=result_store,
+        handle=handle,
+        columns=columns,
+        elapsed_ms=elapsed_ms,
+    )
     output_path = resolve_export_path(path_value, base_dir=base_dir, force=force)
-    content = format_query_result_for_export(result, export_format)
-    write_export_file(output_path, content, overwrite=force, token=token)
+    write_streaming_export(
+        export_source,
+        output_path,
+        export_format=export_format,
+        overwrite=force,
+        token=token,
+    )
     return output_path
 
 
 def save_derived_result_source(
-    result: QueryResult,
+    result_store: TUIResultStore,
+    handle: TUIResultHandle,
     alias: str,
     *,
+    columns: tuple[str, ...],
+    elapsed_ms: float,
     existing_sources: Sequence[TUISource],
     start_dir: Path,
     token: OperationToken | None = None,
 ) -> TUISource:
-    """Write a query result as a project-local CSV and return a derived source."""
+    """Write one preserved TUI result as a project-local CSV and return a source."""
 
+    export_source = _StoredResultExportSource(
+        result_store=result_store,
+        handle=handle,
+        columns=columns,
+        elapsed_ms=elapsed_ms,
+    )
     source_name = validate_table_alias(alias)
-    for source in existing_sources:
-        if source.name.casefold() == source_name.casefold():
+    for existing_source in existing_sources:
+        if existing_source.name.casefold() == source_name.casefold():
             raise TableMappingError(
                 f"Source alias '{source_name}' is already loaded in the TUI session.",
                 suggestion="Choose a unique alias for the derived result source.",
@@ -439,10 +459,17 @@ def save_derived_result_source(
         )
 
     output_path = resolved_result_dir / f"{source_name}.csv"
-    content = format_query_result_for_export(result, ExportFormat.csv)
     try:
-        _write_derived_result_file(output_path, content, token=token)
+        write_streaming_export(
+            export_source,
+            output_path,
+            export_format=ExportFormat.csv,
+            overwrite=False,
+            token=token,
+        )
     except OperationCancelled:
+        raise
+    except ExportError:
         raise
     except OSError as exc:
         raise ExportError(
@@ -507,6 +534,41 @@ def source_capability_status(
     spec = source_spec_from_tui_source(source)
     descriptor = DEFAULT_SOURCE_ADAPTER_REGISTRY.descriptor(spec.kind)
     return descriptor.capabilities.status_for(operation)
+
+
+class _StoredResultExportSource:
+    """Lazy one-shot export source for one validated preserved result handle."""
+
+    def __init__(
+        self,
+        *,
+        result_store: TUIResultStore,
+        handle: TUIResultHandle,
+        columns: tuple[str, ...],
+        elapsed_ms: float,
+    ) -> None:
+        self._result_store = result_store
+        self._handle = handle
+        self._columns = columns
+        self._elapsed_ms = elapsed_ms
+        self._used = False
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        return self._columns
+
+    @property
+    def elapsed_ms(self) -> float:
+        return self._elapsed_ms
+
+    def iter_rows(self) -> Iterator[tuple[object, ...]]:
+        if self._used:
+            raise ExportError(
+                "Stored result export can only be streamed once.",
+                suggestion="Run the export again from the preserved result.",
+            )
+        self._used = True
+        return self._result_store.open_rows(self._handle).iter_rows()
 
 
 def _resolve_tui_source(
