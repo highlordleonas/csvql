@@ -452,6 +452,153 @@ def test_record_query_cancelled_clears_active_selection_but_retains_attempt() ->
     assert state.active_result == TUIActiveResultState()
 
 
+def test_record_query_result_without_activation_preserves_existing_selection() -> None:
+    state = TUISessionState()
+    prior_view = _view(1, (("prior",),))
+    state.record_query_success(
+        1,
+        "SELECT prior",
+        handle=_handle(1),
+        result_view=prior_view,
+        elapsed_ms=1.0,
+    )
+
+    state.record_query_result(
+        2,
+        "SELECT background",
+        record=_record(
+            "complete",
+            handle=_handle(2),
+            columns=("value",),
+            preview_row_count=1,
+            full_row_count=1,
+        ),
+        run_mode="current",
+        activate_result=False,
+    )
+
+    assert state.active_result.sequence == 1
+    assert state.result_view is prior_view
+    assert state.query_result_record(2) == _record(
+        "complete",
+        handle=_handle(2),
+        columns=("value",),
+        preview_row_count=1,
+        full_row_count=1,
+    )
+
+
+def test_background_recording_requires_unrelated_active_selection_and_no_view() -> None:
+    state = TUISessionState()
+
+    with pytest.raises(ValueError, match="unrelated active selection"):
+        state.record_query_result(
+            1,
+            "SELECT 1",
+            record=_record(
+                "complete",
+                handle=_handle(1),
+                columns=("value",),
+                preview_row_count=1,
+                full_row_count=1,
+            ),
+            activate_result=False,
+        )
+
+    prior_view = _view(1, (("prior",),))
+    state.record_query_success(
+        1,
+        "SELECT prior",
+        handle=_handle(1),
+        result_view=prior_view,
+        elapsed_ms=1.0,
+    )
+    with pytest.raises(ValueError, match="cannot retain an undisplayed preview"):
+        state.record_query_result(
+            2,
+            "SELECT 2",
+            record=_record(
+                "complete",
+                handle=_handle(2),
+                columns=("value",),
+                preview_row_count=1,
+                full_row_count=1,
+            ),
+            result_view=_view(2, (("2",),)),
+            activate_result=False,
+        )
+
+
+def test_terminal_outcomes_can_preserve_unrelated_active_result() -> None:
+    state = TUISessionState()
+    prior_view = _view(1, (("prior",),))
+    state.record_query_success(
+        1,
+        "SELECT prior",
+        handle=_handle(1),
+        result_view=prior_view,
+        elapsed_ms=1.0,
+    )
+    sequence = 2
+    state.start_query_request(_run_request(sequence))
+
+    state.record_query_no_result(
+        sequence,
+        "SELECT 2",
+        1.0,
+        complete_run=False,
+        preserve_active_result=True,
+    )
+    assert state.active_result.sequence == 1
+    assert state.result_view is prior_view
+    assert state.last_result_status == "query"
+    state.finish_query_run()
+
+    state.start_query_request(_run_request(3))
+    sequence = state.query_run.sequence
+    assert sequence is not None
+    state.record_query_cancelled(
+        sequence,
+        "SELECT 3",
+        complete_run=False,
+        preserve_active_result=True,
+    )
+    assert state.active_result.sequence == 1
+    assert state.result_view is prior_view
+    state.finish_query_run()
+
+    state.start_query_request(_run_request(4))
+    sequence = state.query_run.sequence
+    assert sequence is not None
+    state.record_query_failed(
+        sequence,
+        "SELECT 4",
+        "failed",
+        preserve_active_result=True,
+    )
+
+    assert state.active_result.sequence == 1
+    assert state.result_view is prior_view
+    assert [item.status for item in state.query_history] == [
+        "success",
+        "no_result",
+        "cancelled",
+        "error",
+    ]
+
+
+def test_preserved_terminalization_requires_unrelated_active_selection() -> None:
+    state = TUISessionState()
+    state.set_active_result_record(1, _record("executing"))
+
+    with pytest.raises(ValueError, match="unrelated active selection"):
+        state.record_query_no_result(1, "SELECT 1", 1.0, preserve_active_result=True)
+    with pytest.raises(ValueError, match="unrelated active selection"):
+        state.record_query_cancelled(1, "SELECT 1", preserve_active_result=True)
+    with pytest.raises(ValueError, match="unrelated active selection"):
+        state.record_query_failed(1, "SELECT 1", "failed", preserve_active_result=True)
+
+
 def test_non_preview_terminalization_rejects_an_active_preview() -> None:
     state = TUISessionState()
     state.set_active_result_record(1, _record("executing"))

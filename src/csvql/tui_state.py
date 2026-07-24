@@ -661,55 +661,61 @@ class TUISessionState:
         run_mode: TUIQueryRunMode = "current",
         buffer_result_index: int | None = None,
         complete_run: bool = True,
+        activate_result: bool = True,
     ) -> None:
         if record.state not in {"complete", "preview_only"}:
             raise ValueError("only final result states can be recorded in session history")
         self._validate_record_sequence(sequence, record)
-        active = self._active_result_record if self.active_result.sequence == sequence else None
-        if active is None:
-            if result_view is None:
-                raise ValueError("a final result requires its active bounded preview")
+        if not activate_result and not self._has_unrelated_active_selection(sequence):
+            raise ValueError("background result recording requires an unrelated active selection")
+        if not activate_result and result_view is not None:
+            raise ValueError("background result recording cannot retain an undisplayed preview")
+        if activate_result:
+            active = self._active_result_record if self.active_result.sequence == sequence else None
+            if active is None:
+                if result_view is None:
+                    raise ValueError("a final result requires its active bounded preview")
+                self.set_active_result_record(
+                    sequence,
+                    TUIResultRecord(
+                        handle=None,
+                        state="executing",
+                        reason=None,
+                        columns=(),
+                        preview_row_count=0,
+                        full_row_count=None,
+                        elapsed_ms=0.0,
+                    ),
+                    run_mode=run_mode,
+                    buffer_result_index=buffer_result_index,
+                )
+                active = self._active_result_record
+            if active is not None and active.state == "executing":
+                self.set_active_result_record(
+                    sequence,
+                    transition_result_record(
+                        active,
+                        state="preserving",
+                        columns=record.columns,
+                        preview_row_count=record.preview_row_count,
+                        elapsed_ms=record.elapsed_ms,
+                    ),
+                    run_mode=run_mode,
+                    buffer_result_index=buffer_result_index,
+                    result_view=result_view,
+                )
             self.set_active_result_record(
                 sequence,
-                TUIResultRecord(
-                    handle=None,
-                    state="executing",
-                    reason=None,
-                    columns=(),
-                    preview_row_count=0,
-                    full_row_count=None,
-                    elapsed_ms=0.0,
-                ),
-                run_mode=run_mode,
-                buffer_result_index=buffer_result_index,
-            )
-            active = self._active_result_record
-        if active is not None and active.state == "executing":
-            self.set_active_result_record(
-                sequence,
-                transition_result_record(
-                    active,
-                    state="preserving",
-                    columns=record.columns,
-                    preview_row_count=record.preview_row_count,
-                    elapsed_ms=record.elapsed_ms,
-                ),
+                record,
                 run_mode=run_mode,
                 buffer_result_index=buffer_result_index,
                 result_view=result_view,
             )
-        self.set_active_result_record(
-            sequence,
-            record,
-            run_mode=run_mode,
-            buffer_result_index=buffer_result_index,
-            result_view=result_view,
-        )
         if record.handle is not None:
             self._query_result_records[sequence] = record
         else:
             self._query_result_records.pop(sequence, None)
-        self._query_history.append(
+        self._append_query_history(
             TUIQueryHistoryItem(
                 sequence=sequence,
                 sql=sql,
@@ -761,7 +767,7 @@ class TUISessionState:
         run_mode: TUIQueryRunMode = "current",
         complete_run: bool = True,
     ) -> None:
-        self._query_history.append(
+        self._append_query_history(
             TUIQueryHistoryItem(
                 sequence=sequence,
                 sql=sql,
@@ -781,10 +787,14 @@ class TUISessionState:
         elapsed_ms: float | None = None,
         run_mode: TUIQueryRunMode = "current",
         complete_run: bool = True,
+        preserve_active_result: bool = False,
     ) -> None:
         self._validate_non_preview_terminal(sequence, state="cancelled")
-        self.clear_last_result()
-        self._query_history.append(
+        if preserve_active_result and not self._has_unrelated_active_selection(sequence):
+            raise ValueError("preserved terminalization requires an unrelated active selection")
+        if not preserve_active_result:
+            self.clear_last_result()
+        self._append_query_history(
             TUIQueryHistoryItem(
                 sequence=sequence,
                 sql=sql,
@@ -804,13 +814,17 @@ class TUISessionState:
         *,
         run_mode: TUIQueryRunMode = "current",
         complete_run: bool = True,
+        preserve_active_result: bool = False,
     ) -> None:
         active = self._active_result_record if self.active_result.sequence == sequence else None
         if active is not None and active.state != "executing":
             raise ValueError("no-result terminalization requires an executing result")
-        self.clear_last_result()
-        self.last_result_status = "no_result"
-        self._query_history.append(
+        if preserve_active_result and not self._has_unrelated_active_selection(sequence):
+            raise ValueError("preserved terminalization requires an unrelated active selection")
+        if not preserve_active_result:
+            self.clear_last_result()
+            self.last_result_status = "no_result"
+        self._append_query_history(
             TUIQueryHistoryItem(
                 sequence=sequence,
                 sql=sql,
@@ -830,11 +844,15 @@ class TUISessionState:
         *,
         run_mode: TUIQueryRunMode = "current",
         complete_run: bool = True,
+        preserve_active_result: bool = False,
     ) -> None:
         self._validate_non_preview_terminal(sequence, state="failed")
-        self.clear_last_result()
-        self.last_result_status = "error"
-        self._query_history.append(
+        if preserve_active_result and not self._has_unrelated_active_selection(sequence):
+            raise ValueError("preserved terminalization requires an unrelated active selection")
+        if not preserve_active_result:
+            self.clear_last_result()
+            self.last_result_status = "error"
+        self._append_query_history(
             TUIQueryHistoryItem(
                 sequence=sequence,
                 sql=sql,
@@ -854,6 +872,7 @@ class TUISessionState:
         *,
         run_mode: TUIQueryRunMode = "current",
         complete_run: bool = True,
+        preserve_active_result: bool = False,
     ) -> None:
         self.record_query_failed(
             sequence,
@@ -861,6 +880,7 @@ class TUISessionState:
             error_message,
             run_mode=run_mode,
             complete_run=complete_run,
+            preserve_active_result=preserve_active_result,
         )
 
     def mark_results_unavailable(self, sequences: tuple[int, ...], message: str) -> None:
@@ -956,6 +976,17 @@ class TUISessionState:
             used.update(self.queued_run.request.sequences)
         if requested & used:
             raise ValueError("query request sequence IDs must not be reused")
+
+    def _advance_next_query_sequence(self, sequence: int) -> None:
+        self._next_query_sequence = max(self._next_query_sequence, sequence + 1)
+
+    def _append_query_history(self, item: TUIQueryHistoryItem) -> None:
+        self._advance_next_query_sequence(item.sequence)
+        self._query_history.append(item)
+
+    def _has_unrelated_active_selection(self, sequence: int) -> bool:
+        active_sequence = self.active_result.sequence
+        return active_sequence is not None and active_sequence != sequence
 
     def _find_source_index(self, alias: str) -> int | None:
         alias_key = alias.casefold()

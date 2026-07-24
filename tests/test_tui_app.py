@@ -739,6 +739,626 @@ def test_terminal_runner_events_update_history_and_status(
     assert history_status == expected_history_status
 
 
+def test_complete_event_preserves_recalled_history_result_and_records_background_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    store = _record_stored_result(
+        state,
+        QueryResult(columns=("prior",), rows=(("prior-row",),), elapsed_ms=1.0),
+        sequence=1,
+        sql="SELECT prior",
+    )
+    release = threading.Event()
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        preview = BoundedQueryResult(
+            columns=("value",),
+            rows=(("new-row",),),
+            elapsed_ms=2.0,
+            preview_payload_bytes=len(encode_row_payload(("new-row",))),
+            has_more_rows=False,
+            truncation_reason=None,
+        )
+        event_sink(TUIPreviewReadyEvent(sequence=request.sequences[0], preview=preview))
+        assert release.wait(5.0)
+        stored = _store_complete_result(
+            result_store,
+            QueryResult(columns=("value",), rows=(("new-row",),), elapsed_ms=3.0),
+            sequence=request.sequences[0],
+        )
+        event_sink(TUICompleteEvent(sequence=request.sequences[0], stored=stored))
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+
+    async def _inner() -> tuple[int | None, str, str, str | None, int | None, str, int]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text("SELECT current")
+            await pilot.press("f4")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if (
+                    app.state.active_query_result_record() is not None
+                    and app.state.active_query_result_record().state == "preserving"
+                ):
+                    break
+            app.query_one("#history", DataTable).focus()
+            app._show_history_result_at_row(0)
+            release.set()
+            await _settled_query_idle(pilot, app)
+            await pilot.pause()
+            settled_status = app.query_one("#status", Static).content
+            preserved_columns, preserved_row_count, recalled_message = _result_grid_snapshot(app)
+            assert app.state.active_result.sequence == 1
+            assert preserved_columns == ("prior",)
+            assert preserved_row_count == 1
+
+            completed_record = app.state.query_result_record(2)
+            app._show_history_result_at_row(1)
+            recalled_completed_message = app.query_one("#results-message", Static).content
+            history_table = app.query_one("#history", DataTable)
+            return (
+                app.state.query_history[0].sequence,
+                settled_status,
+                recalled_message,
+                None if completed_record is None else completed_record.state,
+                None if completed_record is None else completed_record.preview_row_count,
+                recalled_completed_message,
+                history_table.cursor_row,
+            )
+
+    (
+        first_history_sequence,
+        status,
+        recalled_message,
+        completed_state,
+        completed_preview_rows,
+        recalled_completed_message,
+        history_cursor_row,
+    ) = asyncio.run(_inner())
+
+    assert first_history_sequence == 1
+    assert status == "Query 2 completed in the background: 1 row(s) preserved for later recall."
+    assert "History query 1." in recalled_message
+    assert completed_state == "complete"
+    assert completed_preview_rows == 1
+    assert "History query 2." in recalled_completed_message
+    assert history_cursor_row == 0
+
+
+def test_unexpected_worker_failure_after_history_recall_preserves_visible_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    store = _record_stored_result(
+        state,
+        QueryResult(columns=("prior",), rows=(("prior-row",),), elapsed_ms=1.0),
+        sequence=1,
+        sql="SELECT prior",
+    )
+    release = threading.Event()
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del result_store, operation
+        preview = BoundedQueryResult(
+            columns=("value",),
+            rows=((2,),),
+            elapsed_ms=1.0,
+            preview_payload_bytes=len(encode_row_payload((2,))),
+            has_more_rows=True,
+            truncation_reason="row_limit",
+        )
+        event_sink(TUIPreviewReadyEvent(sequence=request.sequences[0], preview=preview))
+        assert release.wait(5.0)
+        raise RuntimeError("internal failure after preview")
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+
+    async def _inner() -> tuple[int | None, str, str, list[str], str | None]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text("SELECT broken")
+            await pilot.press("f4")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if (
+                    app.state.active_query_result_record() is not None
+                    and app.state.active_query_result_record().state == "preserving"
+                ):
+                    break
+            app.query_one("#history", DataTable).focus()
+            app._show_history_result_at_row(0)
+            release.set()
+            await _settled_query_idle(pilot, app)
+            await pilot.pause()
+            failed_record = app.state.query_result_record(2)
+            columns, row_count, recalled_message = _result_grid_snapshot(app)
+            assert columns == ("prior",)
+            assert row_count == 1
+            return (
+                app.state.active_result.sequence,
+                app.query_one("#status", Static).content,
+                recalled_message,
+                app_history_statuses(app.state),
+                None if failed_record is None else failed_record.state,
+            )
+
+    (
+        active_sequence,
+        status,
+        recalled_message,
+        history_statuses,
+        failed_state,
+    ) = asyncio.run(_inner())
+
+    assert active_sequence == 1
+    assert status == "Error: Unable to complete the query. Try running it again."
+    assert "History query 1." in recalled_message
+    assert history_statuses == ["success", "error"]
+    assert failed_state is None
+
+
+@pytest.mark.parametrize(
+    ("event_factory", "expected_status", "expected_history_status"),
+    [
+        (
+            lambda sequence: TUINoResultEvent(sequence=sequence, elapsed_ms=1.0),
+            "Statement completed; no tabular result to display.",
+            "no_result",
+        ),
+        (
+            lambda sequence: TUICancelledBeforePreviewEvent(sequence=sequence),
+            "Query 2 was cancelled before a preview was retained.",
+            "cancelled",
+        ),
+        (
+            lambda sequence: TUIFailedBeforePreviewEvent(
+                sequence=sequence,
+                error_message="preview failed",
+                suggestion="Retry.",
+            ),
+            "Error: preview failed\nSuggestion: Retry.",
+            "error",
+        ),
+    ],
+)
+def test_terminal_runner_events_preserve_recalled_history_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    event_factory,
+    expected_status: str,
+    expected_history_status: str,
+) -> None:
+    state = _make_source_state(tmp_path)
+    store = _record_stored_result(
+        state,
+        QueryResult(columns=("prior",), rows=(("prior-row",),), elapsed_ms=1.0),
+        sequence=1,
+        sql="SELECT prior",
+    )
+    release = threading.Event()
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del result_store, operation
+        assert release.wait(5.0)
+        event_sink(event_factory(request.sequences[0]))
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+
+    async def _inner() -> tuple[int | None, str, str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text("SELECT current")
+            await pilot.press("f4")
+            await pilot.pause(0.1)
+            app.query_one("#history", DataTable).focus()
+            app._show_history_result_at_row(0)
+            release.set()
+            await _settled_query_idle(pilot, app)
+            await pilot.pause()
+            columns, row_count, recalled_message = _result_grid_snapshot(app)
+            assert columns == ("prior",)
+            assert row_count == 1
+            return (
+                app.state.active_result.sequence,
+                app.query_one("#status", Static).content,
+                recalled_message,
+                app.state.query_history[-1].status,
+            )
+
+    active_sequence, status, recalled_message, history_status = asyncio.run(_inner())
+
+    assert active_sequence == 1
+    assert status == expected_status
+    assert "History query 1." in recalled_message
+    assert history_status == expected_history_status
+
+
+def test_buffer_completion_preserves_selected_prior_tab_while_later_result_finishes_in_background(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    release = threading.Event()
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        _emit_complete_result(
+            request=request,
+            result_store=result_store,
+            event_sink=event_sink,
+            result=QueryResult(columns=("first",), rows=(("first-row",),), elapsed_ms=1.0),
+            sequence=request.sequences[0],
+        )
+        preview = BoundedQueryResult(
+            columns=("second",),
+            rows=(("second-row",),),
+            elapsed_ms=2.0,
+            preview_payload_bytes=len(encode_row_payload(("second-row",))),
+            has_more_rows=False,
+            truncation_reason=None,
+        )
+        event_sink(TUIPreviewReadyEvent(sequence=request.sequences[1], preview=preview))
+        assert release.wait(5.0)
+        stored = _store_complete_result(
+            result_store,
+            QueryResult(columns=("second",), rows=(("second-row",),), elapsed_ms=3.0),
+            sequence=request.sequences[1],
+        )
+        event_sink(TUICompleteEvent(sequence=request.sequences[1], stored=stored))
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+
+    async def _inner() -> tuple[
+        int | None,
+        tuple[str, ...],
+        int,
+        str,
+        str | None,
+        int | None,
+        str,
+        tuple[str, ...],
+        int,
+        str,
+        int | None,
+        tuple[str, ...],
+        int,
+        str,
+    ]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text("SELECT 1 AS first;\nSELECT 2 AS second;")
+            await pilot.press("f12")
+            for _ in range(60):
+                await pilot.pause(0.05)
+                if (
+                    len(app.state.buffer_result_tabs) == 2
+                    and app.state.active_query_result_record() is not None
+                    and app.state.active_query_result_record().state == "preserving"
+                ):
+                    break
+            app._show_buffer_result_at_tab(app.state.buffer_result_tabs[0])
+            initial_columns, initial_row_count, initial_message = _result_grid_snapshot(app)
+            release.set()
+            await _settled_query_idle(pilot, app)
+            await pilot.pause()
+            completed_record = app.state.query_result_record(2)
+            preserved_columns, preserved_row_count, preserved_message = _result_grid_snapshot(app)
+            background_status = app.query_one("#status", Static).content
+            background_sequence = app.state.active_result.sequence
+            app._show_buffer_result_at_tab(app.state.buffer_result_tabs[1])
+            reopened_columns, reopened_row_count, reopened_message = _result_grid_snapshot(app)
+            return (
+                background_sequence,
+                initial_columns,
+                initial_row_count,
+                background_status,
+                None if completed_record is None else completed_record.state,
+                None if completed_record is None else completed_record.preview_row_count,
+                initial_message,
+                preserved_columns,
+                preserved_row_count,
+                preserved_message,
+                app.state.active_result.sequence,
+                reopened_columns,
+                reopened_row_count,
+                reopened_message,
+            )
+
+    (
+        active_sequence,
+        columns,
+        row_count,
+        status,
+        completed_state,
+        completed_preview_rows,
+        message,
+        preserved_columns,
+        preserved_row_count,
+        preserved_message,
+        reopened_sequence,
+        reopened_columns,
+        reopened_row_count,
+        reopened_message,
+    ) = asyncio.run(_inner())
+
+    assert active_sequence == 1
+    assert columns == ("first",)
+    assert row_count == 1
+    assert status == "Query 2 completed in the background: 1 row(s) preserved for later recall."
+    assert completed_state == "complete"
+    assert completed_preview_rows == 1
+    assert "Buffer result 1.1." in message
+    assert preserved_columns == ("first",)
+    assert preserved_row_count == 1
+    assert preserved_message == message
+    assert reopened_sequence == 2
+    assert reopened_columns == ("second",)
+    assert reopened_row_count == 1
+    assert "Buffer result 2.2." in reopened_message
+
+
+def test_displaced_preview_only_without_handle_becomes_error_not_false_reopenable_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _make_source_state(tmp_path)
+    store = _record_stored_result(
+        state,
+        QueryResult(columns=("prior",), rows=(("prior-row",),), elapsed_ms=1.0),
+        sequence=1,
+        sql="SELECT prior",
+    )
+    release = threading.Event()
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del result_store, operation
+        preview = BoundedQueryResult(
+            columns=("value",),
+            rows=(("preview-row",),),
+            elapsed_ms=1.0,
+            preview_payload_bytes=len(encode_row_payload(("preview-row",))),
+            has_more_rows=True,
+            truncation_reason="row_limit",
+        )
+        event_sink(TUIPreviewReadyEvent(sequence=request.sequences[0], preview=preview))
+        assert release.wait(5.0)
+        event_sink(
+            tui_app_module.TUIPreviewOnlyEvent(
+                sequence=request.sequences[0],
+                preview=preview,
+                reason="preservation_failed",
+                stored=None,
+            )
+        )
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+
+    async def _inner() -> tuple[str, list[str], str, int | None]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text("SELECT preview_only")
+            await pilot.press("f4")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if (
+                    app.state.active_query_result_record() is not None
+                    and app.state.active_query_result_record().state == "preserving"
+                ):
+                    break
+            app.query_one("#history", DataTable).focus()
+            app._show_history_result_at_row(0)
+            release.set()
+            await _settled_query_idle(pilot, app)
+            await pilot.pause()
+            return (
+                app.query_one("#status", Static).content,
+                app_history_statuses(app.state),
+                app.query_one("#results-message", Static).content,
+                (
+                    app.state.query_result_record(2).handle.sequence
+                    if app.state.query_result_record(2) is not None
+                    and app.state.query_result_record(2).handle is not None
+                    else None
+                ),
+            )
+
+    status, history_statuses, results_message, stored_sequence = asyncio.run(_inner())
+
+    assert status == (
+        "Error: Query 2 finished with a preview-only result, "
+        "but that preview was discarded because another result remained selected."
+    )
+    assert history_statuses == ["success", "error"]
+    assert "History query 1." in results_message
+    assert stored_sequence is None
+
+
+def test_source_columns_empty_outcome_during_query_preserves_visible_preview(
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, str, tuple[str, ...], int]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            request = TUIRunRequest(
+                statements=("SELECT 1",),
+                sequences=(1,),
+                sources=state.table_sources,
+                fallback_sources=(),
+                preview_policy=PreviewPolicy(),
+                run_mode="current",
+                submission_order=1,
+            )
+            app.state.start_query_request(request)
+            app._active_query_sql[1] = "SELECT 1"
+            app._active_query_run_modes[1] = "current"
+            app._active_query_records[1] = TUIResultRecord(
+                handle=None,
+                state="executing",
+                reason=None,
+                columns=(),
+                preview_row_count=0,
+                full_row_count=None,
+                elapsed_ms=0.0,
+            )
+            app.state.set_active_result_record(
+                1,
+                TUIResultRecord(
+                    handle=None,
+                    state="executing",
+                    reason=None,
+                    columns=(),
+                    preview_row_count=0,
+                    full_row_count=None,
+                    elapsed_ms=0.0,
+                ),
+            )
+            preview = BoundedQueryResult(
+                columns=("value",),
+                rows=(("preview",),),
+                elapsed_ms=1.0,
+                preview_payload_bytes=len(encode_row_payload(("preview",))),
+                has_more_rows=True,
+                truncation_reason="row_limit",
+            )
+            app._handle_preview_ready_event(TUIPreviewReadyEvent(sequence=1, preview=preview))
+            app._apply_operation_outcome(
+                tui_app_module._SourceColumnsOutcome(source_name="customers", columns=()),
+                operation_label="Loading columns for customers",
+            )
+            columns, row_count, message = _result_grid_snapshot(app)
+            return (
+                app.query_one("#status", Static).content,
+                message,
+                columns,
+                row_count,
+            )
+
+    status, message, columns, row_count = asyncio.run(_inner())
+
+    assert status == (
+        "customers: no columns available. "
+        "Query results remain visible until the current query finishes."
+    )
+    assert "Full result preservation is still running." in message
+    assert columns == ("value",)
+    assert row_count == 1
+
+
+def test_operation_worker_error_during_query_preserves_visible_preview(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+
+    async def _inner() -> tuple[str, str, tuple[str, ...], int]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            request = TUIRunRequest(
+                statements=("SELECT 1",),
+                sequences=(1,),
+                sources=state.table_sources,
+                fallback_sources=(),
+                preview_policy=PreviewPolicy(),
+                run_mode="current",
+                submission_order=1,
+            )
+            app.state.start_query_request(request)
+            app._active_query_sql[1] = "SELECT 1"
+            app._active_query_run_modes[1] = "current"
+            app._active_query_records[1] = TUIResultRecord(
+                handle=None,
+                state="executing",
+                reason=None,
+                columns=(),
+                preview_row_count=0,
+                full_row_count=None,
+                elapsed_ms=0.0,
+            )
+            app.state.set_active_result_record(
+                1,
+                TUIResultRecord(
+                    handle=None,
+                    state="executing",
+                    reason=None,
+                    columns=(),
+                    preview_row_count=0,
+                    full_row_count=None,
+                    elapsed_ms=0.0,
+                ),
+            )
+            preview = BoundedQueryResult(
+                columns=("value",),
+                rows=(("preview",),),
+                elapsed_ms=1.0,
+                preview_payload_bytes=len(encode_row_payload(("preview",))),
+                has_more_rows=True,
+                truncation_reason="row_limit",
+            )
+            app._handle_preview_ready_event(TUIPreviewReadyEvent(sequence=1, preview=preview))
+            app._handle_operation_worker_failure(
+                CSVQLError("private failure"),
+                operation_label="Loading columns for customers",
+            )
+            columns, row_count, message = _result_grid_snapshot(app)
+            return (
+                app.query_one("#status", Static).content,
+                message,
+                columns,
+                row_count,
+            )
+
+    status, message, columns, row_count = asyncio.run(_inner())
+
+    assert status == (
+        "Loading columns for customers failed while a query result is active. "
+        "Query results remain visible."
+    )
+    assert "Full result preservation is still running." in message
+    assert columns == ("value",)
+    assert row_count == 1
+
+
 def test_app_runs_query_and_updates_status_and_results(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
 
@@ -1345,7 +1965,7 @@ def test_run_buffer_storage_failure_preserves_tabs_and_continues_with_dense_inde
     assert finish_query_run_calls == [state]
     assert run_status == "Ready."
     assert terminal_status == f"Error: {storage_message}"
-    assert terminal_message == f"Error: {storage_message}"
+    assert terminal_message == "Showing 1 total row(s). Full export/save use the preserved result."
     for safe_text in (terminal_status, terminal_message, selected_message):
         assert unsafe_storage_detail not in safe_text
 
@@ -1429,7 +2049,7 @@ def test_run_buffer_final_storage_failure_preserves_prior_tab_and_error_message(
     assert state.query_result_record(3) is None
     assert state.query_result_handle(3) is None
     assert status == f"Error: {storage_message}"
-    assert results_message == f"Error: {storage_message}"
+    assert results_message == "Showing 1 total row(s). Full export/save use the preserved result."
     assert unsafe_storage_detail not in status
     assert unsafe_storage_detail not in results_message
     assert state.query_run.is_running is False
@@ -1670,12 +2290,13 @@ def test_run_buffer_all_storage_failures_preserve_prior_active_result(
         assert state.active_result == previous_active
         assert state.buffer_result_tabs == previous_tabs
         assert before_grid[:2] == after_grid[:2]
+        assert results_message == before_grid[2]
     else:
         assert state.has_active_result is False
         assert state.buffer_result_tabs == ()
         assert after_grid[:2] == ((), 0)
+        assert results_message == f"Error: {storage_messages[0]}"
     assert status == f"Error: {storage_messages[0]}"
-    assert results_message == f"Error: {storage_messages[0]}"
     assert unsafe_storage_detail not in status
     assert unsafe_storage_detail not in results_message
     assert state.query_run.is_running is False
@@ -1889,7 +2510,7 @@ def test_run_buffer_stops_after_middle_outcome_failure(
     assert statuses == ["success", "error"]
     assert sequences == [1, 2]
     assert "simulated failure" in status
-    assert "simulated failure" in results_message
+    assert results_message == "Showing 1 total row(s). Full export/save use the preserved result."
     assert run_status == "Ready."
     assert active_query_sql == {}
     assert active_query_run_modes == {}
@@ -2128,7 +2749,7 @@ def test_run_buffer_stops_after_failure(
     assert statuses == ["success", "error"]
     assert sequences == [1, 2]
     assert "simulated failure" in status
-    assert "simulated failure" in results_message
+    assert results_message == "Showing 1 total row(s). Full export/save use the preserved result."
     assert run_status == "Ready."
 
 
@@ -2200,7 +2821,7 @@ def test_history_rerun_records_rerun_mode_and_status_message(tmp_path: Path) -> 
     assert seen_sql == ["SELECT COUNT(*) AS count FROM customers"]
 
 
-def test_history_refresh_selects_new_query_sequence_after_append(
+def test_history_refresh_preserves_cursor_after_append_while_new_query_becomes_active(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2237,7 +2858,7 @@ def test_history_refresh_selects_new_query_sequence_after_append(
 
     _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
-    async def _inner() -> tuple[list[int], int, str]:
+    async def _inner() -> tuple[list[int], int, int | None, str]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2253,15 +2874,16 @@ def test_history_refresh_selects_new_query_sequence_after_append(
             return (
                 [item.sequence for item in app.state.query_history],
                 history.cursor_row,
+                app.state.active_result.sequence,
                 app.query_one("#status", Static).content,
             )
 
-    sequences, cursor_row, status = asyncio.run(_inner())
+    sequences, cursor_row, active_sequence, status = asyncio.run(_inner())
 
     assert sequences == list(range(1, 12))
-    assert cursor_row == 10
-    assert "11 returned row(s)" not in status
-    assert "1 returned row(s)" in status
+    assert cursor_row == 8
+    assert active_sequence == 11
+    assert status == "1 returned row(s) in 1.0 ms."
 
 
 def test_run_editor_reads_settled_editor_text_after_refresh(

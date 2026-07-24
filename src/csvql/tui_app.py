@@ -44,6 +44,7 @@ from csvql.tui_query_runner import (
 from csvql.tui_result_store import (
     DEFAULT_TUI_RESULT_CAPACITY_BYTES,
     TUIResultCleanupSummary,
+    TUIResultHandle,
     TUIResultStorageError,
     TUIResultStore,
 )
@@ -74,6 +75,7 @@ from csvql.tui_state import (
     TUISessionState,
     TUISource,
     TUISourceColumn,
+    transition_result_record,
 )
 from csvql.tui_workflows import (
     build_initial_state,
@@ -470,6 +472,7 @@ class CSVQLMenuApp(App[None]):
         super().__init__()
         self.start_dir = (start_dir or Path.cwd()).resolve()
         self._active_query_sql: dict[int, str] = {}
+        self._active_query_records: dict[int, TUIResultRecord] = {}
         self._active_query_run_modes: dict[int, TUIQueryRunMode] = {}
         self._next_query_submission_order = 1
         self._next_operation_worker_id = 1
@@ -686,6 +689,9 @@ class CSVQLMenuApp(App[None]):
         if self._operation_running():
             self._set_status(f"{self.state.operation_run.label} already running.")
             return
+        if self.state.query_run.is_running:
+            self._set_status("Query already running. Wait for the current query to finish.")
+            return
 
         source = self.state.selected_source()
         if source is None:
@@ -703,6 +709,9 @@ class CSVQLMenuApp(App[None]):
     def action_profile_source(self) -> None:
         if self._operation_running():
             self._set_status(f"{self.state.operation_run.label} already running.")
+            return
+        if self.state.query_run.is_running:
+            self._set_status("Query already running. Wait for the current query to finish.")
             return
 
         source = self.state.selected_source()
@@ -725,6 +734,9 @@ class CSVQLMenuApp(App[None]):
         if self._operation_running():
             self._set_status(f"{self.state.operation_run.label} already running.")
             return
+        if self.state.query_run.is_running:
+            self._set_status("Query already running. Wait for the current query to finish.")
+            return
 
         source = self.state.selected_source()
         if source is None:
@@ -745,6 +757,9 @@ class CSVQLMenuApp(App[None]):
     def action_show_source_columns(self) -> None:
         if self._operation_running():
             self._set_status(f"{self.state.operation_run.label} already running.")
+            return
+        if self.state.query_run.is_running:
+            self._set_status("Query already running. Wait for the current query to finish.")
             return
 
         self.state.clear_last_result()
@@ -864,6 +879,14 @@ class CSVQLMenuApp(App[None]):
         callback: Callable[[], None],
         preparing_message: str,
     ) -> None:
+        if self._operation_running():
+            self._show_rejected_run(
+                CSVQLError(
+                    f"{self.state.operation_run.label} already running.",
+                    suggestion="Wait for the current action to finish.",
+                )
+            )
+            return
         if self._run_editor_pending or self.state.query_run.is_running:
             self._show_rejected_run(
                 CSVQLError(
@@ -1093,6 +1116,15 @@ class CSVQLMenuApp(App[None]):
 
         try:
             sequence = self.state.reserve_query_sequences(1)[0]
+            executing_record = TUIResultRecord(
+                handle=None,
+                state="executing",
+                reason=None,
+                columns=(),
+                preview_row_count=0,
+                full_row_count=None,
+                elapsed_ms=0.0,
+            )
             request = self._build_query_request(
                 (sql,),
                 sequences=(sequence,),
@@ -1101,17 +1133,10 @@ class CSVQLMenuApp(App[None]):
             self.state.start_query_request(request)
             self.state.set_active_result_record(
                 sequence,
-                TUIResultRecord(
-                    handle=None,
-                    state="executing",
-                    reason=None,
-                    columns=(),
-                    preview_row_count=0,
-                    full_row_count=None,
-                    elapsed_ms=0.0,
-                ),
+                executing_record,
                 run_mode=run_mode,
             )
+            self._active_query_records[sequence] = executing_record
         except RuntimeError:
             self._show_rejected_run(
                 CSVQLError(
@@ -1341,12 +1366,25 @@ class CSVQLMenuApp(App[None]):
         self._apply_operation_outcome(worker.result, operation_label=operation_label)
 
     def _apply_operation_outcome(self, outcome: object, *, operation_label: str) -> None:
+        query_running = self.state.query_run.is_running
         if isinstance(outcome, _SourceInspectOutcome):
             self.state.set_source_columns(outcome.source_name, outcome.columns)
+            if query_running:
+                self._set_status(
+                    f"{outcome.source_name}: inspect completed. "
+                    "Query results remain visible until the current query finishes."
+                )
+                return
             self._show_source_inspect_table(outcome.result, outcome.columns)
             self._set_status(f"{outcome.source_name}: {len(outcome.columns)} columns inspected.")
             return
         if isinstance(outcome, _SourceProfileOutcome):
+            if query_running:
+                self._set_status(
+                    f"{outcome.source_name}: profile completed. "
+                    "Query results remain visible until the current query finishes."
+                )
+                return
             self._show_source_profile_table(outcome.result)
             self._set_status(
                 f"{outcome.source_name}: {outcome.result.row_count} rows, "
@@ -1355,6 +1393,12 @@ class CSVQLMenuApp(App[None]):
             )
             return
         if isinstance(outcome, _SourceSampleOutcome):
+            if query_running:
+                self._set_status(
+                    f"{outcome.source_name}: sample completed. "
+                    "Query results remain visible until the current query finishes."
+                )
+                return
             self.state.clear_last_result()
             query_result = QueryResult(
                 columns=outcome.result.columns,
@@ -1370,6 +1414,18 @@ class CSVQLMenuApp(App[None]):
             return
         if isinstance(outcome, _SourceColumnsOutcome):
             self.state.set_source_columns(outcome.source_name, outcome.columns)
+            if query_running:
+                if not outcome.columns:
+                    self._set_status(
+                        f"{outcome.source_name}: no columns available. "
+                        "Query results remain visible until the current query finishes."
+                    )
+                    return
+                self._set_status(
+                    f"{outcome.source_name}: columns loaded. "
+                    "Query results remain visible until the current query finishes."
+                )
+                return
             if not outcome.columns:
                 self._show_error(CSVQLError(f"Source '{outcome.source_name}' has no columns."))
                 return
@@ -1414,6 +1470,12 @@ class CSVQLMenuApp(App[None]):
         operation_label: str,
     ) -> None:
         if isinstance(error, OperationCancelled):
+            return
+        if self.state.query_run.is_running:
+            self._set_status(
+                f"{operation_label or 'Action'} failed while a query result is active. "
+                "Query results remain visible."
+            )
             return
         if isinstance(error, CSVQLError):
             self._show_error(error)
@@ -1501,6 +1563,13 @@ class CSVQLMenuApp(App[None]):
             "save_result_as_source",
         }
         if self._operation_running() and action in operation_actions:
+            return False
+        if self.state.query_run.is_running and action in {
+            "inspect_source",
+            "sample_source",
+            "profile_source",
+            "show_source_columns",
+        }:
             return False
         if isinstance(self.focused, TextArea):
             text_entry_actions = {
@@ -1604,15 +1673,7 @@ class CSVQLMenuApp(App[None]):
         history_table.add_columns("seq", "run", "status", "rows", "sql")
         target_row = 0
         for item in self.state.query_history:
-            row_index = history_table.row_count
-            rows = "" if item.row_count is None else str(item.row_count)
-            history_table.add_row(
-                literal_terminal_text(item.sequence),
-                literal_terminal_text(_run_mode_display(item.run_mode)),
-                literal_terminal_text(item.status),
-                literal_terminal_text(rows),
-                literal_terminal_text(_one_line_sql(item.sql)),
-            )
+            row_index = self._append_history_row(item)
             if selected_sequence == item.sequence:
                 target_row = row_index
         if history_table.row_count:
@@ -1624,15 +1685,7 @@ class CSVQLMenuApp(App[None]):
         history_table.add_columns("seq", "run", "status", "rows", "sql")
         target_row = 0
         for item in self.state.query_history:
-            row_index = history_table.row_count
-            rows = "" if item.row_count is None else str(item.row_count)
-            history_table.add_row(
-                literal_terminal_text(item.sequence),
-                literal_terminal_text(_run_mode_display(item.run_mode)),
-                literal_terminal_text(item.status),
-                literal_terminal_text(rows),
-                literal_terminal_text(_one_line_sql(item.sql)),
-            )
+            row_index = self._append_history_row(item)
             if item.sequence == sequence:
                 target_row = row_index
         if history_table.row_count:
@@ -1648,6 +1701,24 @@ class CSVQLMenuApp(App[None]):
 
     def _set_status(self, message: str, *, already_safe: bool = False) -> None:
         self._update_static_text("#status", message, already_safe=already_safe)
+
+    def _append_history_row(self, item: TUIQueryHistoryItem) -> int:
+        history_table = self.query_one("#history", DataTable)
+        row_index = history_table.row_count
+        rows = "" if item.row_count is None else str(item.row_count)
+        history_table.add_row(
+            literal_terminal_text(item.sequence),
+            literal_terminal_text(_run_mode_display(item.run_mode)),
+            literal_terminal_text(item.status),
+            literal_terminal_text(rows),
+            literal_terminal_text(_one_line_sql(item.sql)),
+        )
+        return row_index
+
+    def _append_latest_history_row_preserving_selection(self) -> None:
+        if not self.state.query_history:
+            return
+        self._append_history_row(self.state.query_history[-1])
 
     def _update_static_text(
         self,
@@ -2318,6 +2389,7 @@ class CSVQLMenuApp(App[None]):
             buffer_result_index=buffer_result_index,
             result_view=view,
         )
+        self._active_query_records[event.sequence] = record
         populate_result_table(self.query_one("#results", DataTable), view)
         self._refresh_results_title()
         self._refresh_result_tabs()
@@ -2344,15 +2416,34 @@ class CSVQLMenuApp(App[None]):
             return
         run_mode = self._active_query_run_modes.get(event.sequence, "current")
         buffer_result_index = self._buffer_result_index(event.sequence)
-        view = self.state.result_view
-        record = TUIResultRecord(
-            handle=event.stored.handle,
+        preserve_active_result = self._preserve_unrelated_active_result(event.sequence)
+        metadata = self._take_preserving_metadata(
+            event.sequence,
+            expected_columns=event.stored.columns,
+        )
+        if metadata is None:
+            self._record_terminal_metadata_failure(
+                event.sequence,
+                run_mode=run_mode,
+                sql=self._active_query_sql.pop(event.sequence, "<unknown>"),
+            )
+            return
+        view = None
+        preview_row_count = metadata.preview_row_count
+        if not preserve_active_result:
+            view = self._terminal_result_view(
+                sequence=event.sequence,
+                record_columns=event.stored.columns,
+                handle=event.stored.handle,
+            )
+            preview_row_count = len(view.display_rows)
+        record = transition_result_record(
+            metadata,
             state="complete",
-            reason=None,
-            columns=event.stored.columns,
-            preview_row_count=len(view.display_rows),
+            handle=event.stored.handle,
             full_row_count=event.stored.stored_row_count,
             elapsed_ms=event.stored.elapsed_ms,
+            preview_row_count=preview_row_count,
         )
         sql = self._active_query_sql.pop(event.sequence, "<unknown>")
         self.state.record_query_result(
@@ -2363,14 +2454,25 @@ class CSVQLMenuApp(App[None]):
             run_mode=run_mode,
             buffer_result_index=buffer_result_index,
             complete_run=self._is_last_sequence_in_request(event.sequence),
+            activate_result=not preserve_active_result,
         )
         self._active_query_run_modes.pop(event.sequence, None)
-        self._refresh_history_table_selecting(event.sequence)
-        self._refresh_results_display()
-        self._set_status(
-            f"{event.stored.stored_row_count:,} returned row(s) "
-            f"in {event.stored.elapsed_ms:.1f} ms."
-        )
+        if preserve_active_result:
+            self._append_latest_history_row_preserving_selection()
+        else:
+            self._refresh_history_table()
+        if not preserve_active_result:
+            self._refresh_results_display()
+            status_message = (
+                f"{event.stored.stored_row_count:,} returned row(s) "
+                f"in {event.stored.elapsed_ms:.1f} ms."
+            )
+            self._set_status(status_message)
+        else:
+            self._set_status(
+                f"Query {event.sequence} completed in the background: "
+                f"{event.stored.stored_row_count:,} row(s) preserved for later recall."
+            )
         if not self.state.query_run.is_running:
             self._update_static_text("#run-status", "Ready.")
             self.query_one("#sql", TextArea).focus()
@@ -2383,20 +2485,50 @@ class CSVQLMenuApp(App[None]):
         buffer_result_index = (
             self._ensure_buffer_tab(event.sequence) if run_mode == "buffer" else None
         )
-        view = make_bounded_result_view_state(
-            event.preview,
-            source_result_sequence=event.sequence,
+        preserve_active_result = self._preserve_unrelated_active_result(event.sequence)
+        metadata = self._take_preserving_metadata(
+            event.sequence,
+            expected_columns=event.preview.columns,
+            expected_preview_row_count=len(event.preview.rows),
         )
-        record = TUIResultRecord(
-            handle=None if event.stored is None else event.stored.handle,
+        if metadata is None:
+            self._record_terminal_metadata_failure(
+                event.sequence,
+                run_mode=run_mode,
+                sql=self._active_query_sql.pop(event.sequence, "<unknown>"),
+            )
+            return
+        sql = self._active_query_sql.pop(event.sequence, "<unknown>")
+        if preserve_active_result and event.stored is None:
+            message = (
+                f"Query {event.sequence} finished with a preview-only result, "
+                "but that preview was discarded because another result remained selected."
+            )
+            self.state.record_query_error(
+                event.sequence,
+                sql,
+                message,
+                run_mode=run_mode,
+                preserve_active_result=True,
+            )
+            self._append_latest_history_row_preserving_selection()
+            self._update_static_text("#run-status", "Ready.")
+            self._set_status(_error_message(CSVQLError(message)), already_safe=True)
+            self.query_one("#sql", TextArea).focus()
+            return
+        view = None
+        if not preserve_active_result:
+            view = make_bounded_result_view_state(
+                event.preview,
+                source_result_sequence=event.sequence,
+            )
+        record = transition_result_record(
+            metadata,
             state="preview_only",
+            handle=None if event.stored is None else event.stored.handle,
             reason=event.reason,
-            columns=view.columns,
-            preview_row_count=len(view.display_rows),
-            full_row_count=None,
             elapsed_ms=event.preview.elapsed_ms,
         )
-        sql = self._active_query_sql.pop(event.sequence, "<unknown>")
         self.state.record_query_result(
             event.sequence,
             sql,
@@ -2405,12 +2537,20 @@ class CSVQLMenuApp(App[None]):
             run_mode=run_mode,
             buffer_result_index=buffer_result_index,
             complete_run=True,
+            activate_result=not preserve_active_result,
         )
-        populate_result_table(self.query_one("#results", DataTable), view)
-        self._refresh_history_table_selecting(event.sequence)
-        self._refresh_results_display()
+        if not preserve_active_result:
+            assert view is not None
+            populate_result_table(self.query_one("#results", DataTable), view)
+            self._refresh_results_display()
+            self._set_status(result_preview_message(view, record=record))
+        else:
+            self._set_status(f"Query {event.sequence} finished with a retained preview only.")
+        if preserve_active_result:
+            self._append_latest_history_row_preserving_selection()
+        else:
+            self._refresh_history_table()
         self._update_static_text("#run-status", "Ready.")
-        self._set_status(result_preview_message(view, record=record))
         self.query_one("#sql", TextArea).focus()
 
     def _handle_no_result_event(self, event: TUINoResultEvent) -> None:
@@ -2418,6 +2558,8 @@ class CSVQLMenuApp(App[None]):
             return
         run_mode = self._active_query_run_modes.pop(event.sequence, "current")
         sql = self._active_query_sql.pop(event.sequence, "<unknown>")
+        preserve_active_result = self._preserve_unrelated_active_result(event.sequence)
+        self._active_query_records.pop(event.sequence, None)
         previous_tabs = self.state.buffer_result_tabs if run_mode == "buffer" else ()
         previous_sequence = self.state.active_result.sequence if run_mode == "buffer" else None
         self.state.record_query_no_result(
@@ -2426,18 +2568,22 @@ class CSVQLMenuApp(App[None]):
             event.elapsed_ms,
             run_mode=run_mode,
             complete_run=self._is_last_sequence_in_request(event.sequence),
+            preserve_active_result=preserve_active_result,
         )
-        if run_mode == "buffer" and previous_tabs:
+        if preserve_active_result:
+            self._append_latest_history_row_preserving_selection()
+        elif run_mode == "buffer" and previous_tabs:
             self._restore_previous_buffer_selection(previous_tabs, previous_sequence)
         else:
             self._clear_result_grid()
             self._refresh_results_title()
             self._refresh_result_tabs()
-        self._refresh_history_table_selecting(event.sequence)
-        self._set_status("Statement completed; no tabular result to display.")
-        self._update_static_text(
-            "#results-message", "Statement completed; no tabular result to display."
-        )
+        status_message = "Statement completed; no tabular result to display."
+        self._set_status(status_message)
+        if not preserve_active_result:
+            self._update_static_text(
+                "#results-message", "Statement completed; no tabular result to display."
+            )
         if not self.state.query_run.is_running:
             self._update_static_text("#run-status", "Ready.")
             self.query_one("#sql", TextArea).focus()
@@ -2451,6 +2597,8 @@ class CSVQLMenuApp(App[None]):
         run_mode = self._active_query_run_modes.pop(event.sequence, "current")
         sql = self._active_query_sql.pop(event.sequence, "<unknown>")
         self._clear_remaining_request_metadata(excluding=(event.sequence,))
+        preserve_active_result = self._preserve_unrelated_active_result(event.sequence)
+        self._active_query_records.pop(event.sequence, None)
         previous_tabs = self.state.buffer_result_tabs if run_mode == "buffer" else ()
         previous_sequence = self.state.active_result.sequence if run_mode == "buffer" else None
         self.state.record_query_cancelled(
@@ -2458,17 +2606,20 @@ class CSVQLMenuApp(App[None]):
             sql,
             run_mode=run_mode,
             complete_run=True,
+            preserve_active_result=preserve_active_result,
         )
-        if run_mode == "buffer" and previous_tabs:
+        if preserve_active_result:
+            self._append_latest_history_row_preserving_selection()
+        elif run_mode == "buffer" and previous_tabs:
             self._restore_previous_buffer_selection(previous_tabs, previous_sequence)
         else:
             self._clear_result_grid()
             self._refresh_results_title()
             self._refresh_result_tabs()
-        self._refresh_history_table_selecting(event.sequence)
         message = f"Query {event.sequence} was cancelled before a preview was retained."
         self._set_status(message)
-        self._update_static_text("#results-message", message)
+        if not preserve_active_result:
+            self._update_static_text("#results-message", message)
         self._update_static_text("#run-status", "Ready.")
         self.query_one("#sql", TextArea).focus()
 
@@ -2481,6 +2632,8 @@ class CSVQLMenuApp(App[None]):
         run_mode = self._active_query_run_modes.pop(event.sequence, "current")
         sql = self._active_query_sql.pop(event.sequence, "<unknown>")
         self._clear_remaining_request_metadata(excluding=(event.sequence,))
+        preserve_active_result = self._preserve_unrelated_active_result(event.sequence)
+        self._active_query_records.pop(event.sequence, None)
         previous_tabs = self.state.buffer_result_tabs if run_mode == "buffer" else ()
         previous_sequence = self.state.active_result.sequence if run_mode == "buffer" else None
         self.state.record_query_failed(
@@ -2489,16 +2642,24 @@ class CSVQLMenuApp(App[None]):
             event.error_message,
             run_mode=run_mode,
             complete_run=True,
+            preserve_active_result=preserve_active_result,
         )
-        if run_mode == "buffer" and previous_tabs:
+        if preserve_active_result:
+            self._append_latest_history_row_preserving_selection()
+        elif run_mode == "buffer" and previous_tabs:
             self._restore_previous_buffer_selection(previous_tabs, previous_sequence)
         else:
             self._clear_result_grid()
             self._refresh_results_title()
             self._refresh_result_tabs()
-        self._refresh_history_table_selecting(event.sequence)
         self._update_static_text("#run-status", "Ready.")
-        self._show_error(CSVQLError(event.error_message, suggestion=event.suggestion))
+        if preserve_active_result:
+            self._set_status(
+                _error_message(CSVQLError(event.error_message, suggestion=event.suggestion)),
+                already_safe=True,
+            )
+        else:
+            self._show_error(CSVQLError(event.error_message, suggestion=event.suggestion))
         self.query_one("#sql", TextArea).focus()
 
     def _handle_query_worker_failure(
@@ -2520,6 +2681,8 @@ class CSVQLMenuApp(App[None]):
             if self.state.active_result.sequence == sequence
             else None
         )
+        preserve_active_result = self._preserve_unrelated_active_result(sequence)
+        self._active_query_records.pop(sequence, None)
 
         if active_record is not None and active_record.state == "preserving":
             preview_only_record = TUIResultRecord(
@@ -2549,14 +2712,113 @@ class CSVQLMenuApp(App[None]):
             self.query_one("#sql", TextArea).focus()
             return
 
-        self.state.record_query_error(sequence, sql, error_message, run_mode=run_mode)
-        self._refresh_history_table_selecting(sequence)
+        self.state.record_query_error(
+            sequence,
+            sql,
+            error_message,
+            run_mode=run_mode,
+            preserve_active_result=preserve_active_result,
+        )
+        if preserve_active_result:
+            self._append_latest_history_row_preserving_selection()
+        else:
+            self._refresh_history_table()
         self._update_static_text("#run-status", "Ready.")
-        self._clear_result_grid()
-        self._refresh_results_title()
-        self._refresh_result_tabs()
-        self._show_error(CSVQLError(error_message))
+        if preserve_active_result:
+            self._set_status(_error_message(CSVQLError(error_message)), already_safe=True)
+        else:
+            self._clear_result_grid()
+            self._refresh_results_title()
+            self._refresh_result_tabs()
+            self._show_error(CSVQLError(error_message))
         self.query_one("#sql", TextArea).focus()
+
+    def _preserve_unrelated_active_result(self, sequence: int) -> bool:
+        active_sequence = self.state.active_result.sequence
+        return (
+            self.state.active_result.kind in {"history", "buffer"}
+            and active_sequence is not None
+            and active_sequence != sequence
+        )
+
+    def _take_preserving_metadata(
+        self,
+        sequence: int,
+        *,
+        expected_columns: tuple[str, ...],
+        expected_preview_row_count: int | None = None,
+    ) -> TUIResultRecord | None:
+        metadata = self._active_query_records.pop(sequence, None)
+        if metadata is None and self.state.active_result.sequence == sequence:
+            metadata = self.state.active_query_result_record()
+        if (
+            metadata is None
+            or metadata.state != "preserving"
+            or metadata.columns != expected_columns
+            or (
+                expected_preview_row_count is not None
+                and metadata.preview_row_count != expected_preview_row_count
+            )
+        ):
+            return None
+        return metadata
+
+    def _record_terminal_metadata_failure(
+        self,
+        sequence: int,
+        *,
+        run_mode: TUIQueryRunMode,
+        sql: str,
+    ) -> None:
+        preserve_active_result = self._preserve_unrelated_active_result(sequence)
+        message = _UNEXPECTED_QUERY_WORKER_FAILURE_MESSAGE
+        self.state.record_query_error(
+            sequence,
+            sql,
+            message,
+            run_mode=run_mode,
+            preserve_active_result=preserve_active_result,
+        )
+        self._active_query_run_modes.pop(sequence, None)
+        if preserve_active_result:
+            self._append_latest_history_row_preserving_selection()
+        else:
+            self._refresh_history_table()
+        self._update_static_text("#run-status", "Ready.")
+        if preserve_active_result:
+            self._set_status(_error_message(CSVQLError(message)), already_safe=True)
+        else:
+            self._clear_result_grid()
+            self._refresh_results_title()
+            self._refresh_result_tabs()
+            self._show_error(CSVQLError(message))
+        self.query_one("#sql", TextArea).focus()
+
+    def _terminal_result_view(
+        self,
+        *,
+        sequence: int,
+        record_columns: tuple[str, ...],
+        handle: TUIResultHandle,
+    ) -> TUIResultViewState:
+        active_record = (
+            self.state.active_query_result_record()
+            if self.state.active_result.sequence == sequence
+            else None
+        )
+        active_view = self.state.result_view
+        if (
+            active_record is not None
+            and active_record.state == "preserving"
+            and active_view.source_result_sequence == sequence
+            and active_view.columns == record_columns
+        ):
+            return active_view
+        preview = self._result_store.load_preview(handle, self._preview_policy)
+        return make_bounded_result_view_state(
+            preview,
+            source_result_sequence=handle.sequence,
+        )
 
     def _clear_remaining_request_metadata(self, *, excluding: Sequence[int] = ()) -> None:
         request = self.state.query_run.request
@@ -2568,6 +2830,7 @@ class CSVQLMenuApp(App[None]):
                 continue
             self._active_query_sql.pop(sequence, None)
             self._active_query_run_modes.pop(sequence, None)
+            self._active_query_records.pop(sequence, None)
 
     def _failure_sequence_from_worker(self, worker: Worker[object]) -> int | None:
         request = self.state.query_run.request
