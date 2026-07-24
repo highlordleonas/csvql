@@ -7969,6 +7969,255 @@ def test_export_intent_replacement_confirmation_cannot_replace_in_flight_intent(
     assert len(seen_requests) == 2
 
 
+@pytest.mark.parametrize(
+    "resolution",
+    ["submit", "cancel", "invalid", "non_complete", "stale_existing"],
+)
+def test_preserving_export_prompt_reserves_order_until_identity_bound_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resolution: str,
+) -> None:
+    state = _make_source_state(tmp_path)
+    preview = BoundedQueryResult(
+        columns=("value",),
+        rows=((1,),),
+        elapsed_ms=1.0,
+        preview_payload_bytes=len(encode_row_payload((1,))),
+        has_more_rows=True,
+        truncation_reason="row_limit",
+    )
+    preview_ready = threading.Event()
+    release_preservation = threading.Event()
+    export_started = threading.Event()
+    release_export = threading.Event()
+    queued_started = threading.Event()
+    release_queued = threading.Event()
+    seen_requests: list[TUIRunRequest] = []
+    exported_paths: list[Path] = []
+    event_order: list[str] = []
+    first_worker: list[object] = []
+    original_destination = tmp_path / "original.csv"
+    late_destination = tmp_path / "late.csv"
+    invalid_destination = tmp_path / "late.exe"
+
+    def fake_run_tui_request(
+        *,
+        request: TUIRunRequest,
+        result_store: TUIResultStore,
+        event_sink,
+        operation: OperationContext,
+    ) -> None:
+        del operation
+        seen_requests.append(request)
+        event_order.append(f"query-{request.sequences[0]}-start")
+        if len(seen_requests) == 1:
+            event_sink(TUIPreviewReadyEvent(sequence=request.sequences[0], preview=preview))
+            preview_ready.set()
+            assert release_preservation.wait(timeout=5.0)
+            if resolution == "non_complete":
+                event_sink(
+                    TUIPreviewOnlyEvent(
+                        sequence=request.sequences[0],
+                        preview=preview,
+                        reason="preservation_failed",
+                        stored=None,
+                    )
+                )
+            else:
+                completed = _store_complete_result(
+                    result_store,
+                    QueryResult(columns=("value",), rows=((1,),), elapsed_ms=1.0),
+                    sequence=request.sequences[0],
+                )
+                event_sink(TUICompleteEvent(sequence=request.sequences[0], stored=completed))
+        else:
+            queued_started.set()
+            assert release_queued.wait(timeout=5.0)
+            _emit_complete_result(
+                request=request,
+                result_store=result_store,
+                event_sink=event_sink,
+                result=QueryResult(columns=("value",), rows=((2,),), elapsed_ms=1.0),
+            )
+        event_order.append(f"query-{request.sequences[0]}-return")
+
+    def fake_export_last_result(
+        result: QueryResult,
+        path_value: str,
+        **kwargs: object,
+    ) -> Path:
+        del result, kwargs
+        destination = Path(path_value)
+        exported_paths.append(destination)
+        event_order.append(f"export-{destination.name}-start")
+        export_started.set()
+        assert release_export.wait(timeout=5.0)
+        event_order.append(f"export-{destination.name}-finish")
+        return destination
+
+    _patch_run_tui_request(monkeypatch, fake_run_tui_request)
+    monkeypatch.setattr(tui_app_module, "export_last_result", fake_export_last_result)
+
+    async def _open_export_prompt(
+        pilot: Pilot[None],
+        app: CSVQLMenuApp,
+    ) -> Input:
+        app.action_export_last_result()
+        for _ in range(100):
+            await pilot.pause(0.02)
+            if isinstance(app.screen, tui_app_module._PromptInputScreen):
+                break
+        return app.screen.query_one("#export-path", Input)
+
+    async def _submit_export_path(
+        pilot: Pilot[None],
+        app: CSVQLMenuApp,
+        destination: Path,
+    ) -> None:
+        prompt_input = await _open_export_prompt(pilot, app)
+        prompt_input.value = str(destination)
+        await pilot.press("enter")
+        await pilot.pause()
+
+    async def _inner() -> tuple[bool, bool, int, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT 1 AS value")
+            await pilot.press("f4")
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if preview_ready.is_set() and app.state.active_result_record is not None:
+                    break
+            assert app._active_query_worker is not None
+            first_worker.append(app._active_query_worker)
+
+            if resolution == "stale_existing":
+                await _submit_export_path(pilot, app, original_destination)
+                assert app.state.export_intent is not None
+
+            sql.load_text("SELECT 2 AS value")
+            app.action_run_selected_or_current_query()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if app.state.queued_run is not None:
+                    break
+            assert app.state.queued_run is not None
+            queued_identity = app.state.queued_run
+
+            prompt_input = await _open_export_prompt(pilot, app)
+            assert late_destination.exists() is False
+            assert invalid_destination.exists() is False
+            release_preservation.set()
+            for _ in range(150):
+                await pilot.pause(0.02)
+                if first_worker[0].is_finished:
+                    break
+            assert first_worker[0].is_finished
+
+            held_before_resolution = (
+                not queued_started.is_set() and app.state.queued_run is queued_identity
+            )
+            prompt_dismissed_after_non_complete = False
+            rejection_message = ""
+
+            if resolution == "stale_existing":
+                for _ in range(150):
+                    await pilot.pause(0.02)
+                    if export_started.is_set():
+                        break
+                assert export_started.is_set()
+                release_export.set()
+                for _ in range(150):
+                    await pilot.pause(0.02)
+                    if queued_started.is_set():
+                        break
+                prompt_input.value = str(late_destination)
+                await pilot.press("enter")
+                await pilot.pause(0.2)
+            elif resolution == "non_complete":
+                for _ in range(150):
+                    await pilot.pause(0.02)
+                    if queued_started.is_set():
+                        break
+                prompt_dismissed_after_non_complete = not isinstance(
+                    app.screen,
+                    tui_app_module._PromptInputScreen,
+                )
+                rejection_message = app.query_one("#results-message", Static).content
+            elif resolution == "cancel":
+                await pilot.press("escape")
+                for _ in range(150):
+                    await pilot.pause(0.02)
+                    if queued_started.is_set():
+                        break
+            elif resolution == "invalid":
+                prompt_input.value = str(invalid_destination)
+                await pilot.press("enter")
+                for _ in range(150):
+                    await pilot.pause(0.02)
+                    if queued_started.is_set():
+                        break
+                rejection_message = app.query_one("#results-message", Static).content
+            else:
+                prompt_input.value = str(late_destination)
+                await pilot.press("enter")
+                for _ in range(150):
+                    await pilot.pause(0.02)
+                    if export_started.is_set():
+                        break
+                assert late_destination.exists() is False
+                release_export.set()
+                for _ in range(150):
+                    await pilot.pause(0.02)
+                    if queued_started.is_set():
+                        break
+
+            release_queued.set()
+            for _ in range(300):
+                await pilot.pause(0.02)
+                if (
+                    len(seen_requests) == 2
+                    and not app.state.query_run.is_running
+                    and not app.state.operation_run.is_running
+                ):
+                    break
+            return (
+                held_before_resolution,
+                prompt_dismissed_after_non_complete,
+                len(exported_paths),
+                rejection_message,
+            )
+
+    (
+        held_before_resolution,
+        prompt_dismissed_after_non_complete,
+        export_count,
+        rejection_message,
+    ) = asyncio.run(_inner())
+
+    if resolution in {"submit", "cancel", "invalid"}:
+        assert held_before_resolution is True
+    if resolution == "submit":
+        assert exported_paths == [late_destination]
+        assert event_order.index("export-late.csv-finish") < event_order.index("query-2-start")
+    elif resolution == "stale_existing":
+        assert exported_paths == [original_destination]
+    else:
+        assert export_count == 0
+    if resolution == "invalid":
+        assert "Unsupported export file type" in rejection_message
+    if resolution == "non_complete":
+        assert prompt_dismissed_after_non_complete is True
+        assert "was not started" in rejection_message
+        assert "did not produce a complete result" in rejection_message
+    assert event_order.count("query-2-start") == 1
+    assert late_destination.exists() is False
+    assert invalid_destination.exists() is False
+
+
 def test_export_intent_replacement_confirmation_is_identity_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

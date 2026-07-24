@@ -276,6 +276,12 @@ class _SaveResultSourceOutcome:
     source: TUISource
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingExportPrompt:
+    result_sequence: int
+    expected_existing_intent: TUIExportIntent | None
+
+
 class _SQLAssistPickerScreen(ModalScreen[str | None]):
     """Picker screen for SQL templates and completion items."""
 
@@ -492,6 +498,7 @@ class CSVQLMenuApp(App[None]):
         self._active_query_operation: OperationContext | None = None
         self._query_terminal_event_sequence: int | None = None
         self._attached_export_intent_in_flight: TUIExportIntent | None = None
+        self._pending_export_prompt: _PendingExportPrompt | None = None
         self._cancelled_operation_names: set[str] = set()
         self._sql_assist_choices: dict[str, SQLTemplateOption | SQLCompletionItem] = {}
         self._preview_policy = preview_policy or PreviewPolicy()
@@ -1260,14 +1267,38 @@ class CSVQLMenuApp(App[None]):
             self._show_error(CSVQLError("Run a query before exporting."))
             return
 
-        self.push_screen(
-            _PromptInputScreen(
-                (
-                    "Export active result to path "
-                    "(.csv, .json, .md, .markdown, .txt; blank suffix uses .csv)."
-                ),
-                input_id="export-path",
+        prompt = _PromptInputScreen(
+            (
+                "Export active result to path "
+                "(.csv, .json, .md, .markdown, .txt; blank suffix uses .csv)."
             ),
+            input_id="export-path",
+        )
+        if record.state == "preserving":
+            if self._pending_export_prompt is not None:
+                self._show_error(CSVQLError("An export path prompt is already pending."))
+                return
+            pending = _PendingExportPrompt(
+                result_sequence=result_sequence,
+                expected_existing_intent=self.state.export_intent,
+            )
+            self._pending_export_prompt = pending
+            try:
+                self.push_screen(
+                    prompt,
+                    callback=lambda path_value: self._handle_pending_export_prompt(
+                        pending,
+                        path_value,
+                    ),
+                )
+            except ScreenStackError:
+                if self._pending_export_prompt is pending:
+                    self._pending_export_prompt = None
+                self._show_error(CSVQLError("Unable to open the export path prompt."))
+            return
+
+        self.push_screen(
+            prompt,
             callback=lambda path_value: self._handle_export_last_result(
                 path_value,
                 result_sequence=result_sequence,
@@ -1652,6 +1683,34 @@ class CSVQLMenuApp(App[None]):
     def _continue_after_query_worker_terminalized(self) -> bool:
         if self.state.query_run.is_running:
             return False
+
+        pending = self._pending_export_prompt
+        if pending is not None:
+            record = self._result_record_for_sequence(pending.result_sequence)
+            result_is_complete = (
+                record is not None and record.state == "complete" and record.handle is not None
+            )
+            if not result_is_complete:
+                self._pending_export_prompt = None
+                self._dismiss_pending_export_prompt()
+                if self.state.export_intent is None:
+                    message = (
+                        f"Pending export for query {pending.result_sequence} was not "
+                        "started because preservation did not produce a complete result."
+                    )
+                    self._set_status(message)
+                    self._update_static_text("#results-message", message)
+            elif pending.expected_existing_intent is None:
+                if (
+                    self.state.export_intent is None
+                    and self._attached_export_intent_in_flight is None
+                ):
+                    return True
+                self._pending_export_prompt = None
+                self._dismiss_pending_export_prompt()
+            elif self.state.export_intent is not pending.expected_existing_intent:
+                self._pending_export_prompt = None
+                self._dismiss_pending_export_prompt()
 
         intent = self.state.export_intent
         if intent is not None:
@@ -2228,6 +2287,139 @@ class CSVQLMenuApp(App[None]):
             self._add_session_sources(sources)
         except CSVQLError as exc:
             self._show_error(exc)
+            return
+
+    def _handle_pending_export_prompt(
+        self,
+        pending: _PendingExportPrompt,
+        path_value: str | None,
+    ) -> None:
+        if self._pending_export_prompt is not pending:
+            if path_value is not None:
+                self._set_status("Export path prompt expired; no export was started.")
+            return
+
+        if path_value is None:
+            self._pending_export_prompt = None
+            self._set_status("Export path prompt cancelled.")
+            self._continue_after_pending_export_prompt()
+            return
+
+        record = self._result_record_for_sequence(pending.result_sequence)
+        expected_intent = pending.expected_existing_intent
+        if expected_intent is not None:
+            replacement_window_open = (
+                record is not None
+                and record.state == "preserving"
+                and self.state.export_intent is expected_intent
+                and self._attached_export_intent_in_flight is None
+            )
+            if not replacement_window_open:
+                self._pending_export_prompt = None
+                self._set_status(
+                    "Export path prompt expired; kept the existing export destination."
+                )
+                self._continue_after_pending_export_prompt()
+                return
+        elif (
+            self.state.export_intent is not None
+            or self._attached_export_intent_in_flight is not None
+        ):
+            self._pending_export_prompt = None
+            self._set_status("Export path prompt expired; no export was started.")
+            self._continue_after_pending_export_prompt()
+            return
+
+        try:
+            export_path_value, export_format = _export_path_and_format_for_prompt(path_value)
+            intent = build_tui_export_intent(
+                result_sequence=pending.result_sequence,
+                path_value=export_path_value,
+                export_format=export_format,
+                base_dir=self.start_dir,
+            )
+        except CSVQLError as exc:
+            self._pending_export_prompt = None
+            self._show_error(exc)
+            self._continue_after_pending_export_prompt()
+            return
+
+        if record is not None and record.state == "preserving":
+            try:
+                replacement = self.state.attach_export_intent(intent)
+            except RuntimeError as exc:
+                self._pending_export_prompt = None
+                self._show_error(CSVQLError(str(exc)))
+                self._continue_after_pending_export_prompt()
+                return
+            self._pending_export_prompt = None
+            if replacement is None:
+                if expected_intent is not None:
+                    self._show_error(CSVQLError("Export intent changed while the prompt was open."))
+                    return
+                self._set_status(
+                    f"Attached export for query {pending.result_sequence}: "
+                    f"{_display_path(intent.destination, self.start_dir)}."
+                )
+                return
+            if replacement.existing is not expected_intent:
+                self._show_error(CSVQLError("Export intent changed while the prompt was open."))
+                return
+            self._confirm_export_intent_replacement(replacement)
+            return
+
+        if record is not None and record.state == "complete" and record.handle is not None:
+            self._pending_export_prompt = None
+            if self._operation_running():
+                self._show_error(
+                    CSVQLError(
+                        "Unable to schedule the attached export.",
+                        suggestion="The queued run will continue without exporting.",
+                    )
+                )
+                self._continue_after_pending_export_prompt()
+                return
+            self._start_attached_export(intent, record)
+            if self._attached_export_intent_in_flight is intent:
+                return
+            self._show_error(
+                CSVQLError(
+                    "Unable to schedule the attached export.",
+                    suggestion="The queued run will continue without exporting.",
+                )
+            )
+            self._continue_after_pending_export_prompt()
+            return
+
+        self._pending_export_prompt = None
+        self._show_error(
+            CSVQLError(
+                f"Export for query {pending.result_sequence} was not started.",
+                suggestion="Preservation did not produce a complete result.",
+            )
+        )
+        self._continue_after_pending_export_prompt()
+
+    def _continue_after_pending_export_prompt(self) -> None:
+        if (
+            self.state.query_run.is_running
+            or self.state.export_intent is not None
+            or self._attached_export_intent_in_flight is not None
+        ):
+            return
+        if self._continue_after_query_worker_terminalized():
+            return
+        self._update_static_text("#run-status", "Ready.")
+        self.query_one("#sql", TextArea).focus()
+
+    def _dismiss_pending_export_prompt(self) -> None:
+        try:
+            screen = self.screen
+            if not isinstance(screen, _PromptInputScreen):
+                return
+            screen.query_one("#export-path", Input)
+            screen.dismiss(None)
+        except (NoMatches, ScreenStackError):
             return
 
     def _handle_export_last_result(
