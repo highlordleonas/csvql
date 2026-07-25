@@ -38,10 +38,15 @@ and the optional terminal menu. See the [Roadmap](ROADMAP.md) for planned work.
 
 ## Where do terminal-menu result sources go?
 
-When you explicitly save a successful tabular result in the terminal menu,
-LocalQL writes `.csvql/results/{alias}.csv` and adds that alias to the current
-menu session. The alias becomes durable across sessions only when you explicitly
-save sources to `.csvql.yml`.
+When you explicitly save a complete preserved tabular result in the terminal
+menu, LocalQL writes `.csvql/results/{alias}.csv` and adds that alias to the
+current menu session. The alias becomes durable across sessions only when you
+explicitly save sources to `.csvql.yml`.
+
+A preview-only result cannot be saved as a source because LocalQL will not
+present a partial result as complete. If session capacity was exhausted, delete
+an older preserved result from History and rerun the query. If the result's
+temporary storage was lost, rerun the query to create a new complete result.
 
 ## Where should I ask for help or report a problem?
 

@@ -20,6 +20,10 @@ csvql menu revenue_movements.csv
 csvql menu --table customers=customers.csv --table orders=orders.csv
 ```
 
+Launching without a CSV is supported. With no sources loaded, you can still run
+source-free DuckDB SQL such as `SELECT 1`, then add CSVs later with `F3` or
+`Ctrl+O`.
+
 The menu retains up to 1,000 preview rows and uses one 1 GiB result-storage
 capacity by default. Override those session settings with `--limit` and
 `--spool-capacity-mib`:
@@ -33,7 +37,7 @@ You can add sources after launch with `F3`. On macOS it opens a CSV picker;
 `.csv` path into the SQL editor to add it as a source. CSV paths inside SQL
 strings, comments, or expressions remain ordinary SQL text.
 
-![Terminal screenshot of the LocalQL TUI workbench with project sources loaded and a query result visible](assets/localql-tui-workbench.svg)
+![Terminal screenshot of the LocalQL TUI showing loaded CSV sources, a successful History row, and a complete preserved result](assets/localql-tui-workbench.svg)
 
 ## Panes
 
@@ -86,6 +90,11 @@ one from History or exit the menu. If a new result cannot fit in the remaining
 capacity, LocalQL keeps its retained preview as a preview-only result and says
 that full export and save are unavailable for that result.
 
+Deleting a preserved result releases only that result's session capacity. To
+make room for a later complete result, focus History with `F8`, highlight an
+older preserved result, press `Delete`, confirm the deletion, and rerun the
+preview-only query.
+
 The capacity applies to result preservation, not source files. Temporary result
 storage is private to the running menu session and is cleaned up when the menu
 exits.
@@ -133,8 +142,11 @@ anywhere by LocalQL.
 
 When the History pane is focused:
 
+- highlighting a row recalls its result in Results
 - `Enter` reopens a query in the editor
 - `r` reruns a query against the current session sources
+- `Delete` removes the selected preserved result after confirmation and releases
+  any session capacity allocated to it
 
 History clears when the TUI exits.
 

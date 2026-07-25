@@ -1,5 +1,6 @@
 import json
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from csvql import CSVQLSession
@@ -8,6 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REPO_BLOB_PREFIX = "https://github.com/highlordleonas/csvql/blob/main/"
 REPO_RAW_PREFIX = "https://raw.githubusercontent.com/highlordleonas/csvql/main/"
 LINK_RE = re.compile(r"!?\[[^]]*\]\(([^)]+)\)")
+IMAGE_RE = re.compile(r"!\[([^]]*)\]\(([^)]+)\)")
 HEADING_RE = re.compile(r"^#{1,6} +(.+?) *#* *$", flags=re.MULTILINE)
 JSON_FENCE_RE = re.compile(r"```json\n(.*?)\n```", flags=re.DOTALL)
 API_FACTORY_RE = re.compile(r"CSVQLSession\.(from_[a-z_]+)\(")
@@ -102,6 +104,12 @@ def test_getting_started_orders_the_core_query_before_the_optional_tui() -> None
 def test_readme_links_are_safe_for_pypi_rendering() -> None:
     for target in LINK_RE.findall(read_doc("README.md")):
         assert target.startswith(("https://", "mailto:", "#")), target
+
+
+def test_user_documentation_images_have_text_alternatives() -> None:
+    for path in USER_DOC_PATHS:
+        for alternative, target in IMAGE_RE.findall(read_doc(path)):
+            assert alternative.strip(), f"{path}: {target}"
 
 
 def test_installed_user_docs_do_not_use_source_checkout_commands() -> None:
@@ -298,6 +306,63 @@ def test_v1_1_result_and_source_contracts_are_publicly_documented() -> None:
         "no automatic eviction",
     ):
         assert marker in architecture
+
+
+def test_v1_1_onboarding_and_recovery_paths_are_publicly_documented() -> None:
+    readme = " ".join(read_doc("README.md").casefold().split())
+    getting_started = " ".join(read_doc("docs/getting-started.md").casefold().split())
+    tui_guide = " ".join(read_doc("docs/tui-guide.md").casefold().split())
+    faq = " ".join(read_doc("docs/faq.md").casefold().split())
+    troubleshooting = " ".join(read_doc("docs/troubleshooting.md").casefold().split())
+    release_notes = " ".join(read_doc("docs/release-notes/v1.md").casefold().split())
+
+    for document in (readme, getting_started):
+        for marker in (
+            "table output",
+            "1,000 rows",
+            "--limit",
+            "json output",
+            "python api results",
+            "csvql export",
+            "remain complete",
+        ):
+            assert marker in document
+
+    for marker in (
+        "source-free duckdb sql",
+        "no automatic eviction",
+        "delete",
+        "releases only that result's session capacity",
+        "preview-only",
+    ):
+        assert marker in tui_guide
+
+    assert "a preview-only result cannot be saved as a source" in faq
+    assert "terminal-menu session capacity was exhausted" in troubleshooting
+    assert "temporary storage was lost" in troubleshooting
+    assert "rerun" in troubleshooting
+    assert "source-free duckdb sql" in release_notes
+    assert "result selected or recalled" in release_notes
+
+
+def test_tui_workbench_asset_uses_current_result_language_and_accessible_metadata() -> None:
+    root = ET.fromstring(read_doc("docs/assets/localql-tui-workbench.svg"))
+    namespace = {"svg": "http://www.w3.org/2000/svg"}
+    title = root.find("svg:title", namespace)
+    description = root.find("svg:desc", namespace)
+    rendered_text = " ".join("".join(root.itertext()).split())
+
+    assert root.attrib["role"] == "img"
+    assert (
+        root.attrib["aria-labelledby"] == "localql-tui-workbench-title localql-tui-workbench-desc"
+    )
+    assert title is not None
+    assert title.text == "LocalQL TUI workbench showing a complete preserved result"
+    assert description is not None
+    assert description.text
+    assert "Showing 5 total row(s). Full export/save use the preserved result." in rendered_text
+    assert "Delete removes the selected preserved result." in rendered_text
+    assert "Showing 5 returned row(s)." not in rendered_text
 
 
 def test_roadmap_preserves_point_and_query_safety_and_compatibility() -> None:
