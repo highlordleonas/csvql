@@ -389,13 +389,20 @@ def test_atomic_text_output_manual_close_is_idempotent_for_context_cleanup(
 ) -> None:
     output_path = tmp_path / "result.txt"
     fsync_calls: list[int] = []
+    reopen_flags: list[int] = []
     real_fsync = os.fsync
+    real_open = os.open
 
     def record_fsync(fd: int) -> None:
         fsync_calls.append(fd)
         real_fsync(fd)
 
+    def record_open(path: str | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
+        reopen_flags.append(flags)
+        return real_open(path, flags, mode)
+
     monkeypatch.setattr("csvql.atomic_write.os.fsync", record_fsync)
+    monkeypatch.setattr("csvql.atomic_write.os.open", record_open)
 
     with atomic_text_output(output_path) as output:
         output.write("hello\n")
@@ -403,6 +410,7 @@ def test_atomic_text_output_manual_close_is_idempotent_for_context_cleanup(
 
     assert output_path.read_text(encoding="utf-8") == "hello\n"
     assert len(fsync_calls) == 1
+    assert reopen_flags[-1] == os.O_RDWR
     assert not tuple(tmp_path.glob(".result.txt.*.tmp"))
 
 

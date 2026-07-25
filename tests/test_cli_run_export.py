@@ -208,6 +208,7 @@ def test_export_success_output_encodes_terminal_controls_in_output_path(
     orders = tmp_path / "orders.csv"
     query = tmp_path / "count_orders.sql"
     unsafe_output_path = tmp_path / "result\x1b]0;spoof\x07\x7f\x85\x9b31m.csv"
+    write_calls: list[Path] = []
     _write_csv(orders, "order_id,total_amount\nORD-001,20.00\n")
     query.write_text("SELECT COUNT(*) AS order_count FROM orders", encoding="utf-8")
 
@@ -224,6 +225,22 @@ def test_export_success_output_encodes_terminal_controls_in_output_path(
 
     monkeypatch.setattr("csvql.cli.resolve_export_path", fake_resolve_export_path)
 
+    def fake_write_streaming_export(
+        source: object,
+        output_path: Path,
+        *,
+        export_format: ExportFormat,
+        overwrite: bool,
+        token: object | None = None,
+    ) -> None:
+        assert source is not None
+        assert export_format is ExportFormat.csv
+        assert overwrite is False
+        assert token is not None
+        write_calls.append(output_path)
+
+    monkeypatch.setattr("csvql.cli.write_streaming_export", fake_write_streaming_export)
+
     result = runner.invoke(
         app,
         [
@@ -239,7 +256,7 @@ def test_export_success_output_encodes_terminal_controls_in_output_path(
     )
 
     assert result.exit_code == 0, result.output
-    assert unsafe_output_path.read_bytes() == b"order_count\r\n1\r\n"
+    assert write_calls == [unsafe_output_path]
     assert all(control not in result.output for control in "\x1b\x07\x7f\x85\x9b")
     assert r"result\x1b]0;spoof\x07\x7f\x85\x9b31m.csv" in result.output
 

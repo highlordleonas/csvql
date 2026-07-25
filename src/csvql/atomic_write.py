@@ -57,7 +57,9 @@ def atomic_text_output(
             raise
         else:
             if file.closed:
-                sync_fd = os.open(temp_path, os.O_RDONLY)
+                # Windows rejects fsync on a descriptor reopened read-only after
+                # the caller manually closed the staging file.
+                sync_fd = os.open(temp_path, os.O_RDWR)
                 try:
                     os.fsync(sync_fd)
                 finally:

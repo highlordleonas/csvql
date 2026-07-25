@@ -203,8 +203,8 @@ def test_all_source_spec_conversions_capture_anchors_before_later_cwd_change(
         (tmp_path / "tui_session").resolve(),
     )
     assert tuple(spec.locator for spec in specs) == (
-        "data/legacy.csv",
+        str(Path("data/legacy.csv")),
         "data/catalog.csv",
         "data/cli.csv",
-        "data/tui.csv",
+        str(Path("data/tui.csv")),
     )
