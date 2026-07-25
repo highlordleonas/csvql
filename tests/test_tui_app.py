@@ -494,6 +494,48 @@ def test_app_starts_empty() -> None:
 
     assert row_count == 0
     assert "No sources loaded." in status
+    assert "You can run source-free SQL" in status
+
+
+@pytest.mark.parametrize("key", ["f4", "f12"])
+def test_run_shortcuts_execute_source_free_sql(tmp_path: Path, key: str) -> None:
+    async def _inner() -> tuple[
+        tuple[TUISource, ...],
+        str | None,
+        int | None,
+        tuple[str, ...],
+        tuple[tuple[str, ...], ...],
+        list[str],
+        str,
+    ]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sql = app.query_one("#sql", TextArea)
+            sql.load_text("SELECT range AS value FROM range(3)")
+            await pilot.press(key)
+            await _settled_query_idle(pilot, app)
+
+            record = app.state.active_query_result_record()
+            return (
+                app.state.sources,
+                None if record is None else record.state,
+                None if record is None else record.full_row_count,
+                app.state.result_view.columns,
+                app.state.result_view.display_rows,
+                app_history_statuses(app.state),
+                app.query_one("#status", Static).content,
+            )
+
+    sources, state, full_row_count, columns, rows, history_statuses, status = asyncio.run(_inner())
+
+    assert sources == ()
+    assert state == "complete"
+    assert full_row_count == 3
+    assert columns == ("value",)
+    assert rows == (("0",), ("1",), ("2",))
+    assert history_statuses == ["success"]
+    assert "No sources loaded." not in status
 
 
 def test_direct_app_construction_does_not_recover_abandoned_workspaces(
@@ -2272,13 +2314,22 @@ def test_run_shortcuts_preserve_previous_result_after_empty_sql(
 
 
 @pytest.mark.parametrize("key", ["f4", "f12"])
-def test_run_shortcuts_preserve_previous_result_after_missing_sources(
+def test_run_shortcuts_report_missing_table_without_sources(
     tmp_path: Path,
     key: str,
 ) -> None:
     state = _make_source_state(tmp_path)
 
-    async def _inner() -> tuple[bool, bool, tuple[str, ...], int, str, str, str, bool, list[str]]:
+    async def _inner() -> tuple[
+        TUIResultRecord | None,
+        tuple[str, ...],
+        int,
+        str,
+        str,
+        str,
+        bool,
+        list[str],
+    ]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2287,9 +2338,7 @@ def test_run_shortcuts_preserve_previous_result_after_missing_sources(
             await pilot.press("f4")
             await pilot.pause(0.2)
 
-            previous_result = app.state.active_query_result_record()
-            previous_view = app.state.result_view
-            assert previous_result is not None
+            assert app.state.active_query_result_record() is not None
 
             app.state.remove_source("customers")
             app._refresh_sources_table()
@@ -2299,8 +2348,7 @@ def test_run_shortcuts_preserve_previous_result_after_missing_sources(
 
             columns, row_count, message = _result_grid_snapshot(app)
             return (
-                app.state.active_query_result_record() == previous_result,
-                app.state.result_view == previous_view,
+                app.state.active_query_result_record(),
                 columns,
                 row_count,
                 message,
@@ -2311,8 +2359,7 @@ def test_run_shortcuts_preserve_previous_result_after_missing_sources(
             )
 
     (
-        result_preserved,
-        view_preserved,
+        active_result,
         columns,
         row_count,
         message,
@@ -2322,16 +2369,14 @@ def test_run_shortcuts_preserve_previous_result_after_missing_sources(
         history_statuses,
     ) = asyncio.run(_inner())
 
-    assert result_preserved is True
-    assert view_preserved is True
-    assert columns == ("customer_id", "email")
-    assert row_count == 2
-    assert "No sources loaded." in status
-    assert "Previous result is still available." in status
-    assert "Previous result is still available." in message
+    assert active_result is None
+    assert columns == ()
+    assert row_count == 0
+    assert "Table with name customers does not exist" in status
+    assert "Table with name customers does not exist" in message
     assert run_status == "Ready."
     assert is_running is False
-    assert history_statuses == ["success"]
+    assert history_statuses == ["success", "error"]
 
 
 def test_app_clears_stale_result_on_failed_query(tmp_path: Path) -> None:
@@ -4674,8 +4719,8 @@ def test_run_shortcut_does_not_consume_typed_csv_path_text(tmp_path: Path) -> No
     assert editor_text == str(csv_path)
     assert sources == ()
     assert run_status == "Ready."
-    assert "No sources loaded." in status
-    assert "No sources loaded." in results_message
+    assert "Parser Error" in status
+    assert "Parser Error" in results_message
 
 
 def test_idle_editor_csv_path_text_does_not_add_source(tmp_path: Path) -> None:
@@ -7178,6 +7223,99 @@ def test_delete_result_requires_confirmed_identity_and_preserves_other_handles(
     expected_rows = (("second",),) if focus == "history" else (("first",),)
     assert preserved_rows == expected_rows
     assert str(target_sequence) in confirmation
+
+
+@pytest.mark.parametrize(
+    ("action_name", "input_selector"),
+    [
+        ("action_export_last_result", "#export-path"),
+        ("action_save_result_as_source", "#derived-source-alias"),
+    ],
+)
+def test_result_action_uses_active_result_when_editor_focused_with_deleted_history_selection(
+    tmp_path: Path,
+    action_name: str,
+    input_selector: str,
+) -> None:
+    state = _make_source_state(tmp_path)
+    store = TUIResultStore(temp_root=tmp_path)
+    first_sequence = state.reserve_query_sequences(1)[0]
+    _record_stored_result(
+        state,
+        QueryResult(columns=("label",), rows=(("first",),), elapsed_ms=1.0),
+        sequence=first_sequence,
+        sql="SELECT 'first' AS label",
+        store=store,
+    )
+    second_sequence = state.reserve_query_sequences(1)[0]
+    _record_stored_result(
+        state,
+        QueryResult(columns=("label",), rows=(("second",),), elapsed_ms=1.0),
+        sequence=second_sequence,
+        sql="SELECT 'second' AS label",
+        store=store,
+    )
+    first_handle = state.remove_query_result(first_sequence)
+    assert first_handle is not None
+    store.remove(first_handle)
+
+    async def _inner() -> tuple[int | None, int | None, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).focus()
+            await pilot.pause()
+            selected_history_sequence = app._selected_history_sequence()
+
+            getattr(app, action_name)()
+            await pilot.pause()
+
+            prompt_id = app.screen.query_one(input_selector, Input).id
+            active_sequence = app.state.active_result.sequence
+            await pilot.press("escape")
+            await pilot.pause()
+            return selected_history_sequence, active_sequence, prompt_id or ""
+
+    selected_history_sequence, active_sequence, prompt_id = asyncio.run(_inner())
+
+    assert selected_history_sequence == first_sequence
+    assert active_sequence == second_sequence
+    assert prompt_id == input_selector.removeprefix("#")
+
+
+def test_deleted_history_result_is_not_reported_as_lost_storage(tmp_path: Path) -> None:
+    state = _make_source_state(tmp_path)
+    store = _record_stored_result(
+        state,
+        QueryResult(columns=("label",), rows=(("first",),), elapsed_ms=1.0),
+        sequence=state.reserve_query_sequences(1)[0],
+        sql="SELECT 'first' AS label",
+    )
+
+    async def _inner() -> tuple[str, str]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#results", DataTable).focus()
+            await pilot.pause()
+            app.action_delete_result()
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+
+            app.action_focus_history()
+            await pilot.pause()
+            return (
+                app.query_one("#status", Static).content,
+                app.query_one("#results-message", Static).content,
+            )
+
+    status, message = asyncio.run(_inner())
+
+    assert "preserved result is no longer available" in status.lower()
+    assert "preserved result is no longer available" in message.lower()
+    assert "storage" not in status.lower()
+    assert "storage" not in message.lower()
 
 
 def test_delete_result_cancel_keeps_selected_record_and_store_handle(tmp_path: Path) -> None:

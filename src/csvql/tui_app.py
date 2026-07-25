@@ -175,6 +175,7 @@ _RECOMMENDED_TERMINAL_HEIGHT = 36
 _FULL_RESULT_UNAVAILABLE_MESSAGE = (
     "The full result is no longer available because its temporary storage was lost."
 )
+_PRESERVED_RESULT_UNAVAILABLE_MESSAGE = "The preserved result is no longer available."
 _UNEXPECTED_QUERY_WORKER_FAILURE_MESSAGE = "Unable to complete the query. Try running it again."
 _UNEXPECTED_OPERATION_WORKER_FAILURE_MESSAGE = "Unable to complete this action. Try again."
 
@@ -1149,15 +1150,6 @@ class CSVQLMenuApp(App[None]):
             )
             return
 
-        if not self.state.sources:
-            self._show_rejected_run(
-                CSVQLError(
-                    "No sources loaded.",
-                    suggestion="Add a source before running SQL.",
-                )
-            )
-            return
-
         try:
             sequences = self.state.reserve_query_sequences(len(statements))
             request = self._build_query_request(
@@ -1454,15 +1446,6 @@ class CSVQLMenuApp(App[None]):
                 CSVQLError(
                     "Enter SQL before running a query.",
                     suggestion="Type SQL in the editor and try again.",
-                )
-            )
-            return
-
-        if not self.state.sources:
-            self._show_rejected_run(
-                CSVQLError(
-                    "No sources loaded.",
-                    suggestion="Add a source before running SQL.",
                 )
             )
             return
@@ -2278,7 +2261,7 @@ class CSVQLMenuApp(App[None]):
     def _status_message(self) -> str:
         source_count = len(self.state.sources)
         if source_count == 0:
-            return "No sources loaded. Press F3 to choose a CSV or add a source before running SQL."
+            return "No sources loaded. You can run source-free SQL or press F3 to choose a CSV."
         if source_count == 1:
             return "1 source loaded."
         return f"{source_count} sources loaded."
@@ -2979,12 +2962,14 @@ class CSVQLMenuApp(App[None]):
             self._set_status(message)
             self._update_static_text("#results-message", message)
             return True
+        if not self._is_focused("#history"):
+            return False
         item = self._selected_history_item()
         if item is None or item.status != "success":
             return False
         if self.state.query_result_record(item.sequence) is not None:
             return False
-        message = _FULL_RESULT_UNAVAILABLE_MESSAGE
+        message = _PRESERVED_RESULT_UNAVAILABLE_MESSAGE
         self._set_status(message)
         self._update_static_text("#results-message", message)
         return True
@@ -3033,8 +3018,11 @@ class CSVQLMenuApp(App[None]):
             return
         if item.status == "success":
             if not self.state.restore_query_result(item.sequence):
-                self._set_status(_FULL_RESULT_UNAVAILABLE_MESSAGE)
-                self._update_static_text("#results-message", _FULL_RESULT_UNAVAILABLE_MESSAGE)
+                self._set_status(_PRESERVED_RESULT_UNAVAILABLE_MESSAGE)
+                self._update_static_text(
+                    "#results-message",
+                    _PRESERVED_RESULT_UNAVAILABLE_MESSAGE,
+                )
                 return
             record = self.state.query_result_record(item.sequence)
             assert record is not None
