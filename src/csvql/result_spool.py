@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import os
 import struct
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,7 +150,7 @@ class ResultSpoolWriter:
         try:
             staging_fd = os.open(staging_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             self._file = os.fdopen(staging_fd, "wb")
-            if os.name != "nt":
+            if sys.platform != "win32":
                 os.fchmod(self._file.fileno(), 0o600)
             self._owns_staging = True
             self._staging_identity = _stat_identity(os.fstat(self._file.fileno()))

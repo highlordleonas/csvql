@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 import csvql.cli as cli_module
@@ -847,7 +848,7 @@ def test_query_limit_rejects_non_positive_values_before_execution(
     result = runner.invoke(app, ["query", "--limit", bad_limit, "SELECT 1 AS value"])
 
     assert result.exit_code != 0
-    assert "--limit" in result.output
+    assert "--limit" in Text.from_ansi(result.output).plain
 
 
 def test_query_json_limit_rejects_before_request_construction(

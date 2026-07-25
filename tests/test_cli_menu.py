@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 import csvql.tui_launcher as tui_launcher
@@ -36,16 +37,17 @@ def test_menu_help_lists_startup_arguments() -> None:
 
 def test_menu_help_keeps_csv_path_and_table_contract_before_session_options() -> None:
     result = runner.invoke(app, ["menu", "--help"], terminal_width=120)
+    output = Text.from_ansi(result.output).plain
 
     assert result.exit_code == 0, result.output
-    assert "Usage:" in result.output
-    assert "[CSV_PATH]" in result.output
-    assert "--table" in result.output
-    assert "--limit" in result.output
-    assert "--spool-capacity-mib" in result.output
-    assert result.output.index("[CSV_PATH]") < result.output.index("--table")
-    assert result.output.index("--table") < result.output.index("--limit")
-    assert result.output.index("--limit") < result.output.index("--spool-capacity-mib")
+    assert "Usage:" in output
+    assert "[CSV_PATH]" in output
+    assert "--table" in output
+    assert "--limit" in output
+    assert "--spool-capacity-mib" in output
+    assert output.index("[CSV_PATH]") < output.index("--table")
+    assert output.index("--table") < output.index("--limit")
+    assert output.index("--limit") < output.index("--spool-capacity-mib")
 
 
 def test_menu_delegates_startup_args(

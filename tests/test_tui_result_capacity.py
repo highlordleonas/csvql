@@ -828,7 +828,7 @@ def test_read_invalidation_revalidates_identity_before_unlinking(
     replacement.rollback()
 
 
-def test_remove_same_identity_size_mismatch_retains_capacity_until_cleanup(
+def test_remove_same_identity_size_mismatch_preserves_path_and_releases_capacity(
     tmp_path: Path,
 ) -> None:
     columns = ("value",)
@@ -844,14 +844,14 @@ def test_remove_same_identity_size_mismatch_retains_capacity_until_cleanup(
         store.remove(stored.handle)
 
     assert error.value.kind == "result_unavailable"
-    with pytest.raises(TUIResultStorageError) as capacity_error:
-        store.begin_complete(sequence=2, columns=columns)
-    assert capacity_error.value.kind == "capacity"
+    assert final_path.read_bytes().endswith(b"X")
+    replacement = store.begin_complete(sequence=2, columns=columns)
+    replacement.rollback()
 
     cleanup = store.cleanup()
 
-    assert cleanup.warning_count == 0
-    assert not final_path.exists()
+    assert cleanup.workspaces_failed == 1
+    assert final_path.read_bytes().endswith(b"X")
 
 
 def test_remove_foreign_final_alias_cleanup_failure_remains_capacity_accounted(

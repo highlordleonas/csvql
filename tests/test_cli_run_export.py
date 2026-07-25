@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 import csvql.cli as cli_module
@@ -810,7 +811,7 @@ def test_run_limit_rejects_non_positive_values_before_execution(
     result = runner.invoke(app, ["run", "--limit", bad_limit, "count_orders.sql"])
 
     assert result.exit_code != 0
-    assert "--limit" in result.output
+    assert "--limit" in Text.from_ansi(result.output).plain
 
 
 def test_run_json_limit_rejects_before_request_construction(

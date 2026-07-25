@@ -493,6 +493,7 @@ class TUIResultStore:
         self._pending_cleanup_identities: dict[Path, tuple[int, int]] = {}
         self._pending_cleanup_bytes: dict[Path, int] = {}
         self._pending_cleanup_workspaces: dict[Path, _PendingWorkspaceCleanup] = {}
+        self._preserved_foreign_paths: set[Path] = set()
         self._lease: _PlatformLease | None = None
         self._cleanup_uncertainties = 0
         # Starting cleanup permanently closes normal store operations. Completion
@@ -692,7 +693,7 @@ class TUIResultStore:
                 release_bytes=release_bytes,
             )
             if path_state == "foreign":
-                self._track_record_path_for_cleanup(record)
+                self._preserve_foreign_record_path(record)
             self._drop_record(record, release_bytes=release_bytes)
             raise _result_unavailable_error(handle.sequence)
 
@@ -781,6 +782,7 @@ class TUIResultStore:
             self._pending_cleanup_identities.clear()
             self._pending_cleanup_bytes.clear()
             self._pending_cleanup_workspaces.clear()
+            self._preserved_foreign_paths.clear()
             self._workspace_path = None
             self._workspace_identity = None
             self._session_id = None
@@ -1149,7 +1151,7 @@ class TUIResultStore:
                 release_bytes=released,
             )
             if state == "foreign":
-                self._track_record_path_for_cleanup(record)
+                self._preserve_foreign_record_path(record)
             self._drop_record(record, release_bytes=released)
 
     def _retain_record_path_capacity(self, record: _StoredResultRecord) -> None:
@@ -1159,6 +1161,9 @@ class TUIResultStore:
     def _track_record_path_for_cleanup(self, record: _StoredResultRecord) -> None:
         self._pending_cleanup_paths.add(record.path)
         self._pending_cleanup_identities[record.path] = record.identity
+
+    def _preserve_foreign_record_path(self, record: _StoredResultRecord) -> None:
+        self._preserved_foreign_paths.add(record.path)
 
     def _remove_record_staging_alias(
         self,
@@ -1195,10 +1200,10 @@ class TUIResultStore:
             return "uncertain"
         if self._stat_matches_record(result, record):
             return "matching"
-        current_identity = _usable_stat_identity(result)
-        if current_identity is not None and current_identity != record.identity:
-            return "foreign"
-        return "uncertain"
+        # Linux filesystems may immediately reuse an unlinked inode. Once a
+        # successful observation no longer matches the registered artifact,
+        # preserve that path as foreign instead of trusting inode identity.
+        return "foreign"
 
     def _unlink_matching_record_path(
         self,
@@ -1387,9 +1392,13 @@ class TUIResultStore:
                 TUI_RESULT_LEASE_NAME,
                 *(record.path.name for record in self._records_by_nonce.values()),
                 *(path.name for path in self._pending_cleanup_paths),
+                *(path.name for path in self._preserved_foreign_paths),
             }
             observed_names = {path.name for path in workspace.iterdir()}
-            allowed_missing_names = {path.name for path in self._pending_cleanup_paths}
+            allowed_missing_names = {
+                *(path.name for path in self._pending_cleanup_paths),
+                *(path.name for path in self._preserved_foreign_paths),
+            }
             if allowed_missing_result is not None and allowed_missing_result.parent == workspace:
                 allowed_missing_names.add(allowed_missing_result.name)
             required_names = expected_names - allowed_missing_names
@@ -1421,6 +1430,7 @@ class TUIResultStore:
         self._pending_cleanup_paths.clear()
         self._pending_cleanup_identities.clear()
         self._pending_cleanup_bytes.clear()
+        self._preserved_foreign_paths.clear()
         self._allocated_bytes = 0
         self._workspace_path = None
         self._workspace_identity = None
