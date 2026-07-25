@@ -238,9 +238,14 @@ def test_roadmap_preserves_milestone_statuses_dependencies_and_scope() -> None:
     assert roadmap.index(v1_2) < roadmap.index(point_and_query)
     assert roadmap.index(point_and_query) < roadmap.index(v2_0)
     assert roadmap.index(v2_0) < roadmap.index(v2_x)
-    assert re.search(r"\bstatus\b.{0,20}\bplanned\b", v1_1_text)
+    assert re.search(r"\bstatus\b.{0,20}\bactive\b", v1_1_text)
     assert "source" in v1_1_text
     assert "bounded" in v1_1_text
+    assert "interactive cli" in v1_1_text
+    assert "terminal menu" in v1_1_text
+    assert "exports remain complete" in v1_1_text
+    assert "python api remains complete" in v1_1_text
+    assert "json output remains complete" in v1_1_text
     assert re.search(r"\bstatus\b.{0,20}\bplanned\b", v1_2_text)
     assert "depends on v1.1" in v1_2_text
     assert re.search(r"\bstatus\b.{0,20}\bplanned\b", point_and_query_text)
@@ -253,6 +258,46 @@ def test_roadmap_preserves_milestone_statuses_dependencies_and_scope() -> None:
     assert "prerequisite" in v2_0_text
     assert re.search(r"\bstatus\b.{0,20}\b(candidate|deferred)\b", v2_x_text)
     assert "not shipped" in v2_x_text
+
+
+def test_v1_1_result_and_source_contracts_are_publicly_documented() -> None:
+    cli_reference = " ".join(read_doc("docs/cli-reference.md").casefold().split())
+    tui_guide = " ".join(read_doc("docs/tui-guide.md").casefold().split())
+    architecture = " ".join(read_doc("docs/ARCHITECTURE.md").casefold().split())
+
+    for marker in (
+        "1,000 rows",
+        "--limit",
+        "table output",
+        "json output remains complete",
+        "exports remain complete",
+    ):
+        assert marker in cli_reference
+
+    for marker in (
+        "retained preview",
+        "1 gib",
+        "session capacity",
+        "no automatic eviction",
+        "complete result",
+        "export",
+        "save",
+        "preview-only",
+    ):
+        assert marker in tui_guide
+
+    for marker in (
+        "sourcespec",
+        "sourceadapter",
+        "resultstream",
+        "boundedqueryresult",
+        "streaming export",
+        "tuiqueryrunner",
+        "tuiresultstore",
+        "1 gib",
+        "no automatic eviction",
+    ):
+        assert marker in architecture
 
 
 def test_roadmap_preserves_point_and_query_safety_and_compatibility() -> None:

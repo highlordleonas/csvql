@@ -9,17 +9,19 @@ database, orchestration tool, or SQL sandbox.
 CLI arguments
   -> path/sql-file/input parser
   -> explicit table mapping parser or project catalog discovery
-  -> validated table aliases and resolved CSV paths
+  -> private SourceSpec and SourceAdapter resolution
   -> in-memory DuckDB engine
-  -> query/inspect/sample/profile/check/doctor/export output
+  -> complete ResultStream
+  -> bounded interactive output, complete JSON/Python result, or streaming export
 
 Optional terminal menu flow:
 csvql menu startup arguments
   -> lazy Textual dependency boundary
   -> TUI session state from catalog, one CSV path, or --table mappings
-  -> existing inspect/sample/profile/query/export services
-  -> in-memory history, visible results, explicit exports, and explicit
-     project-local derived result CSVs
+  -> TUIQueryRunner consumes one ResultStream
+  -> bounded preview plus complete TUIResultStore preservation
+  -> in-memory history, visible previews, complete explicit exports, and
+     complete explicit project-local derived result CSVs
 ```
 
 ## Components
@@ -44,13 +46,23 @@ csvql menu startup arguments
   data-quality checks, resolve catalog table paths, and build queryable sources.
 
 `query_workflow.py`
-: Shared query request construction and execution for inline query, saved SQL run, and export workflows.
+: Shared query request construction plus complete and streaming execution for
+  inline query, saved SQL run, and export workflows.
 
 `source.py`
-: Resolve local CSV paths and capture file metadata used by inspect, sample, and catalog workflows.
+: Own private `SourceSpec`, resolved-source and capability value objects, resolve
+  local CSV paths, and capture file metadata used by source workflows.
+
+`source_adapter.py`, `csv_adapter.py`
+: Define the private `SourceAdapter` capability/binding boundary and its explicit
+  registry, with CSV as the only v1.1 adapter. This is not a public plugin API.
 
 `source_resolver.py`
 : Resolve inspect/sample inputs as direct CSV paths or project catalog aliases.
+
+`source_operations.py`
+: Run source-neutral inspect, sample, and profile operations over an
+  adapter-prepared binding.
 
 `inspection.py`
 : Use DuckDB and bounded file reads to infer columns, dialect metadata, row-count status, and sample rows.
@@ -74,11 +86,20 @@ csvql menu startup arguments
   checks themselves.
 
 `engine.py`
-: Own DuckDB connection lifecycle, CSV registration, SQL execution, and DuckDB error conversion.
+: Own DuckDB connection lifecycle, source preparation, complete or streaming SQL
+  execution, cancellation, and DuckDB error conversion.
+
+`result_stream.py`, `bounded_result.py`
+: `ResultStream` owns single-consumer bounded batches from one DuckDB cursor.
+  `BoundedQueryResult` and its preview policy cap interactive row and payload
+  retention without changing complete Python or JSON results.
 
 `export.py`
-: Validate export output paths and serialize query results to CSV, JSON,
-  Markdown, or text.
+: Define export formats and validate output paths.
+
+`streaming_export.py`
+: Perform complete streaming export to CSV, JSON, Markdown, or text with atomic
+  destination replacement and cleanup.
 
 `output.py`
 : Convert query, inspect, sample, project catalog, profile, check, and doctor
@@ -101,9 +122,19 @@ csvql menu startup arguments
 
 `tui_workflows.py`
 : TUI workflow adapter around existing CSVQL services. It loads startup
-  sources, runs trusted local SQL through `engine.py`, delegates inspect/sample/
-  profile/export behavior, saves sources to `.csvql.yml`, and writes explicit
-  derived result CSVs under `.csvql/results/`.
+  sources, delegates inspect/sample/profile behavior, saves sources to
+  `.csvql.yml`, and writes explicit derived result CSVs under
+  `.csvql/results/`.
+
+`tui_query_runner.py`
+: `TUIQueryRunner` executes each statement once, publishes its bounded preview,
+  and preserves its complete result when session capacity allows.
+
+`result_codec.py`, `result_spool.py`, `tui_result_store.py`
+: Encode typed rows, own private temporary result files, and expose the
+  `TUIResultStore`. Complete results share one 1 GiB session capacity with no
+  automatic eviction; capacity exhaustion produces a truthful preview-only
+  result without removing earlier results.
 
 `tui_app.py`, `tui_results.py`, `tui_help.py`
 : Textual UI composition, keybindings, result display helpers, and in-app help.
@@ -113,7 +144,8 @@ csvql menu startup arguments
 ## Design Choices
 
 - DuckDB runs in memory for CLI and Python API execution.
-- CSV files are registered as views using DuckDB's CSV reader.
+- CSV files are registered as views through the private CSV `SourceAdapter`
+  using DuckDB's CSV reader.
 - Table aliases must match `^[A-Za-z_][A-Za-z0-9_]*$`.
 - Project catalog discovery is optional and only used for commands that support `.csvql.yml`.
 - Catalog table paths resolve relative to the discovered project root.
@@ -143,9 +175,15 @@ csvql menu startup arguments
 - `doctor` compares configured check columns with the discovered schema without
   running the checks and exits `12` when it finds a project-health problem.
 - `--output` controls stdout formatting for query results.
+- Interactive `query` and `run` table output keeps at most 1,000 rows and
+  16 MiB of encoded preview payload by default. Query/run JSON output and the
+  Python API remain complete in v1.1.
+- CLI exports consume a `ResultStream` and remain complete.
 - `csvql menu` is optional and requires the `tui` package extra; the core CLI
   install does not require Textual.
 - The TUI keeps query history in memory for the current terminal session only.
+- The TUI shows bounded previews while preserving complete results under one
+  1 GiB aggregate session capacity. It uses no automatic eviction.
 - The TUI writes files only on explicit user actions: result export, project
   catalog save, or derived result source save.
 - TUI derived result sources are CSV files under project-root or start-directory

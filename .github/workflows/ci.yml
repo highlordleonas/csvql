@@ -91,12 +91,12 @@ jobs:
             --build-constraints scripts/release-build-constraints.txt \
             --require-hashes
           uv run --frozen --no-sync python scripts/audit_package_contents.py \
-            output/ci-release-dist --expected-version 1.0.5
+            output/ci-release-dist --expected-version 1.1.0
           uv run --frozen --no-sync python scripts/verify_release_artifacts.py \
-            inspect output/ci-release-dist --expected-version 1.0.5
+            inspect output/ci-release-dist --expected-version 1.1.0
           uvx --from twine==6.2.0 twine check \
-            output/ci-release-dist/localql-1.0.5-py3-none-any.whl \
-            output/ci-release-dist/localql-1.0.5.tar.gz
+            output/ci-release-dist/localql-1.1.0-py3-none-any.whl \
+            output/ci-release-dist/localql-1.1.0.tar.gz
           uv --version > output/ci-release-uv-version.txt
           uv run --python "${ARTIFACT_PYTHON}" --no-sync python --version \
             > output/ci-release-python-version.txt

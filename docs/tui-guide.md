@@ -20,6 +20,14 @@ csvql menu revenue_movements.csv
 csvql menu --table customers=customers.csv --table orders=orders.csv
 ```
 
+The menu retains up to 1,000 preview rows and uses one 1 GiB result-storage
+capacity by default. Override those session settings with `--limit` and
+`--spool-capacity-mib`:
+
+```console
+csvql menu --limit 250 --spool-capacity-mib 512
+```
+
 You can add sources after launch with `F3`. On macOS it opens a CSV picker;
 `Ctrl+O` opens the path prompt on every platform. You can also paste a standalone
 `.csv` path into the SQL editor to add it as a source. CSV paths inside SQL
@@ -64,6 +72,23 @@ The History run column labels entries as `current` for F4/Ctrl+R runs,
 
 The full workbench needs at least 100 columns by 30 rows. A 120x36 terminal is
 recommended.
+
+## Result Previews And Session Capacity
+
+Each tabular query displays a retained preview of up to 1,000 rows and 16 MiB
+by default. LocalQL preserves the complete result in private temporary storage
+at the same time, allowing History, export, and save actions to use every row
+without rerunning the query.
+
+Complete results share one 1 GiB session capacity by default. LocalQL uses no
+automatic eviction: earlier preserved results stay available until you remove
+one from History or exit the menu. If a new result cannot fit in the remaining
+capacity, LocalQL keeps its retained preview as a preview-only result and says
+that full export and save are unavailable for that result.
+
+The capacity applies to result preservation, not source files. Temporary result
+storage is private to the running menu session and is cleaned up when the menu
+exits.
 
 ## Source Actions
 
@@ -120,6 +145,10 @@ for a file path. The file suffix chooses the format: `.csv`, `.json`, `.md`,
 `.markdown`, or `.txt`. If the path has no suffix, LocalQL writes `.csv` by
 default.
 
+When a complete result was preserved, the export contains every row rather than
+only the retained preview. Export is unavailable for a preview-only result, and
+the menu reports why instead of writing a partial file.
+
 Relative export paths are resolved from the directory where you launched
 `csvql menu`.
 
@@ -132,6 +161,9 @@ reserve `F11` for Show Desktop.
 
 LocalQL prompts for an alias, writes `.csvql/results/{alias}.csv`, and adds the
 alias to the current Sources pane with kind `derived`.
+
+Save uses the complete preserved result. It is unavailable for a preview-only
+result so LocalQL never presents a partial source as complete.
 
 The CSV file remains on disk. The alias becomes durable across TUI sessions only
 if you explicitly save sources to `.csvql.yml`.

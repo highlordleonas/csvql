@@ -54,16 +54,23 @@ direction, not current availability.
 
 ### v1.1 — Bounded Results and Source Foundations
 
-Status: `Planned`
+Status: `Active`
 
 Depends on the shipped v1 foundation.
 
-- Introduce `SourceSpec`, `SourceAdapter`, and explicit capability contracts.
-- Route CSV through the adapter boundary first.
-- Replace unbounded full-result materialization with bounded or streaming
-  result behavior.
-- Make result-size behavior consistent across the CLI, terminal menu, exports,
-  and Python API.
+The implementation is complete on the v1.1 release candidate and is undergoing
+release validation. It is not shipped until a published release exists.
+
+- Introduce private `SourceSpec`, `SourceAdapter`, and explicit capability
+  contracts, routing CSV through the adapter boundary first.
+- Use bounded or streaming result behavior for the interactive CLI, terminal
+  menu, and exports.
+- Bound interactive CLI table output and terminal menu previews. Exports remain
+  complete, the Python API remains complete, and query/run JSON output remains
+  complete in v1.1.
+- Preserve complete terminal-menu results under one 1 GiB session capacity
+  with no automatic eviction, while reporting preview-only results truthfully
+  when capacity is exhausted.
 - Report source type, capabilities, and missing optional dependencies clearly.
 - Prove compatibility, bounded memory behavior, cancellation, and cleanup.
 

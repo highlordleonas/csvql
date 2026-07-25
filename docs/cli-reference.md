@@ -9,6 +9,7 @@ by default and support JSON where noted. For a guided first use, start with
 - [Query CSV files](#query-csv-files)
 - [Project catalogs](#project-catalogs)
 - [Run saved SQL](#run-saved-sql)
+- [Result-size behavior](#result-size-behavior)
 - [Save and reuse results](#save-and-reuse-results)
 - [Inspect, sample, and profile](#inspect-sample-and-profile)
 - [Data-quality checks](#data-quality-checks)
@@ -72,6 +73,21 @@ csvql run queries/revenue_health.sql --output json
 
 The saved SQL uses the aliases defined by the project catalog.
 
+## Result-size behavior
+
+Interactive table output from `csvql query` and `csvql run` retains up to
+1,000 rows by default and no more than a 16 MiB encoded preview payload. Use
+`--limit N` to choose a different row bound. The bound applies only to table
+output, and LocalQL reports when more rows exist beyond the retained preview.
+
+Query/run JSON output remains complete in v1.1 and does not accept `--limit`.
+The project-backed Python API also remains complete. These compatibility
+surfaces still materialize every returned row, so use them deliberately for
+large results.
+
+`csvql export` streams its result to the requested file, so exports remain
+complete and do not inherit the interactive table preview bound.
+
 ## Save and reuse results
 
 Export saved SQL to a file you choose:
@@ -83,6 +99,8 @@ csvql export queries/revenue_health.sql \
 ```
 
 LocalQL refuses to overwrite an existing output unless you add `--force`.
+The export contains the complete query result even when the same SQL would
+produce a bounded interactive table preview.
 
 An exported result is an ordinary CSV file. Add it to the catalog or pass it
 with `--table` when you want to query it again:
