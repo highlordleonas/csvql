@@ -346,7 +346,16 @@ def test_deleting_older_result_can_retry_preview_persistence_then_start_queue(
 
     _patch_run_tui_request(monkeypatch, fake_run_tui_request)
 
-    async def _inner() -> tuple[int, bool, bool, int | None, int | None, str, str]:
+    async def _inner() -> tuple[
+        int,
+        bool,
+        bool,
+        int | None,
+        int | None,
+        str,
+        str,
+        str,
+    ]:
         app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -376,8 +385,12 @@ def test_deleting_older_result_can_retry_preview_persistence_then_start_queue(
             active_before_history = app.state.active_result.sequence
             message_before_history = app.query_one("#results-message", Static).content
 
-            app.query_one("#history", DataTable).focus()
             history = app.query_one("#history", DataTable)
+            app.action_focus_history()
+            await pilot.pause()
+            message_after_transient_history_focus = app.query_one(
+                "#results-message", Static
+            ).content
             history.move_cursor(row=0)
             await pilot.pause()
             active_after_history = app.state.active_result.sequence
@@ -412,6 +425,7 @@ def test_deleting_older_result_can_retry_preview_persistence_then_start_queue(
                 active_before_history,
                 active_after_history,
                 message_before_history,
+                message_after_transient_history_focus,
                 message_after_history,
             )
 
@@ -422,6 +436,7 @@ def test_deleting_older_result_can_retry_preview_persistence_then_start_queue(
         active_before_history,
         active_after_history,
         message_before_history,
+        message_after_transient_history_focus,
         message_after_history,
     ) = asyncio.run(_inner())
 
@@ -431,6 +446,7 @@ def test_deleting_older_result_can_retry_preview_persistence_then_start_queue(
     assert queue_cleared is True
     assert active_before_history == 2
     assert active_after_history == 2
+    assert message_before_history == message_after_transient_history_focus
     assert message_before_history == message_after_history
 
 

@@ -3013,7 +3013,7 @@ class CSVQLMenuApp(App[None]):
 
     def _show_history_item_result(self, item: TUIQueryHistoryItem) -> None:
         transient_sequence = self._active_transient_preview_only_sequence()
-        if transient_sequence is not None and item.sequence != transient_sequence:
+        if transient_sequence is not None:
             self._set_status(self._paused_preview_status_message(transient_sequence))
             return
         if item.status == "success":
