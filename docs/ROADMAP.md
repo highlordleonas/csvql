@@ -34,14 +34,18 @@ or connector described below is available today.
 
 ## Current foundation
 
-LocalQL v1.0.5 is the shipped CSV-first foundation. It can:
+LocalQL v1.1.1 is the shipped CSV-first foundation. It can:
 
 - query one CSV or join named CSV tables with DuckDB SQL;
 - save repeatable work in `.csvql.yml` project catalogs;
-- run saved SQL and export results;
+- run saved SQL and export complete results;
+- bound interactive `csvql query` and `csvql run` table previews to 1,000 rows
+  while keeping query/run JSON output, Python API results, and exports complete;
 - inspect, sample, profile, and validate local sources;
+- route CSV access through private `SourceSpec` and `SourceAdapter` contracts;
 - produce JSON output for automation-oriented commands; and
-- provide an optional interactive terminal menu.
+- provide an optional interactive terminal menu with preserved complete results
+  under one 1 GiB session capacity and no automatic eviction.
 
 See the [changelog](../CHANGELOG.md) for release history. Future priorities
 remain evidence-led and require concrete planning and validation before
@@ -54,25 +58,24 @@ direction, not current availability.
 
 ### v1.1 — Bounded Results and Source Foundations
 
-Status: `Active`
+Status: `Shipped`
 
 Depends on the shipped v1 foundation.
 
-The implementation is complete on the v1.1 release candidate and is undergoing
-release validation. It is not shipped until a published release exists.
+Shipped in LocalQL 1.1.1.
 
-- Introduce private `SourceSpec`, `SourceAdapter`, and explicit capability
+- Introduced private `SourceSpec`, `SourceAdapter`, and explicit capability
   contracts, routing CSV through the adapter boundary first.
-- Use bounded or streaming result behavior for the interactive CLI, terminal
+- Added bounded or streaming result behavior for the interactive CLI, terminal
   menu, and exports.
-- Bound interactive CLI table output and terminal menu previews. Exports remain
+- Bounded interactive CLI table output and terminal menu previews. Exports remain
   complete, the Python API remains complete, and query/run JSON output remains
   complete in v1.1.
-- Preserve complete terminal-menu results under one 1 GiB session capacity
+- Preserved complete terminal-menu results under one 1 GiB session capacity
   with no automatic eviction, while reporting preview-only results truthfully
   when capacity is exhausted.
-- Report source type, capabilities, and missing optional dependencies clearly.
-- Prove compatibility, bounded memory behavior, cancellation, and cleanup.
+- Reported source type, capabilities, and missing optional dependencies clearly.
+- Proved compatibility, bounded memory behavior, cancellation, and cleanup.
 
 ### v1.2 — Local Structured Formats
 
@@ -151,7 +154,7 @@ These ideas remain useful but are not scheduled milestones:
 
 ## Product boundaries and non-goals
 
-LocalQL v1.0.5 does not ship remote or cloud connectors or a plugin ecosystem.
+LocalQL v1.1.1 does not ship remote or cloud connectors or a plugin ecosystem.
 Future connector support remains planned or candidate work, and a third-party
 SDK remains conditional on first-party contract proof. LocalQL is not a hosted
 analytics platform and does not claim universal connector support.
