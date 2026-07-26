@@ -56,7 +56,7 @@ jobs:
           test "${GITHUB_REF}" = "refs/tags/${EXPECTED_TAG}"
           test "${GITHUB_REF_TYPE}" = "tag"
           test "${GITHUB_REF_NAME}" = "${EXPECTED_TAG}"
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           fetch-depth: 0
       - name: Fetch authoritative annotated release tag
@@ -161,7 +161,7 @@ jobs:
               raise SystemExit("one or more tag-CI jobs did not succeed")
           PY
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
         with:
           version: "0.11.28"
           enable-cache: true
@@ -219,7 +219,7 @@ jobs:
             --uv-identity-file release-bundle/evidence/uv-version.txt \
             --build-constraints-digest-file release-bundle/evidence/release-build-constraints.sha256
       - name: Capture immutable publication bundle
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: localql-1.1.1-publish-bundle
           path: release-bundle
@@ -237,16 +237,16 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           ref: ${{ github.sha }}
       - name: Download immutable publication bundle
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
           name: localql-1.1.1-publish-bundle
           path: captured-bundle
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
         with:
           version: "0.11.28"
           enable-cache: false
@@ -304,7 +304,7 @@ jobs:
             > "${VERIFICATION_DIR}/installed-smokes.json"
       - name: Upload verification evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: localql-1.1.1-verification-evidence
           path: verification-evidence
@@ -327,17 +327,17 @@ jobs:
           test "${GITHUB_REF}" = "refs/tags/${EXPECTED_TAG}"
           test "${GITHUB_REF_TYPE}" = "tag"
           test "${GITHUB_REF_NAME}" = "${EXPECTED_TAG}"
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           fetch-depth: 0
           ref: ${{ github.sha }}
       - name: Download immutable publication bundle
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
           name: localql-1.1.1-publish-bundle
           path: release-bundle
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
         with:
           version: "0.11.28"
           enable-cache: false
@@ -409,7 +409,7 @@ jobs:
       id-token: write
     steps:
       - name: Download immutable publication bundle
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
           name: localql-1.1.1-publish-bundle
           path: release-bundle
@@ -433,17 +433,17 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           fetch-depth: 0
           ref: ${{ github.sha }}
       - name: Download original custody bundle
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
           name: localql-1.1.1-publish-bundle
           path: original-custody
       - name: Install uv without caching
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
         with:
           version: "0.11.28"
           enable-cache: false
@@ -734,7 +734,7 @@ jobs:
             pypi-verification/verification-status.txt
       - name: Upload PyPI verification evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: localql-1.1.1-pypi-verification
           path: pypi-verification

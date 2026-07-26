@@ -13,6 +13,14 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PINNED_ACTION_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
+NODE24_ACTION_PINS = {
+    "actions/checkout": ("actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09"),
+    "actions/upload-artifact": ("actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f"),
+    "actions/download-artifact": (
+        "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131"
+    ),
+    "astral-sh/setup-uv": ("astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990"),
+}
 
 
 def read_text(path: str) -> str:
@@ -189,6 +197,25 @@ def test_github_templates_exist() -> None:
         ".github/workflows/publish.yml",
     ):
         assert (REPO_ROOT / path).is_file(), path
+
+
+def test_workflows_pin_node24_compatible_actions_by_commit() -> None:
+    observed = {action: set() for action in NODE24_ACTION_PINS}
+    for workflow_path in (".github/workflows/ci.yml", ".github/workflows/publish.yml"):
+        for job_name in workflow_jobs(workflow_path):
+            for step in workflow_job_steps(workflow_path, job_name):
+                uses = step.get("uses")
+                if not isinstance(uses, str):
+                    continue
+                action = uses.partition("@")[0]
+                if action not in observed:
+                    continue
+                assert PINNED_ACTION_RE.fullmatch(uses)
+                observed[action].add(uses)
+
+    assert observed == {
+        action: {expected_pin} for action, expected_pin in NODE24_ACTION_PINS.items()
+    }
 
 
 def test_contributor_templates_collect_user_facing_change_context() -> None:
@@ -456,7 +483,7 @@ def test_publish_workflow_uses_identity_bound_trusted_publishing() -> None:
     assert publish_job["steps"] == [
         {
             "name": "Download immutable publication bundle",
-            "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "uses": NODE24_ACTION_PINS["actions/download-artifact"],
             "with": {
                 "name": "localql-1.1.1-publish-bundle",
                 "path": "release-bundle",
