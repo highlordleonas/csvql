@@ -2498,7 +2498,8 @@ def test_f4_runs_query_from_sql_editor(tmp_path: Path) -> None:
             sql.load_text("SELECT * FROM customers")
 
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
+            await pilot.pause()
 
             status = app.query_one("#status", Static).content
             results = app.query_one("#results", DataTable)
@@ -3424,7 +3425,7 @@ def test_buffer_result_navigation_only_works_from_results_pane(tmp_path: Path) -
                 "SELECT email FROM customers ORDER BY email;"
             )
             await pilot.press("f12")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
             initial_label = app.state.active_result.label
 
             app.query_one("#sources", DataTable).focus()
