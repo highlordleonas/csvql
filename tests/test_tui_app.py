@@ -3424,7 +3424,7 @@ def test_buffer_result_navigation_only_works_from_results_pane(tmp_path: Path) -
                 "SELECT email FROM customers ORDER BY email;"
             )
             await pilot.press("f12")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
             initial_label = app.state.active_result.label
 
             app.query_one("#sources", DataTable).focus()
