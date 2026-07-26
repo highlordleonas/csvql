@@ -3708,6 +3708,49 @@ def test_history_refresh_preserves_cursor_after_append_while_new_query_becomes_a
     assert status == "1 returned row(s) in 1.0 ms."
 
 
+def test_programmatic_history_refresh_does_not_restore_focused_history_row(
+    tmp_path: Path,
+) -> None:
+    state = _make_source_state(tmp_path)
+    store = TUIResultStore()
+    for sequence in state.reserve_query_sequences(10):
+        _record_stored_result(
+            state,
+            QueryResult(columns=("value",), rows=((sequence,),), elapsed_ms=1.0),
+            sequence=sequence,
+            sql=f"SELECT {sequence} AS value",
+            store=store,
+        )
+
+    async def _inner() -> tuple[int | None, int, int | None]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path, result_store=store)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            history = app.query_one("#history", DataTable)
+            history.focus()
+            history.move_cursor(row=8)
+            await pilot.pause()
+            selected_sequence = app.state.active_result.sequence
+
+            _record_stored_result(
+                state,
+                QueryResult(columns=("value",), rows=((11,),), elapsed_ms=1.0),
+                sequence=11,
+                sql="SELECT 11 AS value",
+                store=store,
+            )
+            app._refresh_history_table()
+            await pilot.pause()
+
+            return selected_sequence, history.cursor_row, app.state.active_result.sequence
+
+    selected_sequence, cursor_row, active_sequence = asyncio.run(_inner())
+
+    assert selected_sequence == 9
+    assert cursor_row == 8
+    assert active_sequence == 11
+
+
 def test_run_editor_reads_settled_editor_text_after_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

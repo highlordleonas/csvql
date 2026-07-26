@@ -2236,27 +2236,31 @@ class CSVQLMenuApp(App[None]):
     def _refresh_history_table(self) -> None:
         history_table = self.query_one("#history", DataTable)
         selected_sequence = self._selected_history_sequence()
-        history_table.clear(columns=True)
-        history_table.add_columns("seq", "run", "status", "rows", "sql")
-        target_row = 0
-        for item in self.state.query_history:
-            row_index = self._append_history_row(item)
-            if selected_sequence == item.sequence:
-                target_row = row_index
-        if history_table.row_count:
-            history_table.move_cursor(row=target_row)
+        # Rebuilding the table must not replay a history selection and replace
+        # the active result chosen by the query lifecycle.
+        with history_table.prevent(DataTable.RowHighlighted):
+            history_table.clear(columns=True)
+            history_table.add_columns("seq", "run", "status", "rows", "sql")
+            target_row = 0
+            for item in self.state.query_history:
+                row_index = self._append_history_row(item)
+                if selected_sequence == item.sequence:
+                    target_row = row_index
+            if history_table.row_count:
+                history_table.move_cursor(row=target_row)
 
     def _refresh_history_table_selecting(self, sequence: int) -> None:
         history_table = self.query_one("#history", DataTable)
-        history_table.clear(columns=True)
-        history_table.add_columns("seq", "run", "status", "rows", "sql")
-        target_row = 0
-        for item in self.state.query_history:
-            row_index = self._append_history_row(item)
-            if item.sequence == sequence:
-                target_row = row_index
-        if history_table.row_count:
-            history_table.move_cursor(row=target_row)
+        with history_table.prevent(DataTable.RowHighlighted):
+            history_table.clear(columns=True)
+            history_table.add_columns("seq", "run", "status", "rows", "sql")
+            target_row = 0
+            for item in self.state.query_history:
+                row_index = self._append_history_row(item)
+                if item.sequence == sequence:
+                    target_row = row_index
+            if history_table.row_count:
+                history_table.move_cursor(row=target_row)
 
     def _status_message(self) -> str:
         source_count = len(self.state.sources)
