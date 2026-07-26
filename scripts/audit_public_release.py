@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
+import tomllib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final
@@ -244,6 +247,18 @@ IMMUTABLE_FORBIDDEN_NAMES: Final[frozenset[str]] = frozenset(
     {"AGENTS.md", "AGENTS.override.md", "CODEX_CAPABILITY_REVIEW.md"}
 )
 REGULAR_FILE_MODES: Final[frozenset[str]] = frozenset({"100644", "100755"})
+RELEASE_STATE_PATHS: Final[frozenset[str]] = frozenset(
+    {
+        "CHANGELOG.md",
+        "docs/release-notes/v1.md",
+        "pyproject.toml",
+    }
+)
+UNFINALIZED_RELEASE_MARKERS: Final[tuple[str, ...]] = (
+    "unreleased",
+    "release candidate",
+    "not yet published",
+)
 
 
 class AuditError(RuntimeError):
@@ -349,6 +364,66 @@ def verify_regular_public_files(entries: Iterable[TreeEntry]) -> None:
         raise AuditError("public release entries must be regular files")
 
 
+def verify_finalized_release_state(repo: Path, entries: Iterable[TreeEntry]) -> None:
+    """Require committed package release documentation to be finalized."""
+
+    entries_by_path = {entry.path: entry for entry in entries}
+    present_paths = RELEASE_STATE_PATHS & entries_by_path.keys()
+    if present_paths != RELEASE_STATE_PATHS:
+        raise AuditError("release state is not finalized")
+
+    try:
+        pyproject = tomllib.loads(
+            _read_committed_blob(repo, entries_by_path["pyproject.toml"]).decode("utf-8")
+        )
+        version = pyproject["project"]["version"]
+    except (KeyError, TypeError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise AuditError("release state is not finalized") from error
+    if not isinstance(version, str) or not version:
+        raise AuditError("release state is not finalized")
+
+    try:
+        changelog = _read_committed_blob(repo, entries_by_path["CHANGELOG.md"]).decode("utf-8")
+        release_notes = _read_committed_blob(
+            repo, entries_by_path["docs/release-notes/v1.md"]
+        ).decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise AuditError("release state is not finalized") from error
+
+    changelog_heading = re.compile(
+        rf"^## \[{re.escape(version)}\] - (?P<date>\d{{4}}-\d{{2}}-\d{{2}})$",
+        flags=re.MULTILINE,
+    )
+    changelog_match = changelog_heading.search(changelog)
+    release_notes_heading = re.compile(
+        rf"^## {re.escape(version)}$",
+        flags=re.MULTILINE,
+    )
+    release_notes_match = release_notes_heading.search(release_notes)
+    if changelog_match is None or release_notes_match is None:
+        raise AuditError("release state is not finalized")
+    first_changelog_heading = re.search(r"^## .+$", changelog, flags=re.MULTILINE)
+    first_release_notes_heading = re.search(r"^## .+$", release_notes, flags=re.MULTILINE)
+    if (
+        first_changelog_heading is None
+        or first_changelog_heading.start() != changelog_match.start()
+        or first_release_notes_heading is None
+        or first_release_notes_heading.start() != release_notes_match.start()
+    ):
+        raise AuditError("release state is not finalized")
+    try:
+        date.fromisoformat(changelog_match.group("date"))
+    except ValueError as error:
+        raise AuditError("release state is not finalized") from error
+
+    if any(
+        marker in document.casefold()
+        for document in (changelog, release_notes)
+        for marker in UNFINALIZED_RELEASE_MARKERS
+    ):
+        raise AuditError("release state is not finalized")
+
+
 def verify_single_commit_topology(repo: Path, base: str, candidate: str) -> tuple[str, str]:
     """Require candidate to be a non-merge child commit of the declared base."""
 
@@ -407,6 +482,7 @@ def audit_public_release(
     entries = committed_tree_entries(repo_path, candidate)
     classify_tracked_paths(entry.path for entry in entries)
     verify_regular_public_files(entries)
+    verify_finalized_release_state(repo_path, entries)
     if require_clean_worktree:
         verify_clean_tracked_state(repo_path)
     if tree_only:
@@ -482,6 +558,14 @@ def _resolve_tree(repo: Path, revision: str) -> str:
     """Resolve a revision to a committed tree object."""
 
     return _run_git(repo, "rev-parse", "--verify", f"{revision}^{{tree}}")
+
+
+def _read_committed_blob(repo: Path, entry: TreeEntry) -> bytes:
+    """Return one regular file's bytes from the audited committed tree."""
+
+    if entry.object_type != "blob" or entry.mode not in REGULAR_FILE_MODES:
+        raise AuditError("release state is not finalized")
+    return _run_git_bytes(repo, "cat-file", "blob", entry.object_id)
 
 
 def _resolve_commit(repo: Path, revision: str) -> str:

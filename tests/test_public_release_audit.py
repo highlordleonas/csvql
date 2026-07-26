@@ -87,6 +87,29 @@ def initialize_repository(tmp_path: Path) -> tuple[Path, str]:
         "git@github.com:highlordleonas/csvql.git",
     )
     commit_file(repo_root, "README.md", "Initial public file.\n")
+    commit_file(
+        repo_root,
+        "pyproject.toml",
+        '[project]\nname = "localql"\nversion = "1.0.0"\n',
+    )
+    commit_file(
+        repo_root,
+        "CHANGELOG.md",
+        (
+            "# Changelog\n\n"
+            "## [1.0.0] - 2026-07-01\n\n"
+            "LocalQL 1.0.0 establishes the first public release.\n"
+        ),
+    )
+    commit_file(
+        repo_root,
+        "docs/release-notes/v1.md",
+        (
+            "# LocalQL v1 Release Notes\n\n"
+            "## 1.0.0\n\n"
+            "LocalQL 1.0.0 contains the initial v1 feature set.\n"
+        ),
+    )
     base = commit_file(repo_root, "docs/faq.md", "Initial documentation.\n")
     return repo_root, base
 
@@ -129,6 +152,151 @@ def test_public_allowlist_has_no_untracked_candidates(
     missing_public_paths = audit_module.PUBLIC_PATHS - observed_paths
 
     assert missing_public_paths == frozenset()
+
+
+def test_tree_audit_rejects_unfinalized_current_release_state(
+    audit_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    repo_root, _ = initialize_repository(tmp_path)
+    commit_file(
+        repo_root,
+        "pyproject.toml",
+        '[project]\nname = "localql"\nversion = "1.1.1"\n',
+    )
+    commit_file(
+        repo_root,
+        "CHANGELOG.md",
+        (
+            "# Changelog\n\n"
+            "## [1.1.1] - Unreleased\n\n"
+            "This release candidate is not yet published.\n"
+        ),
+    )
+    candidate = commit_file(
+        repo_root,
+        "docs/release-notes/v1.md",
+        (
+            "# LocalQL v1 Release Notes\n\n"
+            "## 1.1.1\n\n"
+            "LocalQL 1.1.1 is a release candidate and is not yet published.\n"
+        ),
+    )
+
+    with pytest.raises(audit_module.AuditError, match="release state is not finalized"):
+        run_audit(
+            audit_module,
+            repo_root,
+            base=None,
+            candidate=candidate,
+            tree_only=True,
+        )
+
+
+def test_tree_audit_rejects_missing_release_state_contract(
+    audit_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "release-audit"
+    repo_root.mkdir()
+    run_git(repo_root, "init", "--initial-branch=main")
+    run_git(repo_root, "config", "user.name", EXPECTED_AUTHOR_NAME)
+    run_git(repo_root, "config", "user.email", EXPECTED_AUTHOR_EMAIL)
+    run_git(
+        repo_root,
+        "remote",
+        "add",
+        "origin",
+        "git@github.com:highlordleonas/csvql.git",
+    )
+    candidate = commit_file(repo_root, "README.md", "Initial public file.\n")
+
+    with pytest.raises(audit_module.AuditError, match="release state is not finalized"):
+        run_audit(
+            audit_module,
+            repo_root,
+            base=None,
+            candidate=candidate,
+            tree_only=True,
+        )
+
+
+def test_tree_audit_rejects_unfinalized_release_state_in_document_preamble(
+    audit_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    repo_root, _ = initialize_repository(tmp_path)
+    commit_file(
+        repo_root,
+        "pyproject.toml",
+        '[project]\nname = "localql"\nversion = "1.1.1"\n',
+    )
+    commit_file(
+        repo_root,
+        "CHANGELOG.md",
+        (
+            "# Changelog\n\n"
+            "## [1.1.1] - 2026-07-25\n\n"
+            "LocalQL 1.1.1 finalizes the public release metadata.\n"
+        ),
+    )
+    candidate = commit_file(
+        repo_root,
+        "docs/release-notes/v1.md",
+        (
+            "# LocalQL v1 Release Notes\n\n"
+            "This release candidate is being validated.\n\n"
+            "## 1.1.1\n\n"
+            "LocalQL 1.1.1 contains the qualified v1.1 feature set.\n"
+        ),
+    )
+
+    with pytest.raises(audit_module.AuditError, match="release state is not finalized"):
+        run_audit(
+            audit_module,
+            repo_root,
+            base=None,
+            candidate=candidate,
+            tree_only=True,
+        )
+
+
+def test_tree_audit_accepts_dated_neutral_current_release_state(
+    audit_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    repo_root, _ = initialize_repository(tmp_path)
+    commit_file(
+        repo_root,
+        "pyproject.toml",
+        '[project]\nname = "localql"\nversion = "1.1.1"\n',
+    )
+    commit_file(
+        repo_root,
+        "CHANGELOG.md",
+        (
+            "# Changelog\n\n"
+            "## [1.1.1] - 2026-07-25\n\n"
+            "LocalQL 1.1.1 finalizes the public release metadata.\n"
+        ),
+    )
+    candidate = commit_file(
+        repo_root,
+        "docs/release-notes/v1.md",
+        (
+            "# LocalQL v1 Release Notes\n\n"
+            "## 1.1.1\n\n"
+            "LocalQL 1.1.1 contains the qualified v1.1 feature set.\n"
+        ),
+    )
+
+    run_audit(
+        audit_module,
+        repo_root,
+        base=None,
+        candidate=candidate,
+        tree_only=True,
+    )
 
 
 def test_each_allowed_public_path_has_a_positive_category(

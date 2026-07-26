@@ -209,9 +209,19 @@ def test_roadmap_defines_complete_status_vocabulary() -> None:
 
 def test_roadmap_preserves_milestone_statuses_dependencies_and_scope() -> None:
     roadmap = read_doc("docs/ROADMAP.md")
+    current_foundation = markdown_block_containing(
+        roadmap,
+        "Current foundation",
+        "LocalQL v1.1.1",
+        "1,000 rows",
+        "SourceSpec",
+        "SourceAdapter",
+        "1 GiB",
+    )
     v1_1 = markdown_block_containing(
         roadmap,
         "v1.1",
+        "Shipped in LocalQL 1.1.1",
         "SourceSpec",
         "SourceAdapter",
         "bounded or streaming",
@@ -236,17 +246,26 @@ def test_roadmap_preserves_milestone_statuses_dependencies_and_scope() -> None:
         "third-party connector SDK",
         "pushdown",
     )
+    product_boundaries = markdown_block_containing(
+        roadmap,
+        "Product boundaries",
+        "LocalQL v1.1.1",
+        "does not ship remote or cloud connectors",
+        "plugin ecosystem",
+    )
     v1_1_text = " ".join(v1_1.casefold().split())
     v1_2_text = " ".join(v1_2.casefold().split())
     point_and_query_text = " ".join(point_and_query.casefold().split())
     v2_0_text = " ".join(v2_0.casefold().split())
     v2_x_text = " ".join(v2_x.casefold().split())
 
+    assert roadmap.index(current_foundation) < roadmap.index(v1_1)
     assert roadmap.index(v1_1) < roadmap.index(v1_2)
     assert roadmap.index(v1_2) < roadmap.index(point_and_query)
     assert roadmap.index(point_and_query) < roadmap.index(v2_0)
     assert roadmap.index(v2_0) < roadmap.index(v2_x)
-    assert re.search(r"\bstatus\b.{0,20}\bactive\b", v1_1_text)
+    assert roadmap.index(v2_x) < roadmap.index(product_boundaries)
+    assert re.search(r"\bstatus\b.{0,20}\bshipped\b", v1_1_text)
     assert "source" in v1_1_text
     assert "bounded" in v1_1_text
     assert "interactive cli" in v1_1_text

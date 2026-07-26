@@ -23,10 +23,10 @@ import pytest
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "verify_release_artifacts.py"
 sys.path.insert(0, str(MODULE_PATH.parents[1]))
-EXPECTED_WHEEL = "localql-1.1.0-py3-none-any.whl"
-EXPECTED_SDIST = "localql-1.1.0.tar.gz"
-DIST_INFO = "localql-1.1.0.dist-info"
-SDIST_ROOT = "localql-1.1.0"
+EXPECTED_WHEEL = "localql-1.1.1-py3-none-any.whl"
+EXPECTED_SDIST = "localql-1.1.1.tar.gz"
+DIST_INFO = "localql-1.1.1.dist-info"
+SDIST_ROOT = "localql-1.1.1"
 SOURCE_COMMIT = "a" * 40
 TAG_OBJECT = "b" * 40
 CONSTRAINTS_DIGEST = "c" * 64
@@ -46,7 +46,7 @@ EXPECTED_METADATA_KEYS = (
 
 BASE_METADATA: dict[str, list[str]] = {
     "Name": ["localql"],
-    "Version": ["1.1.0"],
+    "Version": ["1.1.1"],
     "Summary": ["Local CSV analytics"],
     "Requires-Python": [">=3.11,<3.15"],
     "Requires-Dist": ["duckdb<2,>=1.5.0", "typer>=0.12.3"],
@@ -113,7 +113,7 @@ def wheel_entries(
     record: str = "record-one\n",
 ) -> list[tuple[str | zipfile.ZipInfo, bytes | str]]:
     entries: list[tuple[str | zipfile.ZipInfo, bytes | str]] = [
-        ("csvql/__init__.py", '__version__ = "1.1.0"\n'),
+        ("csvql/__init__.py", '__version__ = "1.1.1"\n'),
         (f"{DIST_INFO}/WHEEL", "Wheel-Version: 1.0\n"),
         (f"{DIST_INFO}/RECORD", record),
     ]
@@ -205,7 +205,7 @@ def custody_cli_arguments(
         mode,
         str(dist_dir),
         "--expected-version",
-        "1.1.0",
+        "1.1.1",
         "--manifest",
         str(manifest),
         "--sha256sums",
@@ -213,7 +213,7 @@ def custody_cli_arguments(
         "--source-commit",
         SOURCE_COMMIT,
         "--tag-name",
-        "v1.1.0",
+        "v1.1.1",
         "--tag-object",
         TAG_OBJECT,
         "--peeled-commit",
@@ -253,7 +253,7 @@ def invoke_wheel_archive_interface(
     if interface == "artifact-pair":
         sdist = wheel.parent / EXPECTED_SDIST
         write_sdist(sdist, metadata_bytes())
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.0")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.1")
         return
     if interface == "semantic-manifest":
         module.semantic_wheel_manifest(wheel)
@@ -387,7 +387,7 @@ def test_artifact_pair_rejects_each_metadata_contract_mismatch(
     )
 
     with pytest.raises(ValueError, match="metadata"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.0")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.1")
 
 
 def test_artifact_pair_rejects_long_description_mismatch(tmp_path: Path) -> None:
@@ -398,14 +398,14 @@ def test_artifact_pair_rejects_long_description_mismatch(tmp_path: Path) -> None
     )
 
     with pytest.raises(ValueError, match="long description"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.0")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.1")
 
 
 def test_artifact_pair_accepts_exact_metadata_and_entry_point(tmp_path: Path) -> None:
     module = release_module()
     wheel, sdist = write_artifact_pair(tmp_path)
 
-    assert module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.0") is None
+    assert module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.1") is None
 
 
 @pytest.mark.parametrize(
@@ -425,7 +425,7 @@ def test_artifact_pair_rejects_missing_wrong_or_duplicate_entry_point(
     wheel, sdist = write_artifact_pair(tmp_path, entry_points=entry_points)
 
     with pytest.raises(ValueError, match="entry point"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.0")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.1")
 
 
 @pytest.mark.parametrize("bad_kind", ["duplicate", "noncanonical", "special"])
@@ -457,7 +457,7 @@ def test_artifact_pair_rejects_ambiguous_or_unsafe_metadata_members(
     write_sdist(sdist, metadata_bytes())
 
     with pytest.raises(ValueError):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.0")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.1")
 
 
 def test_metadata_contract_rejects_duplicate_headers() -> None:
@@ -487,7 +487,7 @@ def test_sdist_requires_exactly_one_two_component_pkg_info(tmp_path: Path) -> No
     write_sdist(sdist, metadata_bytes(), extra_entries=[(extra, metadata_bytes())])
 
     with pytest.raises(ValueError, match="PKG-INFO"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.0")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.1")
 
 
 def test_semantic_manifest_ignores_timestamp_order_and_record(tmp_path: Path) -> None:
@@ -608,7 +608,7 @@ def test_artifact_pair_rejects_canonical_protected_members(
         write_sdist(sdist, metadata_bytes(), extra_entries=[(extra_info, b"private\n")])
 
     with pytest.raises(ValueError, match="protected") as error:
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.0")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.1")
 
     assert protected_member not in str(error.value)
 
@@ -632,7 +632,7 @@ def test_inspect_creates_no_custody_files(
             "inspect",
             str(dist_dir),
             "--expected-version",
-            "1.1.0",
+            "1.1.1",
         ],
     )
 
@@ -671,7 +671,7 @@ def test_create_manifest_schema_and_derived_sums_are_exact_and_deterministic(
         "source": {
             "commit": SOURCE_COMMIT,
             "peeled_commit": SOURCE_COMMIT,
-            "tag": "v1.1.0",
+            "tag": "v1.1.1",
             "tag_object": TAG_OBJECT,
         },
         "toolchain": {
@@ -679,7 +679,7 @@ def test_create_manifest_schema_and_derived_sums_are_exact_and_deterministic(
             "python": "CPython 3.14.6",
             "uv": "uv 0.8.22",
         },
-        "version": "1.1.0",
+        "version": "1.1.1",
     }
 
     invoke_custody_cli(
@@ -804,7 +804,7 @@ def test_cli_rejects_extra_archive_in_exact_selection(
             "inspect",
             str(tmp_path),
             "--expected-version",
-            "1.1.0",
+            "1.1.1",
         ],
     )
 
@@ -1111,7 +1111,7 @@ def test_all_modes_reject_extra_missing_aliased_or_nonregular_directory_entries(
             mode,
             str(dist_dir),
             "--expected-version",
-            "1.1.0",
+            "1.1.1",
         ]
     else:
         evidence = write_custody_evidence(tmp_path / "evidence")
@@ -1207,10 +1207,10 @@ def test_create_rejects_normalized_manifest_and_sums_destination_alias(
 @pytest.mark.parametrize(
     "arguments",
     [
-        ["inspect", "dist", "--expected-version", "1.1.0", "--manifest", "manifest.json"],
-        ["create-manifest", "dist", "--expected-version", "1.1.0"],
-        ["verify-manifest", "dist", "--expected-version", "1.1.0", "--rebuilt-wheel", "wheel"],
-        ["verify-rebuild", "dist", "--expected-version", "1.1.0"],
+        ["inspect", "dist", "--expected-version", "1.1.1", "--manifest", "manifest.json"],
+        ["create-manifest", "dist", "--expected-version", "1.1.1"],
+        ["verify-manifest", "dist", "--expected-version", "1.1.1", "--rebuilt-wheel", "wheel"],
+        ["verify-rebuild", "dist", "--expected-version", "1.1.1"],
     ],
 )
 def test_cli_requires_and_rejects_mode_specific_arguments(
@@ -1243,7 +1243,7 @@ def test_verify_rebuild_cli_accepts_only_a_semantically_identical_wheel(
             "verify-rebuild",
             str(dist_dir),
             "--expected-version",
-            "1.1.0",
+            "1.1.1",
             "--rebuilt-wheel",
             str(rebuilt_wheel),
         ],
@@ -1274,7 +1274,7 @@ def test_verify_rebuild_cli_rejects_divergent_executable_content(
             "verify-rebuild",
             str(dist_dir),
             "--expected-version",
-            "1.1.0",
+            "1.1.1",
             "--rebuilt-wheel",
             str(rebuilt_wheel),
         ],
@@ -1379,7 +1379,7 @@ def test_sdist_compressed_size_limit_applies_to_artifact_pair(tmp_path: Path) ->
     sdist.write_bytes(b"x" * (5 * 1024 * 1024 + 1))
 
     with pytest.raises(ValueError, match="compressed size"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.0")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.1")
 
 
 @pytest.mark.parametrize(
@@ -1406,7 +1406,7 @@ def test_sdist_member_count_limit_is_fail_closed(tmp_path: Path) -> None:
     sdist_with_total_members(sdist, 4097)
 
     with pytest.raises(ValueError, match="member count"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.0")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.1")
 
 
 @pytest.mark.parametrize(
@@ -1435,7 +1435,7 @@ def test_sdist_member_name_volume_limit_is_fail_closed(tmp_path: Path) -> None:
     sdist_with_name_volume(sdist, 1024 * 1024)
 
     with pytest.raises(ValueError, match="member-name bytes"):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.0")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.1")
 
 
 class IncrementalTarArchive:
@@ -1484,7 +1484,7 @@ def test_sdist_metadata_enumeration_stops_at_first_budget_failure(
     monkeypatch.setattr(module.tarfile, "open", lambda *_args, **_kwargs: archive)
 
     with pytest.raises(ValueError, match=budget):
-        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.0")
+        module.verify_artifact_pair(module.ArtifactSet(wheel, sdist), "1.1.1")
 
     expected_yielded = 4097 if budget == "member count" else 1
     assert archive.yielded == expected_yielded

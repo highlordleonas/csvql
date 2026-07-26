@@ -3,15 +3,20 @@
 This page records user-visible changes in each LocalQL release. For a guided
 overview of the v1 feature set, see the [v1 release notes](docs/release-notes/v1.md).
 
-## [1.1.0] - Unreleased
+## [1.1.1] - 2026-07-25
 
-This release candidate is not yet published.
+LocalQL 1.1.1 carries the complete v1.1 feature set forward from the
+validation-only `v1.1.0` tag. Version 1.1.0 was not published to PyPI or as a
+GitHub Release. Product behavior is unchanged from that qualified tree; 1.1.1
+finalizes the public release metadata and strengthens release-state auditing.
 
 ### Added
 
 - CSV access now runs through private `SourceSpec` and `SourceAdapter`
   contracts, establishing a CSV-first source boundary without creating a
   public plugin API.
+- Public-release audits now require a dated current-version changelog entry and
+  neutral release notes before release artifacts are built.
 
 ### Changed
 
@@ -29,6 +34,11 @@ This release candidate is not yet published.
 
 - The terminal menu now supports source-free DuckDB SQL and keeps active-result
   and History actions attached to the result the user selected.
+
+## [1.1.0] - 2026-07-25
+
+Version 1.1.0 was used as a validation-only tag and was not published to PyPI
+or as a GitHub Release. Its qualified product behavior is released as 1.1.1.
 
 ## [1.0.5] - 2026-07-21
 
