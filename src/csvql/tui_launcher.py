@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from importlib import import_module
 from pathlib import Path
 
+from csvql.bounded_result import PreviewPolicy
 from csvql.exceptions import CSVQLError
 from csvql.tui_result_store import recover_abandoned_result_workspaces
 
@@ -12,7 +13,12 @@ _TUI_DEPENDENCY_MESSAGE = 'Install with pip install "localql[tui]" or run uv syn
 
 
 def run_menu_command(
-    *, csv_path: str | None, table_mappings: Sequence[str], start_dir: Path
+    *,
+    csv_path: str | None,
+    table_mappings: Sequence[str],
+    start_dir: Path,
+    preview_policy: PreviewPolicy,
+    result_store_capacity_bytes: int,
 ) -> None:
     """Start the menu TUI with optional startup sources."""
 
@@ -32,6 +38,8 @@ def run_menu_command(
         csv_path=csv_path,
         table_mappings=table_mappings,
         start_dir=start_dir,
+        preview_policy=preview_policy,
+        result_store_capacity_bytes=result_store_capacity_bytes,
         initial_cleanup_summary=recovery_summary,
     )
     app.run()

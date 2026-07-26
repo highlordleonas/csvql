@@ -1,12 +1,21 @@
 """DuckDB-backed data-quality check execution."""
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from typing import cast
 
 import duckdb
 
-from csvql.exceptions import CSVInspectionError, ProjectConfigError
-from csvql.project_config import ProjectContext, ProjectTable, resolve_catalog_path
+from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
+from csvql.engine import CSVQLEngine
+from csvql.exceptions import (
+    CSVInspectionError,
+    CSVQLError,
+    FileMissingError,
+    ProjectConfigError,
+    SourceError,
+)
+from csvql.operation import OperationContext, OperationToken
+from csvql.project_config import ProjectContext, ProjectTable
 from csvql.quality import (
     CheckFailureSample,
     CheckResult,
@@ -14,9 +23,9 @@ from csvql.quality import (
     ConfiguredCheck,
     RunStatus,
 )
+from csvql.source import ResolvedSource, source_spec_from_catalog_table
 from csvql.sql_utils import quote_identifier
 
-CHECK_VIEW_PREFIX = "__csvql_check_"
 CHECK_ROWS_ALIAS = "__csvql_check_rows"
 CHECK_ROW_NUMBER_COLUMN = "__csvql_row_number"
 _SUPPORTED_CHECK_TYPES = {
@@ -56,26 +65,49 @@ def run_configured_checks(
         )
         return CheckRunResult(status="passed", checks=(), warnings=(warning,))
 
-    connection: duckdb.DuckDBPyConnection | None = None
     try:
-        connection = duckdb.connect(database=":memory:")
-        column_names_by_table = _register_tables(
-            connection,
+        required_tables = _required_tables(context, selected_tables)
+        operation = OperationContext(OperationToken())
+        resolved_sources = _resolve_required_sources(
             context,
-            _required_tables(context, selected_tables),
+            required_tables,
+            operation=operation,
         )
-        results = tuple(
-            _run_check(
-                connection,
-                check,
-                column_names_by_table=column_names_by_table,
-                show_failures=show_failures,
-                failure_limit=failure_limit,
+        with CSVQLEngine(operation=operation) as engine:
+            engine.prepare_sources(resolved_sources)
+            column_names_by_table = _discover_columns(
+                engine,
+                required_tables,
             )
-            for check in checks
-        )
+            results = tuple(
+                _run_check(
+                    engine,
+                    check,
+                    column_names_by_table=column_names_by_table,
+                    show_failures=show_failures,
+                    failure_limit=failure_limit,
+                )
+                for check in checks
+            )
+    except FileMissingError:
+        raise
+    except ProjectConfigError:
+        raise
     except CSVInspectionError:
         raise
+    except SourceError as exc:
+        if exc.code == "source_bind_failed" and exc.alias is not None:
+            raise CSVInspectionError(
+                (f"Failed to run data quality checks for project catalog table '{exc.alias}'."),
+                suggestion="Check that the configured CSV file exists and is readable.",
+            ) from exc
+        raise CSVInspectionError(
+            "Failed to run data quality checks.",
+            suggestion=(
+                "Check that configured columns exist and values compare cleanly with "
+                "DuckDB-inferred CSV types."
+            ),
+        ) from exc
     except duckdb.Error as exc:
         raise CSVInspectionError(
             "Failed to run data quality checks.",
@@ -84,14 +116,56 @@ def run_configured_checks(
                 "DuckDB-inferred CSV types."
             ),
         ) from exc
-    finally:
-        if connection is not None:
-            connection.close()
+    except CSVQLError as exc:
+        raise CSVInspectionError(
+            "Failed to run data quality checks.",
+            suggestion=(
+                "Check that configured columns exist and values compare cleanly with "
+                "DuckDB-inferred CSV types."
+            ),
+        ) from exc
 
     status: RunStatus = (
         "failed" if any(result.status == "failed" for result in results) else "passed"
     )
     return CheckRunResult(status=status, checks=results, warnings=())
+
+
+def _resolve_required_sources(
+    context: ProjectContext,
+    tables: Sequence[ProjectTable],
+    *,
+    operation: OperationContext,
+) -> tuple[ResolvedSource, ...]:
+    resolved: list[ResolvedSource] = []
+    for table in tables:
+        spec = source_spec_from_catalog_table(table, project_root=context.project_root)
+        try:
+            adapter = DEFAULT_SOURCE_ADAPTER_REGISTRY.create(spec.kind, capability="query")
+            adapter.validate_options(spec)
+            resolved.append(adapter.resolve(spec, operation))
+        except SourceError as exc:
+            if exc.code == "source_missing":
+                raise FileMissingError(
+                    f"CSV file not found for project catalog table '{table.name}': {table.path}",
+                    suggestion=(
+                        "Update .csvql.yml, run csvql add "
+                        f"{table.name} <path> --replace, or restore the CSV file."
+                    ),
+                ) from exc
+            raise
+    return tuple(resolved)
+
+
+def _discover_columns(
+    engine: CSVQLEngine,
+    tables: Sequence[ProjectTable],
+) -> dict[str, tuple[str, ...]]:
+    column_names_by_table: dict[str, tuple[str, ...]] = {}
+    for table in tables:
+        result = engine.query(f"DESCRIBE SELECT * FROM {quote_identifier(table.name)}")
+        column_names_by_table[table.name.lower()] = tuple(str(row[0]) for row in result.rows)
+    return column_names_by_table
 
 
 def _select_tables(
@@ -163,38 +237,12 @@ def _required_tables(
     return tuple(required_tables)
 
 
-def _register_tables(
-    connection: duckdb.DuckDBPyConnection,
-    context: ProjectContext,
-    tables: Iterable[ProjectTable],
-) -> dict[str, tuple[str, ...]]:
-    column_names_by_table: dict[str, tuple[str, ...]] = {}
-    for table in tables:
-        try:
-            resolved_path = resolve_catalog_path(table, context)
-            relation = connection.read_csv(
-                str(resolved_path),
-                auto_detect=True,
-                header=True,
-            )
-            relation.create_view(_view_name(table.name), replace=True)
-            column_names_by_table[table.name.lower()] = tuple(
-                str(column) for column in relation.columns
-            )
-        except (OSError, duckdb.Error) as exc:
-            raise CSVInspectionError(
-                f"Failed to run data quality checks for project catalog table '{table.name}'.",
-                suggestion="Check that the configured CSV file exists and is readable.",
-            ) from exc
-    return column_names_by_table
-
-
 def _view_name(table_name: str) -> str:
-    return f"{CHECK_VIEW_PREFIX}{table_name.lower()}"
+    return table_name
 
 
 def _run_check(
-    connection: duckdb.DuckDBPyConnection,
+    connection: CSVQLEngine,
     check: ConfiguredCheck,
     *,
     column_names_by_table: dict[str, tuple[str, ...]],
@@ -275,7 +323,7 @@ def _validate_check_execution(check: ConfiguredCheck) -> None:
 
 
 def _failed_count(
-    connection: duckdb.DuckDBPyConnection,
+    connection: CSVQLEngine,
     check: ConfiguredCheck,
     column_names_by_table: dict[str, tuple[str, ...]],
 ) -> int:
@@ -321,7 +369,7 @@ def _failed_count(
 
 
 def _failure_samples(
-    connection: duckdb.DuckDBPyConnection,
+    connection: CSVQLEngine,
     check: ConfiguredCheck,
     *,
     column_names_by_table: dict[str, tuple[str, ...]],
@@ -359,7 +407,7 @@ def _failure_samples(
 
 
 def _row_level_failure_samples(
-    connection: duckdb.DuckDBPyConnection,
+    connection: CSVQLEngine,
     check: ConfiguredCheck,
     column_name: str,
     *,
@@ -382,7 +430,7 @@ def _row_level_failure_samples(
 
 
 def _unique_failure_samples(
-    connection: duckdb.DuckDBPyConnection,
+    connection: CSVQLEngine,
     check: ConfiguredCheck,
     column_name: str,
     *,
@@ -395,7 +443,7 @@ def _unique_failure_samples(
 
 
 def _row_count_between_failure_sample(
-    connection: duckdb.DuckDBPyConnection,
+    connection: CSVQLEngine,
     check: ConfiguredCheck,
 ) -> CheckFailureSample:
     observed = _fetch_scalar_int(
@@ -416,7 +464,7 @@ def _row_count_between_failure_sample(
 
 
 def _foreign_key_failure_samples(
-    connection: duckdb.DuckDBPyConnection,
+    connection: CSVQLEngine,
     check: ConfiguredCheck,
     child_column: str,
     parent_column: str,
@@ -442,26 +490,25 @@ def _foreign_key_failure_samples(
 
 
 def _fetch_scalar_int(
-    connection: duckdb.DuckDBPyConnection,
+    connection: CSVQLEngine,
     query: str,
     parameters: Sequence[object] = (),
 ) -> int:
-    row = connection.execute(query, parameters).fetchone()
-    if row is None or row[0] is None:
+    result = connection.query(query, parameters)
+    if not result.rows or result.rows[0][0] is None:
         return 0
-    return _as_int(row[0])
+    return _as_int(result.rows[0][0])
 
 
 def _fetch_rows(
-    connection: duckdb.DuckDBPyConnection,
+    connection: CSVQLEngine,
     query: str,
     parameters: Sequence[object] = (),
 ) -> tuple[dict[str, object], ...]:
-    cursor = connection.execute(query, parameters)
-    column_names = tuple(column[0] for column in cursor.description or ())
+    result = connection.query(query, parameters)
     return tuple(
-        {name: value for name, value in zip(column_names, row, strict=True)}
-        for row in cursor.fetchall()
+        {name: value for name, value in zip(result.columns, row, strict=True)}
+        for row in result.rows
     )
 
 
@@ -523,7 +570,7 @@ def _max_count_sql(check: ConfiguredCheck, column_name: str) -> str:
 
 
 def _row_count_between_failure_count(
-    connection: duckdb.DuckDBPyConnection,
+    connection: CSVQLEngine,
     check: ConfiguredCheck,
 ) -> int:
     min_value = (

@@ -5,6 +5,7 @@ from textwrap import indent
 import pytest
 import yaml
 
+from csvql import project_config
 from csvql.atomic_write import write_text_atomic
 from csvql.exceptions import FileMissingError, ProjectConfigError
 from csvql.models import TableSource
@@ -519,6 +520,30 @@ def test_project_tables_to_sources_returns_validated_table_sources(tmp_path: Pat
     ]
 
 
+def test_project_tables_to_source_specs_preserves_project_anchored_declarations(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    context = ProjectContext(
+        project_root=project_root.resolve(),
+        config_path=(project_root / CONFIG_FILENAME).resolve(),
+        config=ProjectConfig(
+            version=SUPPORTED_VERSION,
+            tables=(
+                ProjectTable("orders", "data/orders.csv"),
+                ProjectTable("customers", "/external/customers.csv"),
+            ),
+        ),
+    )
+
+    specs = project_config.project_tables_to_source_specs(context)
+
+    assert [(spec.alias, spec.kind, spec.locator, spec.anchor) for spec in specs] == [
+        ("orders", "csv", "data/orders.csv", project_root.resolve()),
+        ("customers", "csv", "/external/customers.csv", project_root.resolve()),
+    ]
+
+
 def test_save_project_persists_sorted_tables(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
@@ -633,6 +658,26 @@ def test_add_project_table_stores_project_relative_path_for_internal_file(
     assert updated_context.config_path.read_text(encoding="utf-8") == (
         "version: 1\ntables:\n  orders:\n    path: data/orders.csv\n"
     )
+
+
+def test_version_one_catalog_round_trips_relative_table_path(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    csv_path = project_root / "data" / "orders.csv"
+    csv_path.parent.mkdir(parents=True)
+    csv_path.write_text("order_id,total_amount\nORD-1,12.34\n", encoding="utf-8")
+    context = initialize_project(project_root)
+    updated_context = add_project_table(
+        context,
+        "orders",
+        "data/orders.csv",
+        invocation_dir=project_root,
+    )
+
+    reloaded_context = load_project(project_root)
+
+    assert reloaded_context.config == updated_context.config
+    assert reloaded_context.config.version == 1
+    assert reloaded_context.config.tables == (ProjectTable(name="orders", path="data/orders.csv"),)
 
 
 def test_add_project_table_uses_invocation_dir_for_relative_input(

@@ -32,15 +32,22 @@ History pane
   highlight           Recall selected query result
   Enter               Reopen selected query
   r                   Rerun selected query with current session sources
+  Delete              Delete selected preserved result after confirmation
 
 Results
   [ / ]               Previous/next buffer result when Results is focused
+  A bounded preview appears while the same execution preserves the full result.
+  Preservation reports rows, logical bytes, elapsed time, and remaining capacity.
+  Complete results enable full-result actions; Preview-only results name why those actions are
+  unavailable and LocalQL does not rerun SQL.
+  Queued exports run before the next queued query starts.
+  Delete removes only the confirmed preserved result.
 
 General
   F1                  Help
   F7                  Export active result (.csv, .json, .md, .markdown, .txt)
   F9 / q              Quit outside text entry
-  Esc                 Close help or modal
+  Esc                 Cancel active execution or preservation; otherwise close help or modal
 
 Derived sources
   Ctrl+S              Save active result to .csvql/results/{alias}.csv

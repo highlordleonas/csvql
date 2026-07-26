@@ -100,6 +100,27 @@ by Show Desktop; use `Ctrl+S` to save a result as a derived source.
 `F3` opens a native CSV picker on macOS. `Ctrl+O` opens the path prompt on every
 platform. See the [Terminal menu guide](tui-guide.md) for all keybindings.
 
+## Terminal-menu session capacity was exhausted
+
+If the menu says preservation stopped because the TUI session capacity was
+exhausted, the retained preview remains viewable, but full export and save are
+unavailable for that result. LocalQL does not automatically evict an earlier
+complete result or write a partial export.
+
+Focus History with `F8`, highlight an older preserved result, press `Delete`,
+and confirm the deletion. Then rerun the preview-only query so LocalQL can try
+to preserve it as a new complete result.
+
+If you need a large result only as a file, `csvql export` streams the complete
+result without using the terminal menu's result-storage capacity.
+
+## The full result is no longer available because its temporary storage was lost
+
+The menu may still show the retained preview and query History, but the
+preserved complete result is gone. Full export and save remain unavailable for
+that result. Highlight the query in History and press `r`, or reopen it with
+`Enter` and run it again, to create a new complete result.
+
 ## SQL safety
 
 LocalQL treats user-authored SQL as trusted local DuckDB SQL. It does not

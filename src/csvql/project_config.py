@@ -11,7 +11,11 @@ from csvql.atomic_write import write_text_atomic
 from csvql.exceptions import FileMissingError, ProjectConfigError, TableMappingError
 from csvql.models import TableSource
 from csvql.quality import CheckType, ConfiguredCheck, ForeignKeyReference
-from csvql.source import resolve_csv_path
+from csvql.source import (
+    SourceSpec,
+    resolve_csv_path,
+    source_spec_from_catalog_table,
+)
 from csvql.table_mapping import validate_table_alias
 
 CONFIG_FILENAME = ".csvql.yml"
@@ -233,6 +237,15 @@ def project_tables_to_sources(context: ProjectContext) -> list[TableSource]:
 
     return [
         TableSource(name=table.name, path=resolve_catalog_path(table, context))
+        for table in context.config.tables
+    ]
+
+
+def project_tables_to_source_specs(context: ProjectContext) -> list[SourceSpec]:
+    """Convert catalog declarations using the immutable project-root anchor."""
+
+    return [
+        source_spec_from_catalog_table(table, project_root=context.project_root)
         for table in context.config.tables
     ]
 

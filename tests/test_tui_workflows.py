@@ -4,13 +4,29 @@ from pathlib import Path
 import pytest
 
 from csvql import tui_workflows
-from csvql.exceptions import ExportError, ProjectConfigError, TableMappingError
+from csvql.csv_adapter import CSV_CAPABILITIES, CSVSourceAdapter
+from csvql.exceptions import (
+    CSVQLError,
+    ExportError,
+    ProjectConfigError,
+    SourceError,
+    TableMappingError,
+)
 from csvql.export import ExportFormat
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
 from csvql.project_config import CONFIG_FILENAME, initialize_project, load_project
+from csvql.result_codec import encode_row_payload
+from csvql.source import (
+    SourceCapabilities,
+    SourceCapabilityStatus,
+    source_spec_from_tui_source,
+)
+from csvql.source_adapter import PreparedBinding
+from csvql.tui_result_store import TUIResultHandle, TUIResultStore
 from csvql.tui_state import TUISessionState, TUISource, TUISourceColumn
 from csvql.tui_workflows import (
     build_initial_state,
+    build_tui_export_intent,
     export_last_result,
     external_catalog_source_paths,
     inspect_source,
@@ -31,6 +47,24 @@ def _write_csv(path: Path, content: str = "id,value\n1,alpha\n") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path
+
+
+def test_build_tui_export_intent_resolves_without_touching_destination(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "queued.csv"
+
+    intent = build_tui_export_intent(
+        result_sequence=7,
+        path_value="queued.csv",
+        export_format=ExportFormat.csv,
+        base_dir=tmp_path,
+    )
+
+    assert intent.result_sequence == 7
+    assert intent.destination == destination
+    assert intent.format is ExportFormat.csv
+    assert destination.exists() is False
 
 
 def test_build_initial_state_without_catalog_or_args_returns_empty_state(
@@ -91,6 +125,19 @@ def test_build_initial_state_loads_single_csv_argument_with_derived_alias(
     assert state.selected_alias == "sales_2026"
 
 
+def test_build_initial_state_loads_leading_underscore_csv_argument_with_normalized_alias(
+    tmp_path: Path,
+) -> None:
+    csv_path = _write_csv(tmp_path / "__localql_orders.csv")
+
+    state = build_initial_state(csv_path=str(csv_path), table_mappings=(), start_dir=tmp_path)
+
+    assert state.sources == (
+        TUISource(name="localql_orders", path=csv_path.resolve(), origin="argument"),
+    )
+    assert state.selected_alias == "localql_orders"
+
+
 def test_build_initial_state_loads_table_mappings_in_argument_order(
     tmp_path: Path,
 ) -> None:
@@ -108,6 +155,27 @@ def test_build_initial_state_loads_table_mappings_in_argument_order(
         TUISource(name="second", path=second_csv.resolve(), origin="argument"),
     )
     assert state.selected_alias == "first"
+
+
+def test_build_initial_state_keeps_csv_argument_before_table_mappings(
+    tmp_path: Path,
+) -> None:
+    csv_path = _write_csv(tmp_path / "primary.csv")
+    second_csv = _write_csv(tmp_path / "second.csv")
+    third_csv = _write_csv(tmp_path / "third.csv")
+
+    state = build_initial_state(
+        csv_path=str(csv_path),
+        table_mappings=(f"second={second_csv}", f"third={third_csv}"),
+        start_dir=tmp_path,
+    )
+
+    assert state.sources == (
+        TUISource(name="primary", path=csv_path.resolve(), origin="argument"),
+        TUISource(name="second", path=second_csv.resolve(), origin="argument"),
+        TUISource(name="third", path=third_csv.resolve(), origin="argument"),
+    )
+    assert state.selected_alias == "primary"
 
 
 def test_build_initial_state_rejects_duplicate_aliases_between_csv_and_mapping(
@@ -142,6 +210,22 @@ def test_sources_from_csv_path_text_adds_pasted_paths_with_derived_aliases(
     assert sources == (
         TUISource(name="new_customers", path=customers_csv.resolve(), origin="session"),
         TUISource(name="orders", path=orders_csv.resolve(), origin="session"),
+    )
+
+
+def test_sources_from_csv_path_text_normalizes_leading_underscore_filenames(
+    tmp_path: Path,
+) -> None:
+    orders_csv = _write_csv(tmp_path / "__localql_orders.csv")
+
+    sources = sources_from_csv_path_text(
+        str(orders_csv),
+        existing_sources=(),
+        start_dir=tmp_path,
+    )
+
+    assert sources == (
+        TUISource(name="localql_orders", path=orders_csv.resolve(), origin="session"),
     )
 
 
@@ -406,14 +490,14 @@ def test_run_buffer_for_tui_returns_no_result_for_empty_columns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeCSVQLEngine:
+        def __init__(self, *, operation: object) -> None:
+            self.operation = operation
+
         def __enter__(self) -> "FakeCSVQLEngine":
             return self
 
         def __exit__(self, *exc_info: object) -> None:
             return None
-
-        def register_tables(self, table_sources: object) -> None:
-            del table_sources
 
         def query(self, sql: str) -> QueryResult:
             del sql
@@ -430,15 +514,52 @@ def test_run_buffer_for_tui_returns_no_result_for_empty_columns(
     assert outcome[0].elapsed_ms == 3.25
 
 
+def _store_complete_result(
+    result_store: TUIResultStore,
+    result: QueryResult,
+    *,
+    sequence: int,
+) -> TUIResultHandle:
+    writer = result_store.begin_complete(sequence=sequence, columns=result.columns)
+    for row in result.rows:
+        writer.append_payload(encode_row_payload(tuple(row)))
+    return writer.commit(elapsed_ms=result.elapsed_ms).handle
+
+
+def _save_query_result_as_source(
+    result: QueryResult,
+    alias: str,
+    *,
+    existing_sources: tuple[TUISource, ...],
+    start_dir: Path,
+) -> TUISource:
+    result_store = TUIResultStore(temp_root=start_dir)
+    handle = _store_complete_result(result_store, result, sequence=1)
+    return save_derived_result_source(
+        result_store,
+        handle,
+        alias,
+        columns=result.columns,
+        elapsed_ms=result.elapsed_ms,
+        existing_sources=existing_sources,
+        start_dir=start_dir,
+    )
+
+
 def test_export_last_result_writes_json_and_returns_resolved_path(tmp_path: Path) -> None:
     csv_path = _write_csv(tmp_path / "orders.csv", "order_id,status\nORD-1,paid\n")
     source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
     result = query_sources((source,), "SELECT * FROM orders ORDER BY order_id")
+    store = TUIResultStore(temp_root=tmp_path)
+    handle = _store_complete_result(store, result, sequence=1)
     (tmp_path / "exports").mkdir()
 
     output_path = export_last_result(
-        result,
+        store,
+        handle,
         "exports/result.json",
+        columns=result.columns,
+        elapsed_ms=result.elapsed_ms,
         export_format=ExportFormat.json,
         base_dir=tmp_path,
     )
@@ -459,30 +580,41 @@ def test_export_last_result_forwards_force_to_atomic_writer(
     force: bool,
 ) -> None:
     result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
-    writes: list[tuple[Path, bool]] = []
+    store = TUIResultStore(temp_root=tmp_path)
+    handle = _store_complete_result(store, result, sequence=1)
+    writes: list[tuple[object, Path, bool]] = []
 
-    def fake_write_export_file(
+    def fake_write_streaming_export(
+        source: object,
         path: Path,
-        content: str,
         *,
+        export_format: ExportFormat,
         overwrite: bool,
         token: object | None = None,
     ) -> None:
-        assert content.endswith("\n")
+        assert export_format is ExportFormat.csv
         assert token is None
-        writes.append((path, overwrite))
+        writes.append((source, path, overwrite))
 
-    monkeypatch.setattr("csvql.tui_workflows.write_export_file", fake_write_export_file)
+    monkeypatch.setattr("csvql.tui_workflows.write_streaming_export", fake_write_streaming_export)
 
     output_path = export_last_result(
-        result,
+        store,
+        handle,
         "result.csv",
+        columns=result.columns,
+        elapsed_ms=result.elapsed_ms,
         export_format=ExportFormat.csv,
         base_dir=tmp_path,
         force=force,
     )
 
-    assert writes == [(output_path, force)]
+    assert len(writes) == 1
+    source, path, overwrite = writes[0]
+    assert path == output_path
+    assert overwrite is force
+    assert source.columns == ("id",)
+    assert tuple(source.iter_rows()) == ((1,),)
 
 
 def test_save_sources_to_project_catalog_creates_catalog_and_uses_relative_paths(
@@ -554,15 +686,114 @@ def test_save_sources_to_project_catalog_missing_project_does_not_create_catalog
     assert not (project_root / CONFIG_FILENAME).exists()
 
 
+def test_save_sources_to_project_catalog_rejects_case_variant_batch_collision(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_csv(project_root / "Orders.csv")
+    _write_csv(project_root / "orders.csv")
+
+    first = TUISource(name="Orders", path=(project_root / "Orders.csv").resolve(), origin="session")
+    duplicate = TUISource(
+        name="orders",
+        path=(project_root / "orders.csv").resolve(),
+        origin="session",
+    )
+
+    with pytest.raises(ProjectConfigError, match=r"Duplicate project catalog table 'orders'"):
+        save_sources_to_project_catalog((first, duplicate), start_dir=project_root, replace=False)
+
+    assert not (project_root / CONFIG_FILENAME).exists()
+
+
+def test_save_sources_to_project_catalog_rejects_case_variant_existing_alias_without_mutation(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_csv(project_root / "data" / "Orders.csv")
+    _write_csv(project_root / "data" / "orders.csv")
+    initialize_project(project_root)
+    config_path = project_root / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\ntables:\n  Orders:\n    path: data/Orders.csv\n",
+        encoding="utf-8",
+    )
+    original_config = config_path.read_text(encoding="utf-8")
+    source = TUISource(
+        name="orders",
+        path=(project_root / "data" / "orders.csv").resolve(),
+        origin="session",
+    )
+
+    with pytest.raises(ProjectConfigError, match=r"Project catalog table 'orders' already exists"):
+        save_sources_to_project_catalog((source,), start_dir=project_root, replace=False)
+
+    assert config_path.read_text(encoding="utf-8") == original_config
+
+
+def test_save_sources_to_project_catalog_replace_true_updates_casefolded_entry_once(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    original_csv = _write_csv(project_root / "data" / "Orders.csv")
+    replacement_csv = _write_csv(project_root / "data" / "orders-replacement.csv")
+    initialize_project(project_root)
+    config_path = project_root / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\ntables:\n  Orders:\n    path: data/Orders.csv\n",
+        encoding="utf-8",
+    )
+    source = TUISource(name="orders", path=replacement_csv.resolve(), origin="session")
+
+    context = save_sources_to_project_catalog((source,), start_dir=project_root, replace=True)
+
+    assert len(context.config.tables) == 1
+    assert context.config.tables[0].name == "orders"
+    assert context.config.tables[0].path == "data/orders-replacement.csv"
+    assert load_project(project_root).config.tables == context.config.tables
+    assert original_csv.read_text(encoding="utf-8") == "id,value\n1,alpha\n"
+
+
+def test_save_sources_to_project_catalog_rejects_invalid_staged_config_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    csv_path = _write_csv(project_root / "data" / "orders.csv")
+    initialize_project(project_root)
+    config_path = project_root / CONFIG_FILENAME
+    original_config = config_path.read_text(encoding="utf-8")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="session")
+
+    monkeypatch.setattr("csvql.tui_workflows._project_catalog_path_value", lambda *_args: "")
+
+    with pytest.raises(
+        ProjectConfigError,
+        match=r"Missing CSV path for project catalog table 'orders'",
+    ):
+        save_sources_to_project_catalog((source,), start_dir=project_root, replace=False)
+
+    assert config_path.read_text(encoding="utf-8") == original_config
+
+
 def test_export_last_result_refuses_overwrite_without_force(tmp_path: Path) -> None:
     csv_path = _write_csv(tmp_path / "orders.csv", "order_id,status\nORD-1,paid\n")
     source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
     result = query_sources((source,), "SELECT * FROM orders ORDER BY order_id")
+    store = TUIResultStore(temp_root=tmp_path)
+    handle = _store_complete_result(store, result, sequence=1)
     (tmp_path / "exports").mkdir()
 
     output_path = export_last_result(
-        result,
+        store,
+        handle,
         "exports/result.json",
+        columns=result.columns,
+        elapsed_ms=result.elapsed_ms,
         export_format=ExportFormat.json,
         base_dir=tmp_path,
     )
@@ -570,13 +801,84 @@ def test_export_last_result_refuses_overwrite_without_force(tmp_path: Path) -> N
 
     with pytest.raises(ExportError, match=r"Export output already exists"):
         export_last_result(
-            result,
+            store,
+            handle,
             "exports/result.json",
+            columns=result.columns,
+            elapsed_ms=result.elapsed_ms,
             export_format=ExportFormat.json,
             base_dir=tmp_path,
         )
 
     assert output_path.read_text(encoding="utf-8") == first_content
+
+
+def test_export_last_result_validates_destination_before_opening_store_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
+    store = TUIResultStore(temp_root=tmp_path)
+    handle = _store_complete_result(store, result, sequence=1)
+    output_path = tmp_path / "result.csv"
+    output_path.write_text("id\n1\n", encoding="utf-8")
+    open_calls: list[object] = []
+
+    def fail_if_opened(requested_handle: object) -> object:
+        open_calls.append(requested_handle)
+        raise AssertionError("store rows should not open before destination validation")
+
+    monkeypatch.setattr(store, "open_rows", fail_if_opened)
+
+    with pytest.raises(ExportError, match=r"Export output already exists"):
+        export_last_result(
+            store,
+            handle,
+            str(output_path),
+            columns=result.columns,
+            elapsed_ms=result.elapsed_ms,
+            export_format=ExportFormat.csv,
+            base_dir=tmp_path,
+        )
+
+    assert open_calls == []
+
+
+def test_export_last_result_opens_store_rows_once_when_streaming_begins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
+    store = TUIResultStore(temp_root=tmp_path)
+    handle = _store_complete_result(store, result, sequence=1)
+    source_calls: list[TUIResultHandle] = []
+
+    original_open_rows = store.open_rows
+
+    def recording_open_rows(requested_handle: TUIResultHandle):
+        source_calls.append(requested_handle)
+        return original_open_rows(requested_handle)
+
+    def fake_write_streaming_export(source, path: Path, **kwargs: object) -> None:
+        del path, kwargs
+        assert tuple(source.iter_rows()) == ((1,),)
+        with pytest.raises(ExportError, match=r"only be streamed once"):
+            tuple(source.iter_rows())
+
+    monkeypatch.setattr(store, "open_rows", recording_open_rows)
+    monkeypatch.setattr("csvql.tui_workflows.write_streaming_export", fake_write_streaming_export)
+
+    export_last_result(
+        store,
+        handle,
+        "result.csv",
+        columns=result.columns,
+        elapsed_ms=result.elapsed_ms,
+        export_format=ExportFormat.csv,
+        base_dir=tmp_path,
+    )
+
+    assert source_calls == [handle]
 
 
 def test_save_derived_result_source_writes_project_local_csv_and_returns_source(
@@ -590,10 +892,15 @@ def test_save_derived_result_source_writes_project_local_csv_and_returns_source(
         rows=((1, "Ada"), (2, "Bea")),
         elapsed_ms=1.0,
     )
+    store = TUIResultStore(temp_root=tmp_path)
+    handle = _store_complete_result(store, result, sequence=1)
 
     source = save_derived_result_source(
-        result,
+        store,
+        handle,
         "order_names",
+        columns=result.columns,
+        elapsed_ms=result.elapsed_ms,
         existing_sources=(),
         start_dir=project_root,
     )
@@ -603,9 +910,330 @@ def test_save_derived_result_source_writes_project_local_csv_and_returns_source(
     assert source == TUISource(
         name="order_names",
         path=output_path.resolve(),
-        origin="session",
-        kind="derived",
+        origin="derived",
+        kind="csv",
     )
+
+
+def test_save_derived_result_source_validates_alias_before_opening_store_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    initialize_project(project_root)
+    result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
+    store = TUIResultStore(temp_root=tmp_path)
+    handle = _store_complete_result(store, result, sequence=1)
+    open_calls: list[object] = []
+
+    def fail_if_opened(requested_handle: object) -> object:
+        open_calls.append(requested_handle)
+        raise AssertionError("store rows should not open before alias validation")
+
+    monkeypatch.setattr(store, "open_rows", fail_if_opened)
+
+    with pytest.raises(TableMappingError, match=r"Invalid table alias"):
+        save_derived_result_source(
+            store,
+            handle,
+            "bad alias",
+            columns=result.columns,
+            elapsed_ms=result.elapsed_ms,
+            existing_sources=(),
+            start_dir=project_root,
+        )
+
+    assert open_calls == []
+
+
+def test_save_derived_result_source_opens_once_and_preserves_row_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = QueryResult(
+        columns=("position", "label"),
+        rows=((1, "first"), (2, "second"), (3, "third")),
+        elapsed_ms=1.0,
+    )
+    store = TUIResultStore(temp_root=tmp_path)
+    handle = _store_complete_result(store, result, sequence=1)
+    open_calls: list[TUIResultHandle] = []
+    original_open_rows = store.open_rows
+
+    def recording_open_rows(requested_handle: TUIResultHandle):
+        open_calls.append(requested_handle)
+        return original_open_rows(requested_handle)
+
+    monkeypatch.setattr(store, "open_rows", recording_open_rows)
+
+    source = save_derived_result_source(
+        store,
+        handle,
+        "ordered_rows",
+        columns=result.columns,
+        elapsed_ms=result.elapsed_ms,
+        existing_sources=(),
+        start_dir=tmp_path,
+    )
+
+    assert open_calls == [handle]
+    assert source.path.read_text(encoding="utf-8") == (
+        "position,label\n1,first\n2,second\n3,third\n"
+    )
+
+
+def test_private_spill_handle_cannot_enter_catalog_but_committed_csv_can(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    private_spool = tmp_path / "localql-private-spool" / "query-1.result"
+    private_spool.parent.mkdir()
+    private_spool.write_bytes(b"private result bytes")
+    handle = TUIResultHandle(sequence=1, store_id="1" * 32, nonce="2" * 32)
+
+    with pytest.raises(AttributeError):
+        source_spec_from_tui_source(handle)  # type: ignore[arg-type]
+    with pytest.raises(AttributeError):
+        save_sources_to_project_catalog(  # type: ignore[arg-type]
+            (handle,),
+            start_dir=project_root,
+            replace=False,
+        )
+    assert not (project_root / CONFIG_FILENAME).exists()
+
+    committed_store = TUIResultStore(temp_root=tmp_path)
+    committed = save_derived_result_source(
+        committed_store,
+        _store_complete_result(
+            committed_store,
+            QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0),
+            sequence=1,
+        ),
+        "committed_ids",
+        columns=("id",),
+        elapsed_ms=1.0,
+        existing_sources=(),
+        start_dir=project_root,
+    )
+    context = save_sources_to_project_catalog(
+        (committed,),
+        start_dir=project_root,
+        replace=False,
+    )
+
+    assert committed.path != private_spool
+    assert committed.kind == "csv"
+    assert committed.origin == "derived"
+    assert len(context.config.tables) == 1
+    assert context.config.tables[0].name == "committed_ids"
+    assert Path(context.config.tables[0].path).suffix == ".csv"
+    assert private_spool.name not in context.config.tables[0].path
+    assert private_spool.read_bytes() == b"private result bytes"
+
+
+def test_query_sources_does_not_use_legacy_table_source_conversion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    csv_path = _write_csv(tmp_path / "orders.csv")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
+
+    def reject_legacy_conversion(self: TUISource) -> object:
+        del self
+        raise AssertionError("legacy TableSource conversion used")
+
+    monkeypatch.setattr(TUISource, "as_table_source", reject_legacy_conversion)
+
+    result = query_sources((source,), "SELECT count(*) FROM orders")
+
+    assert result.rows == ((1,),)
+
+
+@pytest.mark.parametrize("workflow_name", ["query_sources", "run_buffer_for_tui"])
+def test_tui_query_route_shares_context_from_resolve_through_bind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workflow_name: str,
+) -> None:
+    csv_path = _write_csv(tmp_path / "orders.csv")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
+    resolve_operations: list[object] = []
+    bind_operations: list[object] = []
+    real_resolve = CSVSourceAdapter.resolve
+    real_bind = CSVSourceAdapter.bind
+
+    def recording_resolve(self, spec, operation):
+        resolve_operations.append(operation)
+        return real_resolve(self, spec, operation)
+
+    def recording_bind(self, connection, resolved_source, operation):
+        bind_operations.append(operation)
+        return real_bind(self, connection, resolved_source, operation)
+
+    monkeypatch.setattr(CSVSourceAdapter, "resolve", recording_resolve)
+    monkeypatch.setattr(CSVSourceAdapter, "bind", recording_bind)
+
+    workflow = getattr(tui_workflows, workflow_name)
+    if workflow_name == "run_buffer_for_tui":
+        workflow((source,), ("SELECT count(*) FROM orders",), sequences=(1,))
+    else:
+        workflow((source,), "SELECT count(*) FROM orders")
+
+    assert len(resolve_operations) == 1
+    assert bind_operations == resolve_operations
+
+
+def test_catalog_save_rejects_source_that_cannot_be_bound_without_mutating_catalog(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    initialize_project(project_root)
+    config_path = project_root / CONFIG_FILENAME
+    original_config = config_path.read_text(encoding="utf-8")
+    csv_path = project_root / "unreadable.csv"
+    csv_path.write_bytes(b"id\n\xff\n")
+    source = TUISource(name="unreadable", path=csv_path.resolve(), origin="session")
+
+    with pytest.raises(SourceError, match="bind"):
+        save_sources_to_project_catalog((source,), start_dir=project_root, replace=False)
+
+    assert config_path.read_text(encoding="utf-8") == original_config
+
+
+def test_catalog_save_rejects_effective_query_capability_without_mutating_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    initialize_project(project_root)
+    config_path = project_root / CONFIG_FILENAME
+    original_config = config_path.read_text(encoding="utf-8")
+    csv_path = _write_csv(project_root / "orders.csv")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="session")
+    real_bind = CSVSourceAdapter.bind
+    effective_capabilities = SourceCapabilities(
+        statuses=tuple(
+            SourceCapabilityStatus(
+                operation=status.operation,
+                state="unsupported",
+                reason_code="effective_query_unavailable",
+                remediation="Use a source binding with effective query support.",
+            )
+            if status.operation == "query"
+            else status
+            for status in CSV_CAPABILITIES.statuses
+        )
+    )
+
+    class QueryUnavailableBinding:
+        def __init__(self, binding: PreparedBinding) -> None:
+            self._binding = binding
+
+        @property
+        def alias(self) -> str:
+            return self._binding.alias
+
+        @property
+        def source(self):
+            return self._binding.source
+
+        @property
+        def capabilities(self) -> SourceCapabilities:
+            return effective_capabilities
+
+        def close(self) -> None:
+            self._binding.close()
+
+    def bind_without_effective_query(self, connection, resolved, operation):
+        return QueryUnavailableBinding(real_bind(self, connection, resolved, operation))
+
+    monkeypatch.setattr(CSVSourceAdapter, "bind", bind_without_effective_query)
+
+    with pytest.raises(SourceError) as exc_info:
+        save_sources_to_project_catalog((source,), start_dir=project_root, replace=False)
+
+    assert "effective_query_unavailable" in exc_info.value.message
+    assert exc_info.value.suggestion == ("Use a source binding with effective query support.")
+    assert config_path.read_text(encoding="utf-8") == original_config
+
+
+def test_catalog_save_cleanup_uncertainty_does_not_mutate_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    initialize_project(project_root)
+    config_path = project_root / CONFIG_FILENAME
+    original_config = config_path.read_text(encoding="utf-8")
+    csv_path = _write_csv(project_root / "orders.csv")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="session")
+    real_bind = CSVSourceAdapter.bind
+
+    class CleanupFailingBinding:
+        def __init__(self, binding: PreparedBinding) -> None:
+            self._binding = binding
+
+        @property
+        def alias(self) -> str:
+            return self._binding.alias
+
+        @property
+        def source(self):
+            return self._binding.source
+
+        @property
+        def capabilities(self):
+            return self._binding.capabilities
+
+        def close(self) -> None:
+            self._binding.close()
+            raise RuntimeError("private cleanup detail")
+
+    def bind_with_cleanup_uncertainty(self, connection, resolved, operation):
+        return CleanupFailingBinding(real_bind(self, connection, resolved, operation))
+
+    monkeypatch.setattr(CSVSourceAdapter, "bind", bind_with_cleanup_uncertainty)
+
+    with pytest.raises(CSVQLError, match="cleanup did not complete with certainty"):
+        save_sources_to_project_catalog((source,), start_dir=project_root, replace=False)
+
+    assert config_path.read_text(encoding="utf-8") == original_config
+
+
+def test_tui_source_operations_do_not_use_legacy_csv_facades(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    csv_path = _write_csv(tmp_path / "orders.csv")
+    source = TUISource(name="orders", path=csv_path.resolve(), origin="argument")
+
+    monkeypatch.setattr(
+        tui_workflows,
+        "inspect_csv_source",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy inspect facade used")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tui_workflows,
+        "sample_csv_source",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy sample facade used")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tui_workflows,
+        "profile_csv_source",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy profile facade used")),
+        raising=False,
+    )
+
+    assert inspect_source(source).columns[0].name == "id"
+    assert sample_source(source, limit=1).rows == ((1, "alpha"),)
+    assert profile_source(source).row_count == 1
 
 
 def test_save_derived_result_source_uses_start_dir_without_project_catalog(
@@ -613,7 +1241,7 @@ def test_save_derived_result_source_uses_start_dir_without_project_catalog(
 ) -> None:
     result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
 
-    source = save_derived_result_source(
+    source = _save_query_result_as_source(
         result,
         "scratch_ids",
         existing_sources=(),
@@ -623,20 +1251,22 @@ def test_save_derived_result_source_uses_start_dir_without_project_catalog(
     output_path = tmp_path / ".csvql" / "results" / "scratch_ids.csv"
     assert output_path.exists()
     assert source.path == output_path.resolve()
-    assert source.kind == "derived"
+    assert source.kind == "csv"
+    assert source.origin == "derived"
 
 
 def test_save_derived_result_source_preserves_empty_result_headers(tmp_path: Path) -> None:
     result = QueryResult(columns=("id", "name"), rows=(), elapsed_ms=1.0)
 
-    source = save_derived_result_source(
+    source = _save_query_result_as_source(
         result,
         "empty_names",
         existing_sources=(),
         start_dir=tmp_path,
     )
 
-    assert source.kind == "derived"
+    assert source.kind == "csv"
+    assert source.origin == "derived"
     assert (tmp_path / ".csvql" / "results" / "empty_names.csv").read_text(
         encoding="utf-8"
     ) == "id,name\n"
@@ -647,7 +1277,7 @@ def test_save_derived_result_source_refuses_duplicate_session_alias(tmp_path: Pa
     existing = (TUISource(name="orders", path=tmp_path / "orders.csv", origin="argument"),)
 
     with pytest.raises(TableMappingError, match=r"Source alias 'ORDERS' is already loaded"):
-        save_derived_result_source(
+        _save_query_result_as_source(
             result,
             "ORDERS",
             existing_sources=existing,
@@ -665,7 +1295,7 @@ def test_save_derived_result_source_refuses_existing_output_file(tmp_path: Path)
     output_path.write_text("id\nexisting\n", encoding="utf-8")
 
     with pytest.raises(ExportError, match=r"Derived result already exists"):
-        save_derived_result_source(
+        _save_query_result_as_source(
             result,
             "orders",
             existing_sources=(),
@@ -680,6 +1310,8 @@ def test_save_derived_result_source_refuses_file_created_during_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
+    result_store = TUIResultStore(temp_root=tmp_path)
+    handle = _store_complete_result(result_store, result, sequence=1)
     output_dir = tmp_path / ".csvql" / "results"
     output_dir.mkdir(parents=True)
     output_path = output_dir / "race.csv"
@@ -700,10 +1332,13 @@ def test_save_derived_result_source_refuses_file_created_during_commit(
     )
     monkeypatch.setattr("csvql.atomic_write.os.link", racing_link)
 
-    with pytest.raises(ExportError, match=r"Derived result already exists"):
+    with pytest.raises(ExportError, match=r"Export output already exists"):
         save_derived_result_source(
-            result,
+            result_store,
+            handle,
             "race",
+            columns=result.columns,
+            elapsed_ms=result.elapsed_ms,
             existing_sources=(),
             start_dir=tmp_path,
         )
@@ -747,7 +1382,7 @@ def test_save_derived_result_source_refuses_case_variant_output_file(
     )
 
     with pytest.raises(ExportError, match=r"Derived result already exists"):
-        save_derived_result_source(
+        _save_query_result_as_source(
             result,
             "ORDERS",
             existing_sources=(),
@@ -767,7 +1402,7 @@ def test_save_derived_result_source_uses_project_root_from_nested_start_dir(
     initialize_project(project_root)
     result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
 
-    source = save_derived_result_source(
+    source = _save_query_result_as_source(
         result,
         "nested_ids",
         existing_sources=(),
@@ -794,7 +1429,7 @@ def test_save_derived_result_source_refuses_symlinked_csvql_dir_before_mkdir(
     result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
 
     with pytest.raises(ExportError, match="Derived results directory escapes"):
-        save_derived_result_source(
+        _save_query_result_as_source(
             result,
             "leak",
             existing_sources=(),
@@ -823,7 +1458,7 @@ def test_save_derived_result_source_rejects_csvql_escape_before_existing_file_ch
     result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
 
     with pytest.raises(ExportError, match="Derived results directory escapes"):
-        save_derived_result_source(
+        _save_query_result_as_source(
             result,
             "leak",
             existing_sources=(),
@@ -849,7 +1484,7 @@ def test_save_derived_result_source_refuses_symlinked_results_dir_escape(
     result = QueryResult(columns=("id",), rows=((1,),), elapsed_ms=1.0)
 
     with pytest.raises(ExportError, match="Derived results directory escapes"):
-        save_derived_result_source(
+        _save_query_result_as_source(
             result,
             "leak",
             existing_sources=(),
@@ -880,8 +1515,8 @@ def test_save_derived_result_source_refuses_file_created_during_save(
         racing_existing_derived_result_path,
     )
 
-    with pytest.raises(ExportError, match="Derived result already exists"):
-        save_derived_result_source(
+    with pytest.raises(ExportError, match="Export output already exists"):
+        _save_query_result_as_source(
             result,
             "race",
             existing_sources=(),
@@ -908,7 +1543,7 @@ def test_query_sources_can_join_derived_csv_source(tmp_path: Path) -> None:
         rows=((1, "Ada"), (2, "Bea")),
         elapsed_ms=1.0,
     )
-    derived = save_derived_result_source(
+    derived = _save_query_result_as_source(
         result,
         "order_names",
         existing_sources=(),

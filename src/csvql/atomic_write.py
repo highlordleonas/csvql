@@ -4,36 +4,102 @@ from __future__ import annotations
 
 import os
 import tempfile
-import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import TextIO
+
+from csvql.operation import (
+    OperationCancelled as OperationCancelled,
+)
+from csvql.operation import (
+    OperationToken as OperationToken,
+)
 
 
-class OperationCancelled(Exception):
-    """Raised when a cancellable local operation is cancelled before commit."""
+@contextmanager
+def atomic_text_output(
+    path: Path,
+    *,
+    encoding: str = "utf-8",
+    newline: str | None = None,
+    overwrite: bool = True,
+    token: OperationToken | None = None,
+) -> Iterator[TextIO]:
+    """Yield a staging text writer and atomically publish it on success."""
 
+    if token is not None:
+        token.raise_if_cancelled()
 
-class OperationToken:
-    """Thread-safe cancellation token for local TUI/file operations."""
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        text=True,
+    )
+    temp_path = Path(temp_name)
+    file: TextIO | None = None
+    committed = False
+    needs_post_publish_cleanup = False
+    try:
+        try:
+            file = os.fdopen(fd, "w", encoding=encoding, newline=newline)
+        except BaseException:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            raise
 
-    def __init__(self) -> None:
-        self._cancelled = threading.Event()
+        try:
+            yield file
+        except BaseException:
+            raise
+        else:
+            if file.closed:
+                # Windows rejects fsync on a descriptor reopened read-only after
+                # the caller manually closed the staging file.
+                sync_fd = os.open(temp_path, os.O_RDWR)
+                try:
+                    os.fsync(sync_fd)
+                finally:
+                    try:
+                        os.close(sync_fd)
+                    except Exception:
+                        pass
+            else:
+                file.flush()
+                os.fsync(file.fileno())
+                file.close()
 
-    def cancel(self) -> None:
-        """Mark the operation as cancelled."""
+            if token is not None:
+                token.raise_if_cancelled()
 
-        self._cancelled.set()
-
-    @property
-    def is_cancelled(self) -> bool:
-        """Return whether cancellation has been requested."""
-
-        return self._cancelled.is_set()
-
-    def raise_if_cancelled(self) -> None:
-        """Raise :class:`OperationCancelled` when the token is cancelled."""
-
-        if self.is_cancelled:
-            raise OperationCancelled("Operation cancelled.")
+            if overwrite:
+                os.replace(temp_path, path)
+                committed = True
+            else:
+                os.link(temp_path, path)
+                committed = True
+                needs_post_publish_cleanup = True
+                try:
+                    temp_path.unlink(missing_ok=True)
+                    needs_post_publish_cleanup = False
+                except OSError:
+                    pass
+    except BaseException:
+        raise
+    finally:
+        if file is not None and not file.closed:
+            try:
+                file.close()
+            except Exception:
+                pass
+        if not committed or needs_post_publish_cleanup:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def write_text_atomic(
@@ -51,31 +117,11 @@ def write_text_atomic(
     not already exist.
     """
 
-    if token is not None:
-        token.raise_if_cancelled()
-
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
-        text=True,
-    )
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(fd, "w", encoding=encoding, newline=newline) as file:
-            file.write(content)
-            file.flush()
-            os.fsync(file.fileno())
-        if token is not None:
-            token.raise_if_cancelled()
-        if overwrite:
-            os.replace(temp_path, path)
-        else:
-            os.link(temp_path, path)
-            temp_path.unlink(missing_ok=True)
-    except BaseException:
-        try:
-            temp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+    with atomic_text_output(
+        path,
+        encoding=encoding,
+        newline=newline,
+        overwrite=overwrite,
+        token=token,
+    ) as file:
+        file.write(content)

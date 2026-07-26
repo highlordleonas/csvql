@@ -133,6 +133,18 @@ def test_format_query_result_for_text_export_matches_table_output() -> None:
     assert "2 row(s) in 1.23 ms" in output
 
 
+def test_format_query_result_for_json_export_rounds_elapsed_ms_to_three_decimals() -> None:
+    result = QueryResult(
+        columns=("id",),
+        rows=((1,),),
+        elapsed_ms=1.23456,
+    )
+
+    output = format_query_result_for_export(result, ExportFormat.json)
+
+    assert json.loads(output)["elapsed_ms"] == 1.235
+
+
 def test_resolve_export_path_refuses_existing_file_without_force(tmp_path: Path) -> None:
     output_path = tmp_path / "result.csv"
     output_path.write_text("existing", encoding="utf-8")

@@ -2,35 +2,51 @@
 
 import os
 import shlex
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from csvql.atomic_write import OperationCancelled, OperationToken, write_text_atomic
+from csvql.atomic_write import write_text_atomic
+from csvql.bounded_result import PreviewPolicy
+from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import CSVQLError, ExportError, ProjectConfigError, TableMappingError
-from csvql.export import (
-    ExportFormat,
-    format_query_result_for_export,
-    resolve_export_path,
-    write_export_file,
-)
-from csvql.inspection import inspect_csv_source, sample_csv_source
+from csvql.export import ExportFormat, resolve_export_path
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
-from csvql.profiling import profile_csv_source
+from csvql.operation import OperationCancelled, OperationContext, OperationToken
 from csvql.project_config import (
     SUPPORTED_VERSION,
     ProjectConfig,
     ProjectContext,
     ProjectTable,
+    _parse_project_config,
     _project_catalog_path_value,
+    _project_config_payload,
     load_project,
     resolve_catalog_path,
     save_project,
 )
-from csvql.source import CSVSource, source_from_path
+from csvql.query_workflow import _snapshot_optional_catalog
+from csvql.source import (
+    ResolvedSource,
+    SourceCapability,
+    SourceCapabilityStatus,
+    source_spec_from_tui_source,
+)
+from csvql.source_operations import SourceOperations
+from csvql.streaming_export import write_streaming_export
 from csvql.table_mapping import parse_table_mapping, source_from_single_csv, validate_table_alias
-from csvql.tui_state import TUIQueryOutcome, TUISessionState, TUISource, TUISourceColumn
+from csvql.tui_query_runner import TUIRunRequest
+from csvql.tui_result_store import TUIResultHandle, TUIResultStore
+from csvql.tui_state import (
+    TUIExportIntent,
+    TUIQueryOutcome,
+    TUIQueryRunMode,
+    TUISessionState,
+    TUISource,
+    TUISourceColumn,
+)
 
 _MISSING_PROJECT_PREFIX = "No .csvql.yml project catalog found."
 _DERIVED_RESULTS_DIR = Path(".csvql") / "results"
@@ -123,16 +139,29 @@ def external_catalog_source_paths(
     return tuple(external_paths)
 
 
-def inspect_source(source: TUISource, *, exact: bool = False) -> InspectResult:
-    """Inspect a TUI source using the existing CSV inspection service."""
+def inspect_source(
+    source: TUISource,
+    *,
+    exact: bool = False,
+    operation: OperationContext | None = None,
+) -> InspectResult:
+    """Inspect a TUI source through its resolved adapter boundary."""
 
-    return inspect_csv_source(_csv_source(source), exact=exact)
+    active_operation = operation or OperationContext(OperationToken())
+    resolved = _resolve_tui_source(source, capability="inspect", operation=active_operation)
+    with CSVQLEngine(operation=active_operation) as engine:
+        result = SourceOperations(engine, resolved).inspect(exact=exact)
+    return replace(result, source=_tui_source_summary(result.source, source))
 
 
-def inspect_source_columns(source: TUISource) -> tuple[TUISourceColumn, ...]:
+def inspect_source_columns(
+    source: TUISource,
+    *,
+    operation: OperationContext | None = None,
+) -> tuple[TUISourceColumn, ...]:
     """Inspect a TUI source and return its columns for source intelligence."""
 
-    result = inspect_source(source)
+    result = inspect_source(source, operation=operation)
     return tuple(
         TUISourceColumn(name=column.name, duckdb_type=column.duckdb_type)
         for column in result.columns
@@ -146,24 +175,95 @@ def render_duckdb_identifier(identifier: str) -> str:
     return f'"{escaped_identifier}"'
 
 
-def sample_source(source: TUISource, *, limit: int = 10) -> SampleResult:
-    """Sample a TUI source using the existing CSV sampling service."""
+def sample_source(
+    source: TUISource,
+    *,
+    limit: int = 10,
+    operation: OperationContext | None = None,
+) -> SampleResult:
+    """Sample a TUI source through its resolved adapter boundary."""
 
-    return sample_csv_source(_csv_source(source), limit=limit)
+    active_operation = operation or OperationContext(OperationToken())
+    resolved = _resolve_tui_source(source, capability="sample", operation=active_operation)
+    with CSVQLEngine(operation=active_operation) as engine:
+        result = SourceOperations(engine, resolved).sample(limit=limit)
+    return replace(result, source=_tui_source_summary(result.source, source))
 
 
-def profile_source(source: TUISource) -> ProfileResult:
-    """Profile a TUI source using the existing CSV profiling service."""
+def profile_source(
+    source: TUISource,
+    *,
+    operation: OperationContext | None = None,
+) -> ProfileResult:
+    """Profile a TUI source through its resolved adapter boundary."""
 
-    return profile_csv_source(_csv_source(source))
+    active_operation = operation or OperationContext(OperationToken())
+    resolved = _resolve_tui_source(source, capability="profile", operation=active_operation)
+    with CSVQLEngine(operation=active_operation) as engine:
+        result = SourceOperations(engine, resolved).profile()
+    return replace(result, source=_tui_source_summary(result.source, source))
 
 
 def query_sources(sources: Sequence[TUISource], sql: str) -> QueryResult:
     """Query registered TUI sources with trusted local SQL."""
 
-    with CSVQLEngine() as engine:
-        engine.register_tables(source.as_table_source() for source in sources)
+    operation = OperationContext(OperationToken())
+    resolved = tuple(
+        _resolve_tui_source(source, capability="query", operation=operation) for source in sources
+    )
+    with CSVQLEngine(operation=operation) as engine:
+        engine.prepare_sources(resolved)
         return engine.query(sql)
+
+
+def build_tui_run_request(
+    sources: Sequence[TUISource],
+    statements: Sequence[str],
+    *,
+    sequences: Sequence[int],
+    preview_policy: PreviewPolicy,
+    run_mode: TUIQueryRunMode,
+    submission_order: int,
+    start_dir: Path,
+    operation: OperationContext | None = None,
+) -> TUIRunRequest:
+    """Capture immutable SQL, source, fallback, and preview inputs for one TUI run."""
+
+    active_operation = operation or OperationContext(OperationToken())
+    resolved_sources = tuple(
+        _resolve_tui_source(source, capability="query", operation=active_operation)
+        for source in tuple(sources)
+    )
+    fallback_sources = _snapshot_optional_catalog(
+        start_dir=start_dir,
+        operation=active_operation,
+    )
+    return TUIRunRequest(
+        statements=tuple(statements),
+        sequences=tuple(sequences),
+        sources=resolved_sources,
+        fallback_sources=fallback_sources,
+        preview_policy=preview_policy,
+        run_mode=run_mode,
+        submission_order=submission_order,
+    )
+
+
+def build_tui_export_intent(
+    *,
+    result_sequence: int,
+    path_value: str,
+    export_format: ExportFormat,
+    base_dir: Path,
+) -> TUIExportIntent:
+    """Resolve one export destination without creating or staging it."""
+
+    destination = resolve_export_path(path_value, base_dir=base_dir, force=False)
+    return TUIExportIntent(
+        result_sequence=result_sequence,
+        destination=destination,
+        format=export_format,
+    )
 
 
 def run_buffer_for_tui(
@@ -178,8 +278,13 @@ def run_buffer_for_tui(
         raise ValueError("Run Buffer statements and sequences must have the same length.")
 
     outcomes: list[TUIQueryOutcome] = []
-    with CSVQLEngine() as engine:
-        engine.register_tables(source.as_table_source() for source in sources)
+    operation = OperationContext(OperationToken())
+    resolved = tuple(
+        _resolve_tui_source(source, capability="query", operation=operation) for source in sources
+    )
+    with CSVQLEngine(operation=operation) as engine:
+        if resolved:
+            engine.prepare_sources(resolved)
         for sql, sequence in zip(statements, sequences, strict=True):
             try:
                 result = engine.query(sql)
@@ -236,35 +341,58 @@ def run_query_for_tui(
 
 
 def export_last_result(
-    result: QueryResult,
+    result_store: TUIResultStore,
+    handle: TUIResultHandle,
     path_value: str,
     *,
+    columns: tuple[str, ...],
+    elapsed_ms: float,
     export_format: ExportFormat,
     base_dir: Path,
     force: bool = False,
     token: OperationToken | None = None,
 ) -> Path:
-    """Export the selected TUI query result using the existing export helpers."""
+    """Export one preserved TUI result without materializing all rows in memory."""
 
+    export_source = _StoredResultExportSource(
+        result_store=result_store,
+        handle=handle,
+        columns=columns,
+        elapsed_ms=elapsed_ms,
+    )
     output_path = resolve_export_path(path_value, base_dir=base_dir, force=force)
-    content = format_query_result_for_export(result, export_format)
-    write_export_file(output_path, content, overwrite=force, token=token)
+    write_streaming_export(
+        export_source,
+        output_path,
+        export_format=export_format,
+        overwrite=force,
+        token=token,
+    )
     return output_path
 
 
 def save_derived_result_source(
-    result: QueryResult,
+    result_store: TUIResultStore,
+    handle: TUIResultHandle,
     alias: str,
     *,
+    columns: tuple[str, ...],
+    elapsed_ms: float,
     existing_sources: Sequence[TUISource],
     start_dir: Path,
     token: OperationToken | None = None,
 ) -> TUISource:
-    """Write a query result as a project-local CSV and return a derived source."""
+    """Write one preserved TUI result as a project-local CSV and return a source."""
 
+    export_source = _StoredResultExportSource(
+        result_store=result_store,
+        handle=handle,
+        columns=columns,
+        elapsed_ms=elapsed_ms,
+    )
     source_name = validate_table_alias(alias)
-    for source in existing_sources:
-        if source.name.casefold() == source_name.casefold():
+    for existing_source in existing_sources:
+        if existing_source.name.casefold() == source_name.casefold():
             raise TableMappingError(
                 f"Source alias '{source_name}' is already loaded in the TUI session.",
                 suggestion="Choose a unique alias for the derived result source.",
@@ -331,10 +459,17 @@ def save_derived_result_source(
         )
 
     output_path = resolved_result_dir / f"{source_name}.csv"
-    content = format_query_result_for_export(result, ExportFormat.csv)
     try:
-        _write_derived_result_file(output_path, content, token=token)
+        write_streaming_export(
+            export_source,
+            output_path,
+            export_format=ExportFormat.csv,
+            overwrite=False,
+            token=token,
+        )
     except OperationCancelled:
+        raise
+    except ExportError:
         raise
     except OSError as exc:
         raise ExportError(
@@ -345,8 +480,8 @@ def save_derived_result_source(
     return TUISource(
         name=source_name,
         path=output_path,
-        origin="session",
-        kind="derived",
+        origin="derived",
+        kind="csv",
     )
 
 
@@ -368,6 +503,7 @@ def save_sources_to_project_catalog(
             tables=tuple(sorted(tables, key=lambda table: table.name)),
         ),
     )
+    _validate_staged_project_context(staged_context)
     return save_project(staged_context)
 
 
@@ -389,13 +525,69 @@ def _catalog_sources(*, start_dir: Path) -> tuple[TUISource, ...]:
     )
 
 
-def _csv_source(source: TUISource) -> CSVSource:
-    resolved = source_from_path(str(source.path))
-    return CSVSource(
-        path=resolved.path,
-        display_path=source.name,
-        fingerprint=resolved.fingerprint,
-    )
+def source_capability_status(
+    source: TUISource,
+    operation: SourceCapability,
+) -> SourceCapabilityStatus:
+    """Return the descriptor status used to enable or reject a TUI source action."""
+
+    spec = source_spec_from_tui_source(source)
+    descriptor = DEFAULT_SOURCE_ADAPTER_REGISTRY.descriptor(spec.kind)
+    return descriptor.capabilities.status_for(operation)
+
+
+class _StoredResultExportSource:
+    """Lazy one-shot export source for one validated preserved result handle."""
+
+    def __init__(
+        self,
+        *,
+        result_store: TUIResultStore,
+        handle: TUIResultHandle,
+        columns: tuple[str, ...],
+        elapsed_ms: float,
+    ) -> None:
+        self._result_store = result_store
+        self._handle = handle
+        self._columns = columns
+        self._elapsed_ms = elapsed_ms
+        self._used = False
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        return self._columns
+
+    @property
+    def elapsed_ms(self) -> float:
+        return self._elapsed_ms
+
+    def iter_rows(self) -> Iterator[tuple[object, ...]]:
+        if self._used:
+            raise ExportError(
+                "Stored result export can only be streamed once.",
+                suggestion="Run the export again from the preserved result.",
+            )
+        self._used = True
+        return self._result_store.open_rows(self._handle).iter_rows()
+
+
+def _resolve_tui_source(
+    source: TUISource,
+    *,
+    capability: SourceCapability,
+    operation: OperationContext,
+) -> ResolvedSource:
+    spec = source_spec_from_tui_source(source)
+    adapter = DEFAULT_SOURCE_ADAPTER_REGISTRY.create(spec.kind, capability=capability)
+    adapter.validate_options(spec)
+    return adapter.resolve(spec, operation)
+
+
+def _tui_source_summary(
+    summary: dict[str, object],
+    source: TUISource,
+) -> dict[str, object]:
+    return {**summary, "display_path": source.name}
 
 
 def _stage_project_tables(
@@ -405,20 +597,29 @@ def _stage_project_tables(
     replace: bool,
 ) -> list[ProjectTable]:
     tables = list(context.config.tables)
-    existing_indexes = {table.name: index for index, table in enumerate(tables)}
+    existing_indexes = {table.name.casefold(): index for index, table in enumerate(tables)}
     seen_batch_aliases: set[str] = set()
 
     for source in sources:
-        if source.name in seen_batch_aliases:
+        source_key = source.name.casefold()
+        if source_key in seen_batch_aliases:
             raise ProjectConfigError(
                 f"Duplicate project catalog table '{source.name}' in save batch.",
                 suggestion="Use one entry per alias when saving sources to the project catalog.",
             )
-        seen_batch_aliases.add(source.name)
+        seen_batch_aliases.add(source_key)
 
-        resolved_path = source_from_path(str(source.path), base_dir=context.project_root).path
+        operation = OperationContext(OperationToken())
+        resolved = _resolve_tui_source(
+            source,
+            capability="query",
+            operation=operation,
+        )
+        with CSVQLEngine(operation=operation) as engine:
+            engine.prepare_sources((resolved,))
+        resolved_path = Path(resolved.canonical_locator)
         stored_path = _project_catalog_path_value(context.project_root, resolved_path)
-        existing_index = existing_indexes.get(source.name)
+        existing_index = existing_indexes.get(source_key)
 
         if existing_index is not None and not replace:
             raise ProjectConfigError(
@@ -436,6 +637,16 @@ def _stage_project_tables(
             tables.append(ProjectTable(name=source.name, path=stored_path))
 
     return tables
+
+
+def _validate_staged_project_context(context: ProjectContext) -> None:
+    payload = _project_config_payload(context.config)
+    validated_config = _parse_project_config(payload, config_path=context.config_path)
+    if validated_config != context.config:
+        raise ProjectConfigError(
+            f"Staged project catalog for {context.config_path} is invalid.",
+            suggestion="Retry the save after repairing the staged project catalog entries.",
+        )
 
 
 def _load_or_initialize_project(start_dir: Path) -> ProjectContext:

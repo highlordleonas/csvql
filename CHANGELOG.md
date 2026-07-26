@@ -3,6 +3,33 @@
 This page records user-visible changes in each LocalQL release. For a guided
 overview of the v1 feature set, see the [v1 release notes](docs/release-notes/v1.md).
 
+## [1.1.0] - Unreleased
+
+This release candidate is not yet published.
+
+### Added
+
+- CSV access now runs through private `SourceSpec` and `SourceAdapter`
+  contracts, establishing a CSV-first source boundary without creating a
+  public plugin API.
+
+### Changed
+
+- Interactive `csvql query` and `csvql run` table output now retains a bounded
+  preview of 1,000 rows by default. Query/run JSON output and Python API results
+  remain complete.
+- CLI exports and terminal-menu export/save actions use complete results rather
+  than inheriting the interactive preview bound.
+- The terminal menu preserves complete results under one 1 GiB session
+  capacity with no automatic eviction. Existing preserved results remain
+  available when capacity is exhausted; a new result then reports a
+  preview-only state.
+
+### Fixed
+
+- The terminal menu now supports source-free DuckDB SQL and keeps active-result
+  and History actions attached to the result the user selected.
+
 ## [1.0.5] - 2026-07-21
 
 ### Changed

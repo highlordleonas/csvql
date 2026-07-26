@@ -15,6 +15,7 @@ menu.
 ## Contents
 
 - [Install and first query](#install-and-first-query)
+- [Result behavior](#result-behavior)
 - [Optional terminal menu](#optional-terminal-menu)
 - [Compatibility and safety](#compatibility-and-safety)
 - [Core workflows](#core-workflows)
@@ -43,6 +44,17 @@ for project catalogs, saved SQL, and exports.
 
 ![Terminal screenshot of a LocalQL query over a CSV file](https://raw.githubusercontent.com/highlordleonas/csvql/main/docs/assets/localql-terminal-query.svg)
 
+## Result behavior
+
+LocalQL keeps interactive output responsive without changing complete-result
+contracts. `csvql query` and `csvql run` table output retains up to 1,000 rows
+by default; `--limit` changes that table-preview bound. Query/run JSON output,
+Python API results, and `csvql export` remain complete.
+
+The terminal menu follows the same split: Results shows a bounded preview while
+export and save use the preserved complete result when session capacity is
+available.
+
 ## Optional terminal menu
 
 The core CLI needs only `localql`. Install the optional Textual-based terminal
@@ -54,11 +66,14 @@ python -m pip install "localql[tui]"
 csvql menu orders.csv
 ```
 
+You can also start with `csvql menu` and run source-free SQL such as `SELECT 1`
+before loading any CSVs.
+
 All core commands remain available without the extra. See the
 [Terminal menu guide](https://github.com/highlordleonas/csvql/blob/main/docs/tui-guide.md)
 for keys and source-management actions.
 
-![Terminal screenshot of the LocalQL TUI workbench with sources, SQL, history, and results](https://raw.githubusercontent.com/highlordleonas/csvql/main/docs/assets/localql-tui-workbench.svg)
+![Terminal screenshot of the LocalQL TUI workbench with CSV sources, SQL, History, and a complete preserved result](https://raw.githubusercontent.com/highlordleonas/csvql/main/docs/assets/localql-tui-workbench.svg)
 
 ## Compatibility and safety
 

@@ -7,19 +7,25 @@ import typer
 from rich.console import Console
 
 from csvql import __version__
+from csvql.bounded_result import (
+    DEFAULT_INTERACTIVE_ROW_LIMIT,
+    MAX_PREVIEW_PAYLOAD_BYTES,
+    PreviewPolicy,
+    collect_bounded_preview,
+)
 from csvql.checks import run_configured_checks
 from csvql.doctor import run_doctor
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import CSVQLError, DataQualityCheckFailure, DoctorFailure
 from csvql.export import (
     ExportFormat,
-    format_query_result_for_export,
     resolve_export_path,
-    write_export_file,
 )
 from csvql.inspection import inspect_csv_source, sample_csv_source
+from csvql.operation import OperationContext, OperationToken
 from csvql.output import (
     OutputFormat,
+    format_bounded_table_result,
     format_check_result_json,
     format_check_result_table,
     format_doctor_result_json,
@@ -33,7 +39,6 @@ from csvql.output import (
     format_project_tables_table,
     format_sample_result_json,
     format_sample_result_table,
-    format_table_result,
 )
 from csvql.profiling import profile_csv_source
 from csvql.project_config import (
@@ -43,25 +48,50 @@ from csvql.project_config import (
     load_project,
 )
 from csvql.query_workflow import (
+    QueryRequest,
+    _adapt_result_stream_for_export,
     build_inline_query_request,
     build_saved_sql_query_request,
     execute_query_request,
+    execute_query_request_stream,
 )
 from csvql.source_resolver import resolve_path_or_catalog_source
 from csvql.sql_file import load_sql_file
+from csvql.streaming_export import write_streaming_export
 from csvql.terminal_text import literal_terminal_text, terminal_safe_text
 from csvql.tui_launcher import run_menu_command
+from csvql.tui_result_store import DEFAULT_TUI_RESULT_CAPACITY_BYTES
 
 app = typer.Typer(
     add_completion=False,
     help="Query local CSV files with DuckDB SQL.",
 )
 
+_JSON_LIMIT_MESSAGE = (
+    "The --limit option only applies to table output. JSON output remains complete in v1.1."
+)
+_JSON_LIMIT_SUGGESTION = "Remove --limit or use --output table."
+_INTERRUPTED_QUERY_MESSAGE = "Query interrupted."
+_INTERRUPTED_QUERY_SUGGESTION = "Retry the query when ready."
+_MEBIBYTE = 1024 * 1024
+_MAX_TUI_RESULT_CAPACITY_BYTES = (2**63) - 1
+_MAX_TUI_RESULT_CAPACITY_MIB = _MAX_TUI_RESULT_CAPACITY_BYTES // _MEBIBYTE
+
 
 def _version_callback(value: bool) -> None:
     if value:
         typer.echo(__version__)
         raise typer.Exit()
+
+
+def _capacity_bytes_from_mib(capacity_mib: int) -> int:
+    if type(capacity_mib) is not int:
+        raise typer.BadParameter("must be a valid integer.")
+    if capacity_mib <= 0:
+        raise typer.BadParameter("must be at least 1.")
+    if capacity_mib > _MAX_TUI_RESULT_CAPACITY_MIB:
+        raise typer.BadParameter(f"must be at most {_MAX_TUI_RESULT_CAPACITY_MIB}.")
+    return capacity_mib * _MEBIBYTE
 
 
 @app.callback(invoke_without_command=True)
@@ -200,14 +230,36 @@ def menu(
             help="Table mapping in name=path form. Repeat for multiple CSV files.",
         ),
     ] = None,
+    limit: Annotated[
+        int,
+        typer.Option(
+            "--limit",
+            min=1,
+            help="Maximum number of preview rows to retain in the session.",
+        ),
+    ] = DEFAULT_INTERACTIVE_ROW_LIMIT,
+    spool_capacity_mib: Annotated[
+        int,
+        typer.Option(
+            "--spool-capacity-mib",
+            min=1,
+            help="Per-session TUI result capacity in MiB.",
+        ),
+    ] = DEFAULT_TUI_RESULT_CAPACITY_BYTES // _MEBIBYTE,
 ) -> None:
     """Open the interactive CSVQL terminal menu."""
 
     try:
+        result_store_capacity_bytes = _capacity_bytes_from_mib(spool_capacity_mib)
         run_menu_command(
             csv_path=csv_path,
             table_mappings=tuple(table or ()),
             start_dir=Path.cwd(),
+            preview_policy=PreviewPolicy(
+                row_limit=limit,
+                payload_limit_bytes=MAX_PREVIEW_PAYLOAD_BYTES,
+            ),
+            result_store_capacity_bytes=result_store_capacity_bytes,
         )
     except CSVQLError as exc:
         _exit_with_error(exc)
@@ -316,22 +368,43 @@ def query(
             help="Result output format.",
         ),
     ] = OutputFormat.table,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            min=1,
+            help="Maximum rows to display in table output.",
+        ),
+    ] = None,
 ) -> None:
     """Run SQL against one or more local CSV files."""
 
     try:
+        _reject_json_limit(limit=limit, output=output)
+        operation = OperationContext(token=OperationToken())
         request = build_inline_query_request(
             sql_or_csv,
             sql,
             table or [],
             base_dir=Path.cwd(),
+            operation=operation,
         )
-        with CSVQLEngine() as engine:
-            result = execute_query_request(engine, request)
-        if output is OutputFormat.json:
-            typer.echo(format_json_result(result))
-        else:
-            typer.echo(format_table_result(result), nl=False)
+        with CSVQLEngine(operation=operation) as engine:
+            if output is OutputFormat.json:
+                result = execute_query_request(engine, request, operation=operation)
+                typer.echo(format_json_result(result))
+            else:
+                typer.echo(
+                    _format_bounded_query_preview(
+                        engine,
+                        request,
+                        operation=operation,
+                        limit=limit,
+                    ),
+                    nl=False,
+                )
+    except KeyboardInterrupt:
+        _exit_with_error(_interrupted_query_error())
     except CSVQLError as exc:
         _exit_with_error(exc)
 
@@ -359,22 +432,43 @@ def run(
             help="Result output format.",
         ),
     ] = OutputFormat.table,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            min=1,
+            help="Maximum rows to display in table output.",
+        ),
+    ] = None,
 ) -> None:
     """Run SQL from a local file."""
 
     try:
+        _reject_json_limit(limit=limit, output=output)
         loaded_sql = load_sql_file(sql_file, base_dir=Path.cwd())
+        operation = OperationContext(token=OperationToken())
         request = build_saved_sql_query_request(
             loaded_sql.sql,
             table or [],
             base_dir=Path.cwd(),
+            operation=operation,
         )
-        with CSVQLEngine() as engine:
-            result = execute_query_request(engine, request)
-        if output is OutputFormat.json:
-            typer.echo(format_json_result(result))
-        else:
-            typer.echo(format_table_result(result), nl=False)
+        with CSVQLEngine(operation=operation) as engine:
+            if output is OutputFormat.json:
+                result = execute_query_request(engine, request, operation=operation)
+                typer.echo(format_json_result(result))
+            else:
+                typer.echo(
+                    _format_bounded_query_preview(
+                        engine,
+                        request,
+                        operation=operation,
+                        limit=limit,
+                    ),
+                    nl=False,
+                )
+    except KeyboardInterrupt:
+        _exit_with_error(_interrupted_query_error())
     except CSVQLError as exc:
         _exit_with_error(exc)
 
@@ -421,15 +515,22 @@ def export(
     try:
         loaded_sql = load_sql_file(sql_file, base_dir=Path.cwd())
         output_path = resolve_export_path(out, base_dir=Path.cwd(), force=force)
+        operation = OperationContext(token=OperationToken())
         request = build_saved_sql_query_request(
             loaded_sql.sql,
             table or [],
             base_dir=Path.cwd(),
+            operation=operation,
         )
-        with CSVQLEngine() as engine:
-            result = execute_query_request(engine, request)
-        content = format_query_result_for_export(result, export_format)
-        write_export_file(output_path, content, overwrite=force)
+        with CSVQLEngine(operation=operation) as engine:
+            stream = execute_query_request_stream(engine, request, operation=operation)
+            write_streaming_export(
+                _adapt_result_stream_for_export(stream),
+                output_path,
+                export_format=export_format,
+                overwrite=force,
+                token=operation.token,
+            )
         _echo_human_message(f"Wrote export to {output_path}.")
     except CSVQLError as exc:
         _exit_with_error(exc)
@@ -511,6 +612,36 @@ def tables(
 
 def _echo_human_message(message: str) -> None:
     typer.echo(terminal_safe_text(message))
+
+
+def _reject_json_limit(*, limit: int | None, output: OutputFormat) -> None:
+    if output is OutputFormat.json and limit is not None:
+        raise CSVQLError(
+            _JSON_LIMIT_MESSAGE,
+            suggestion=_JSON_LIMIT_SUGGESTION,
+        )
+
+
+def _format_bounded_query_preview(
+    engine: CSVQLEngine,
+    request: QueryRequest,
+    *,
+    operation: OperationContext,
+    limit: int | None,
+) -> str:
+    stream = execute_query_request_stream(engine, request, operation=operation)
+    result = collect_bounded_preview(
+        stream,
+        policy=PreviewPolicy(row_limit=limit or DEFAULT_INTERACTIVE_ROW_LIMIT),
+    )
+    return format_bounded_table_result(result)
+
+
+def _interrupted_query_error() -> CSVQLError:
+    return CSVQLError(
+        _INTERRUPTED_QUERY_MESSAGE,
+        suggestion=_INTERRUPTED_QUERY_SUGGESTION,
+    )
 
 
 def _exit_with_error(error: CSVQLError) -> None:

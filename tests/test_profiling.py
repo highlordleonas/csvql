@@ -1,7 +1,9 @@
 from pathlib import Path
 
+import duckdb
 import pytest
 
+import csvql.engine as engine_module
 from csvql.exceptions import CSVInspectionError
 from csvql.profiling import profile_csv_source
 from csvql.source import source_from_path
@@ -110,6 +112,26 @@ def test_profile_csv_source_wraps_missing_file_after_source_resolution(
     csv_path.write_text("order_id,status\nORD-1,paid\n", encoding="utf-8")
     source = source_from_path(str(csv_path))
     csv_path.unlink()
+
+    with pytest.raises(CSVInspectionError) as exc_info:
+        profile_csv_source(source)
+
+    assert str(exc_info.value) == f"Failed to profile CSV file: {csv_path}"
+    assert exc_info.value.suggestion == ("Check that the file is a readable CSV with a header row.")
+
+
+def test_profile_facade_translates_raw_duckdb_connect_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    csv_path = tmp_path / "orders.csv"
+    csv_path.write_text("order_id,status\nORD-1,paid\n", encoding="utf-8")
+    source = source_from_path(str(csv_path))
+
+    def fail_connect(*args: object, **kwargs: object) -> None:
+        raise duckdb.IOException("injected connection failure")
+
+    monkeypatch.setattr(engine_module.duckdb, "connect", fail_connect)
 
     with pytest.raises(CSVInspectionError) as exc_info:
         profile_csv_source(source)

@@ -31,6 +31,20 @@ structured result.
 
 ![Terminal screenshot of a LocalQL query over a CSV file](assets/localql-terminal-query.svg)
 
+## Understand previews and complete outputs
+
+Interactive table output from `csvql query` and `csvql run` retains up to 1,000
+rows by default. Use `--limit` to choose a smaller or larger table-preview
+bound:
+
+```console
+csvql query orders.csv "SELECT * FROM orders" --limit 25
+```
+
+The bound applies only to human-readable table output. Query/run JSON output
+and Python API results remain complete, and `csvql export` writes the complete
+result to a file.
+
 ## Use a project catalog
 
 For repeated work in a directory, initialize a catalog and register a friendly
@@ -67,11 +81,14 @@ python -m pip install "localql[tui]"
 csvql menu orders.csv
 ```
 
+You can also start with `csvql menu` and run source-free SQL such as `SELECT 1`
+before loading any CSVs.
+
 The menu lets you add sources, write SQL, inspect results, and export a result
 without changing the core CLI workflow. See the
 [Terminal menu guide](tui-guide.md) for keys and source actions.
 
-![Terminal screenshot of the LocalQL TUI workbench with sources, SQL, history, and results](assets/localql-tui-workbench.svg)
+![Terminal screenshot of the LocalQL TUI workbench with CSV sources, SQL, History, and a complete preserved result](assets/localql-tui-workbench.svg)
 
 ## Compatibility and SQL safety
 
