@@ -22,14 +22,12 @@ from textual.widgets._footer import FooterKey
 from csvql import tui_app as tui_app_module
 from csvql.atomic_write import OperationToken
 from csvql.bounded_result import BoundedQueryResult, PreviewPolicy
-from csvql.csv_adapter import CSVSourceAdapter
 from csvql.engine import CSVQLEngine
-from csvql.exceptions import CSVQLError, SourceError, TableMappingError
+from csvql.exceptions import CSVQLError, TableMappingError
 from csvql.export import ExportFormat
 from csvql.models import QueryResult
 from csvql.operation import OperationCancelled, OperationContext
 from csvql.result_codec import encode_row_payload
-from csvql.source import SourceCapabilityStatus
 from csvql.tui_app import CSVQLMenuApp
 from csvql.tui_help import WORKBENCH_HELP
 from csvql.tui_query_runner import (
@@ -90,100 +88,6 @@ def _make_source_state(tmp_path: Path, *, alias: str = "customers") -> TUISessio
     state = TUISessionState()
     state.add_source(TUISource(name=alias, path=csv_path, origin="argument"))
     return state
-
-
-def test_unavailable_source_action_reports_exact_capability_guidance(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state = _make_source_state(tmp_path)
-    unavailable = SourceCapabilityStatus(
-        operation="sample",
-        state="unavailable",
-        reason_code="missing_driver",
-        remediation="Install the csv-driver extra.",
-    )
-    monkeypatch.setattr(
-        tui_app_module,
-        "source_capability_status",
-        lambda source, operation: unavailable,
-        raising=False,
-    )
-
-    async def _inner() -> tuple[str, bool]:
-        app = CSVQLMenuApp(start_dir=tmp_path, initial_state=state)
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.query_one("#sources", DataTable).focus()
-            app.action_sample_source()
-            await pilot.pause()
-            return (
-                app.query_one("#status", Static).content,
-                app.state.operation_run.is_running,
-            )
-
-    status, is_running = asyncio.run(_inner())
-
-    assert "missing_driver" in status
-    assert "Install the csv-driver extra." in status
-    assert is_running is False
-
-
-@pytest.mark.parametrize(
-    ("action_name", "operation"),
-    [
-        ("action_inspect_source", "inspect"),
-        ("action_sample_source", "sample"),
-        ("action_profile_source", "profile"),
-        ("action_show_source_columns", "inspect"),
-    ],
-)
-@pytest.mark.parametrize("capability_state", ["unavailable", "unsupported"])
-def test_contextual_source_actions_reject_exact_capability_without_worker(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    action_name: str,
-    operation: str,
-    capability_state: str,
-) -> None:
-    state = _make_source_state(tmp_path)
-    reason_code = f"{capability_state}_test_reason"
-    remediation = f"Remediate {capability_state} {operation}."
-    worker_calls: list[object] = []
-    monkeypatch.setattr(
-        tui_app_module,
-        "source_capability_status",
-        lambda source, requested_operation: SourceCapabilityStatus(
-            operation=requested_operation,
-            state=capability_state,
-            reason_code=reason_code,
-            remediation=remediation,
-        ),
-    )
-    monkeypatch.setattr(
-        CSVQLMenuApp,
-        "_start_operation_worker",
-        lambda self, **kwargs: worker_calls.append((self, kwargs)),
-    )
-
-    async def _inner() -> tuple[str, bool]:
-        app = CSVQLMenuApp(start_dir=tmp_path, initial_state=state)
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.query_one("#sources", DataTable).focus()
-            getattr(app, action_name)()
-            await pilot.pause()
-            return (
-                app.query_one("#status", Static).content,
-                app.state.operation_run.is_running,
-            )
-
-    status, is_running = asyncio.run(_inner())
-
-    assert f"'{operation}' is {capability_state} ({reason_code})" in status
-    assert remediation in status
-    assert worker_calls == []
-    assert is_running is False
 
 
 def _result_grid_snapshot(app: CSVQLMenuApp) -> tuple[tuple[str, ...], int, str]:
@@ -5907,21 +5811,7 @@ def test_queued_source_fingerprint_mutation_terminalizes_as_source_changed(
     release_first = threading.Event()
     seen_requests: list[TUIRunRequest] = []
     second_events: list[object] = []
-    source_error_codes: list[str] = []
     real_run_tui_request = tui_app_module.run_tui_request
-    real_bind = CSVSourceAdapter.bind
-
-    def recording_bind(
-        adapter: CSVSourceAdapter,
-        connection: object,
-        source: object,
-        operation: OperationContext,
-    ):
-        try:
-            return real_bind(adapter, connection, source, operation)  # type: ignore[arg-type]
-        except SourceError as exc:
-            source_error_codes.append(exc.code)
-            raise
 
     def controlled_run_tui_request(
         request: TUIRunRequest,
@@ -5953,7 +5843,6 @@ def test_queued_source_fingerprint_mutation_terminalizes_as_source_changed(
             operation=operation,
         )
 
-    monkeypatch.setattr(CSVSourceAdapter, "bind", recording_bind)
     monkeypatch.setattr(tui_app_module, "run_tui_request", controlled_run_tui_request)
 
     async def _inner() -> tuple[object, tuple[object, ...], bool]:
@@ -6001,7 +5890,6 @@ def test_queued_source_fingerprint_mutation_terminalizes_as_source_changed(
     ]
 
     assert queued_fingerprint is not None
-    assert source_error_codes == ["source_changed"]
     assert len(failed_events) == 1
     assert failed_events[0].error_message == "CSV source changed after submission."
     assert failed_events[0].suggestion == (

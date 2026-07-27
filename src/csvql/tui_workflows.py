@@ -9,7 +9,6 @@ from urllib.parse import unquote, urlparse
 
 from csvql.atomic_write import write_text_atomic
 from csvql.bounded_result import PreviewPolicy
-from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import CSVQLError, ExportError, ProjectConfigError, TableMappingError
 from csvql.export import ExportFormat, resolve_export_path
@@ -30,11 +29,11 @@ from csvql.project_config import (
 from csvql.query_workflow import _snapshot_optional_catalog
 from csvql.source import (
     ResolvedSource,
-    SourceCapability,
-    SourceCapabilityStatus,
+    build_source_request,
     source_spec_from_tui_source,
 )
 from csvql.source_operations import SourceOperations
+from csvql.source_runtime import resolve_source_request
 from csvql.streaming_export import write_streaming_export
 from csvql.table_mapping import parse_table_mapping, source_from_single_csv, validate_table_alias
 from csvql.tui_query_runner import TUIRunRequest
@@ -148,7 +147,7 @@ def inspect_source(
     """Inspect a TUI source through its resolved adapter boundary."""
 
     active_operation = operation or OperationContext(OperationToken())
-    resolved = _resolve_tui_source(source, capability="inspect", operation=active_operation)
+    resolved = _resolve_tui_source(source, operation=active_operation)
     with CSVQLEngine(operation=active_operation) as engine:
         result = SourceOperations(engine, resolved).inspect(exact=exact)
     return replace(result, source=_tui_source_summary(result.source, source))
@@ -184,7 +183,7 @@ def sample_source(
     """Sample a TUI source through its resolved adapter boundary."""
 
     active_operation = operation or OperationContext(OperationToken())
-    resolved = _resolve_tui_source(source, capability="sample", operation=active_operation)
+    resolved = _resolve_tui_source(source, operation=active_operation)
     with CSVQLEngine(operation=active_operation) as engine:
         result = SourceOperations(engine, resolved).sample(limit=limit)
     return replace(result, source=_tui_source_summary(result.source, source))
@@ -198,7 +197,7 @@ def profile_source(
     """Profile a TUI source through its resolved adapter boundary."""
 
     active_operation = operation or OperationContext(OperationToken())
-    resolved = _resolve_tui_source(source, capability="profile", operation=active_operation)
+    resolved = _resolve_tui_source(source, operation=active_operation)
     with CSVQLEngine(operation=active_operation) as engine:
         result = SourceOperations(engine, resolved).profile()
     return replace(result, source=_tui_source_summary(result.source, source))
@@ -208,9 +207,7 @@ def query_sources(sources: Sequence[TUISource], sql: str) -> QueryResult:
     """Query registered TUI sources with trusted local SQL."""
 
     operation = OperationContext(OperationToken())
-    resolved = tuple(
-        _resolve_tui_source(source, capability="query", operation=operation) for source in sources
-    )
+    resolved = tuple(_resolve_tui_source(source, operation=operation) for source in sources)
     with CSVQLEngine(operation=operation) as engine:
         engine.prepare_sources(resolved)
         return engine.query(sql)
@@ -231,8 +228,7 @@ def build_tui_run_request(
 
     active_operation = operation or OperationContext(OperationToken())
     resolved_sources = tuple(
-        _resolve_tui_source(source, capability="query", operation=active_operation)
-        for source in tuple(sources)
+        _resolve_tui_source(source, operation=active_operation) for source in tuple(sources)
     )
     fallback_sources = _snapshot_optional_catalog(
         start_dir=start_dir,
@@ -279,9 +275,7 @@ def run_buffer_for_tui(
 
     outcomes: list[TUIQueryOutcome] = []
     operation = OperationContext(OperationToken())
-    resolved = tuple(
-        _resolve_tui_source(source, capability="query", operation=operation) for source in sources
-    )
+    resolved = tuple(_resolve_tui_source(source, operation=operation) for source in sources)
     with CSVQLEngine(operation=operation) as engine:
         if resolved:
             engine.prepare_sources(resolved)
@@ -515,25 +509,21 @@ def _catalog_sources(*, start_dir: Path) -> tuple[TUISource, ...]:
             return ()
         raise
 
-    return tuple(
-        TUISource(
-            name=table.name,
-            path=resolve_catalog_path(table, context),
-            origin="catalog",
+    sources: list[TUISource] = []
+    for table in context.config.tables:
+        candidate = Path(table.path).expanduser()
+        if not candidate.is_absolute():
+            candidate = context.project_root / candidate
+        # Validate artifact provenance before a provider is allowed to inspect it.
+        TUISource(name=table.name, path=candidate, origin="catalog")
+        sources.append(
+            TUISource(
+                name=table.name,
+                path=resolve_catalog_path(table, context),
+                origin="catalog",
+            )
         )
-        for table in context.config.tables
-    )
-
-
-def source_capability_status(
-    source: TUISource,
-    operation: SourceCapability,
-) -> SourceCapabilityStatus:
-    """Return the descriptor status used to enable or reject a TUI source action."""
-
-    spec = source_spec_from_tui_source(source)
-    descriptor = DEFAULT_SOURCE_ADAPTER_REGISTRY.descriptor(spec.kind)
-    return descriptor.capabilities.status_for(operation)
+    return tuple(sources)
 
 
 class _StoredResultExportSource:
@@ -574,13 +564,22 @@ class _StoredResultExportSource:
 def _resolve_tui_source(
     source: TUISource,
     *,
-    capability: SourceCapability,
     operation: OperationContext,
 ) -> ResolvedSource:
     spec = source_spec_from_tui_source(source)
-    adapter = DEFAULT_SOURCE_ADAPTER_REGISTRY.create(spec.kind, capability=capability)
-    adapter.validate_options(spec)
-    return adapter.resolve(spec, operation)
+    resolved = resolve_source_request(
+        build_source_request(
+            alias=spec.alias,
+            locator=spec.locator,
+            anchor=spec.anchor,
+            explicit_type=spec.kind,
+            options=spec.options,
+        ),
+        operation=operation,
+    )
+    if not isinstance(resolved, ResolvedSource):
+        raise RuntimeError("Source resolution returned an invalid value.")
+    return resolved
 
 
 def _tui_source_summary(
@@ -612,7 +611,6 @@ def _stage_project_tables(
         operation = OperationContext(OperationToken())
         resolved = _resolve_tui_source(
             source,
-            capability="query",
             operation=operation,
         )
         with CSVQLEngine(operation=operation) as engine:

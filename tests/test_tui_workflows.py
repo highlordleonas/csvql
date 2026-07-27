@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from csvql import tui_workflows
-from csvql.csv_adapter import CSV_CAPABILITIES, CSVSourceAdapter
+from csvql.csv_adapter import CSVSourceAdapter
 from csvql.exceptions import (
     CSVQLError,
     ExportError,
@@ -16,12 +16,8 @@ from csvql.export import ExportFormat
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
 from csvql.project_config import CONFIG_FILENAME, initialize_project, load_project
 from csvql.result_codec import encode_row_payload
-from csvql.source import (
-    SourceCapabilities,
-    SourceCapabilityStatus,
-    source_spec_from_tui_source,
-)
-from csvql.source_adapter import PreparedBinding
+from csvql.source import source_spec_from_tui_source
+from csvql.source_adapter import RelationalBinding
 from csvql.tui_result_store import TUIResultHandle, TUIResultStore
 from csvql.tui_state import TUISessionState, TUISource, TUISourceColumn
 from csvql.tui_workflows import (
@@ -1064,13 +1060,13 @@ def test_tui_query_route_shares_context_from_resolve_through_bind(
     real_resolve = CSVSourceAdapter.resolve
     real_bind = CSVSourceAdapter.bind
 
-    def recording_resolve(self, spec, operation):
+    def recording_resolve(self, selected, operation):
         resolve_operations.append(operation)
-        return real_resolve(self, spec, operation)
+        return real_resolve(self, selected, operation)
 
-    def recording_bind(self, connection, resolved_source, operation):
-        bind_operations.append(operation)
-        return real_bind(self, connection, resolved_source, operation)
+    def recording_bind(self, resolved_source, engine_session, binding_context):
+        bind_operations.append(binding_context.operation)
+        return real_bind(self, resolved_source, engine_session, binding_context)
 
     monkeypatch.setattr(CSVSourceAdapter, "resolve", recording_resolve)
     monkeypatch.setattr(CSVSourceAdapter, "bind", recording_bind)
@@ -1082,7 +1078,10 @@ def test_tui_query_route_shares_context_from_resolve_through_bind(
         workflow((source,), "SELECT count(*) FROM orders")
 
     assert len(resolve_operations) == 1
-    assert bind_operations == resolve_operations
+    assert len(bind_operations) == 1
+    assert all(
+        context is resolve_operations[0] for context in (*resolve_operations, *bind_operations)
+    )
 
 
 def test_catalog_save_rejects_source_that_cannot_be_bound_without_mutating_catalog(
@@ -1103,64 +1102,6 @@ def test_catalog_save_rejects_source_that_cannot_be_bound_without_mutating_catal
     assert config_path.read_text(encoding="utf-8") == original_config
 
 
-def test_catalog_save_rejects_effective_query_capability_without_mutating_catalog(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project_root = tmp_path / "project"
-    project_root.mkdir()
-    initialize_project(project_root)
-    config_path = project_root / CONFIG_FILENAME
-    original_config = config_path.read_text(encoding="utf-8")
-    csv_path = _write_csv(project_root / "orders.csv")
-    source = TUISource(name="orders", path=csv_path.resolve(), origin="session")
-    real_bind = CSVSourceAdapter.bind
-    effective_capabilities = SourceCapabilities(
-        statuses=tuple(
-            SourceCapabilityStatus(
-                operation=status.operation,
-                state="unsupported",
-                reason_code="effective_query_unavailable",
-                remediation="Use a source binding with effective query support.",
-            )
-            if status.operation == "query"
-            else status
-            for status in CSV_CAPABILITIES.statuses
-        )
-    )
-
-    class QueryUnavailableBinding:
-        def __init__(self, binding: PreparedBinding) -> None:
-            self._binding = binding
-
-        @property
-        def alias(self) -> str:
-            return self._binding.alias
-
-        @property
-        def source(self):
-            return self._binding.source
-
-        @property
-        def capabilities(self) -> SourceCapabilities:
-            return effective_capabilities
-
-        def close(self) -> None:
-            self._binding.close()
-
-    def bind_without_effective_query(self, connection, resolved, operation):
-        return QueryUnavailableBinding(real_bind(self, connection, resolved, operation))
-
-    monkeypatch.setattr(CSVSourceAdapter, "bind", bind_without_effective_query)
-
-    with pytest.raises(SourceError) as exc_info:
-        save_sources_to_project_catalog((source,), start_dir=project_root, replace=False)
-
-    assert "effective_query_unavailable" in exc_info.value.message
-    assert exc_info.value.suggestion == ("Use a source binding with effective query support.")
-    assert config_path.read_text(encoding="utf-8") == original_config
-
-
 def test_catalog_save_cleanup_uncertainty_does_not_mutate_catalog(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1175,7 +1116,7 @@ def test_catalog_save_cleanup_uncertainty_does_not_mutate_catalog(
     real_bind = CSVSourceAdapter.bind
 
     class CleanupFailingBinding:
-        def __init__(self, binding: PreparedBinding) -> None:
+        def __init__(self, binding: RelationalBinding) -> None:
             self._binding = binding
 
         @property
@@ -1183,19 +1124,31 @@ def test_catalog_save_cleanup_uncertainty_does_not_mutate_catalog(
             return self._binding.alias
 
         @property
-        def source(self):
-            return self._binding.source
+        def resolved_source(self):
+            return self._binding.resolved_source
 
         @property
-        def capabilities(self):
-            return self._binding.capabilities
+        def engine_session_id(self) -> str:
+            return self._binding.engine_session_id
 
-        def close(self) -> None:
-            self._binding.close()
+        @property
+        def state(self):
+            return self._binding.state
+
+        def revalidate(self, requirement, operation):
+            return self._binding.revalidate(requirement, operation)
+
+        def close(self, operation) -> None:
+            self._binding.close(operation)
             raise RuntimeError("private cleanup detail")
 
-    def bind_with_cleanup_uncertainty(self, connection, resolved, operation):
-        return CleanupFailingBinding(real_bind(self, connection, resolved, operation))
+    def bind_with_cleanup_uncertainty(
+        self,
+        resolved,
+        engine_session,
+        binding_context,
+    ):
+        return CleanupFailingBinding(real_bind(self, resolved, engine_session, binding_context))
 
     monkeypatch.setattr(CSVSourceAdapter, "bind", bind_with_cleanup_uncertainty)
 

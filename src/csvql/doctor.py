@@ -7,7 +7,6 @@ from typing import Literal
 import duckdb
 
 from csvql.checks import resolve_configured_column_name, validate_table_aliases
-from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import CSVQLError, FileMissingError, ProjectConfigError, SourceError
 from csvql.operation import OperationContext, OperationToken
@@ -17,8 +16,13 @@ from csvql.project_config import (
     discover_project,
     load_project,
 )
-from csvql.source import source_spec_from_catalog_table
+from csvql.source import (
+    ResolvedSource,
+    build_source_request,
+    source_spec_from_catalog_table,
+)
 from csvql.source_operations import SourceOperations
+from csvql.source_runtime import resolve_source_request
 
 DoctorScope = Literal["project", "table", "check"]
 DoctorStatus = Literal["passed", "warning", "failed"]
@@ -239,9 +243,19 @@ def _run_table_readiness_probes(
         resolved = None
         readiness_error: BaseException | None = None
         try:
-            adapter = DEFAULT_SOURCE_ADAPTER_REGISTRY.create(spec.kind, capability="sample")
-            adapter.validate_options(spec)
-            resolved = adapter.resolve(spec, operation)
+            candidate = resolve_source_request(
+                build_source_request(
+                    alias=spec.alias,
+                    locator=spec.locator,
+                    anchor=spec.anchor,
+                    explicit_type=spec.kind,
+                    options=spec.options,
+                ),
+                operation=operation,
+            )
+            if not isinstance(candidate, ResolvedSource):
+                raise RuntimeError("Doctor source resolution returned an invalid value.")
+            resolved = candidate
             with CSVQLEngine(operation=operation) as engine:
                 sample = SourceOperations(engine, resolved).sample(limit=1)
             column_names_by_table[table.name.lower()] = sample.columns

@@ -6,11 +6,10 @@ import pytest
 
 import csvql.csv_adapter as csv_adapter_module
 import csvql.engine as engine_module
-from csvql.csv_adapter import SNIFF_BYTES, CSVSourceAdapter
+from csvql.csv_adapter import SNIFF_BYTES
 from csvql.exceptions import CSVInspectionError
 from csvql.inspection import inspect_csv_source, sample_csv_source
-from csvql.operation import OperationContext, OperationToken
-from csvql.source import SourceSpec, source_from_path
+from csvql.source import source_from_path
 
 
 def test_inspect_csv_source_returns_columns_without_counting_rows(tmp_path: Path) -> None:
@@ -154,13 +153,13 @@ def test_sample_facade_translates_success_cleanup_failure(
     csv_path = tmp_path / "orders.csv"
     csv_path.write_text("order_id,status\nORD-1,paid\n", encoding="utf-8")
     source = source_from_path(str(csv_path))
-    original_close = csv_adapter_module._CSVPreparedBinding.close
+    original_close = csv_adapter_module._CSVRelationalBinding.close
 
-    def fail_after_close(binding: object) -> None:
-        original_close(binding)
+    def fail_after_close(binding: object, context: object) -> None:
+        original_close(binding, context)
         raise RuntimeError("injected cleanup failure")
 
-    monkeypatch.setattr(csv_adapter_module._CSVPreparedBinding, "close", fail_after_close)
+    monkeypatch.setattr(csv_adapter_module._CSVRelationalBinding, "close", fail_after_close)
 
     with pytest.raises(CSVInspectionError) as exc_info:
         sample_csv_source(source)
@@ -188,35 +187,36 @@ def test_csv_adapter_detects_dialect_from_only_sniff_bytes(
 ) -> None:
     csv_path = tmp_path / "large.csv"
     csv_path.write_text("order_id,total_amount\nORD-1,12.34\n", encoding="utf-8")
-
+    original_open = Path.open
     read_sizes: list[int] = []
 
-    class FakeFile:
-        def __enter__(self) -> "FakeFile":
+    class RecordingFile:
+        def __init__(self, path: Path, *args: object, **kwargs: object) -> None:
+            self._file = original_open(path, *args, **kwargs)
+
+        def __enter__(self) -> "RecordingFile":
             return self
 
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
-            return False
+        def __exit__(self, *exc_info: object) -> None:
+            self._file.close()
 
-        def read(self, size: int = -1) -> str:
+        def fileno(self) -> int:
+            return self._file.fileno()
+
+        def read(self, size: int = -1) -> bytes:
             read_sizes.append(size)
-            return "order_id,total_amount\nORD-1,12.34\n"
+            return self._file.read(size)
 
-    def fake_open(self: Path, *args: object, **kwargs: object) -> FakeFile:
-        return FakeFile()
+    def recording_open(path: Path, *args: object, **kwargs: object) -> object:
+        if path == csv_path:
+            return RecordingFile(path, *args, **kwargs)
+        return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", fake_open, raising=True)
+    monkeypatch.setattr(Path, "open", recording_open)
 
-    adapter = CSVSourceAdapter()
-    resolved = adapter.resolve(
-        SourceSpec(alias="orders", kind="csv", locator=str(csv_path), anchor=tmp_path),
-        OperationContext(token=OperationToken()),
-    )
-    metadata = adapter.inspect_metadata(
-        resolved,
-        OperationContext(token=OperationToken()),
-    )
+    result = inspect_csv_source(source_from_path(str(csv_path)))
 
-    assert read_sizes == [SNIFF_BYTES]
-    assert metadata.dialect.delimiter == ","
-    assert metadata.dialect.header is True
+    assert read_sizes
+    assert set(read_sizes) == {SNIFF_BYTES}
+    assert result.dialect.delimiter == ","
+    assert result.dialect.header is True

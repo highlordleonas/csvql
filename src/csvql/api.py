@@ -6,7 +6,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from csvql.checks import run_configured_checks
-from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import (
     CSVInspectionError,
@@ -35,8 +34,13 @@ from csvql.query_workflow import (
     _adapt_result_stream_for_export,
     execute_query_request_stream,
 )
-from csvql.source import ResolvedSource, source_spec_from_catalog_table
+from csvql.source import (
+    ResolvedSource,
+    build_source_request,
+    source_spec_from_catalog_table,
+)
 from csvql.source_operations import SourceOperations
+from csvql.source_runtime import resolve_source_request
 from csvql.sql_file import load_sql_file
 from csvql.streaming_export import write_streaming_export
 
@@ -225,9 +229,19 @@ def _resolve_catalog_source(
 ) -> ResolvedSource:
     spec = source_spec_from_catalog_table(table, project_root=context.project_root)
     try:
-        adapter = DEFAULT_SOURCE_ADAPTER_REGISTRY.create(spec.kind, capability="query")
-        adapter.validate_options(spec)
-        return adapter.resolve(spec, operation)
+        resolved = resolve_source_request(
+            build_source_request(
+                alias=spec.alias,
+                locator=spec.locator,
+                anchor=spec.anchor,
+                explicit_type=spec.kind,
+                options=spec.options,
+            ),
+            operation=operation,
+        )
+        if not isinstance(resolved, ResolvedSource):
+            raise RuntimeError("Catalog source resolution returned an invalid value.")
+        return resolved
     except SourceError as exc:
         if exc.code == "source_missing":
             raise FileMissingError(

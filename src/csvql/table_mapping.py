@@ -7,10 +7,10 @@ from pathlib import Path
 from csvql.exceptions import TableMappingError
 from csvql.models import TableSource
 from csvql.source import (
-    SourceSpec,
     _csv_source_from_resolved,
     _resolve_csv_source_spec,
     csv_source_from_spec,
+    source_alias_collision_key,
     source_spec_from_cli_mapping,
 )
 
@@ -88,13 +88,12 @@ def source_from_single_csv(path_value: str, *, base_dir: Path | None = None) -> 
     resolved = _resolve_csv_source_spec(placeholder_spec, display_path=path_value)
     canonical_path = Path(resolved.canonical_locator)
     alias = derive_alias_from_path(canonical_path)
-    actual_spec = SourceSpec(
+    actual_resolved = replace(
+        resolved,
         alias=alias,
-        kind=resolved.spec.kind,
-        locator=resolved.canonical_locator,
-        anchor=canonical_path.parent,
-        options=resolved.spec.options,
+        alias_key=source_alias_collision_key(alias),
+        requested_locator=resolved.canonical_locator,
+        resolution_anchor=canonical_path.parent,
     )
-    actual_resolved = replace(resolved, spec=actual_spec)
     source = _csv_source_from_resolved(actual_resolved, display_path=path_value)
     return TableSource(name=alias, path=source.path)

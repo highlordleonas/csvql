@@ -15,7 +15,7 @@ from csvql.project_config import (
     load_project,
 )
 from csvql.quality import ConfiguredCheck, ForeignKeyReference
-from csvql.source_adapter import PreparedBinding
+from csvql.source_adapter import RelationalBinding
 
 
 def test_checks_module_has_no_managed_direct_csv_read() -> None:
@@ -96,13 +96,13 @@ def test_checks_share_one_operation_context_from_resolve_through_bind(
     real_resolve = CSVSourceAdapter.resolve
     real_bind = CSVSourceAdapter.bind
 
-    def recording_resolve(self, spec, operation):
+    def recording_resolve(self, selected, operation):
         resolve_operations.append(operation)
-        return real_resolve(self, spec, operation)
+        return real_resolve(self, selected, operation)
 
-    def recording_bind(self, connection, source, operation):
-        bind_operations.append(operation)
-        return real_bind(self, connection, source, operation)
+    def recording_bind(self, source, engine_session, binding_context):
+        bind_operations.append(binding_context.operation)
+        return real_bind(self, source, engine_session, binding_context)
 
     monkeypatch.setattr(CSVSourceAdapter, "resolve", recording_resolve)
     monkeypatch.setattr(CSVSourceAdapter, "bind", recording_bind)
@@ -110,7 +110,10 @@ def test_checks_share_one_operation_context_from_resolve_through_bind(
     run_configured_checks(context, table_name=None, show_failures=False, failure_limit=5)
 
     assert len(resolve_operations) == 1
-    assert bind_operations == resolve_operations
+    assert len(bind_operations) == 1
+    assert all(
+        context is resolve_operations[0] for context in (*resolve_operations, *bind_operations)
+    )
 
 
 def test_run_configured_checks_returns_table_specific_warning_for_zero_checks(
@@ -705,7 +708,7 @@ def test_required_bind_failure_prevents_all_check_sql_and_cleans_reverse_order(
     real_bind = CSVSourceAdapter.bind
 
     class RecordingBinding:
-        def __init__(self, binding: PreparedBinding) -> None:
+        def __init__(self, binding: RelationalBinding) -> None:
             self._binding = binding
 
         @property
@@ -713,20 +716,27 @@ def test_required_bind_failure_prevents_all_check_sql_and_cleans_reverse_order(
             return self._binding.alias
 
         @property
-        def source(self):
-            return self._binding.source
+        def resolved_source(self):
+            return self._binding.resolved_source
 
         @property
-        def capabilities(self):
-            return self._binding.capabilities
+        def engine_session_id(self) -> str:
+            return self._binding.engine_session_id
 
-        def close(self) -> None:
+        @property
+        def state(self):
+            return self._binding.state
+
+        def revalidate(self, requirement, operation):
+            return self._binding.revalidate(requirement, operation)
+
+        def close(self, operation) -> None:
             cleanup_order.append(self.alias)
-            self._binding.close()
+            self._binding.close(operation)
 
-    def recording_bind(self, connection, source, operation):
-        bind_attempts.append(source.spec.alias)
-        binding = real_bind(self, connection, source, operation)
+    def recording_bind(self, source, engine_session, binding_context):
+        bind_attempts.append(source.alias)
+        binding = real_bind(self, source, engine_session, binding_context)
         return RecordingBinding(binding)
 
     def unexpected_query(self, sql: str, params: object = None):

@@ -1,215 +1,128 @@
-"""Shared relational operations over one engine-prepared source binding."""
+"""Format-neutral relational operations over one resolved source."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 
-import duckdb
-
-from csvql.csv_adapter import CSV_CAPABILITIES
 from csvql.engine import CSVQLEngine
-from csvql.exceptions import QueryExecutionError, SourceError
+from csvql.exceptions import (
+    QueryExecutionError,
+    SourceBindingError,
+    SourceIdentityError,
+)
 from csvql.models import (
     ColumnInfo,
     ColumnProfile,
+    DialectInfo,
     InspectResult,
     ProfileResult,
     QueryResult,
     RowCountInfo,
     SampleResult,
 )
-from csvql.source import CSVSource, ResolvedSource, SourceCapability, SourceSpec
-from csvql.source_adapter import PreparedBinding, SourceAdapter, require_capability
+from csvql.operation import OperationContext, OperationToken
+from csvql.source import (
+    CSVSource,
+    FrozenJSONArray,
+    FrozenJSONObject,
+    FrozenJSONValue,
+    ResolvedSource,
+    build_source_request,
+)
+from csvql.source_runtime import resolve_source_request
 from csvql.sql_utils import quote_identifier
 
 
 class SourceOperations:
-    """Run source-neutral relational operations over one prepared binding.
-
-    The accepted Task 7 boundary does not permit widening ``CSVQLEngine``. This
-    class therefore contains the only direct access to the engine's private
-    registry, prepared-binding list, lifecycle guard, and operation context.
-    Those seams supply adapter metadata, effective capabilities, terminal reuse
-    protection, and shared cancellation without widening the engine API.
-    """
+    """Run engine-owned relational operations over one resolved source."""
 
     def __init__(self, engine: CSVQLEngine, source: ResolvedSource) -> None:
         self._engine = engine
         self._source = source
         self._prepared = False
-        self._binding: PreparedBinding | None = None
 
     def inspect(self, *, exact: bool = False) -> InspectResult:
-        """Inspect schema and adapter metadata, optionally counting all rows."""
+        """Inspect schema and recorded provider facts, optionally counting rows."""
 
-        with self._engine._lifecycle_lock:
-            self._require("inspect")
-            if exact:
-                self._require("exact_count")
-            binding = self._prepare()
-            self._require_effective(binding, "inspect")
-            if exact:
-                self._require_effective(binding, "exact_count")
-            metadata = self._adapter("inspect").inspect_metadata(
-                self._source,
-                self._engine._operation,
-            )
-            columns = self._columns()
-            row_count = RowCountInfo.not_counted()
-            if exact:
-                row_count = RowCountInfo.exact_count(
-                    self._fetch_scalar_int(
-                        f"SELECT count(*) FROM {self._quoted_alias()}",
-                    )
+        self._prepare()
+        columns = self._columns()
+        row_count = RowCountInfo.not_counted()
+        if exact:
+            row_count = RowCountInfo.exact_count(
+                self._fetch_scalar_int(
+                    f"SELECT count(*) FROM {self._quoted_alias()}",
                 )
-            return InspectResult(
-                source=_source_summary(self._source),
-                dialect=metadata.dialect,
-                columns=tuple(
-                    ColumnInfo(name=column_name, duckdb_type=duckdb_type)
-                    for column_name, duckdb_type in columns
-                ),
-                row_count=row_count,
-                warnings=metadata.warnings,
             )
+        dialect, warnings = _recorded_dialect(self._source)
+        return InspectResult(
+            source=_source_summary(self._source),
+            dialect=dialect,
+            columns=tuple(
+                ColumnInfo(name=column_name, duckdb_type=duckdb_type)
+                for column_name, duckdb_type in columns
+            ),
+            row_count=row_count,
+            warnings=warnings,
+        )
 
     def sample(self, *, limit: int = 10) -> SampleResult:
         """Return at most ``limit`` rows, binding the limit as a SQL value."""
 
-        with self._engine._lifecycle_lock:
-            if limit <= 0:
-                raise ValueError("Sample limit must be greater than zero.")
-            self._require("sample")
-            binding = self._prepare()
-            self._require_effective(binding, "sample")
-            result = self._query(
-                f"SELECT * FROM {self._quoted_alias()} LIMIT ?",
-                (limit,),
-            )
-            return SampleResult(
-                source=_source_summary(self._source),
-                limit=limit,
-                columns=result.columns,
-                rows=result.rows,
-                warnings=(),
-            )
+        if limit <= 0:
+            raise ValueError("Sample limit must be greater than zero.")
+        self._prepare()
+        result = self._query(
+            f"SELECT * FROM {self._quoted_alias()} LIMIT ?",
+            (limit,),
+        )
+        return SampleResult(
+            source=_source_summary(self._source),
+            limit=limit,
+            columns=result.columns,
+            rows=result.rows,
+            warnings=(),
+        )
 
     def profile(self) -> ProfileResult:
         """Return established full-scan aggregate metrics for the source."""
 
-        with self._engine._lifecycle_lock:
-            self._require("profile")
-            binding = self._prepare()
-            self._require_effective(binding, "profile")
-            columns = self._columns()
-            row_count = self._fetch_scalar_int(
-                f"SELECT count(*) FROM {self._quoted_alias()}",
-            )
-            column_profiles = tuple(
-                self._profile_column(
-                    column_name=column_name,
-                    duckdb_type=duckdb_type,
-                    row_count=row_count,
-                )
-                for column_name, duckdb_type in columns
-            )
-            return ProfileResult(
-                source=_source_summary(self._source),
+        self._prepare()
+        columns = self._columns()
+        row_count = self._fetch_scalar_int(
+            f"SELECT count(*) FROM {self._quoted_alias()}",
+        )
+        column_profiles = tuple(
+            self._profile_column(
+                column_name=column_name,
+                duckdb_type=duckdb_type,
                 row_count=row_count,
-                column_count=len(columns),
-                duplicate_row_count=self._duplicate_row_count(columns),
-                columns=column_profiles,
-                warnings=(),
             )
-
-    def _require(self, operation: SourceCapability) -> None:
-        if self._prepared:
-            self._engine._raise_if_closed()
-        require_capability(
-            self._source.capabilities,
-            operation,
-            kind=self._source.spec.kind,
-            alias=self._source.spec.alias,
+            for column_name, duckdb_type in columns
         )
-        descriptor = self._engine._registry.descriptor(self._source.spec.kind)
-        require_capability(
-            descriptor.capabilities,
-            operation,
-            kind=self._source.spec.kind,
-            alias=self._source.spec.alias,
+        return ProfileResult(
+            source=_source_summary(self._source),
+            row_count=row_count,
+            column_count=len(columns),
+            duplicate_row_count=self._duplicate_row_count(columns),
+            columns=column_profiles,
+            warnings=(),
         )
 
-    def _prepare(self) -> PreparedBinding:
+    def _prepare(self) -> None:
+        self._engine.operation_context.checkpoint()
         if self._prepared:
-            self._engine._raise_if_closed()
-            self._engine._operation.checkpoint()
-            if self._binding is None:
-                raise SourceError(
-                    "source_bind_failed",
-                    "Prepared source binding identity is unavailable.",
-                    kind=self._source.spec.kind,
-                    alias=self._source.spec.alias,
-                    suggestion="Start a new LocalQL operation.",
-                )
-            return self._binding
-
-        prior_bindings = tuple(self._engine._bindings)
-        try:
-            self._engine.prepare_sources((self._source,))
-        except duckdb.Error as exc:
-            raise SourceError(
+            return
+        self._engine.prepare_sources((self._source,))
+        if self._source.alias not in self._engine.registered_aliases:
+            raise SourceBindingError(
                 "source_bind_failed",
-                "Failed to prepare the source operation.",
-                kind=self._source.spec.kind,
-                alias=self._source.spec.alias,
-                suggestion="Check that the source is a readable table.",
-            ) from exc
-        current_bindings = tuple(self._engine._bindings)
-        if len(current_bindings) != len(prior_bindings) + 1 or any(
-            current is not prior
-            for current, prior in zip(
-                current_bindings[: len(prior_bindings)],
-                prior_bindings,
-                strict=True,
-            )
-        ):
-            raise SourceError(
-                "source_bind_failed",
-                "Engine source preparation did not produce one identifiable binding.",
-                kind=self._source.spec.kind,
-                alias=self._source.spec.alias,
+                "Engine source preparation did not register the requested alias.",
+                kind=self._source.source_kind,
+                alias=self._source.alias,
                 suggestion="Start a new LocalQL operation.",
             )
-        binding = current_bindings[-1]
-        self._binding = binding
         self._prepared = True
-        return binding
-
-    def _require_effective(
-        self,
-        binding: PreparedBinding,
-        operation: SourceCapability,
-    ) -> None:
-        require_capability(
-            binding.capabilities,
-            operation,
-            kind=self._source.spec.kind,
-            alias=self._source.spec.alias,
-        )
-
-    def _adapter(self, capability: SourceCapability) -> SourceAdapter:
-        registry = self._engine._registry
-        expected_descriptor = registry.descriptor(self._source.spec.kind)
-        adapter = registry.create(self._source.spec.kind, capability=capability)
-        if adapter.descriptor is not expected_descriptor:
-            raise SourceError(
-                "source_bind_failed",
-                "Selected source adapter descriptor does not match the registry.",
-                kind=self._source.spec.kind,
-                alias=self._source.spec.alias,
-                suggestion="Start a new LocalQL operation with a valid adapter registry.",
-            )
-        return adapter
 
     def _columns(self) -> tuple[tuple[str, str], ...]:
         result = self._query(
@@ -220,7 +133,7 @@ class SourceOperations:
             if len(row) < 2 or not isinstance(row[0], str) or not isinstance(row[1], str):
                 raise QueryExecutionError(
                     "DuckDB returned invalid source column metadata.",
-                    suggestion="Check that the source has a readable header row.",
+                    suggestion="Check that the source has a readable schema.",
                 )
             columns.append((row[0], row[1]))
         return tuple(columns)
@@ -260,7 +173,10 @@ class SourceOperations:
             max=row[4],
         )
 
-    def _duplicate_row_count(self, columns: tuple[tuple[str, str], ...]) -> int:
+    def _duplicate_row_count(
+        self,
+        columns: tuple[tuple[str, str], ...],
+    ) -> int:
         if not columns:
             return max(
                 self._fetch_scalar_int(
@@ -299,19 +215,18 @@ class SourceOperations:
         params: Sequence[object] | None = None,
     ) -> QueryResult:
         result = self._engine.query(query, params)
-        self._engine._operation.checkpoint()
+        self._engine.operation_context.checkpoint()
         return result
 
     def _quoted_alias(self) -> str:
-        # SourceSpec validates the alias before resolution; quoting preserves its exact spelling.
-        return quote_identifier(self._source.spec.alias)
+        return quote_identifier(self._source.alias)
 
 
 def _quote_column(column_name: str) -> str:
     if not column_name:
         raise QueryExecutionError(
             "DuckDB returned an invalid empty source column name.",
-            suggestion="Check that the source has a readable header row.",
+            suggestion="Check that the source has a readable schema.",
         )
     return quote_identifier(column_name)
 
@@ -337,15 +252,15 @@ def _integer_result(value: object) -> int:
 def _source_summary(source: ResolvedSource) -> dict[str, object]:
     fingerprint = source.fingerprint
     if fingerprint is None:
-        raise SourceError(
+        raise SourceIdentityError(
             "source_bind_failed",
             "Resolved source identity is unavailable.",
-            kind=source.spec.kind,
-            alias=source.spec.alias,
+            kind=source.source_kind,
+            alias=source.alias,
             suggestion="Resolve the source again before running the operation.",
         )
     return {
-        "display_path": source.spec.locator,
+        "display_path": source.requested_locator,
         "resolved_path": source.canonical_locator,
         "size_bytes": fingerprint.size_bytes,
         "modified_at": fingerprint.modified_at,
@@ -353,17 +268,61 @@ def _source_summary(source: ResolvedSource) -> dict[str, object]:
     }
 
 
-def _resolved_source_from_csv(source: CSVSource) -> ResolvedSource:
-    """Translate the public CSV facade without re-resolving its captured identity."""
-
-    return ResolvedSource(
-        spec=SourceSpec(
-            alias="csv_source",
-            kind="csv",
-            locator=source.display_path,
-            anchor=source.path.parent,
-        ),
-        canonical_locator=str(source.path),
-        fingerprint=source.fingerprint,
-        capabilities=CSV_CAPABILITIES,
+def _recorded_dialect(
+    source: ResolvedSource,
+) -> tuple[DialectInfo, tuple[str, ...]]:
+    facts = {key: _thaw(value) for key, value in source.provider_facts.items}
+    warnings_value = facts.get("dialect_warnings", [])
+    warnings = (
+        tuple(item for item in warnings_value if isinstance(item, str))
+        if isinstance(warnings_value, list)
+        else ()
     )
+    header = facts.get("dialect_header")
+    return (
+        DialectInfo(
+            delimiter=_optional_string(facts.get("dialect_delimiter")),
+            quote=_optional_string(facts.get("dialect_quote")),
+            escape=_optional_string(facts.get("dialect_escape")),
+            header=header if isinstance(header, bool) else None,
+            encoding=_optional_string(facts.get("dialect_encoding")),
+        ),
+        warnings,
+    )
+
+
+def _optional_string(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _thaw(value: FrozenJSONValue) -> object:
+    if isinstance(value, FrozenJSONArray):
+        return [_thaw(item) for item in value.values]
+    if isinstance(value, FrozenJSONObject):
+        return {key: _thaw(item) for key, item in value.items}
+    return value
+
+
+def _resolved_source_from_csv(source: CSVSource) -> ResolvedSource:
+    """Translate the public CSV facade through the default source runtime."""
+
+    resolved = resolve_source_request(
+        build_source_request(
+            alias="csv_source",
+            locator=str(source.path),
+            anchor=source.path.parent,
+            explicit_type="csv",
+        ),
+        operation=OperationContext(OperationToken()),
+    )
+    if not isinstance(resolved, ResolvedSource):
+        raise RuntimeError("CSV compatibility resolution returned an invalid value.")
+    if resolved.fingerprint != source.fingerprint:
+        raise SourceIdentityError(
+            "source_changed",
+            "CSV source changed after submission.",
+            kind="csv",
+            alias="csv_source",
+            suggestion="Submit the operation again to capture the current CSV source.",
+        )
+    return replace(resolved, requested_locator=source.display_path)

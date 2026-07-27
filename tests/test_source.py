@@ -208,3 +208,275 @@ def test_all_source_spec_conversions_capture_anchors_before_later_cwd_change(
         "data/cli.csv",
         str(Path("data/tui.csv")),
     )
+
+
+def test_v12_source_options_freeze_nested_json_with_canonical_key_order() -> None:
+    from csvql.source import canonical_source_options_bytes, freeze_source_options
+
+    options = freeze_source_options(
+        (
+            ("schema", {"zeta": ["VARCHAR", None], "alpha": {"enabled": True}}),
+            ("sample_size", 20_480),
+        )
+    )
+
+    assert canonical_source_options_bytes(options) == (
+        b'{"sample_size":20480,"schema":{"alpha":{"enabled":true},"zeta":["VARCHAR",null]}}'
+    )
+
+
+def test_v12_source_options_reject_values_that_cannot_be_reproduced() -> None:
+    from csvql.source import freeze_source_options
+
+    with pytest.raises(ValueError, match="Duplicate source option key"):
+        freeze_source_options((("header", True), ("header", False)))
+    with pytest.raises(TypeError, match="string keys"):
+        freeze_source_options((("schema", {1: "BIGINT"}),))
+    with pytest.raises(ValueError, match="finite"):
+        freeze_source_options((("ratio", float("nan")),))
+    with pytest.raises(TypeError, match="JSON-compatible"):
+        freeze_source_options((("path", Path("orders.csv")),))
+
+
+def test_v12_source_request_builder_is_provider_neutral_and_performs_no_path_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from csvql.source import build_source_request
+
+    def unexpected_path_io(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("SourceRequest construction must not inspect the filesystem.")
+
+    for method_name in ("exists", "is_dir", "is_file", "lstat", "stat"):
+        monkeypatch.setattr(Path, method_name, unexpected_path_io)
+
+    request = build_source_request(
+        alias="CustomerOrders",
+        locator="missing/orders.data",
+        anchor=tmp_path / "project" / ".." / "project",
+        explicit_type="json",
+        options=(("schema", {"order_id": "VARCHAR"}),),
+    )
+
+    assert request.alias == "CustomerOrders"
+    assert request.alias_key == "customerorders"
+    assert request.locator == "missing/orders.data"
+    assert request.anchor == tmp_path / "project"
+    assert request.explicit_type == "json"
+
+
+def test_v12_source_request_excludes_surface_context_from_semantic_equality(
+    tmp_path: Path,
+) -> None:
+    from csvql.source import SourceApplicationContext, build_source_request
+
+    first = build_source_request(
+        alias="Orders",
+        locator="orders.csv",
+        anchor=tmp_path,
+        explicit_type=None,
+    )
+    second = build_source_request(
+        alias="Orders",
+        locator="orders.csv",
+        anchor=tmp_path,
+        explicit_type=None,
+    )
+
+    assert first == second
+    assert SourceApplicationContext(surface="cli") != SourceApplicationContext(surface="tui")
+    assert not hasattr(first, "surface")
+
+
+def test_v12_source_request_rejects_invalid_aliases_and_empty_explicit_types(
+    tmp_path: Path,
+) -> None:
+    from csvql.source import SourceRequest, build_source_request
+
+    with pytest.raises(ValueError, match="valid unmodified SQL identifier"):
+        build_source_request(alias="order-items", locator="orders.csv", anchor=tmp_path)
+    with pytest.raises(ValueError, match="reserved"):
+        build_source_request(alias="__LOCALQL_work", locator="orders.csv", anchor=tmp_path)
+    with pytest.raises(ValueError, match="explicit source type"):
+        build_source_request(
+            alias="orders",
+            locator="orders.csv",
+            anchor=tmp_path,
+            explicit_type=" ",
+        )
+    with pytest.raises(ValueError, match="valid unmodified SQL identifier"):
+        SourceRequest(
+            alias="order-items",
+            locator="orders.csv",
+            anchor=tmp_path,
+            explicit_type=None,
+        )
+    with pytest.raises(TypeError, match="JSON-compatible"):
+        SourceRequest(
+            alias="orders",
+            locator="orders.csv",
+            anchor=tmp_path,
+            explicit_type=None,
+            options=(("path", Path("orders.csv")),),  # type: ignore[arg-type]
+        )
+
+
+def test_v12_diagnostic_orders_evidence_and_redacts_absolute_source_references(
+    tmp_path: Path,
+) -> None:
+    from csvql.source import (
+        DiagnosticCode,
+        DiagnosticEvidence,
+        DiagnosticStage,
+        RequiredAction,
+        SourceDiagnostic,
+        canonical_source_json_bytes,
+    )
+
+    diagnostic = SourceDiagnostic(
+        code=DiagnosticCode.SOURCE_AMBIGUOUS,
+        stage=DiagnosticStage.DETECTION,
+        message="Bounded identification produced candidates.",
+        safe_source_reference=str(tmp_path / "private" / "orders"),
+        evidence=(
+            DiagnosticEvidence("json", "signature", "object"),
+            DiagnosticEvidence("csv", "record_shape", "two_rows"),
+        ),
+        required_action=RequiredAction("specify_type", ("csv", "json")),
+    )
+
+    assert tuple(item.provider_key for item in diagnostic.evidence) == ("csv", "json")
+    serialized = canonical_source_json_bytes(diagnostic.as_json_value())
+    assert str(tmp_path).encode() not in serialized
+    assert b'"source":"orders"' in serialized
+    assert b'"kind":"specify_type"' in serialized
+
+
+def test_v12_required_action_rejects_invalid_provider_keys() -> None:
+    from csvql.source import RequiredAction
+
+    with pytest.raises(ValueError, match="provider key"):
+        RequiredAction("specify_type", ("",))
+
+
+def test_v12_detection_outcomes_are_structurally_distinct(tmp_path: Path) -> None:
+    from csvql.source import (
+        AmbiguousSource,
+        DetectionResult,
+        DiagnosticCode,
+        DiagnosticStage,
+        RequiredAction,
+        SelectedSource,
+        SourceDiagnostic,
+        build_source_request,
+    )
+    from csvql.source_registry import DescriptorView
+
+    request = build_source_request(alias="orders", locator="orders.csv", anchor=tmp_path)
+    descriptor = DescriptorView(
+        provider_key="csv",
+        source_kind="csv",
+        factory_key="builtin.csv",
+        provider_interpretation_version="1",
+    )
+    selected: DetectionResult = SelectedSource(
+        request=request,
+        provider_key="csv",
+        source_kind="csv",
+        descriptor=descriptor,
+        selection_reason="extension",
+        extension_evidence=".csv",
+        options=(),
+    )
+    ambiguous: DetectionResult = AmbiguousSource(
+        request=request,
+        diagnostic=SourceDiagnostic(
+            code=DiagnosticCode.SOURCE_AMBIGUOUS,
+            stage=DiagnosticStage.DETECTION,
+            message="Explicit source type required.",
+            safe_source_reference="orders.csv",
+            required_action=RequiredAction("specify_type", ("csv",)),
+        ),
+        candidates=("csv",),
+        required_action=RequiredAction("specify_type", ("csv",)),
+    )
+
+    assert type(selected) is SelectedSource
+    assert type(ambiguous) is AmbiguousSource
+    assert not hasattr(selected, "required_action")
+    assert not hasattr(ambiguous, "descriptor")
+
+
+def test_v12_source_identity_excludes_alias_but_changes_with_semantics() -> None:
+    from csvql.source import (
+        IdentityStrength,
+        ObservedFileFacts,
+        build_source_identity,
+        freeze_source_options,
+    )
+
+    observed = ObservedFileFacts(size_bytes=128, modified_time_ns=1_234_567_890)
+    first = build_source_identity(
+        provider_key="csv",
+        source_kind="csv",
+        canonical_locator="/data/orders.csv",
+        semantic_options=freeze_source_options((("header", True),)),
+        provider_interpretation_version="1",
+        strength=IdentityStrength.OBSERVATIONAL,
+        observed_file=observed,
+    )
+    same = build_source_identity(
+        provider_key="csv",
+        source_kind="csv",
+        canonical_locator="/data/orders.csv",
+        semantic_options=freeze_source_options((("header", True),)),
+        provider_interpretation_version="1",
+        strength=IdentityStrength.OBSERVATIONAL,
+        observed_file=observed,
+    )
+    changed = build_source_identity(
+        provider_key="csv",
+        source_kind="csv",
+        canonical_locator="/data/orders.csv",
+        semantic_options=freeze_source_options((("header", False),)),
+        provider_interpretation_version="1",
+        strength=IdentityStrength.OBSERVATIONAL,
+        observed_file=observed,
+    )
+
+    assert first == same
+    assert first.digest != changed.digest
+    assert first.strength is IdentityStrength.OBSERVATIONAL
+
+
+def test_v12_source_identity_excludes_declared_sensitive_option_values() -> None:
+    from csvql.source import (
+        IdentityStrength,
+        build_source_identity,
+        freeze_source_options,
+    )
+
+    first = build_source_identity(
+        provider_key="future",
+        source_kind="future",
+        canonical_locator="/data/source",
+        semantic_options=freeze_source_options(
+            (("mode", "stable"), ("credential", "first-sensitive-value"))
+        ),
+        sensitive_option_keys=("credential",),
+        provider_interpretation_version="1",
+        strength=IdentityStrength.OBSERVATIONAL,
+    )
+    second = build_source_identity(
+        provider_key="future",
+        source_kind="future",
+        canonical_locator="/data/source",
+        semantic_options=freeze_source_options(
+            (("credential", "second-sensitive-value"), ("mode", "stable"))
+        ),
+        sensitive_option_keys=("credential",),
+        provider_interpretation_version="1",
+        strength=IdentityStrength.OBSERVATIONAL,
+    )
+
+    assert first == second

@@ -5,7 +5,12 @@ from importlib.util import find_spec
 
 import pytest
 
-from csvql.operation import OperationCancelled, OperationContext, OperationToken
+from csvql.operation import (
+    OperationCancelled,
+    OperationContext,
+    OperationState,
+    OperationToken,
+)
 
 
 def test_private_operation_contract_has_its_own_module() -> None:
@@ -161,3 +166,32 @@ def test_concurrent_cancel_requests_invoke_one_callback_and_preserve_cancellatio
     assert context.token.is_cancelled
     with pytest.raises(OperationCancelled):
         context.checkpoint()
+
+
+def test_execution_state_reaches_a_terminal_barrier_after_cancellation() -> None:
+    """Cleanup must be able to distinguish a requested interrupt from terminal execution."""
+
+    context = OperationContext(OperationToken())
+    context.begin_execution()
+
+    context.request_cancel()
+    assert context.state is OperationState.CANCELLING
+    assert not context.await_terminal(timeout=0)
+
+    context.mark_terminal()
+
+    assert context.state is OperationState.TERMINAL
+    assert context.await_terminal(timeout=0)
+
+
+def test_serial_execution_can_reenter_after_a_normal_terminal_state() -> None:
+    """A clean engine session may reuse bindings across serial queries."""
+
+    context = OperationContext(OperationToken())
+    context.begin_execution()
+    context.mark_terminal()
+
+    context.begin_execution()
+
+    assert context.state is OperationState.EXECUTING
+    assert not context.await_terminal(timeout=0)

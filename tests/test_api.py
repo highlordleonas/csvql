@@ -97,9 +97,9 @@ def test_session_source_operation_shares_context_from_resolve_through_bind(
         resolve_operations.append(operation)
         return real_resolve(self, spec, operation)
 
-    def recording_bind(self, connection, source, operation):
-        bind_operations.append(operation)
-        return real_bind(self, connection, source, operation)
+    def recording_bind(self, source, engine_session, binding_context):
+        bind_operations.append(binding_context.operation)
+        return real_bind(self, source, engine_session, binding_context)
 
     monkeypatch.setattr(CSVSourceAdapter, "resolve", recording_resolve)
     monkeypatch.setattr(CSVSourceAdapter, "bind", recording_bind)
@@ -145,6 +145,40 @@ def test_session_query_preserves_public_registration_error_for_unreadable_csv(
     assert type(exc_info.value) is CSVQLError
     assert exc_info.value.message == (
         f"Failed to register CSV table 'orders' from {csv_path.resolve()}."
+    )
+
+
+def test_session_query_attributes_same_basename_bind_failure_to_exact_alias(
+    tmp_path: Path,
+) -> None:
+    """Sanitized basenames must not make multi-source diagnostics ambiguous."""
+
+    project_root = tmp_path / "project"
+    first_path = project_root / "first" / "data.csv"
+    second_path = project_root / "second" / "data.csv"
+    first_path.parent.mkdir(parents=True)
+    second_path.parent.mkdir(parents=True)
+    first_path.write_text("id\n1\n", encoding="utf-8")
+    second_path.write_bytes(b"id\n\xff\n")
+    (project_root / ".csvql.yml").write_text(
+        (
+            "version: 1\n"
+            "tables:\n"
+            "  first:\n"
+            "    path: first/data.csv\n"
+            "  second:\n"
+            "    path: second/data.csv\n"
+        ),
+        encoding="utf-8",
+    )
+    session = CSVQLSession.from_config(project_root)
+
+    with pytest.raises(CSVQLError) as exc_info:
+        session.query("SELECT * FROM first")
+
+    assert type(exc_info.value) is CSVQLError
+    assert exc_info.value.message == (
+        f"Failed to register CSV table 'second' from {second_path.resolve()}."
     )
 
 

@@ -1,15 +1,23 @@
-"""DuckDB-backed query execution for CSVQL."""
+"""Format-neutral DuckDB session and relational query execution."""
 
 import re
 from collections.abc import Callable, Iterable, Sequence
-from threading import RLock
+from dataclasses import dataclass
+from enum import StrEnum
+from threading import RLock, get_ident
 from time import perf_counter
 from typing import cast
+from uuid import uuid4
 
 import duckdb
 
-from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
-from csvql.exceptions import CSVQLError, QueryExecutionError, SourceError
+from csvql.exceptions import (
+    CSVQLError,
+    EngineSessionTaintedError,
+    QueryExecutionError,
+    SourceBindingError,
+    SourceCleanupError,
+)
 from csvql.models import QueryResult, TableSource
 from csvql.operation import OperationCancelled, OperationContext, OperationToken
 from csvql.result_stream import (
@@ -17,17 +25,37 @@ from csvql.result_stream import (
     ResultCursor,
     ResultStream,
 )
-from csvql.source import ResolvedSource, SourceSpec, source_alias_collision_key
-from csvql.source_adapter import (
-    PreparedBinding,
-    SourceAdapter,
-    SourceAdapterRegistry,
-    require_capability,
-)
+from csvql.source import PreparedSources, ResolvedSource, source_alias_collision_key
+from csvql.source_adapter import StructuralCallback
 
 _SOURCE_ALIAS_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RESERVED_ALIAS_PREFIX = "__localql_"
 _QUERY_FETCH_ROWS = 1000
+
+
+class EngineSessionState(StrEnum):
+    """Lifecycle state of one DuckDB-backed LocalQL session."""
+
+    CLEAN = "clean"
+    CANCELLING = "cancelling"
+    TAINTED = "tainted"
+    CLOSED = "closed"
+
+
+@dataclass(frozen=True, slots=True)
+class RegistrationToken:
+    """Opaque engine-session-bound ownership token for one relation."""
+
+    value: str
+    engine_session_id: str
+    alias_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class _Registration:
+    token: RegistrationToken
+    alias: str
+    unregister: StructuralCallback
 
 
 class _PersistentResultSessionCursor:
@@ -62,23 +90,63 @@ class _PersistentResultSessionCursor:
 
 
 class CSVQLEngine:
-    """In-memory DuckDB engine that registers CSV files as queryable views."""
+    """Public compatibility facade over one format-neutral DuckDB session."""
 
     def __init__(
         self,
         *,
-        registry: SourceAdapterRegistry | None = None,
         operation: OperationContext | None = None,
     ) -> None:
-        self._registry = registry or DEFAULT_SOURCE_ADAPTER_REGISTRY
         self._operation = operation or OperationContext(token=OperationToken())
+        self._session_id = uuid4().hex
+        self._owner_thread_id = get_ident()
         self._connection: duckdb.DuckDBPyConnection | None = None
-        self._bindings: list[PreparedBinding] = []
-        self._alias_keys: set[str] = set()
+        self._registrations: dict[str, _Registration] = {}
+        self._alias_keys: dict[str, str] = {}
+        self._retired_registration_tokens: set[str] = set()
+        self._compatibility_scopes: list[PreparedSources] = []
         self._session_cursor: ResultCursor | None = None
         self._active_stream: ResultStream | None = None
-        self._closed = False
+        self._state = EngineSessionState.CLEAN
         self._lifecycle_lock = RLock()
+
+    @property
+    def session_id(self) -> str:
+        """Return the opaque immutable identity of this engine session."""
+
+        return self._session_id
+
+    @property
+    def operation_context(self) -> OperationContext:
+        """Return the operation context shared by this compatibility facade."""
+
+        return self._operation
+
+    @property
+    def state(self) -> EngineSessionState:
+        """Return the engine-session lifecycle state."""
+
+        return self._state
+
+    @property
+    def has_active_execution(self) -> bool:
+        """Return whether a result stream currently owns the execution slot."""
+
+        with self._lifecycle_lock:
+            return self._active_stream is not None
+
+    @property
+    def is_tainted(self) -> bool:
+        """Return whether terminal query state could not be established."""
+
+        return self._state is EngineSessionState.TAINTED
+
+    @property
+    def registered_aliases(self) -> tuple[str, ...]:
+        """Return registered aliases in deterministic registration order."""
+
+        with self._lifecycle_lock:
+            return tuple(registration.alias for registration in self._registrations.values())
 
     def __enter__(self) -> "CSVQLEngine":
         return self
@@ -90,12 +158,143 @@ class CSVQLEngine:
             return
         self.close()
 
+    def assert_session_access(self) -> None:
+        """Reject provider or binding use from a non-owner thread."""
+
+        if get_ident() != self._owner_thread_id:
+            raise SourceBindingError(
+                "source_bind_failed",
+                "Engine session cannot be used from a different thread.",
+                suggestion="Prepare and use each source on the engine owner thread.",
+            )
+
+    def preflight_aliases(self, aliases: tuple[str, ...]) -> None:
+        """Validate a complete incoming alias batch before provider work."""
+
+        with self._lifecycle_lock:
+            self.assert_session_access()
+            self._raise_if_closed()
+            incoming_keys: set[str] = set()
+            for alias in aliases:
+                if (
+                    not isinstance(alias, str)
+                    or not _SOURCE_ALIAS_PATTERN.fullmatch(alias)
+                    or source_alias_collision_key(alias).startswith(_RESERVED_ALIAS_PREFIX)
+                ):
+                    raise SourceBindingError(
+                        "source_bind_failed",
+                        "Source alias is invalid or reserved.",
+                        alias=alias if isinstance(alias, str) else None,
+                        suggestion=("Use a unique SQL identifier outside the reserved prefix."),
+                    )
+                alias_key = source_alias_collision_key(alias)
+                if alias_key in self._alias_keys or alias_key in incoming_keys:
+                    raise SourceBindingError(
+                        "source_bind_failed",
+                        "Source alias conflicts with an existing registered source.",
+                        alias=alias,
+                        suggestion="Use a unique source alias.",
+                    )
+                incoming_keys.add(alias_key)
+
+    def register_relation(
+        self,
+        *,
+        alias: str,
+        register: StructuralCallback,
+        unregister: StructuralCallback,
+        operation: OperationContext,
+    ) -> RegistrationToken:
+        """Register one provider-owned relation under an opaque cleanup token."""
+
+        with self._lifecycle_lock:
+            self.assert_session_access()
+            self._raise_if_closed()
+            self._raise_if_tainted()
+            if self._active_stream is not None:
+                raise SourceBindingError(
+                    "source_bind_failed",
+                    "A source cannot be registered while the engine is executing.",
+                    alias=alias,
+                    suggestion="Wait for the active query to finish.",
+                )
+            self.preflight_aliases((alias,))
+            operation.checkpoint()
+            connection = self._ensure_connection()
+            register(connection)
+            token = RegistrationToken(
+                value=uuid4().hex,
+                engine_session_id=self._session_id,
+                alias_key=source_alias_collision_key(alias),
+            )
+            self._registrations[token.value] = _Registration(
+                token=token,
+                alias=alias,
+                unregister=unregister,
+            )
+            self._alias_keys[token.alias_key] = token.value
+            try:
+                operation.checkpoint()
+            except OperationCancelled:
+                cleanup_operation = OperationContext(OperationToken())
+                self.unregister_relation(token, operation=cleanup_operation)
+                raise
+            return token
+
+    def unregister_relation(
+        self,
+        registration_token: object,
+        *,
+        operation: OperationContext,
+    ) -> None:
+        """Remove exactly one token-owned relation after execution is terminal."""
+
+        with self._lifecycle_lock:
+            self.assert_session_access()
+            if not isinstance(registration_token, RegistrationToken):
+                raise SourceBindingError(
+                    "source_bind_failed",
+                    "Source registration token is invalid.",
+                    suggestion="Release sources through their owning binding.",
+                )
+            if registration_token.engine_session_id != self._session_id:
+                raise SourceBindingError(
+                    "source_bind_failed",
+                    "Source registration belongs to a different engine session.",
+                    suggestion="Release sources through their owning engine session.",
+                )
+            if registration_token.value in self._retired_registration_tokens:
+                return
+            self._raise_if_closed()
+            self._raise_if_tainted()
+            if self._active_stream is not None:
+                raise SourceBindingError(
+                    "source_bind_failed",
+                    "Source relation cannot be removed during active execution.",
+                    suggestion="Wait for the query terminal barrier before cleanup.",
+                )
+            registration = self._registrations.get(registration_token.value)
+            if registration is None:
+                raise SourceBindingError(
+                    "source_bind_failed",
+                    "Source registration token is unknown.",
+                    suggestion="Release sources through their owning binding.",
+                )
+            operation.checkpoint()
+            connection = self._connection
+            if connection is not None:
+                registration.unregister(connection)
+            self._registrations.pop(registration_token.value, None)
+            self._alias_keys.pop(registration_token.alias_key, None)
+            self._retired_registration_tokens.add(registration_token.value)
+
     def close(self) -> None:
-        """Close bindings in reverse order, then close the owned connection."""
+        """Close the owned DuckDB session after application source release."""
 
         cleanup_failures = self._release_resources(primary=None)
         if cleanup_failures:
-            raise CSVQLError(
+            raise SourceCleanupError(
+                "source_cleanup_failed",
                 "LocalQL engine cleanup did not complete with certainty.",
                 suggestion="Start a new LocalQL operation before retrying.",
             )
@@ -103,88 +302,57 @@ class CSVQLEngine:
     def interrupt(self) -> None:
         """Request cancellation and best-effort interruption of live DuckDB work."""
 
+        with self._lifecycle_lock:
+            if self._active_stream is not None and self._state is EngineSessionState.CLEAN:
+                self._state = EngineSessionState.CANCELLING
         self._operation.request_cancel()
 
-    def register_tables(self, table_sources: Iterable[TableSource]) -> None:
-        """Resolve legacy CSV table sources and prepare them through the registry."""
-
-        with self._lifecycle_lock:
-            self._raise_if_closed()
-            sources = tuple(table_sources)
-            current_source: TableSource | None = None
-            try:
-                self._preflight_aliases(tuple(source.name for source in sources))
-                resolved_sources: list[ResolvedSource] = []
-                for source in sources:
-                    current_source = source
-                    self._operation.checkpoint()
-                    source_path = source.path
-                    spec = SourceSpec(
-                        alias=source.name,
-                        kind="csv",
-                        locator=source_path.name,
-                        anchor=source_path.parent,
-                    )
-                    adapter = self._select_adapter(spec)
-                    adapter.validate_options(spec)
-                    resolved_sources.append(adapter.resolve(spec, self._operation))
-                current_source = None
-                self._prepare_sources_locked(resolved_sources)
-            except OperationCancelled as exc:
-                self._release_resources(primary=exc)
-                raise
-            except SourceError as exc:
-                public_error = self._legacy_register_error(
-                    exc,
-                    table_sources=sources,
-                    current_source=current_source,
-                )
-                self._release_resources(primary=public_error)
-                raise public_error from exc
-            except BaseException as exc:
-                self._release_resources(primary=exc)
-                raise
-
     def prepare_sources(self, sources: Sequence[ResolvedSource]) -> None:
-        """Preflight all required sources, then bind them in request order."""
+        """Compatibility facade over coordinator-owned source preparation."""
 
-        with self._lifecycle_lock:
-            self._raise_if_closed()
-            try:
-                self._prepare_sources_locked(sources)
-            except BaseException as exc:
-                self._release_resources(primary=exc)
-                raise
+        from csvql.source_runtime import prepare_resolved_sources
 
-    def _prepare_sources_locked(self, sources: Sequence[ResolvedSource]) -> None:
-        prepared = self._preflight_sources(sources)
-        if not prepared:
+        resolved_sources = tuple(sources)
+        if not resolved_sources:
             return
-        connection = self._ensure_connection()
-        self._operation.checkpoint()
-        for adapter, source in prepared:
-            self._operation.checkpoint()
-            binding = adapter.bind(connection, source, self._operation)
-            self._bindings.append(binding)
-            self._validate_binding(binding, source)
-            self._alias_keys.add(source.spec.alias_key)
-            self._operation.checkpoint()
-
-    def _legacy_register_error(
-        self,
-        exc: SourceError,
-        *,
-        table_sources: Sequence[TableSource],
-        current_source: TableSource | None,
-    ) -> CSVQLError:
-        source_by_alias = {source.name: source for source in table_sources}
-        failed_source = source_by_alias.get(exc.alias or "") or current_source
-        alias = exc.alias or (failed_source.name if failed_source is not None else "source")
-        source_path = str(failed_source.path) if failed_source is not None else "<unavailable>"
-        return CSVQLError(
-            f"Failed to register CSV table '{alias}' from {source_path}.",
-            suggestion="Check that the file is a readable CSV with a header row.",
+        prepared = prepare_resolved_sources(
+            resolved_sources,
+            engine_session=self,
+            operation=self._operation,
         )
+        self._compatibility_scopes.append(prepared)
+
+    def register_tables(self, table_sources: Iterable[TableSource]) -> None:
+        """Translate retained CSV table facades into explicit source requests."""
+
+        from csvql.source import build_source_request
+        from csvql.source_runtime import (
+            prepare_source_requests,
+            raise_preparation_failure,
+        )
+
+        sources = tuple(table_sources)
+        if not sources:
+            return
+        requests = tuple(
+            build_source_request(
+                alias=source.name,
+                locator=str(source.path),
+                anchor=source.path.parent,
+                explicit_type="csv",
+            )
+            for source in sources
+        )
+        outcome = prepare_source_requests(
+            requests,
+            engine_session=self,
+            operation=self._operation,
+        )
+        from csvql.source import SourcePreparationFailure
+
+        if isinstance(outcome, SourcePreparationFailure):
+            raise_preparation_failure(outcome, requests=requests)
+        self._compatibility_scopes.append(outcome)
 
     def query(self, sql: str, params: Sequence[object] | None = None) -> QueryResult:
         """Execute SQL and return all result rows."""
@@ -208,13 +376,25 @@ class CSVQLEngine:
                 if primary is None:
                     raise
                 _add_cleanup_note(primary)
-        return QueryResult(columns=stream.columns, rows=tuple(rows), elapsed_ms=stream.elapsed_ms)
+        return QueryResult(
+            columns=stream.columns,
+            rows=tuple(rows),
+            elapsed_ms=stream.elapsed_ms,
+        )
 
-    def stream(self, sql: str, params: Sequence[object] | None = None) -> ResultStream:
-        """Execute SQL and return a private single-consumer result stream."""
+    def stream(
+        self,
+        sql: str,
+        params: Sequence[object] | None = None,
+        *,
+        on_terminal: Callable[[], None] | None = None,
+    ) -> ResultStream:
+        """Execute SQL and return one private single-consumer result stream."""
 
         with self._lifecycle_lock:
+            self.assert_session_access()
             self._raise_if_closed(query=True)
+            self._raise_if_tainted(query=True)
             if self._active_stream is not None:
                 raise QueryExecutionError(
                     "LocalQL engine already has an active result stream.",
@@ -223,19 +403,22 @@ class CSVQLEngine:
             started_at = perf_counter()
             connection: duckdb.DuckDBPyConnection | None = None
             cursor: ResultCursor | None = None
+            execution_started = False
             try:
                 self._operation.checkpoint()
                 connection = self._ensure_connection()
                 cursor = self._ensure_session_cursor(connection)
                 self._operation.attach_interrupt(_interrupt_callback(cursor, connection))
                 self._operation.checkpoint()
+                self._operation.begin_execution()
+                execution_started = True
                 cursor.execute(sql, params or [])
                 self._operation.checkpoint()
                 stream = ResultStream(
                     cursor=cursor,
                     operation=self._operation,
                     started_at=started_at,
-                    close_owner=self._close_active_stream,
+                    close_owner=lambda: self._close_active_stream(on_terminal),
                     request_interrupt=self.interrupt,
                     now=perf_counter,
                     discard_cursor=self._discard_active_result_session,
@@ -243,155 +426,91 @@ class CSVQLEngine:
                 self._active_stream = stream
                 return stream
             except OperationCancelled as exc:
-                if cursor is not None and self._discard_session_cursor():
-                    self._fail_closed_start_cleanup(primary=exc, cursor=cursor)
-                self._release_resources(primary=exc)
+                self._finish_failed_execution(
+                    cursor=cursor,
+                    execution_started=execution_started,
+                    primary=exc,
+                )
                 raise
             except duckdb.Error as exc:
                 if self._operation.token.is_cancelled:
                     cancelled = OperationCancelled("Operation cancelled.")
-                    if cursor is not None and self._discard_session_cursor():
-                        self._fail_closed_start_cleanup(primary=cancelled, cursor=cursor)
-                    self._release_resources(primary=cancelled)
-                    raise cancelled from exc
-                if cursor is not None and self._discard_session_cursor():
-                    public_error = QueryExecutionError(
-                        f"DuckDB query failed: {exc}",
-                        suggestion="Check table names, column names, and SQL syntax.",
+                    self._finish_failed_execution(
+                        cursor=cursor,
+                        execution_started=execution_started,
+                        primary=cancelled,
                     )
-                    self._fail_closed_start_cleanup(primary=public_error, cursor=cursor)
-                    raise public_error from exc
-                self._restore_connection_interrupt()
-                raise QueryExecutionError(
+                    raise cancelled from exc
+                public_error = QueryExecutionError(
                     f"DuckDB query failed: {exc}",
                     suggestion="Check table names, column names, and SQL syntax.",
-                ) from exc
+                )
+                if self._finish_failed_execution(
+                    cursor=cursor,
+                    execution_started=execution_started,
+                    primary=public_error,
+                ):
+                    public_error = QueryExecutionError(
+                        "DuckDB query failed and terminal cursor cleanup was uncertain.",
+                        suggestion="Close this LocalQL engine before retrying.",
+                    )
+                    _add_cleanup_note(public_error)
+                    self._mark_tainted()
+                    raise public_error from exc
+                raise public_error from exc
             except BaseException as exc:
-                if cursor is not None and self._discard_session_cursor():
-                    self._fail_closed_start_cleanup(primary=exc, cursor=cursor)
-                self._release_resources(primary=exc)
+                self._finish_failed_execution(
+                    cursor=cursor,
+                    execution_started=execution_started,
+                    primary=exc,
+                )
                 raise
 
-    def _preflight_sources(
+    def _finish_failed_execution(
         self,
-        sources: Sequence[ResolvedSource],
-    ) -> list[tuple[SourceAdapter, ResolvedSource]]:
-        self._operation.checkpoint()
-        self._preflight_aliases(tuple(source.spec.alias for source in sources))
-        prepared: list[tuple[SourceAdapter, ResolvedSource]] = []
-        for source in sources:
-            spec = source.spec
-            adapter = self._select_adapter(spec)
-            adapter.validate_options(spec)
-            require_capability(
-                source.capabilities,
-                "query",
-                kind=spec.kind,
-                alias=spec.alias,
-            )
-            if not source.canonical_locator:
-                raise SourceError(
-                    "source_missing",
-                    "Resolved source locator is unavailable.",
-                    kind=spec.kind,
-                    alias=spec.alias,
-                    suggestion="Resolve the source again before preparing it.",
-                )
-            if spec.kind == "csv" and source.fingerprint is None:
-                raise SourceError(
-                    "source_changed",
-                    "CSV source identity is unavailable.",
-                    kind=spec.kind,
-                    alias=spec.alias,
-                    suggestion="Submit the operation again to capture the current CSV source.",
-                )
-            self._operation.checkpoint()
-            prepared.append((adapter, source))
-        return prepared
+        *,
+        cursor: ResultCursor | None,
+        execution_started: bool,
+        primary: BaseException,
+    ) -> bool:
+        """Establish terminal state after a failed query start when provable."""
 
-    def _select_adapter(self, spec: SourceSpec) -> SourceAdapter:
-        expected_descriptor = self._registry.descriptor(spec.kind)
-        adapter = self._registry.create(spec.kind, capability="query")
-        if adapter.descriptor is not expected_descriptor:
-            raise SourceError(
-                "source_bind_failed",
-                "Selected source adapter descriptor does not match the registry.",
-                kind=spec.kind,
-                alias=spec.alias,
-                suggestion="Start a new LocalQL operation with a valid adapter registry.",
-            )
-        return adapter
-
-    def _validate_binding(
-        self,
-        binding: PreparedBinding,
-        source: ResolvedSource,
-    ) -> None:
-        if binding.alias != source.spec.alias:
-            raise SourceError(
-                "source_bind_failed",
-                "Prepared binding alias does not match the requested source.",
-                kind=source.spec.kind,
-                alias=source.spec.alias,
-                suggestion="Start a new LocalQL operation with a valid source adapter.",
-            )
-        if binding.source is not source:
-            raise SourceError(
-                "source_bind_failed",
-                "Prepared binding source does not match the resolved source.",
-                kind=source.spec.kind,
-                alias=source.spec.alias,
-                suggestion="Start a new LocalQL operation with a valid source adapter.",
-            )
-        require_capability(
-            binding.capabilities,
-            "query",
-            kind=source.spec.kind,
-            alias=source.spec.alias,
-        )
-
-    def _preflight_aliases(self, aliases: tuple[str, ...]) -> None:
-        incoming_keys: set[str] = set()
-        for alias in aliases:
-            if (
-                not isinstance(alias, str)
-                or not _SOURCE_ALIAS_PATTERN.fullmatch(alias)
-                or source_alias_collision_key(alias).startswith(_RESERVED_ALIAS_PREFIX)
-            ):
-                raise SourceError(
-                    "source_bind_failed",
-                    "Source alias is invalid or reserved.",
-                    alias=alias if isinstance(alias, str) else None,
-                    suggestion="Use a unique SQL identifier outside the reserved prefix.",
-                )
-            alias_key = source_alias_collision_key(alias)
-            if alias_key in self._alias_keys or alias_key in incoming_keys:
-                raise SourceError(
-                    "source_bind_failed",
-                    "Source alias conflicts with an existing required source.",
-                    alias=alias,
-                    suggestion="Use a unique source alias.",
-                )
-            incoming_keys.add(alias_key)
+        cleanup_failed = cursor is not None and bool(self._discard_session_cursor())
+        if cleanup_failed:
+            self._mark_tainted()
+            _add_cleanup_note(primary)
+            return True
+        if execution_started:
+            self._operation.mark_terminal()
+        else:
+            self._restore_connection_interrupt()
+        return False
 
     def _ensure_connection(self) -> duckdb.DuckDBPyConnection:
-        with self._lifecycle_lock:
-            self._raise_if_closed()
-            if self._connection is None:
-                connection = duckdb.connect(database=":memory:")
-                self._connection = connection
-                self._operation.attach_interrupt(connection.interrupt)
-            return self._connection
+        self._raise_if_closed()
+        if self._connection is None:
+            connection = duckdb.connect(
+                database=":memory:",
+                config={
+                    "autoinstall_known_extensions": "false",
+                    "autoload_known_extensions": "false",
+                },
+            )
+            self._connection = connection
+            self._operation.attach_interrupt(connection.interrupt)
+        return self._connection
 
-    def _ensure_session_cursor(self, connection: duckdb.DuckDBPyConnection) -> ResultCursor:
-        with self._lifecycle_lock:
-            self._raise_if_closed()
-            if self._session_cursor is None:
-                self._session_cursor = _open_result_cursor(connection)
-            return self._session_cursor
+    def _ensure_session_cursor(
+        self,
+        connection: duckdb.DuckDBPyConnection,
+    ) -> ResultCursor:
+        self._raise_if_closed()
+        if self._session_cursor is None:
+            self._session_cursor = _open_result_cursor(connection)
+        return self._session_cursor
 
     def _raise_if_closed(self, *, query: bool = False) -> None:
-        if not self._closed:
+        if self._state is not EngineSessionState.CLOSED:
             return
         error_type = QueryExecutionError if query else CSVQLError
         raise error_type(
@@ -399,19 +518,33 @@ class CSVQLEngine:
             suggestion="Create a new engine for another operation.",
         )
 
+    def _raise_if_tainted(self, *, query: bool = False) -> None:
+        if self._state is not EngineSessionState.TAINTED:
+            return
+        if query:
+            raise QueryExecutionError(
+                "LocalQL engine session is tainted.",
+                suggestion="Close the owning engine session.",
+            )
+        raise EngineSessionTaintedError(
+            "engine_session_tainted",
+            "LocalQL engine session is tainted.",
+            suggestion="Close the owning engine session.",
+        )
+
+    def _mark_tainted(self) -> None:
+        if self._state is not EngineSessionState.CLOSED:
+            self._state = EngineSessionState.TAINTED
+
     def _release_resources(self, *, primary: BaseException | None) -> int:
         with self._lifecycle_lock:
-            if self._closed:
+            if self._state is EngineSessionState.CLOSED:
                 return 0
             connection = self._connection
             session_cursor = self._session_cursor
             active_stream = self._active_stream
-            bindings = tuple(reversed(self._bindings))
-            self._bindings.clear()
-            self._alias_keys.clear()
-            self._connection = None
-            self._session_cursor = None
-            self._closed = True
+            compatibility_scopes = tuple(reversed(self._compatibility_scopes))
+            self._compatibility_scopes.clear()
 
         cursor_failures = 0
         if active_stream is not None:
@@ -423,12 +556,15 @@ class CSVQLEngine:
             cursor_failures += self._close_cursor(session_cursor)
         elif active_stream is None and session_cursor is not None:
             cursor_failures += self._close_cursor(session_cursor)
+
         binding_failures = 0
-        for binding in bindings:
-            try:
-                binding.close()
-            except BaseException:
-                binding_failures += 1
+        if compatibility_scopes:
+            from csvql.source_runtime import default_source_components
+
+            coordinator = default_source_components().coordinator
+            for prepared in compatibility_scopes:
+                report = coordinator.release(prepared)
+                binding_failures += len(report.failures)
 
         connection_failures = 0
         if connection is not None:
@@ -439,6 +575,11 @@ class CSVQLEngine:
         self._operation.detach_interrupt()
         with self._lifecycle_lock:
             self._active_stream = None
+            self._connection = None
+            self._session_cursor = None
+            self._registrations.clear()
+            self._alias_keys.clear()
+            self._state = EngineSessionState.CLOSED
 
         if primary is not None:
             if cursor_failures:
@@ -451,14 +592,22 @@ class CSVQLEngine:
                 primary.add_note("Cleanup uncertainty: the engine connection could not be closed.")
         return cursor_failures + binding_failures + connection_failures
 
-    def _close_active_stream(self) -> None:
+    def _close_active_stream(
+        self,
+        on_terminal: Callable[[], None] | None,
+    ) -> None:
         with self._lifecycle_lock:
             self._active_stream = None
             if self._session_cursor is not None and not _cursor_survives_stream_close(
                 self._session_cursor
             ):
                 self._session_cursor = None
+            if self._state is EngineSessionState.CANCELLING:
+                self._state = EngineSessionState.CLEAN
+        self._operation.mark_terminal()
         self._restore_connection_interrupt()
+        if on_terminal is not None:
+            on_terminal()
 
     def _close_cursor(self, cursor: ResultCursor | None) -> int:
         if cursor is None:
@@ -470,10 +619,9 @@ class CSVQLEngine:
         return 0
 
     def _discard_session_cursor(self) -> int:
-        with self._lifecycle_lock:
-            cursor = self._session_cursor
-            self._session_cursor = None
-            self._active_stream = None
+        cursor = self._session_cursor
+        self._session_cursor = None
+        self._active_stream = None
         failure = self._close_cursor(cursor)
         self._restore_connection_interrupt()
         return failure
@@ -483,28 +631,20 @@ class CSVQLEngine:
             cursor = self._session_cursor
         if cursor is None:
             return
-        _discard_cursor(cursor)
+        try:
+            _discard_cursor(cursor)
+        except BaseException:
+            self._mark_tainted()
+            raise
         with self._lifecycle_lock:
             if self._session_cursor is cursor:
                 self._session_cursor = None
 
     def _restore_connection_interrupt(self) -> None:
         with self._lifecycle_lock:
-            if self._closed or self._connection is None:
+            if self._state is EngineSessionState.CLOSED or self._connection is None:
                 return
             self._operation.attach_interrupt(self._connection.interrupt)
-
-    def _fail_closed_start_cleanup(
-        self,
-        *,
-        primary: BaseException,
-        cursor: ResultCursor,
-    ) -> None:
-        _add_cleanup_note(primary)
-        with self._lifecycle_lock:
-            self._session_cursor = cursor
-            self._active_stream = None
-        self._release_resources(primary=primary)
 
 
 def _add_cleanup_note(primary: BaseException) -> None:
@@ -513,7 +653,9 @@ def _add_cleanup_note(primary: BaseException) -> None:
         primary.add_note(CURSOR_CLEANUP_UNCERTAINTY_NOTE)
 
 
-def _open_result_cursor(connection: duckdb.DuckDBPyConnection) -> ResultCursor:
+def _open_result_cursor(
+    connection: duckdb.DuckDBPyConnection,
+) -> ResultCursor:
     return _PersistentResultSessionCursor(connection)
 
 

@@ -5,7 +5,6 @@ from typing import cast
 
 import duckdb
 
-from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import (
     CSVInspectionError,
@@ -23,7 +22,12 @@ from csvql.quality import (
     ConfiguredCheck,
     RunStatus,
 )
-from csvql.source import ResolvedSource, source_spec_from_catalog_table
+from csvql.source import (
+    ResolvedSource,
+    build_source_request,
+    source_spec_from_catalog_table,
+)
+from csvql.source_runtime import resolve_source_request
 from csvql.sql_utils import quote_identifier
 
 CHECK_ROWS_ALIAS = "__csvql_check_rows"
@@ -141,9 +145,19 @@ def _resolve_required_sources(
     for table in tables:
         spec = source_spec_from_catalog_table(table, project_root=context.project_root)
         try:
-            adapter = DEFAULT_SOURCE_ADAPTER_REGISTRY.create(spec.kind, capability="query")
-            adapter.validate_options(spec)
-            resolved.append(adapter.resolve(spec, operation))
+            source = resolve_source_request(
+                build_source_request(
+                    alias=spec.alias,
+                    locator=spec.locator,
+                    anchor=spec.anchor,
+                    explicit_type=spec.kind,
+                    options=spec.options,
+                ),
+                operation=operation,
+            )
+            if not isinstance(source, ResolvedSource):
+                raise RuntimeError("Check source resolution returned an invalid value.")
+            resolved.append(source)
         except SourceError as exc:
             if exc.code == "source_missing":
                 raise FileMissingError(

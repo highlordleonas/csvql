@@ -5,13 +5,14 @@ from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import (
     CSVQLError,
     FileMissingError,
     QueryExecutionError,
+    SourceCleanupError,
     SourceError,
+    SourceIdentityError,
     TableMappingError,
 )
 from csvql.models import QueryResult
@@ -23,10 +24,20 @@ from csvql.project_config import (
 )
 from csvql.result_stream import CURSOR_CLEANUP_UNCERTAINTY_NOTE, ResultStream
 from csvql.source import (
+    IdentityRequirement,
+    IdentityValidationStatus,
+    PreparedSources,
     ResolvedSource,
     SourceFingerprint,
     SourceSpec,
+    build_source_request,
+    source_alias_collision_key,
     source_spec_from_cli_mapping,
+)
+from csvql.source_runtime import (
+    default_source_components,
+    prepare_resolved_sources,
+    resolve_source_request,
 )
 from csvql.table_mapping import derive_alias_from_path, validate_table_alias
 
@@ -295,17 +306,35 @@ def execute_query_request_stream(
 
     _require_matching_operation_context(engine, operation)
     operation.checkpoint()
-    engine.prepare_sources(request.required_sources)
-    attempted_aliases = {source.spec.alias.casefold() for source in request.required_sources}
+    prepared_scopes: list[PreparedSources] = []
+    try:
+        if request.required_sources:
+            prepared_scopes.append(
+                prepare_resolved_sources(
+                    request.required_sources,
+                    engine_session=engine,
+                    operation=operation,
+                )
+            )
+    except BaseException as exc:
+        _release_query_sources(prepared_scopes, primary=exc)
+        raise
+    attempted_aliases = {source.alias_key for source in request.required_sources}
     while True:
-        operation.checkpoint()
         try:
-            return engine.stream(request.sql)
+            operation.checkpoint()
+            _revalidate_query_sources(prepared_scopes)
+            return engine.stream(
+                request.sql,
+                on_terminal=lambda: _release_query_sources(prepared_scopes),
+            )
         except QueryExecutionError as exc:
             if CURSOR_CLEANUP_UNCERTAINTY_NOTE in getattr(exc, "__notes__", ()):
+                _release_query_sources(prepared_scopes, primary=exc)
                 raise
             missing_name = _missing_duckdb_table_name(exc)
             if missing_name is None:
+                _release_query_sources(prepared_scopes, primary=exc)
                 raise
 
             missing_key = missing_name.casefold()
@@ -319,9 +348,83 @@ def execute_query_request_stream(
                 None,
             )
             if candidate is None:
+                _release_query_sources(prepared_scopes, primary=exc)
                 raise
             attempted_aliases.add(missing_key)
-            engine.prepare_sources((_resolve_fallback_candidate(candidate, operation=operation),))
+            try:
+                prepared_scopes.append(
+                    prepare_resolved_sources(
+                        (
+                            _resolve_fallback_candidate(
+                                candidate,
+                                operation=operation,
+                            ),
+                        ),
+                        engine_session=engine,
+                        operation=operation,
+                    )
+                )
+            except BaseException as fallback_error:
+                _release_query_sources(prepared_scopes, primary=fallback_error)
+                raise
+        except BaseException as exc:
+            _release_query_sources(prepared_scopes, primary=exc)
+            raise
+
+
+def _revalidate_query_sources(prepared_scopes: list[PreparedSources]) -> None:
+    """Confirm submission identity immediately before each execution attempt."""
+
+    coordinator = default_source_components().coordinator
+    for prepared in prepared_scopes:
+        outcome = coordinator.revalidate(prepared, IdentityRequirement())
+        first_failure = next(
+            (
+                result
+                for result in outcome.results
+                if result.status is not IdentityValidationStatus.CONFIRMED
+            ),
+            None,
+        )
+        if first_failure is None:
+            continue
+        diagnostic = first_failure.diagnostic
+        raise SourceIdentityError(
+            "source_changed",
+            (
+                diagnostic.message
+                if diagnostic is not None
+                else "Source identity could not be confirmed before execution."
+            ),
+            alias=first_failure.alias,
+            suggestion="Submit the operation again to capture the current source.",
+        )
+
+
+def _release_query_sources(
+    prepared_scopes: list[PreparedSources],
+    *,
+    primary: BaseException | None = None,
+) -> None:
+    """Release query-owned sources in reverse scope order at the terminal barrier."""
+
+    coordinator = default_source_components().coordinator
+    cleanup_failed = False
+    while prepared_scopes:
+        report = coordinator.release(prepared_scopes.pop())
+        cleanup_failed = cleanup_failed or not report.succeeded
+    if not cleanup_failed:
+        return
+    if primary is not None:
+        primary.add_note(
+            "Cleanup uncertainty: one or more query source bindings could not be closed."
+        )
+        return
+    raise SourceCleanupError(
+        "source_cleanup_failed",
+        "Query source cleanup did not complete with certainty.",
+        suggestion="Close this LocalQL engine before retrying.",
+    )
 
 
 def _missing_duckdb_table_name(error: QueryExecutionError) -> str | None:
@@ -382,7 +485,7 @@ def _resolve_fallback_candidate(
             raise
         raise _build_fallback_catalog_file_missing(candidate) from exc
     if resolved.fingerprint != candidate.expected_fingerprint:
-        raise SourceError(
+        raise SourceIdentityError(
             "source_changed",
             "CSV source changed after submission.",
             kind=candidate.spec.kind,
@@ -455,15 +558,26 @@ def _resolve_source(
     *,
     operation: OperationContext,
 ) -> ResolvedSource:
-    adapter = DEFAULT_SOURCE_ADAPTER_REGISTRY.create(spec.kind, capability="query")
-    return adapter.resolve(spec, operation)
+    resolved = resolve_source_request(
+        build_source_request(
+            alias=spec.alias,
+            locator=spec.locator,
+            anchor=spec.anchor,
+            explicit_type=spec.kind,
+            options=spec.options,
+        ),
+        operation=operation,
+    )
+    if not isinstance(resolved, ResolvedSource):
+        raise RuntimeError("Source resolution returned an invalid value.")
+    return resolved
 
 
 def _require_matching_operation_context(
     engine: CSVQLEngine,
     operation: OperationContext,
 ) -> None:
-    if getattr(engine, "_operation", None) is operation:
+    if engine.operation_context is operation:
         return
     raise CSVQLError(
         "LocalQL query workflow requires one shared operation context.",
@@ -520,12 +634,11 @@ def _resolved_single_csv(
         operation=operation,
     )
     canonical_path = Path(resolved.canonical_locator)
+    alias = derive_alias_from_path(canonical_path)
     return replace(
         resolved,
-        spec=replace(
-            resolved.spec,
-            alias=derive_alias_from_path(canonical_path),
-            locator=resolved.canonical_locator,
-            anchor=canonical_path.parent,
-        ),
+        alias=alias,
+        alias_key=source_alias_collision_key(alias),
+        requested_locator=resolved.canonical_locator,
+        resolution_anchor=canonical_path.parent,
     )

@@ -14,7 +14,7 @@ from csvql.query_workflow import (
     build_saved_sql_query_request,
     execute_query_request,
 )
-from csvql.source import ResolvedSource, SourceSpec
+from csvql.source import ResolvedSource, SelectedSource, SourceSpec
 
 
 def _write_csv(path: Path, content: str) -> None:
@@ -116,11 +116,11 @@ def test_builder_resolves_each_required_and_fallback_identity_once_at_submission
 
     def record_resolve(
         self: CSVSourceAdapter,
-        spec: SourceSpec,
+        selected: SelectedSource,
         context: OperationContext,
     ) -> ResolvedSource:
-        resolved_aliases.append(spec.alias)
-        return original_resolve(self, spec, context)
+        resolved_aliases.append(selected.request.alias)
+        return original_resolve(self, selected, context)
 
     monkeypatch.setattr(CSVSourceAdapter, "resolve", record_resolve)
 
@@ -505,31 +505,38 @@ def test_fallback_alias_is_attempted_at_most_once(
         fallback_sources=(candidate, candidate),
     )
 
-    class RepeatingMissingEngine:
-        def __init__(self, operation: OperationContext) -> None:
-            self._operation = operation
-            self.prepared: list[str] = []
-            self.error = QueryExecutionError(
-                "DuckDB query failed: Catalog Error: Table with name CUSTOMERS does not exist!"
+    error = QueryExecutionError(
+        "DuckDB query failed: Catalog Error: Table with name CUSTOMERS does not exist!"
+    )
+    stream_calls = 0
+
+    def repeat_missing(
+        self: CSVQLEngine,
+        sql: str,
+        params=None,
+        *,
+        on_terminal=None,
+    ) -> None:
+        del self, sql, params, on_terminal
+        nonlocal stream_calls
+        stream_calls += 1
+        raise error
+
+    with (
+        CSVQLEngine(operation=operation) as engine,
+        pytest.MonkeyPatch.context() as monkeypatch,
+    ):
+        monkeypatch.setattr(CSVQLEngine, "stream", repeat_missing)
+        with pytest.raises(QueryExecutionError) as exc_info:
+            execute_query_request(
+                engine,
+                duplicate_request,
+                operation=operation,
             )
+        assert engine.registered_aliases == ()
 
-        def prepare_sources(self, sources: object) -> None:
-            self.prepared.extend(source.spec.alias for source in sources)  # type: ignore[union-attr]
-
-        def stream(self, sql: str, params=None) -> None:
-            del sql, params
-            raise self.error
-
-    engine = RepeatingMissingEngine(operation)
-    with pytest.raises(QueryExecutionError) as exc_info:
-        execute_query_request(
-            engine,  # type: ignore[arg-type]
-            duplicate_request,
-            operation=operation,
-        )
-
-    assert exc_info.value is engine.error
-    assert engine.prepared == ["orders", "customers"]
+    assert exc_info.value is error
+    assert stream_calls == 2
 
 
 def test_build_saved_sql_query_request_uses_one_context_for_required_and_fallback_resolution(
@@ -621,13 +628,13 @@ def test_cancelled_operation_stops_before_fallback_resolution(
 
     def cancelling_resolve(
         self: CSVSourceAdapter,
-        spec: SourceSpec,
+        selected: SelectedSource,
         context: OperationContext,
     ) -> ResolvedSource:
-        resolve_calls.append(spec.alias)
-        if spec.alias == "customers":
+        resolve_calls.append(selected.request.alias)
+        if selected.request.alias == "customers":
             context.request_cancel()
-        return original_resolve(self, spec, context)
+        return original_resolve(self, selected, context)
 
     monkeypatch.setattr(CSVSourceAdapter, "resolve", cancelling_resolve)
     with pytest.raises(OperationCancelled):

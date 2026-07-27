@@ -23,7 +23,6 @@ from csvql.exceptions import CSVQLError
 from csvql.export import ExportFormat
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
 from csvql.operation import OperationCancelled, OperationContext, OperationToken
-from csvql.source import SourceCapability
 from csvql.table_mapping import parse_table_mapping
 from csvql.terminal_text import literal_terminal_text, terminal_safe_text
 from csvql.tui_editor import all_sql_statements, selected_or_current_sql
@@ -95,7 +94,6 @@ from csvql.tui_workflows import (
     sample_source,
     save_derived_result_source,
     save_sources_to_project_catalog,
-    source_capability_status,
     sources_from_csv_path_text,
 )
 
@@ -913,9 +911,6 @@ class CSVQLMenuApp(App[None]):
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
-        if self._reject_unavailable_source_action(source, "inspect"):
-            return
-
         self._start_operation_worker(
             kind="inspect",
             label=f"Inspecting {source.name}",
@@ -936,9 +931,6 @@ class CSVQLMenuApp(App[None]):
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
-        if self._reject_unavailable_source_action(source, "profile"):
-            return
-
         self._start_operation_worker(
             kind="profile",
             label=f"Profiling {source.name}",
@@ -962,9 +954,6 @@ class CSVQLMenuApp(App[None]):
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
-        if self._reject_unavailable_source_action(source, "sample"):
-            return
-
         self._start_operation_worker(
             kind="sample",
             label=f"Sampling {source.name}",
@@ -988,9 +977,6 @@ class CSVQLMenuApp(App[None]):
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
-        if self._reject_unavailable_source_action(source, "inspect"):
-            return
-
         self._start_operation_worker(
             kind="columns",
             label=f"Loading columns for {source.name}",
@@ -999,22 +985,6 @@ class CSVQLMenuApp(App[None]):
                 columns=inspect_source_columns(source, operation=operation),
             ),
         )
-
-    def _reject_unavailable_source_action(
-        self,
-        source: TUISource,
-        operation: SourceCapability,
-    ) -> bool:
-        status = source_capability_status(source, operation)
-        if status.state == "available":
-            return False
-        self._show_error(
-            CSVQLError(
-                (f"Source capability '{operation}' is {status.state} ({status.reason_code})."),
-                suggestion=status.remediation,
-            )
-        )
-        return True
 
     def action_insert_source_alias(self) -> None:
         source = self.state.selected_source()

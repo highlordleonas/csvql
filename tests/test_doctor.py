@@ -15,7 +15,7 @@ from csvql.doctor import (
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import SourceError
 from csvql.project_config import ProjectConfig, ProjectContext, ProjectTable
-from csvql.source_adapter import PreparedBinding
+from csvql.source_adapter import RelationalBinding
 from csvql.source_operations import SourceOperations
 
 
@@ -98,13 +98,13 @@ def test_table_readiness_resolves_binds_and_queries_once_per_table(
     real_bind = CSVSourceAdapter.bind
     real_query = CSVQLEngine.query
 
-    def recording_resolve(self, spec, operation):
-        resolves.append((spec.alias, operation))
-        return real_resolve(self, spec, operation)
+    def recording_resolve(self, selected, operation):
+        resolves.append((selected.request.alias, operation))
+        return real_resolve(self, selected, operation)
 
-    def recording_bind(self, connection, source, operation):
-        binds.append((source.spec.alias, operation))
-        return real_bind(self, connection, source, operation)
+    def recording_bind(self, source, engine_session, binding_context):
+        binds.append((source.alias, binding_context.operation))
+        return real_bind(self, source, engine_session, binding_context)
 
     def recording_query(self, sql: str, params=None):
         queries.append(sql)
@@ -120,7 +120,12 @@ def test_table_readiness_resolves_binds_and_queries_once_per_table(
     assert columns == {"first": ("id",), "second": ("id",)}
     assert [alias for alias, _ in resolves] == ["first", "second"]
     assert [alias for alias, _ in binds] == ["first", "second"]
-    assert [operation for _, operation in binds] == [operation for _, operation in resolves]
+    for (_alias, resolve_operation), (_, bind_operation) in zip(
+        resolves,
+        binds,
+        strict=True,
+    ):
+        assert resolve_operation is bind_operation
     assert len(queries) == 2
     assert all("LIMIT ?" in query for query in queries)
 
@@ -145,7 +150,7 @@ def test_table_readiness_reports_cleanup_failure_and_continues(
     real_bind = CSVSourceAdapter.bind
 
     class CleanupFailingBinding:
-        def __init__(self, binding: PreparedBinding) -> None:
+        def __init__(self, binding: RelationalBinding) -> None:
             self._binding = binding
 
         @property
@@ -153,15 +158,22 @@ def test_table_readiness_reports_cleanup_failure_and_continues(
             return self._binding.alias
 
         @property
-        def source(self):
-            return self._binding.source
+        def resolved_source(self):
+            return self._binding.resolved_source
 
         @property
-        def capabilities(self):
-            return self._binding.capabilities
+        def engine_session_id(self) -> str:
+            return self._binding.engine_session_id
 
-        def close(self) -> None:
-            self._binding.close()
+        @property
+        def state(self):
+            return self._binding.state
+
+        def revalidate(self, requirement, operation):
+            return self._binding.revalidate(requirement, operation)
+
+        def close(self, operation) -> None:
+            self._binding.close(operation)
             raise SourceError(
                 "source_bind_failed",
                 "Failed to clean up CSV source binding.",
@@ -170,12 +182,12 @@ def test_table_readiness_reports_cleanup_failure_and_continues(
 
     def bind_with_first_cleanup_failure(
         self: CSVSourceAdapter,
-        connection,
         source,
-        context,
+        engine_session,
+        binding_context,
     ):
-        binding = real_bind(self, connection, source, context)
-        if source.spec.alias == "first":
+        binding = real_bind(self, source, engine_session, binding_context)
+        if source.alias == "first":
             return CleanupFailingBinding(binding)
         return binding
 
@@ -207,7 +219,7 @@ def test_table_readiness_preserves_primary_failure_and_cleanup_uncertainty(
     real_bind = CSVSourceAdapter.bind
 
     class CleanupFailingBinding:
-        def __init__(self, binding: PreparedBinding) -> None:
+        def __init__(self, binding: RelationalBinding) -> None:
             self._binding = binding
 
         @property
@@ -215,19 +227,26 @@ def test_table_readiness_preserves_primary_failure_and_cleanup_uncertainty(
             return self._binding.alias
 
         @property
-        def source(self):
-            return self._binding.source
+        def resolved_source(self):
+            return self._binding.resolved_source
 
         @property
-        def capabilities(self):
-            return self._binding.capabilities
+        def engine_session_id(self) -> str:
+            return self._binding.engine_session_id
 
-        def close(self) -> None:
-            self._binding.close()
+        @property
+        def state(self):
+            return self._binding.state
+
+        def revalidate(self, requirement, operation):
+            return self._binding.revalidate(requirement, operation)
+
+        def close(self, operation) -> None:
+            self._binding.close(operation)
             raise RuntimeError("private cleanup detail")
 
-    def failing_bind(self, connection, source, operation):
-        return CleanupFailingBinding(real_bind(self, connection, source, operation))
+    def failing_bind(self, source, engine_session, binding_context):
+        return CleanupFailingBinding(real_bind(self, source, engine_session, binding_context))
 
     def failing_sample(self: SourceOperations, *, limit: int = 10):
         del limit
@@ -460,7 +479,7 @@ def test_table_readiness_propagates_internal_duckdb_failures(
         def close(self) -> None:
             return None
 
-    monkeypatch.setattr(duckdb, "connect", lambda database: FakeConnection())
+    monkeypatch.setattr(duckdb, "connect", lambda **kwargs: FakeConnection())
 
     with pytest.raises(duckdb.InternalException, match="simulated internal failure"):
         _run_table_readiness_probes(context, context.config.tables)
@@ -564,7 +583,7 @@ def test_run_doctor_omits_check_probes_when_readiness_fails_after_column_discove
         def close(self) -> None:
             return None
 
-    monkeypatch.setattr(duckdb, "connect", lambda database: FakeConnection())
+    monkeypatch.setattr(duckdb, "connect", lambda **kwargs: FakeConnection())
 
     result = run_doctor(start_dir=tmp_path)
 

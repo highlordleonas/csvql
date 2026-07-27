@@ -1,5 +1,8 @@
 """Typed exceptions for CLI-friendly CSVQL failures."""
 
+from __future__ import annotations
+
+from dataclasses import dataclass
 from typing import Literal
 
 SourceErrorCode = Literal[
@@ -8,8 +11,9 @@ SourceErrorCode = Literal[
     "unsupported_source_option",
     "source_missing",
     "source_changed",
-    "unsupported_capability",
     "source_bind_failed",
+    "source_cleanup_failed",
+    "engine_session_tainted",
 ]
 
 
@@ -34,9 +38,6 @@ class SourceError(CSVQLError):
         *,
         kind: str | None = None,
         alias: str | None = None,
-        capability: str | None = None,
-        dependency: str | None = None,
-        extra: str | None = None,
         suggestion: str | None = None,
     ) -> None:
         """Create a source error with only structured boundary context."""
@@ -45,30 +46,69 @@ class SourceError(CSVQLError):
         self.code = code
         self.kind = kind
         self.alias = alias
-        self.capability = capability
-        self.dependency = dependency
-        self.extra = extra
 
-    @classmethod
-    def missing_optional_dependency(
-        cls,
-        *,
-        kind: str,
-        capability: str,
-        dependency: str,
-        extra: str,
-    ) -> "SourceError":
-        """Build an actionable error for an unavailable optional adapter runtime."""
 
-        return cls(
-            "missing_optional_dependency",
-            "The requested source capability requires an optional dependency.",
-            kind=kind,
-            capability=capability,
-            dependency=dependency,
-            extra=extra,
-            suggestion=f"Install the '{extra}' extra to enable this source capability.",
+class SourceResolutionError(SourceError):
+    """Failure while turning a selected source into resource-free facts."""
+
+
+class SourceBindingError(SourceError):
+    """Failure while binding a resolved source to one engine session."""
+
+
+class SourceIdentityError(SourceError):
+    """Failure to establish the required source reproducibility identity."""
+
+
+class EngineSessionTaintedError(SourceError):
+    """Failure caused by an engine session whose terminal state is uncertain."""
+
+
+class SourceCleanupError(SourceError):
+    """Failure while releasing one or more prepared source bindings."""
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigurationFinding:
+    """One deterministic application-composition defect."""
+
+    code: str
+    subject: str
+    detail: str
+
+
+class ConfigurationFailure(CSVQLError):
+    """Raised when import-free source component composition is invalid."""
+
+    def __init__(self, findings: tuple[ConfigurationFinding, ...]) -> None:
+        ordered = tuple(
+            sorted(
+                findings,
+                key=lambda finding: (finding.code, finding.subject, finding.detail),
+            )
         )
+        if not ordered:
+            raise ValueError("ConfigurationFailure requires at least one finding.")
+        super().__init__("LocalQL source-provider configuration is invalid.")
+        self.findings = ordered
+
+
+class SourceActivationError(CSVQLError):
+    """Sanitized failure while activating one selected source provider."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        provider_key: str,
+        dependency_key: str | None = None,
+        suggestion: str | None = None,
+    ) -> None:
+        super().__init__(message, suggestion=suggestion)
+        self.code = code
+        self.provider_key = provider_key
+        self.dependency_key = dependency_key
 
 
 class FileMissingError(CSVQLError):
