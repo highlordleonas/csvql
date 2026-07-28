@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import duckdb
 import pytest
 
 from csvql.engine import CSVQLEngine
@@ -22,6 +23,19 @@ def _resolved_csv(path: Path, *, alias: str = "orders") -> ResolvedSource:
             locator=path.name,
             anchor=path.parent,
             explicit_type="csv",
+        ),
+        operation=OperationContext(OperationToken()),
+    )
+    assert isinstance(resolved, ResolvedSource)
+    return resolved
+
+
+def _resolved_parquet(path: Path, *, alias: str = "orders") -> ResolvedSource:
+    resolved = resolve_source_request(
+        build_source_request(
+            alias=alias,
+            locator=path.name,
+            anchor=path.parent,
         ),
         operation=OperationContext(OperationToken()),
     )
@@ -52,6 +66,39 @@ def test_csv_inspect_sample_and_profile_preserve_relational_behavior(
     assert [column.name for column in inspected.columns] == ["id", "value"]
     assert inspected.row_count.value == 3
     assert inspected.dialect.delimiter == ","
+    assert sampled.rows == ((1, "alpha"), (2, "beta"))
+    assert profiled.row_count == 3
+    assert profiled.duplicate_row_count == 1
+
+
+def test_parquet_inspect_sample_and_profile_match_relational_behavior(
+    tmp_path: Path,
+) -> None:
+    """Source operations must depend on relational binding, not CSV parsing."""
+
+    path = tmp_path / "orders.parquet"
+    connection = duckdb.connect(database=":memory:")
+    try:
+        connection.sql(
+            """
+            SELECT *
+            FROM (VALUES (1, 'alpha'), (2, 'beta'), (2, 'beta'))
+                AS rows(id, value)
+            """
+        ).write_parquet(str(path))
+    finally:
+        connection.close()
+    source = _resolved_parquet(path)
+
+    with CSVQLEngine() as engine:
+        operations = SourceOperations(engine, source)
+        inspected = operations.inspect(exact=True)
+        sampled = operations.sample(limit=2)
+        profiled = operations.profile()
+
+    assert [column.name for column in inspected.columns] == ["id", "value"]
+    assert inspected.row_count.value == 3
+    assert inspected.dialect.delimiter is None
     assert sampled.rows == ((1, "alpha"), (2, "beta"))
     assert profiled.row_count == 3
     assert profiled.duplicate_row_count == 1

@@ -302,10 +302,13 @@ class CSVQLEngine:
     def interrupt(self) -> None:
         """Request cancellation and best-effort interruption of live DuckDB work."""
 
-        with self._lifecycle_lock:
-            if self._active_stream is not None and self._state is EngineSessionState.CLEAN:
-                self._state = EngineSessionState.CANCELLING
+        # The cursor executes while the lifecycle lock is held. Request the
+        # attached DuckDB interrupt before acquiring that lock so another
+        # thread can stop a query that has not returned a ResultStream yet.
         self._operation.request_cancel()
+        with self._lifecycle_lock:
+            if self._state is EngineSessionState.CLEAN:
+                self._state = EngineSessionState.CANCELLING
 
     def prepare_sources(self, sources: Sequence[ResolvedSource]) -> None:
         """Compatibility facade over coordinator-owned source preparation."""
@@ -482,6 +485,8 @@ class CSVQLEngine:
             return True
         if execution_started:
             self._operation.mark_terminal()
+            if self._state is EngineSessionState.CANCELLING:
+                self._state = EngineSessionState.CLEAN
         else:
             self._restore_connection_interrupt()
         return False

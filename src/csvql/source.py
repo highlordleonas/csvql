@@ -240,6 +240,14 @@ class DiagnosticCode(StrEnum):
     SOURCE_IDENTITY_CHANGED = "source.identity_changed"
     SOURCE_IDENTITY_UNAVAILABLE = "source.identity_unavailable"
     SOURCE_IDENTITY_INVALID = "source.identity_invalid"
+    SOURCE_PARQUET_INVALID = "source.parquet_invalid"
+    SOURCE_PARQUET_DATASET_EMPTY = "source.parquet_dataset_empty"
+    SOURCE_DATASET_MANIFEST_LIMIT = "source.dataset_manifest_limit"
+    SOURCE_DATASET_SYMLINK_REJECTED = "source.dataset_symlink_rejected"
+    SOURCE_DATASET_CHANGED = "source.dataset_changed"
+    SOURCE_PARQUET_SCHEMA_MISMATCH = "source.parquet_schema_mismatch"
+    SOURCE_PARTITIONING_INVALID = "source.partitioning_invalid"
+    SOURCE_IDENTITY_STRENGTH_UNAVAILABLE = "source.identity_strength_unavailable"
     SOURCE_CLEANUP_FAILED = "source.cleanup_failed"
     ENGINE_SESSION_ACTIVE = "engine.session_active"
     ENGINE_SESSION_TAINTED = "engine.session_tainted"
@@ -497,14 +505,20 @@ class IdentityValidationResult:
     status: IdentityValidationStatus
     required_strength: IdentityStrength
     confirmed_strength: IdentityStrength | None = None
+    evidence_digest: str | None = None
     diagnostic: SourceDiagnostic | None = None
 
     def __post_init__(self) -> None:
         if self.status is IdentityValidationStatus.CONFIRMED:
             if self.confirmed_strength is None:
                 raise ValueError("Confirmed identity requires a confirmed strength.")
-        elif self.confirmed_strength is not None:
-            raise ValueError("Non-confirmed identity cannot report a confirmed strength.")
+            if self.evidence_digest is not None and not re.fullmatch(
+                r"[0-9a-f]{64}",
+                self.evidence_digest,
+            ):
+                raise ValueError("Identity evidence digests must be lowercase SHA-256.")
+        elif self.confirmed_strength is not None or self.evidence_digest is not None:
+            raise ValueError("Non-confirmed identity cannot report confirmed evidence.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -531,42 +545,44 @@ def build_source_identity(
     strength: IdentityStrength,
     observed_file: ObservedFileFacts | None = None,
     dataset_members: Iterable[DatasetMemberFacts] = (),
+    provider_identity_evidence: str | None = None,
 ) -> SourceIdentity:
     """Build a SHA-256 identity from canonical provider interpretation material."""
 
     members = tuple(sorted(dataset_members, key=lambda item: item.relative_path))
     sensitive_keys = frozenset(sensitive_option_keys)
-    material = freeze_source_value(
-        {
-            "provider_key": provider_key,
-            "source_kind": source_kind,
-            "canonical_locator": canonical_locator,
-            "semantic_options": {
-                key: _thaw_source_value(value)
-                for key, value in semantic_options
-                if key not in sensitive_keys
-            },
-            "provider_interpretation_version": provider_interpretation_version,
-            "strength": strength.value,
-            "observed_file": (
-                None
-                if observed_file is None
-                else {
-                    "size_bytes": observed_file.size_bytes,
-                    "modified_time_ns": observed_file.modified_time_ns,
-                }
-            ),
-            "dataset_members": [
-                {
-                    "relative_path": member.relative_path,
-                    "size_bytes": member.observed.size_bytes,
-                    "modified_time_ns": member.observed.modified_time_ns,
-                    "provider_evidence": member.provider_evidence,
-                }
-                for member in members
-            ],
-        }
-    )
+    identity_material: dict[str, object] = {
+        "provider_key": provider_key,
+        "source_kind": source_kind,
+        "canonical_locator": canonical_locator,
+        "semantic_options": {
+            key: _thaw_source_value(value)
+            for key, value in semantic_options
+            if key not in sensitive_keys
+        },
+        "provider_interpretation_version": provider_interpretation_version,
+        "strength": strength.value,
+        "observed_file": (
+            None
+            if observed_file is None
+            else {
+                "size_bytes": observed_file.size_bytes,
+                "modified_time_ns": observed_file.modified_time_ns,
+            }
+        ),
+        "dataset_members": [
+            {
+                "relative_path": member.relative_path,
+                "size_bytes": member.observed.size_bytes,
+                "modified_time_ns": member.observed.modified_time_ns,
+                "provider_evidence": member.provider_evidence,
+            }
+            for member in members
+        ],
+    }
+    if provider_identity_evidence is not None:
+        identity_material["provider_identity_evidence"] = provider_identity_evidence
+    material = freeze_source_value(identity_material)
     return SourceIdentity(
         digest=hashlib.sha256(canonical_source_json_bytes(material)).hexdigest(),
         strength=strength,

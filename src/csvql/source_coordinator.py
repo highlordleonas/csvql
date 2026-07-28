@@ -462,11 +462,14 @@ def _source_error_diagnostic(
     stage: DiagnosticStage,
     request: SourceRequest,
 ) -> SourceDiagnostic:
-    code = {
-        DiagnosticStage.RESOLUTION: DiagnosticCode.SOURCE_RESOLUTION_FAILED,
-        DiagnosticStage.BINDING: DiagnosticCode.SOURCE_BIND_FAILED,
-        DiagnosticStage.IDENTITY: DiagnosticCode.SOURCE_IDENTITY_CHANGED,
-    }.get(stage, DiagnosticCode.SOURCE_REQUEST_INVALID)
+    try:
+        code = DiagnosticCode(error.code)
+    except ValueError:
+        code = {
+            DiagnosticStage.RESOLUTION: DiagnosticCode.SOURCE_RESOLUTION_FAILED,
+            DiagnosticStage.BINDING: DiagnosticCode.SOURCE_BIND_FAILED,
+            DiagnosticStage.IDENTITY: DiagnosticCode.SOURCE_IDENTITY_CHANGED,
+        }.get(stage, DiagnosticCode.SOURCE_REQUEST_INVALID)
     return SourceDiagnostic(
         code=code,
         stage=stage,
@@ -481,7 +484,7 @@ def _source_error_diagnostic(
         ),
         required_action=RequiredAction(
             ("resubmit_source" if stage is DiagnosticStage.IDENTITY else "correct_source"),
-            () if request.explicit_type is None else (request.explicit_type,),
+            () if error.kind is None else (error.kind,),
         ),
     )
 

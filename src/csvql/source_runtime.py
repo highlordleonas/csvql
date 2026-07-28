@@ -214,17 +214,25 @@ def _legacy_suggestion(
 def _legacy_error_code(code: str) -> SourceErrorCode:
     if code in {
         "source.bind_failed",
+        "source.parquet_schema_mismatch",
         "source.provider_contract_invalid",
     }:
         return "source_bind_failed"
     if code in {
+        "source.dataset_changed",
         "source.identity_changed",
         "source.identity_invalid",
         "source.identity_unavailable",
+        "source.identity_strength_unavailable",
     }:
         return "source_changed"
     if code in {
+        "source.dataset_manifest_limit",
+        "source.dataset_symlink_rejected",
         "source.locator_shape_invalid",
+        "source.parquet_dataset_empty",
+        "source.parquet_invalid",
+        "source.partitioning_invalid",
         "source.resolution_failed",
     }:
         return "source_missing"

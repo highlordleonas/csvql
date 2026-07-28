@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import ast
 import threading
+import time
 from pathlib import Path
 
+import duckdb
 import pytest
 
 from csvql.engine import CSVQLEngine
@@ -16,7 +18,14 @@ from csvql.exceptions import (
     SourceBindingError,
     SourceError,
 )
-from csvql.operation import OperationContext, OperationState, OperationToken
+from csvql.operation import (
+    OperationCancelled,
+    OperationContext,
+    OperationState,
+    OperationToken,
+)
+from csvql.source import PreparedSources, SourcePreparationFailure, build_source_request
+from csvql.source_runtime import default_source_components, prepare_source_requests
 
 
 def _operation() -> OperationContext:
@@ -224,3 +233,114 @@ def test_engine_rejects_second_active_stream_and_close_is_terminal() -> None:
 
     with pytest.raises(CSVQLError, match="closed"):
         engine.preflight_aliases(("orders",))
+
+
+@pytest.mark.parametrize(
+    "table_order", (("csv_rows", "parquet_rows"), ("parquet_rows", "csv_rows"))
+)
+def test_engine_joins_csv_and_parquet_without_format_branches(
+    tmp_path: Path,
+    table_order: tuple[str, str],
+) -> None:
+    """Cross-format joins must be ordinary engine-owned relational operations."""
+
+    csv_path = tmp_path / "orders.csv"
+    csv_path.write_text("id,value\n1,alpha\n2,beta\n", encoding="utf-8")
+    parquet_path = tmp_path / "scores.parquet"
+    connection = duckdb.connect(database=":memory:")
+    try:
+        connection.sql(
+            """
+            SELECT *
+            FROM (VALUES (1, 10), (2, 20), (3, 30))
+                AS rows(id, score)
+            """
+        ).write_parquet(str(parquet_path))
+    finally:
+        connection.close()
+    requests = (
+        build_source_request(
+            alias="csv_rows",
+            locator=csv_path.name,
+            anchor=csv_path.parent,
+        ),
+        build_source_request(
+            alias="parquet_rows",
+            locator=parquet_path.name,
+            anchor=parquet_path.parent,
+        ),
+    )
+    if table_order[0] == "parquet_rows":
+        requests = tuple(reversed(requests))
+
+    with CSVQLEngine() as engine:
+        prepared = prepare_source_requests(
+            requests,
+            engine_session=engine,
+            operation=engine.operation_context,
+        )
+        assert isinstance(prepared, PreparedSources)
+        assert not isinstance(prepared, SourcePreparationFailure)
+        result = engine.query(
+            """
+            SELECT csv_rows.id, csv_rows.value, parquet_rows.score
+            FROM csv_rows
+            JOIN parquet_rows USING (id)
+            ORDER BY csv_rows.id
+            """
+        )
+
+    assert result.rows == ((1, "alpha", 10), (2, "beta", 20))
+
+
+def test_long_parquet_scan_can_be_cancelled_and_cleaned_up(tmp_path: Path) -> None:
+    """Parquet execution must retain the engine's interrupt and terminal barriers."""
+
+    parquet_path = tmp_path / "numbers.parquet"
+    connection = duckdb.connect(database=":memory:")
+    try:
+        connection.sql("SELECT range::INTEGER AS id FROM range(250000)").write_parquet(
+            str(parquet_path)
+        )
+    finally:
+        connection.close()
+    request = build_source_request(
+        alias="numbers",
+        locator=parquet_path.name,
+        anchor=parquet_path.parent,
+    )
+    operation = _operation()
+    with CSVQLEngine(operation=operation) as engine:
+        prepared = prepare_source_requests(
+            (request,),
+            engine_session=engine,
+            operation=operation,
+        )
+        assert isinstance(prepared, PreparedSources)
+        cancellation_failures: list[str] = []
+
+        def cancel_during_execution() -> None:
+            deadline = time.monotonic() + 2
+            while operation.state is not OperationState.EXECUTING:
+                if time.monotonic() >= deadline:
+                    cancellation_failures.append("execution did not start")
+                    return
+                time.sleep(0.001)
+            engine.interrupt()
+
+        canceller = threading.Thread(target=cancel_during_execution)
+        canceller.start()
+        with pytest.raises(OperationCancelled):
+            engine.query(
+                """
+                SELECT sum(a.id::HUGEINT * b.id::HUGEINT)
+                FROM numbers AS a
+                CROSS JOIN numbers AS b
+                """
+            )
+        canceller.join(timeout=2)
+
+        assert not canceller.is_alive()
+        assert cancellation_failures == []
+        assert operation.state is OperationState.TERMINAL
+        assert default_source_components().coordinator.release(prepared).succeeded
