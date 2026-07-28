@@ -26,9 +26,10 @@ from csvql.result_stream import (
     ResultStream,
 )
 from csvql.source import PreparedSources, ResolvedSource, source_alias_collision_key
-from csvql.source_adapter import StructuralCallback
+from csvql.source_adapter import EngineDependencyState, StructuralCallback
 
 _SOURCE_ALIAS_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_DUCKDB_EXTENSION_KEY_PATTERN = re.compile(r"^duckdb\.extension\.([a-z][a-z0-9_]*)$")
 _RESERVED_ALIAS_PREFIX = "__localql_"
 _QUERY_FETCH_ROWS = 1000
 
@@ -104,6 +105,8 @@ class CSVQLEngine:
         self._registrations: dict[str, _Registration] = {}
         self._alias_keys: dict[str, str] = {}
         self._retired_registration_tokens: set[str] = set()
+        self._authorized_extension_keys: set[str] = set()
+        self._loaded_extension_keys: set[str] = set()
         self._compatibility_scopes: list[PreparedSources] = []
         self._session_cursor: ResultCursor | None = None
         self._active_stream: ResultStream | None = None
@@ -196,6 +199,137 @@ class CSVQLEngine:
                         suggestion="Use a unique source alias.",
                     )
                 incoming_keys.add(alias_key)
+
+    def inspect_dependency(
+        self,
+        dependency_key: str | None,
+        dependency_kind: str | None,
+        *,
+        operation: OperationContext,
+    ) -> EngineDependencyState:
+        """Inspect one selected runtime dependency without loading or installing it."""
+
+        with self._lifecycle_lock:
+            self.assert_session_access()
+            self._raise_if_closed()
+            self._raise_if_tainted()
+            if self._active_stream is not None:
+                raise SourceBindingError(
+                    "source_bind_failed",
+                    "Source dependencies cannot be inspected during active execution.",
+                    suggestion="Wait for the active query to finish.",
+                )
+            operation.checkpoint()
+            if dependency_key is None:
+                if dependency_kind is not None:
+                    raise SourceBindingError(
+                        "source_bind_failed",
+                        "Source dependency metadata is inconsistent.",
+                    )
+                return EngineDependencyState(
+                    dependency_key=None,
+                    available=True,
+                    dependency_version=None,
+                    duckdb_version=duckdb.__version__,
+                )
+            if dependency_kind == "builtin":
+                return EngineDependencyState(
+                    dependency_key=dependency_key,
+                    available=True,
+                    dependency_version=None,
+                    duckdb_version=duckdb.__version__,
+                )
+            match = _DUCKDB_EXTENSION_KEY_PATTERN.fullmatch(dependency_key)
+            if dependency_kind != "duckdb_extension" or match is None:
+                return EngineDependencyState(
+                    dependency_key=dependency_key,
+                    available=False,
+                    dependency_version=None,
+                    duckdb_version=duckdb.__version__,
+                )
+            connection = self._ensure_connection()
+            try:
+                row = connection.execute(
+                    """
+                    SELECT
+                        installed,
+                        loaded,
+                        extension_version,
+                        install_mode
+                    FROM duckdb_extensions()
+                    WHERE extension_name = ?
+                    """,
+                    [match.group(1)],
+                ).fetchone()
+            except duckdb.Error as exc:
+                raise SourceBindingError(
+                    "source_bind_failed",
+                    "Selected source dependency availability could not be inspected.",
+                    suggestion="Start a new LocalQL engine session and retry.",
+                ) from exc
+            operation.checkpoint()
+            if row is None:
+                return EngineDependencyState(
+                    dependency_key=dependency_key,
+                    available=False,
+                    dependency_version=None,
+                    duckdb_version=duckdb.__version__,
+                )
+            installed, loaded, extension_version, install_mode = row
+            available = bool(installed or loaded)
+            dependency_version = None
+            if available:
+                raw_version = extension_version or install_mode or "available"
+                dependency_version = str(raw_version)
+                self._authorized_extension_keys.add(dependency_key)
+                if loaded:
+                    self._loaded_extension_keys.add(dependency_key)
+            return EngineDependencyState(
+                dependency_key=dependency_key,
+                available=available,
+                dependency_version=dependency_version,
+                duckdb_version=duckdb.__version__,
+            )
+
+    def load_installed_extension(
+        self,
+        dependency_key: str,
+        *,
+        operation: OperationContext,
+    ) -> None:
+        """Load one previously inspected installed extension without acquisition."""
+
+        with self._lifecycle_lock:
+            self.assert_session_access()
+            self._raise_if_closed()
+            self._raise_if_tainted()
+            if self._active_stream is not None:
+                raise SourceBindingError(
+                    "source_bind_failed",
+                    "A source extension cannot be loaded during active execution.",
+                    suggestion="Wait for the active query to finish.",
+                )
+            match = _DUCKDB_EXTENSION_KEY_PATTERN.fullmatch(dependency_key)
+            if match is None or dependency_key not in self._authorized_extension_keys:
+                raise SourceBindingError(
+                    "source_bind_failed",
+                    "Source extension load was not authorized by dependency inspection.",
+                    suggestion="Prepare the selected source again in this engine session.",
+                )
+            if dependency_key in self._loaded_extension_keys:
+                return
+            operation.checkpoint()
+            connection = self._ensure_connection()
+            try:
+                connection.load_extension(match.group(1))
+            except duckdb.Error as exc:
+                raise SourceBindingError(
+                    "source_bind_failed",
+                    "The installed source extension could not be loaded.",
+                    suggestion="Verify the extension matches this DuckDB runtime.",
+                ) from exc
+            self._loaded_extension_keys.add(dependency_key)
+            operation.checkpoint()
 
     def register_relation(
         self,
@@ -584,6 +718,8 @@ class CSVQLEngine:
             self._session_cursor = None
             self._registrations.clear()
             self._alias_keys.clear()
+            self._authorized_extension_keys.clear()
+            self._loaded_extension_keys.clear()
             self._state = EngineSessionState.CLOSED
 
         if primary is not None:

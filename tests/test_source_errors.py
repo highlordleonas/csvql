@@ -10,6 +10,7 @@ from csvql.exceptions import (
     SourceIdentityError,
     SourceResolutionError,
 )
+from csvql.source import DiagnosticCode
 
 
 def test_source_error_is_available_for_private_source_boundaries() -> None:
@@ -49,6 +50,28 @@ def test_optional_dependency_failure_is_provider_activation_evidence() -> None:
     assert error.provider_key == "future"
     assert error.dependency_key == "future-driver"
     assert error.suggestion == "Install the LocalQL future provider extra."
+
+
+def test_excel_diagnostics_use_provider_specific_stable_codes() -> None:
+    """Surfaces need to distinguish workbook, sheet, range, and inference failures."""
+
+    assert {
+        DiagnosticCode.SOURCE_EXCEL_INVALID.value,
+        DiagnosticCode.SOURCE_EXCEL_METADATA_LIMIT.value,
+        DiagnosticCode.SOURCE_EXCEL_SHEET_MISSING.value,
+        DiagnosticCode.SOURCE_EXCEL_SHEET_AMBIGUOUS.value,
+        DiagnosticCode.SOURCE_EXCEL_RANGE_INVALID.value,
+        DiagnosticCode.SOURCE_EXCEL_RANGE_REQUIRED.value,
+        DiagnosticCode.SOURCE_EXCEL_SCHEMA_INFERENCE_FAILED.value,
+    } == {
+        "source.excel_invalid",
+        "source.excel_metadata_limit",
+        "source.excel_sheet_missing",
+        "source.excel_sheet_ambiguous",
+        "source.excel_range_invalid",
+        "source.excel_range_required",
+        "source.excel_schema_inference_failed",
+    }
 
 
 def test_lifecycle_failure_classes_remain_source_errors() -> None:

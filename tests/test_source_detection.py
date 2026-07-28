@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,40 @@ def test_json_family_extensions_select_deterministically_case_insensitively(
     assert detected.source_kind == expected_provider
     assert detected.selection_reason == "extension"
     assert detected.extension_evidence == expected_extension
+
+
+def test_excel_extension_selects_without_import_or_workbook_inspection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recognized extension is authoritative even before adapter activation."""
+
+    monkeypatch.delitem(sys.modules, "csvql.excel_adapter", raising=False)
+    path = tmp_path / "BOOK.XLSX"
+    path.write_bytes(b"not inspected during extension selection")
+
+    detected = _builtin_service().detect(build_source_request(alias="book", locator=str(path)))
+
+    assert isinstance(detected, SelectedSource)
+    assert detected.provider_key == "excel"
+    assert detected.selection_reason == "extension"
+    assert detected.extension_evidence == ".xlsx"
+    assert "csvql.excel_adapter" not in sys.modules
+
+
+def test_extensionless_xlsx_evidence_requires_explicit_type(tmp_path: Path) -> None:
+    """Bounded identification supplies evidence but never selects a provider."""
+
+    path = tmp_path / "workbook"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("xl/workbook.xml", "<workbook/>")
+
+    detected = _builtin_service().detect(build_source_request(alias="book", locator=str(path)))
+
+    assert isinstance(detected, AmbiguousSource)
+    assert "excel" in detected.candidates
+    assert detected.required_action.kind == "specify_type"
 
 
 def test_untyped_directory_is_ambiguous_even_when_name_has_parquet_suffix(

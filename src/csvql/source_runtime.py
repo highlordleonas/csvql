@@ -29,7 +29,10 @@ from csvql.source_adapter import EngineSession
 from csvql.source_coordinator import PreparationContext, SourceCoordinator
 from csvql.source_detection import SourceDetectionService
 from csvql.source_identifiers import build_builtin_identifier_table
-from csvql.source_registry import build_builtin_descriptor_registry
+from csvql.source_registry import (
+    DependencyRequirement,
+    build_builtin_descriptor_registry,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,8 +65,24 @@ def default_source_components() -> SourceComponents:
 
 
 def default_activation_context() -> ActivationContext:
-    """Inspect installed dependency metadata without loading provider code."""
+    """Return the retained JSON activation context for compatibility callers."""
 
+    requirement = build_builtin_descriptor_registry().descriptor("json").dependency
+    return activation_context_for_dependency(requirement)
+
+
+def activation_context_for_dependency(
+    requirement: DependencyRequirement | None,
+) -> ActivationContext:
+    """Inspect only one selected dependency without loading or installing it."""
+
+    if requirement is None or requirement.kind == "builtin":
+        return ActivationContext(duckdb_version=duckdb.__version__)
+    if requirement.kind != "duckdb_extension" or not requirement.key.startswith(
+        "duckdb.extension."
+    ):
+        return ActivationContext(duckdb_version=duckdb.__version__)
+    extension_name = requirement.key.removeprefix("duckdb.extension.")
     connection = _connect_activation_metadata(
         database=":memory:",
         config={
@@ -74,23 +93,27 @@ def default_activation_context() -> ActivationContext:
     try:
         extension_rows = connection.execute(
             """
-            SELECT extension_name, extension_version, install_mode
+            SELECT installed, loaded, extension_version, install_mode
             FROM duckdb_extensions()
-            WHERE installed
-            ORDER BY extension_name
-            """
+            WHERE extension_name = ?
+            """,
+            [extension_name],
         ).fetchall()
     finally:
         connection.close()
-    dependency_versions = tuple(
-        (
-            f"duckdb.extension.{extension_name}",
-            extension_version or install_mode,
+    available = bool(extension_rows and (extension_rows[0][0] or extension_rows[0][1]))
+    dependency_versions = (
+        ()
+        if not available
+        else (
+            (
+                requirement.key,
+                str(extension_rows[0][2] or extension_rows[0][3] or "available"),
+            ),
         )
-        for extension_name, extension_version, install_mode in extension_rows
     )
     return ActivationContext(
-        available_dependencies=frozenset(key for key, _version in dependency_versions),
+        available_dependencies=(frozenset((requirement.key,)) if available else frozenset()),
         dependency_versions=dependency_versions,
         duckdb_version=duckdb.__version__,
     )
@@ -116,7 +139,10 @@ def resolve_source_request(
                 else outcome.required_action.kind.replace("_", " ")
             ),
         )
-    adapter = components.factory.activate(outcome, default_activation_context())
+    adapter = components.factory.activate(
+        outcome,
+        activation_context_for_dependency(outcome.descriptor.dependency),
+    )
     return adapter.resolve(outcome, operation)
 
 
@@ -132,10 +158,7 @@ def prepare_source_requests(
     return default_source_components().coordinator.prepare(
         requests,
         engine_session,
-        PreparationContext(
-            operation=operation,
-            activation=default_activation_context(),
-        ),
+        PreparationContext(operation=operation),
         resolved_snapshots=resolved_snapshots,
     )
 
@@ -238,6 +261,17 @@ def _legacy_suggestion(
             "parquet": "Parquet",
         }.get(source_kind, source_kind)
         return f"Submit the operation again to capture the current {display_kind} source."
+    if required_action.kind == "satisfy_provider_dependency":
+        guidance = next(
+            (
+                evidence.stable_detail
+                for evidence in diagnostic.evidence
+                if evidence.evidence_kind == "dependency_guidance"
+            ),
+            None,
+        )
+        if guidance is not None:
+            return guidance
     return required_action.kind.replace("_", " ")
 
 
@@ -268,6 +302,12 @@ def _legacy_error_code(code: str) -> SourceErrorCode:
         "source.json_record_path_invalid",
         "source.json_schema_invalid",
         "source.ndjson_invalid",
+        "source.excel_invalid",
+        "source.excel_metadata_limit",
+        "source.excel_range_invalid",
+        "source.excel_range_required",
+        "source.excel_sheet_ambiguous",
+        "source.excel_sheet_missing",
         "source.locator_shape_invalid",
         "source.parquet_dataset_empty",
         "source.parquet_invalid",
@@ -275,6 +315,8 @@ def _legacy_error_code(code: str) -> SourceErrorCode:
         "source.resolution_failed",
     }:
         return "source_missing"
+    if code == "source.excel_schema_inference_failed":
+        return "source_bind_failed"
     if code == "source.json_dependency_missing":
         return "missing_optional_dependency"
     if code.startswith("source.activation"):

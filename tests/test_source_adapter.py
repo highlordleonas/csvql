@@ -13,6 +13,7 @@ def test_source_adapter_module_contains_only_the_narrow_behavioral_contracts() -
 
     assert {
         "BindingContext",
+        "EngineDependencyState",
         "EngineSession",
         "RelationalBinding",
         "SourceAdapter",
@@ -57,3 +58,20 @@ def test_binding_context_carries_only_the_shared_operation_context() -> None:
 
     assert context.operation is operation
     assert tuple(context.__dataclass_fields__) == ("operation",)
+
+
+def test_engine_dependency_state_carries_one_selected_runtime_observation() -> None:
+    """A global dependency inventory would probe providers that were never selected."""
+
+    from csvql.source_adapter import EngineDependencyState
+
+    state = EngineDependencyState(
+        dependency_key="duckdb.extension.excel",
+        available=True,
+        dependency_version="excel-v1",
+        duckdb_version="1.5.4",
+    )
+
+    assert state.dependency_key == "duckdb.extension.excel"
+    assert state.available is True
+    assert state.dependency_version == "excel-v1"

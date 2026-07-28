@@ -21,7 +21,7 @@ from csvql.source import (
     UnknownSource,
     build_source_request,
 )
-from csvql.source_registry import DescriptorView
+from csvql.source_registry import DependencyRequirement, DescriptorView
 
 
 def test_source_coordinator_module_exposes_the_lifecycle_boundary() -> None:
@@ -128,7 +128,9 @@ class _RecordingFactory:
 
     def activate(self, selected: SelectedSource, context: object) -> object:
         self._events.append(f"activate:{selected.request.alias}")
-        return self._adapters[selected.request.alias]
+        adapter = self._adapters[selected.request.alias]
+        adapter._activation_context = context
+        return adapter
 
 
 class _RecordingEngineSession:
@@ -147,6 +149,24 @@ class _RecordingEngineSession:
 
     def preflight_aliases(self, aliases: tuple[str, ...]) -> None:
         self.events.append(f"preflight:{','.join(aliases)}")
+
+    def inspect_dependency(
+        self,
+        dependency_key: str | None,
+        dependency_kind: str | None,
+        *,
+        operation: object,
+    ) -> object:
+        del operation
+        from csvql.source_adapter import EngineDependencyState
+
+        self.events.append(f"inspect:{dependency_key or 'none'}")
+        return EngineDependencyState(
+            dependency_key=dependency_key,
+            available=True,
+            dependency_version=(None if dependency_key is None else f"{dependency_kind}-test"),
+            duckdb_version="1.4.0",
+        )
 
 
 class _RecordingBinding:
@@ -201,10 +221,20 @@ class _RecordingAdapter:
     ) -> None:
         self._events = events
         self._fail_bind = fail_bind
+        self._activation_context = None
 
     def resolve(self, selected: SelectedSource, operation: object) -> object:
         self._events.append(f"resolve:{selected.request.alias}")
-        return _resolved(selected.request)
+        resolved = _resolved(selected.request)
+        if self._activation_context is None:
+            return resolved
+        return replace(
+            resolved,
+            duckdb_version=self._activation_context.duckdb_version,
+            dependency_versions=self._activation_context.selected_dependency_versions(
+                selected.descriptor.dependency
+            ),
+        )
 
     def bind(
         self,
@@ -225,13 +255,18 @@ class _RecordingAdapter:
         return _RecordingBinding(resolved, engine_session.session_id, self._events)
 
 
-def _selected(request: SourceRequest) -> SelectedSource:
+def _selected(
+    request: SourceRequest,
+    *,
+    dependency: DependencyRequirement | None = None,
+) -> SelectedSource:
     descriptor = DescriptorView(
         provider_key="csv",
         source_kind="csv",
         factory_key="builtin.csv",
         provider_interpretation_version="1",
         extensions=(".csv",),
+        dependency=dependency,
     )
     return SelectedSource(
         request=request,
@@ -330,6 +365,67 @@ def test_prepare_resolves_every_source_before_binding_in_request_order() -> None
     ]
 
 
+def test_prepare_detects_entire_batch_before_selected_dependency_inspection() -> None:
+    """Availability work before detection completes would probe an unselected provider."""
+
+    coordinator_module = importlib.import_module("csvql.source_coordinator")
+    source_module = importlib.import_module("csvql.source")
+    requests = (
+        build_source_request(
+            alias="orders",
+            locator="orders.csv",
+            explicit_type="csv",
+        ),
+        build_source_request(
+            alias="customers",
+            locator="customers.csv",
+            explicit_type="csv",
+        ),
+    )
+    events: list[str] = []
+    outcomes = {
+        "orders": _selected(
+            requests[0],
+            dependency=DependencyRequirement("runtime.orders", "test_runtime"),
+        ),
+        "customers": _selected(
+            requests[1],
+            dependency=DependencyRequirement("runtime.customers", "test_runtime"),
+        ),
+    }
+    adapters = {request.alias: _RecordingAdapter(events=events) for request in requests}
+    coordinator = coordinator_module.SourceCoordinator(
+        _RecordingDetection(outcomes, events),
+        _RecordingFactory(adapters, events),
+    )
+    context = coordinator_module.PreparationContext(
+        operation=importlib.import_module("csvql.operation").OperationContext(
+            importlib.import_module("csvql.operation").OperationToken()
+        )
+    )
+
+    outcome = coordinator.prepare(
+        requests,
+        _RecordingEngineSession(events),
+        context,
+    )
+
+    assert isinstance(outcome, source_module.PreparedSources)
+    assert events == [
+        "preflight:orders,customers",
+        "detect:orders",
+        "detect:customers",
+        "inspect:runtime.orders",
+        "activate:orders",
+        "inspect:runtime.customers",
+        "activate:customers",
+        "resolve:orders",
+        "resolve:customers",
+        "bind:orders",
+        "bind:customers",
+    ]
+
+
 def test_prepare_reuses_valid_resolved_snapshots_without_resolving_again() -> None:
     """A resource-free snapshot may be rebound without repeating provider I/O."""
 
@@ -395,6 +491,59 @@ def test_prepare_rejects_snapshot_runtime_mismatch_before_binding() -> None:
     ]
 
 
+def test_prepare_rejects_snapshot_dependency_version_mismatch() -> None:
+    """A resolved workbook cannot be rebound under a different provider runtime."""
+
+    coordinator_module = importlib.import_module("csvql.source_coordinator")
+    factory_module = importlib.import_module("csvql.adapter_factory")
+    operation_module = importlib.import_module("csvql.operation")
+    source_module = importlib.import_module("csvql.source")
+    request = build_source_request(
+        alias="orders",
+        locator="/data/orders.csv",
+        explicit_type="csv",
+    )
+    dependency = DependencyRequirement("runtime.orders", "test_runtime")
+    events: list[str] = []
+    coordinator = coordinator_module.SourceCoordinator(
+        _RecordingDetection(
+            {"orders": _selected(request, dependency=dependency)},
+            events,
+        ),
+        _RecordingFactory(
+            {"orders": _RecordingAdapter(events=events)},
+            events,
+        ),
+    )
+    context = coordinator_module.PreparationContext(
+        operation=operation_module.OperationContext(operation_module.OperationToken()),
+        activation=factory_module.ActivationContext(
+            available_dependencies=frozenset((dependency.key,)),
+            dependency_versions=((dependency.key, "current"),),
+            duckdb_version="1.4.0",
+        ),
+    )
+    stale = replace(
+        _resolved(request),
+        dependency_versions=((dependency.key, "stale"),),
+    )
+
+    outcome = coordinator.prepare(
+        (request,),
+        _RecordingEngineSession(events),
+        context,
+        resolved_snapshots=(stale,),
+    )
+
+    assert isinstance(outcome, source_module.SourcePreparationFailure)
+    assert outcome.diagnostics[0].code is source_module.DiagnosticCode.SOURCE_IDENTITY_CHANGED
+    assert events == [
+        "preflight:orders",
+        "detect:orders",
+        "activate:orders",
+    ]
+
+
 def test_prepare_collects_all_nonselection_diagnostics_before_activation() -> None:
     """Stopping at the first unknown source would hide deterministic batch defects."""
 
@@ -427,7 +576,11 @@ def test_prepare_collects_all_nonselection_diagnostics_before_activation() -> No
     outcome = coordinator.prepare(
         requests,
         _RecordingEngineSession(events),
-        _preparation_context(),
+        coordinator_module.PreparationContext(
+            operation=importlib.import_module("csvql.operation").OperationContext(
+                importlib.import_module("csvql.operation").OperationToken()
+            )
+        ),
     )
 
     assert isinstance(outcome, source_module.SourcePreparationFailure)

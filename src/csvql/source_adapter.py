@@ -34,6 +34,24 @@ class BindingContext:
     operation: OperationContext
 
 
+@dataclass(frozen=True, slots=True)
+class EngineDependencyState:
+    """One selected dependency observation from the owning engine runtime."""
+
+    dependency_key: str | None
+    available: bool
+    dependency_version: str | None
+    duckdb_version: str
+
+    def __post_init__(self) -> None:
+        if not self.duckdb_version:
+            raise ValueError("Engine dependency state requires a DuckDB version.")
+        if self.dependency_key is None and self.dependency_version is not None:
+            raise ValueError("Dependency versions require a dependency key.")
+        if not self.available and self.dependency_version is not None:
+            raise ValueError("Unavailable dependencies cannot report a version.")
+
+
 @runtime_checkable
 class EngineSession(Protocol):
     """Provider-neutral engine operations available to bindings."""
@@ -50,6 +68,21 @@ class EngineSession(Protocol):
     def assert_session_access(self) -> None: ...
 
     def preflight_aliases(self, aliases: tuple[str, ...]) -> None: ...
+
+    def inspect_dependency(
+        self,
+        dependency_key: str | None,
+        dependency_kind: str | None,
+        *,
+        operation: OperationContext,
+    ) -> EngineDependencyState: ...
+
+    def load_installed_extension(
+        self,
+        dependency_key: str,
+        *,
+        operation: OperationContext,
+    ) -> None: ...
 
     def register_relation(
         self,

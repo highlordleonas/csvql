@@ -11,6 +11,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
+import csvql.engine as engine_module
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import (
     CSVQLError,
@@ -77,6 +78,71 @@ def test_engine_disables_duckdb_extension_autoinstall_and_autoload() -> None:
         )
 
     assert result.rows == ((False, False),)
+
+
+def test_engine_inspects_and_native_loads_only_one_authorized_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Extension loading must require exact prior availability evidence."""
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.events: list[object] = []
+
+        def interrupt(self) -> None:
+            return
+
+        def execute(self, query: str, params: list[object]):
+            self.events.append(("execute", query, params))
+            return self
+
+        def fetchone(self) -> tuple[bool, bool, str, str]:
+            return True, False, "excel-test-v1", "REPOSITORY"
+
+        def load_extension(self, extension_name: str) -> None:
+            self.events.append(("load_extension", extension_name))
+
+        def close(self) -> None:
+            self.events.append("close")
+
+    connection = FakeConnection()
+    monkeypatch.setattr(
+        engine_module.duckdb,
+        "connect",
+        lambda **_kwargs: connection,
+    )
+    engine = CSVQLEngine()
+    try:
+        state = engine.inspect_dependency(
+            "duckdb.extension.excel",
+            "duckdb_extension",
+            operation=engine.operation_context,
+        )
+
+        assert state.available is True
+        assert state.dependency_version == "excel-test-v1"
+        execute_event = connection.events[0]
+        assert execute_event[2] == ["excel"]
+        assert "WHERE extension_name = ?" in execute_event[1]
+        assert "WHERE installed" not in execute_event[1]
+
+        with pytest.raises(SourceBindingError, match="not authorized"):
+            engine.load_installed_extension(
+                "duckdb.extension.json",
+                operation=engine.operation_context,
+            )
+
+        engine.load_installed_extension(
+            "duckdb.extension.excel",
+            operation=engine.operation_context,
+        )
+        engine.load_installed_extension(
+            "duckdb.extension.excel",
+            operation=engine.operation_context,
+        )
+        assert connection.events.count(("load_extension", "excel")) == 1
+    finally:
+        engine.close()
 
 
 def test_provider_neutral_registration_is_queryable_and_token_owned() -> None:

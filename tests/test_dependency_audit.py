@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
+import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from importlib import metadata
@@ -41,6 +43,25 @@ TUI_AUDIT = {
     "fixes": [],
 }
 FIXED_TIME = datetime(2026, 7, 15, 12, 34, 56, 123456, tzinfo=timezone.utc)  # noqa: UP017
+
+
+def test_excel_provider_adds_no_python_workbook_parser_dependency() -> None:
+    """XLSX metadata stays stdlib-only and runtime reading remains DuckDB-owned."""
+
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    dependencies = tuple(project["dependencies"])
+    optional_dependencies = tuple(
+        dependency for group in project["optional-dependencies"].values() for dependency in group
+    )
+    normalized = tuple(
+        re.split(r"[\s\[<>=!~]", dependency, maxsplit=1)[0].casefold()
+        for dependency in (*dependencies, *optional_dependencies)
+    )
+
+    assert "duckdb" in normalized
+    assert "openpyxl" not in normalized
+    assert "xlrd" not in normalized
+    assert "xlsxwriter" not in normalized
 
 
 def test_windows_file_identity_uses_birthtime_instead_of_deprecated_ctime(

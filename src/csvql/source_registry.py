@@ -697,7 +697,10 @@ BUILTIN_SOURCE_DESCRIPTORS = (
         dependency=DependencyRequirement(
             "duckdb.extension.excel",
             "duckdb_extension",
-            guidance="Install the DuckDB excel extension explicitly.",
+            guidance=(
+                "Install the DuckDB excel extension explicitly in this environment; "
+                "installation is a separate networked action."
+            ),
         ),
         options=(
             _option("header", "boolean", default=True, has_default=True),

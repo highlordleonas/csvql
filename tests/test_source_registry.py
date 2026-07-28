@@ -70,6 +70,9 @@ def test_builtin_descriptors_encode_approved_static_defaults_once() -> None:
         "type_mode": "text",
     }
     assert "ignore_errors" not in {option.key for option in excel.options}
+    assert excel.dependency is not None
+    assert excel.dependency.key == "duckdb.extension.excel"
+    assert "separate networked action" in (excel.dependency.guidance or "")
 
 
 def test_registry_uses_longest_compound_suffix_without_registration_order() -> None:

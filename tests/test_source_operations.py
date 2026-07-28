@@ -212,5 +212,5 @@ def test_source_operations_use_only_public_engine_and_resolved_source_contracts(
     }
 
     assert private_engine_attributes == set()
-    assert "csvql.csv_adapter" not in imported_modules
+    assert not any(module.endswith("_adapter") for module in imported_modules)
     assert "csvql.source_adapter" not in imported_modules

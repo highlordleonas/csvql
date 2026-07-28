@@ -51,7 +51,7 @@ class PreparationContext:
     """Operation-scoped inputs used while preparing sources."""
 
     operation: OperationContext
-    activation: ActivationContext
+    activation: ActivationContext | None = None
 
 
 class SourceCoordinator:
@@ -152,19 +152,80 @@ class SourceCoordinator:
 
         selected_sources = cast(tuple[SelectedSource, ...], detections)
         adapters: list[SourceAdapter] = []
+        activation_contexts: list[ActivationContext] = []
+        dependency_contexts: dict[tuple[str | None, str | None], ActivationContext] = {}
         for selected in selected_sources:
             context.operation.checkpoint()
+            requirement = selected.descriptor.dependency
+            dependency_key = None if requirement is None else requirement.key
+            dependency_kind = None if requirement is None else requirement.kind
             try:
-                adapters.append(self._factory.activate(selected, context.activation))
+                activation = context.activation
+                if activation is None:
+                    cache_key = (dependency_key, dependency_kind)
+                    activation = dependency_contexts.get(cache_key)
+                    if activation is None:
+                        state = engine_session.inspect_dependency(
+                            dependency_key,
+                            dependency_kind,
+                            operation=context.operation,
+                        )
+                        if state.dependency_key != dependency_key:
+                            raise SourceActivationError(
+                                "source.provider_contract_invalid",
+                                "Engine dependency evidence does not match the selected provider.",
+                                provider_key=selected.provider_key,
+                                dependency_key=dependency_key,
+                            )
+                        available_dependencies = (
+                            frozenset()
+                            if dependency_key is None or not state.available
+                            else frozenset((dependency_key,))
+                        )
+                        dependency_versions = (
+                            ()
+                            if dependency_key is None or state.dependency_version is None
+                            else ((dependency_key, state.dependency_version),)
+                        )
+                        activation = ActivationContext(
+                            available_dependencies=available_dependencies,
+                            dependency_versions=dependency_versions,
+                            duckdb_version=state.duckdb_version,
+                        )
+                        dependency_contexts[cache_key] = activation
+                adapters.append(self._factory.activate(selected, activation))
+                activation_contexts.append(activation)
             except SourceActivationError as exc:
                 return SourcePreparationFailure((_activation_diagnostic(exc, selected.request),))
+            except SourceError as exc:
+                return SourcePreparationFailure(
+                    (
+                        _source_error_diagnostic(
+                            exc,
+                            stage=DiagnosticStage.ACTIVATION,
+                            request=selected.request,
+                        ),
+                    )
+                )
 
         if normalized_snapshots is None:
             resolved_sources: list[ResolvedSource] = []
-            for selected, adapter in zip(selected_sources, adapters, strict=True):
+            for selected, adapter, activation in zip(
+                selected_sources,
+                adapters,
+                activation_contexts,
+                strict=True,
+            ):
                 context.operation.checkpoint()
                 try:
-                    resolved_sources.append(adapter.resolve(selected, context.operation))
+                    resolved = adapter.resolve(selected, context.operation)
+                    _validate_resolved_snapshot(
+                        selected,
+                        resolved=resolved,
+                        adapter=adapter,
+                        activation=activation,
+                    )
+                    resolved_sources.append(resolved)
                 except SourceError as exc:
                     return SourcePreparationFailure(
                         (
@@ -177,10 +238,11 @@ class SourceCoordinator:
                     )
         else:
             resolved_sources = list(normalized_snapshots)
-            for selected, adapter, resolved in zip(
+            for selected, adapter, resolved, activation in zip(
                 selected_sources,
                 adapters,
                 resolved_sources,
+                activation_contexts,
                 strict=True,
             ):
                 context.operation.checkpoint()
@@ -189,7 +251,7 @@ class SourceCoordinator:
                         selected,
                         resolved=resolved,
                         adapter=adapter,
-                        context=context,
+                        activation=activation,
                     )
                 except SourceError as exc:
                     return SourcePreparationFailure(
@@ -387,7 +449,7 @@ def _validate_resolved_snapshot(
     *,
     resolved: ResolvedSource,
     adapter: SourceAdapter,
-    context: PreparationContext,
+    activation: ActivationContext,
 ) -> None:
     """Reject stale or cross-provider snapshots before creating a binding."""
 
@@ -399,7 +461,9 @@ def _validate_resolved_snapshot(
         or resolved.provider_interpretation_version
         != selected.descriptor.provider_interpretation_version
         or resolved.adapter_implementation_version != adapter.implementation_version
-        or resolved.duckdb_version != context.activation.duckdb_version
+        or resolved.duckdb_version != activation.duckdb_version
+        or resolved.dependency_versions
+        != activation.selected_dependency_versions(selected.descriptor.dependency)
     ):
         raise SourceIdentityError(
             "source_changed",
@@ -462,14 +526,17 @@ def _source_error_diagnostic(
     stage: DiagnosticStage,
     request: SourceRequest,
 ) -> SourceDiagnostic:
-    try:
-        code = DiagnosticCode(error.code)
-    except ValueError:
-        code = {
-            DiagnosticStage.RESOLUTION: DiagnosticCode.SOURCE_RESOLUTION_FAILED,
-            DiagnosticStage.BINDING: DiagnosticCode.SOURCE_BIND_FAILED,
-            DiagnosticStage.IDENTITY: DiagnosticCode.SOURCE_IDENTITY_CHANGED,
-        }.get(stage, DiagnosticCode.SOURCE_REQUEST_INVALID)
+    if stage is DiagnosticStage.ACTIVATION:
+        code = DiagnosticCode.SOURCE_ACTIVATION_FAILED
+    else:
+        try:
+            code = DiagnosticCode(error.code)
+        except ValueError:
+            code = {
+                DiagnosticStage.RESOLUTION: DiagnosticCode.SOURCE_RESOLUTION_FAILED,
+                DiagnosticStage.BINDING: DiagnosticCode.SOURCE_BIND_FAILED,
+                DiagnosticStage.IDENTITY: DiagnosticCode.SOURCE_IDENTITY_CHANGED,
+            }.get(stage, DiagnosticCode.SOURCE_REQUEST_INVALID)
     return SourceDiagnostic(
         code=code,
         stage=stage,
@@ -497,11 +564,29 @@ def _activation_diagnostic(
         code = DiagnosticCode(error.code)
     except ValueError:
         code = DiagnosticCode.SOURCE_ACTIVATION_FAILED
+    evidence: list[DiagnosticEvidence] = []
+    if error.dependency_key is not None:
+        evidence.append(
+            DiagnosticEvidence(
+                error.provider_key,
+                "dependency_key",
+                error.dependency_key,
+            )
+        )
+    if error.suggestion is not None:
+        evidence.append(
+            DiagnosticEvidence(
+                error.provider_key,
+                "dependency_guidance",
+                error.suggestion,
+            )
+        )
     return SourceDiagnostic(
         code=code,
         stage=DiagnosticStage.ACTIVATION,
         message=error.message,
         safe_source_reference=request.safe_source_reference,
+        evidence=tuple(evidence),
         required_action=RequiredAction("satisfy_provider_dependency", (error.provider_key,)),
     )
 
