@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import threading
 import time
 from pathlib import Path
@@ -293,6 +294,124 @@ def test_engine_joins_csv_and_parquet_without_format_branches(
     assert result.rows == ((1, "alpha", 10), (2, "beta", 20))
 
 
+def _write_join_fixture(
+    path: Path,
+    *,
+    provider_key: str,
+    rows: tuple[dict[str, object], ...],
+) -> None:
+    if provider_key == "csv":
+        columns = tuple(rows[0])
+        path.write_text(
+            ",".join(columns)
+            + "\n"
+            + "\n".join(",".join(str(row[column]) for column in columns) for row in rows)
+            + "\n",
+            encoding="utf-8",
+        )
+        return
+    if provider_key == "json":
+        path.write_text(json.dumps(rows), encoding="utf-8")
+        return
+    if provider_key == "ndjson":
+        path.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+        return
+    if provider_key == "parquet":
+        columns = tuple(rows[0])
+        placeholders = ", ".join("?" for _column in columns)
+        connection = duckdb.connect(database=":memory:")
+        try:
+            relation = connection.sql(
+                f"SELECT * FROM (VALUES {', '.join(f'({placeholders})' for _row in rows)}) "
+                f"AS rows({', '.join(columns)})",
+                params=[value for row in rows for value in (row[column] for column in columns)],
+            )
+            relation.write_parquet(str(path))
+        finally:
+            connection.close()
+        return
+    raise AssertionError(f"Unsupported test provider: {provider_key}")
+
+
+@pytest.mark.parametrize(
+    ("left_provider", "right_provider", "request_order"),
+    (
+        ("csv", "json", ("left_rows", "right_rows")),
+        ("csv", "json", ("right_rows", "left_rows")),
+        ("parquet", "json", ("left_rows", "right_rows")),
+        ("json", "ndjson", ("left_rows", "right_rows")),
+    ),
+)
+def test_engine_joins_json_family_without_format_branches(
+    left_provider: str,
+    right_provider: str,
+    request_order: tuple[str, str],
+    tmp_path: Path,
+) -> None:
+    """JSON-family sources must join through ordinary relational bindings."""
+
+    suffixes = {
+        "csv": "csv",
+        "json": "json",
+        "ndjson": "ndjson",
+        "parquet": "parquet",
+    }
+    left_path = tmp_path / f"left.{suffixes[left_provider]}"
+    right_path = tmp_path / f"right.{suffixes[right_provider]}"
+    _write_join_fixture(
+        left_path,
+        provider_key=left_provider,
+        rows=(
+            {"id": 1, "value": "alpha"},
+            {"id": 2, "value": "beta"},
+        ),
+    )
+    _write_join_fixture(
+        right_path,
+        provider_key=right_provider,
+        rows=(
+            {"id": 1, "score": 10},
+            {"id": 2, "score": 20},
+            {"id": 3, "score": 30},
+        ),
+    )
+    requests_by_alias = {
+        "left_rows": build_source_request(
+            alias="left_rows",
+            locator=left_path.name,
+            anchor=left_path.parent,
+        ),
+        "right_rows": build_source_request(
+            alias="right_rows",
+            locator=right_path.name,
+            anchor=right_path.parent,
+        ),
+    }
+    requests = tuple(requests_by_alias[alias] for alias in request_order)
+
+    with CSVQLEngine() as engine:
+        prepared = prepare_source_requests(
+            requests,
+            engine_session=engine,
+            operation=engine.operation_context,
+        )
+        assert isinstance(prepared, PreparedSources)
+        assert not isinstance(prepared, SourcePreparationFailure)
+        result = engine.query(
+            """
+            SELECT left_rows.id, left_rows.value, right_rows.score
+            FROM left_rows
+            JOIN right_rows USING (id)
+            ORDER BY left_rows.id
+            """
+        )
+
+    assert result.rows == ((1, "alpha", 10), (2, "beta", 20))
+
+
 def test_long_parquet_scan_can_be_cancelled_and_cleaned_up(tmp_path: Path) -> None:
     """Parquet execution must retain the engine's interrupt and terminal barriers."""
 
@@ -308,6 +427,56 @@ def test_long_parquet_scan_can_be_cancelled_and_cleaned_up(tmp_path: Path) -> No
         alias="numbers",
         locator=parquet_path.name,
         anchor=parquet_path.parent,
+    )
+    operation = _operation()
+    with CSVQLEngine(operation=operation) as engine:
+        prepared = prepare_source_requests(
+            (request,),
+            engine_session=engine,
+            operation=operation,
+        )
+        assert isinstance(prepared, PreparedSources)
+        cancellation_failures: list[str] = []
+
+        def cancel_during_execution() -> None:
+            deadline = time.monotonic() + 2
+            while operation.state is not OperationState.EXECUTING:
+                if time.monotonic() >= deadline:
+                    cancellation_failures.append("execution did not start")
+                    return
+                time.sleep(0.001)
+            engine.interrupt()
+
+        canceller = threading.Thread(target=cancel_during_execution)
+        canceller.start()
+        with pytest.raises(OperationCancelled):
+            engine.query(
+                """
+                SELECT sum(a.id::HUGEINT * b.id::HUGEINT)
+                FROM numbers AS a
+                CROSS JOIN numbers AS b
+                """
+            )
+        canceller.join(timeout=2)
+
+        assert not canceller.is_alive()
+        assert cancellation_failures == []
+        assert operation.state is OperationState.TERMINAL
+        assert default_source_components().coordinator.release(prepared).succeeded
+
+
+def test_long_ndjson_query_can_be_cancelled_and_cleaned_up(tmp_path: Path) -> None:
+    """JSON-family bindings must retain engine cancellation and cleanup barriers."""
+
+    source = tmp_path / "numbers.ndjson"
+    source.write_text(
+        "".join(json.dumps({"id": value}) + "\n" for value in range(50_000)),
+        encoding="utf-8",
+    )
+    request = build_source_request(
+        alias="numbers",
+        locator=source.name,
+        anchor=source.parent,
     )
     operation = _operation()
     with CSVQLEngine(operation=operation) as engine:

@@ -7,6 +7,7 @@ from functools import lru_cache
 from typing import Never
 
 import duckdb
+from duckdb import connect as _connect_activation_metadata
 
 from csvql.adapter_factory import (
     ActivationContext,
@@ -61,9 +62,38 @@ def default_source_components() -> SourceComponents:
 
 
 def default_activation_context() -> ActivationContext:
-    """Build core runtime facts without inspecting optional provider dependencies."""
+    """Inspect installed dependency metadata without loading provider code."""
 
-    return ActivationContext(duckdb_version=duckdb.__version__)
+    connection = _connect_activation_metadata(
+        database=":memory:",
+        config={
+            "autoinstall_known_extensions": "false",
+            "autoload_known_extensions": "false",
+        },
+    )
+    try:
+        extension_rows = connection.execute(
+            """
+            SELECT extension_name, extension_version, install_mode
+            FROM duckdb_extensions()
+            WHERE installed
+            ORDER BY extension_name
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    dependency_versions = tuple(
+        (
+            f"duckdb.extension.{extension_name}",
+            extension_version or install_mode,
+        )
+        for extension_name, extension_version, install_mode in extension_rows
+    )
+    return ActivationContext(
+        available_dependencies=frozenset(key for key, _version in dependency_versions),
+        dependency_versions=dependency_versions,
+        duckdb_version=duckdb.__version__,
+    )
 
 
 def resolve_source_request(
@@ -214,6 +244,11 @@ def _legacy_suggestion(
 def _legacy_error_code(code: str) -> SourceErrorCode:
     if code in {
         "source.bind_failed",
+        "source.json_record_not_object",
+        "source.json_record_path_missing",
+        "source.json_record_path_not_array",
+        "source.json_record_shape_invalid",
+        "source.json_schema_cast_failed",
         "source.parquet_schema_mismatch",
         "source.provider_contract_invalid",
     }:
@@ -229,6 +264,10 @@ def _legacy_error_code(code: str) -> SourceErrorCode:
     if code in {
         "source.dataset_manifest_limit",
         "source.dataset_symlink_rejected",
+        "source.json_invalid",
+        "source.json_record_path_invalid",
+        "source.json_schema_invalid",
+        "source.ndjson_invalid",
         "source.locator_shape_invalid",
         "source.parquet_dataset_empty",
         "source.parquet_invalid",
@@ -236,6 +275,8 @@ def _legacy_error_code(code: str) -> SourceErrorCode:
         "source.resolution_failed",
     }:
         return "source_missing"
+    if code == "source.json_dependency_missing":
+        return "missing_optional_dependency"
     if code.startswith("source.activation"):
         return "missing_optional_dependency"
     return "unknown_source_kind"

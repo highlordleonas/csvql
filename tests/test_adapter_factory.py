@@ -4,6 +4,7 @@ import importlib
 import sys
 from types import ModuleType
 
+import duckdb
 import pytest
 
 from csvql.source import (
@@ -105,6 +106,10 @@ def test_builtin_factory_registrations_compose_without_importing_providers(
     _factory_module().AdapterFactory(registry, table)
 
     assert table.provider_keys == ("csv", "excel", "json", "ndjson", "parquet")
+    assert table.registration("json").import_module == "csvql.json_adapter"
+    assert table.registration("json").constructor_symbol == "_create_json_adapter"
+    assert table.registration("ndjson").import_module == "csvql.json_adapter"
+    assert table.registration("ndjson").constructor_symbol == "_create_ndjson_adapter"
     assert not any(
         module_name in sys.modules
         for module_name in (
@@ -115,6 +120,68 @@ def test_builtin_factory_registrations_compose_without_importing_providers(
             "csvql.excel_adapter",
         )
     )
+
+
+def test_default_activation_context_reports_statically_linked_json_support() -> None:
+    """JSON activation must use installed runtime facts without auto-installing."""
+
+    from csvql.source_runtime import default_activation_context
+
+    context = default_activation_context()
+
+    assert "duckdb.extension.json" in context.available_dependencies
+    assert dict(context.dependency_versions)["duckdb.extension.json"] == "v1.5.4"
+
+
+def test_activation_metadata_connection_isolated_from_engine_connect_injection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Engine failure injection must not replace dependency metadata inspection."""
+
+    from csvql.source_runtime import default_activation_context
+
+    def reject_engine_connection(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("engine connection injection reached activation metadata")
+
+    monkeypatch.setattr(duckdb, "connect", reject_engine_connection)
+
+    context = default_activation_context()
+
+    assert "duckdb.extension.json" in context.available_dependencies
+
+
+def test_builtin_json_dependency_failure_precedes_provider_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing JSON support must remain a selected-provider activation outcome."""
+
+    module = _factory_module()
+    registry_module = importlib.import_module("csvql.source_registry")
+    from csvql.exceptions import SourceActivationError
+
+    registry = registry_module.build_builtin_descriptor_registry()
+    table = module.build_builtin_lazy_adapter_table()
+    imported: list[str] = []
+    monkeypatch.setattr(
+        importlib,
+        "import_module",
+        lambda name: imported.append(name),
+    )
+
+    with pytest.raises(SourceActivationError) as captured:
+        module.AdapterFactory(registry, table).activate(
+            _selected(
+                "json",
+                factory_key=registry.descriptor("json").factory_key,
+                dependency=registry.descriptor("json").dependency,
+            ),
+            module.ActivationContext(duckdb_version="1.5.4"),
+        )
+
+    assert captured.value.code == "source.activation_dependency_missing"
+    assert captured.value.provider_key == "json"
+    assert captured.value.dependency_key == "duckdb.extension.json"
+    assert imported == []
 
 
 def test_factory_imports_and_constructs_only_selected_provider(

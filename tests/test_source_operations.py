@@ -43,6 +43,25 @@ def _resolved_parquet(path: Path, *, alias: str = "orders") -> ResolvedSource:
     return resolved
 
 
+def _resolved_json_family(
+    path: Path,
+    *,
+    provider_key: str,
+    alias: str = "orders",
+) -> ResolvedSource:
+    resolved = resolve_source_request(
+        build_source_request(
+            alias=alias,
+            locator=path.name,
+            anchor=path.parent,
+            explicit_type=provider_key,
+        ),
+        operation=OperationContext(OperationToken()),
+    )
+    assert isinstance(resolved, ResolvedSource)
+    return resolved
+
+
 def test_csv_inspect_sample_and_profile_preserve_relational_behavior(
     tmp_path: Path,
 ) -> None:
@@ -89,6 +108,47 @@ def test_parquet_inspect_sample_and_profile_match_relational_behavior(
     finally:
         connection.close()
     source = _resolved_parquet(path)
+
+    with CSVQLEngine() as engine:
+        operations = SourceOperations(engine, source)
+        inspected = operations.inspect(exact=True)
+        sampled = operations.sample(limit=2)
+        profiled = operations.profile()
+
+    assert [column.name for column in inspected.columns] == ["id", "value"]
+    assert inspected.row_count.value == 3
+    assert inspected.dialect.delimiter is None
+    assert sampled.rows == ((1, "alpha"), (2, "beta"))
+    assert profiled.row_count == 3
+    assert profiled.duplicate_row_count == 1
+
+
+@pytest.mark.parametrize(
+    ("provider_key", "filename", "content"),
+    (
+        (
+            "json",
+            "orders.json",
+            ('[{"id":1,"value":"alpha"},{"id":2,"value":"beta"},{"id":2,"value":"beta"}]'),
+        ),
+        (
+            "ndjson",
+            "orders.ndjson",
+            ('{"id":1,"value":"alpha"}\n{"id":2,"value":"beta"}\n{"id":2,"value":"beta"}\n'),
+        ),
+    ),
+)
+def test_json_family_inspect_sample_and_profile_match_relational_behavior(
+    provider_key: str,
+    filename: str,
+    content: str,
+    tmp_path: Path,
+) -> None:
+    """JSON-family operations must use the same relational binding boundary."""
+
+    path = tmp_path / filename
+    path.write_text(content, encoding="utf-8")
+    source = _resolved_json_family(path, provider_key=provider_key)
 
     with CSVQLEngine() as engine:
         operations = SourceOperations(engine, source)

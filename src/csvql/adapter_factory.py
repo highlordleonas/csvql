@@ -302,7 +302,7 @@ BUILTIN_LAZY_ADAPTER_REGISTRATIONS = (
     LazyAdapterRegistration(
         "ndjson",
         "builtin.ndjson",
-        "csvql.ndjson_adapter",
+        "csvql.json_adapter",
         "_create_ndjson_adapter",
         "duckdb.extension.json",
     ),

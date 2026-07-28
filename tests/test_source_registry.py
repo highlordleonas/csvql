@@ -37,6 +37,7 @@ def test_builtin_descriptors_encode_approved_static_defaults_once() -> None:
 
     parquet = registry.descriptor("parquet")
     json_descriptor = registry.descriptor("json")
+    ndjson_descriptor = registry.descriptor("ndjson")
     excel = registry.descriptor("excel")
 
     assert parquet.option_defaults_as_python() == {
@@ -44,9 +45,24 @@ def test_builtin_descriptors_encode_approved_static_defaults_once() -> None:
         "union_by_name": False,
     }
     assert json_descriptor.option_defaults_as_python() == {
-        "maximum_object_size": 16_777_216,
-        "record_mode": "array",
+        "maximum_depth": 10,
         "sample_size": 20_480,
+    }
+    assert ndjson_descriptor.option_defaults_as_python() == {
+        "maximum_depth": 10,
+        "sample_size": 20_480,
+    }
+    assert {option.key for option in json_descriptor.options} == {
+        "maximum_depth",
+        "record_path",
+        "sample_size",
+        "schema",
+    }
+    assert {option.key for option in ndjson_descriptor.options} == {
+        "maximum_depth",
+        "record_path",
+        "sample_size",
+        "schema",
     }
     assert excel.option_defaults_as_python() == {
         "header": True,

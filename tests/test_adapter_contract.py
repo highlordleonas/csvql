@@ -32,6 +32,8 @@ class ProviderCase:
 
 PROVIDER_CASES = (
     ProviderCase("csv", "orders.csv"),
+    ProviderCase("json", "orders.json"),
+    ProviderCase("ndjson", "orders.ndjson"),
     ProviderCase("parquet", "orders.parquet"),
 )
 
@@ -44,6 +46,18 @@ def _write_fixture(case: ProviderCase, path: Path) -> None:
     if case.provider_key == "csv":
         path.write_text(
             "id,value\n1,alpha\n2,beta\n3,beta\n",
+            encoding="utf-8",
+        )
+        return
+    if case.provider_key == "json":
+        path.write_text(
+            '[{"id":1,"value":"alpha"},{"id":2,"value":"beta"},{"id":3,"value":"beta"}]',
+            encoding="utf-8",
+        )
+        return
+    if case.provider_key == "ndjson":
+        path.write_text(
+            '{"id":1,"value":"alpha"}\n{"id":2,"value":"beta"}\n{"id":3,"value":"beta"}\n',
             encoding="utf-8",
         )
         return

@@ -657,11 +657,10 @@ BUILTIN_SOURCE_DESCRIPTORS = (
         dependency=DependencyRequirement(
             "duckdb.extension.json",
             "duckdb_extension",
-            guidance="Install the DuckDB json extension explicitly.",
+            guidance="Use a DuckDB runtime with the JSON extension available.",
         ),
         options=(
-            _option("maximum_object_size", "integer", default=16_777_216, has_default=True),
-            _option("record_mode", "string", default="array", has_default=True),
+            _option("maximum_depth", "integer", default=10, has_default=True),
             _option("record_path", "string"),
             _option("sample_size", "integer", default=20_480, has_default=True),
             _option("schema", "object"),
@@ -673,15 +672,15 @@ BUILTIN_SOURCE_DESCRIPTORS = (
     SourceDescriptor(
         provider_key="ndjson",
         source_kind="ndjson",
-        aliases=("jsonl",),
+        aliases=("jsonl", "jsonlines"),
         extensions=(".ndjson", ".jsonl"),
         dependency=DependencyRequirement(
             "duckdb.extension.json",
             "duckdb_extension",
-            guidance="Install the DuckDB json extension explicitly.",
+            guidance="Use a DuckDB runtime with the JSON extension available.",
         ),
         options=(
-            _option("maximum_object_size", "integer", default=16_777_216, has_default=True),
+            _option("maximum_depth", "integer", default=10, has_default=True),
             _option("record_path", "string"),
             _option("sample_size", "integer", default=20_480, has_default=True),
             _option("schema", "object"),

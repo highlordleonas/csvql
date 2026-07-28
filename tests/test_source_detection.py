@@ -53,19 +53,30 @@ def test_explicit_type_wins_over_conflicting_extension_without_provider_import(
     assert "csvql.csv_adapter" not in sys.modules
 
 
-def test_recognized_extension_selects_deterministically_case_insensitively(
+@pytest.mark.parametrize(
+    ("filename", "expected_provider", "expected_extension"),
+    (
+        ("events.JSON", "json", ".json"),
+        ("events.NDJSON", "ndjson", ".ndjson"),
+        ("events.JSONL", "ndjson", ".jsonl"),
+    ),
+)
+def test_json_family_extensions_select_deterministically_case_insensitively(
+    filename: str,
+    expected_provider: str,
+    expected_extension: str,
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / "events.JSONL"
+    path = tmp_path / filename
     path.write_text('{"id": 1}\n', encoding="utf-8")
 
     detected = _builtin_service().detect(build_source_request(alias="events", locator=str(path)))
 
     assert isinstance(detected, SelectedSource)
-    assert detected.provider_key == "ndjson"
-    assert detected.source_kind == "ndjson"
+    assert detected.provider_key == expected_provider
+    assert detected.source_kind == expected_provider
     assert detected.selection_reason == "extension"
-    assert detected.extension_evidence == ".jsonl"
+    assert detected.extension_evidence == expected_extension
 
 
 def test_untyped_directory_is_ambiguous_even_when_name_has_parquet_suffix(
@@ -322,8 +333,7 @@ def test_descriptor_defaults_apply_once_and_invalid_static_options_do_not_select
 
     assert isinstance(selected, SelectedSource)
     assert selected.options_as_python() == {
-        "maximum_object_size": 16_777_216,
-        "record_mode": "array",
+        "maximum_depth": 10,
         "sample_size": 10,
     }
     assert isinstance(unknown_option, InvalidSource)
