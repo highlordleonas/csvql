@@ -218,6 +218,37 @@ def test_workflows_pin_node24_compatible_actions_by_commit() -> None:
     }
 
 
+def test_ci_provisions_excel_for_every_required_matrix_cell() -> None:
+    workflow = workflow_payload(".github/workflows/ci.yml")
+    test_job = workflow["jobs"]["test"]
+    job_env = test_job["env"]
+    assert job_env["LOCALQL_TEST_DUCKDB_EXTENSION_DIRECTORY"] == (
+        "${{ runner.temp }}/localql-duckdb-extensions"
+    )
+
+    provision_step = named_step(
+        ".github/workflows/ci.yml",
+        "test",
+        "Provision DuckDB Excel extension",
+    )
+    provision_run = step_run(provision_step)
+    assert provision_step["timeout-minutes"] == 5
+    for required in (
+        '"autoinstall_known_extensions": "false"',
+        '"autoload_known_extensions": "false"',
+        '"extension_directory": str(extension_directory)',
+        'connection.install_extension("excel")',
+        "FROM duckdb_extensions()",
+        '["excel"]',
+    ):
+        assert required in provision_run
+    assert "load_extension" not in provision_run
+
+    test_step = named_step(".github/workflows/ci.yml", "test", "Test")
+    assert test_step["env"]["LOCALQL_REQUIRE_PROVISIONED_EXCEL"] == "1"
+    assert step_run(test_step) == "uv run --all-extras pytest"
+
+
 def test_contributor_templates_collect_user_facing_change_context() -> None:
     feature_request = yaml.safe_load(read_text(".github/ISSUE_TEMPLATE/feature_request.yml"))
     feature_fields = {

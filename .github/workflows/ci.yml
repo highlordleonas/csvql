@@ -16,6 +16,7 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     env:
+      LOCALQL_TEST_DUCKDB_EXTENSION_DIRECTORY: ${{ runner.temp }}/localql-duckdb-extensions
       UV_PYTHON: ${{ matrix.python-version }}
     defaults:
       run:
@@ -49,6 +50,58 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
         run: uv sync --all-extras --frozen
+      - name: Provision DuckDB Excel extension
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          uv run --frozen --no-sync python - <<'PY'
+          import os
+          import time
+          from pathlib import Path
+
+          import duckdb
+
+          extension_directory = Path(
+              os.environ["LOCALQL_TEST_DUCKDB_EXTENSION_DIRECTORY"]
+          )
+          extension_directory.mkdir(parents=True, exist_ok=True)
+          connection = duckdb.connect(
+              database=":memory:",
+              config={
+                  "autoinstall_known_extensions": "false",
+                  "autoload_known_extensions": "false",
+                  "extension_directory": str(extension_directory),
+              },
+          )
+          try:
+              for attempt in range(2):
+                  try:
+                      connection.install_extension("excel")
+                      break
+                  except duckdb.Error:
+                      if attempt == 1:
+                          raise
+                      time.sleep(1)
+              state = connection.execute(
+                  """
+                  SELECT installed, extension_version, install_mode
+                  FROM duckdb_extensions()
+                  WHERE extension_name = ?
+                  """,
+                  ["excel"],
+              ).fetchone()
+              if state is None or not state[0]:
+                  raise RuntimeError("DuckDB Excel extension provisioning did not complete.")
+              print(
+                  {
+                      "duckdb_version": duckdb.__version__,
+                      "excel_extension_version": state[1],
+                      "install_mode": state[2],
+                  }
+              )
+          finally:
+              connection.close()
+          PY
       - name: Verify pull request test merge
         if: github.event_name == 'pull_request'
         env:
@@ -77,6 +130,8 @@ jobs:
       - name: Type check
         run: uv run --all-extras mypy src
       - name: Test
+        env:
+          LOCALQL_REQUIRE_PROVISIONED_EXCEL: "1"
         run: uv run --all-extras pytest
       - name: Verify exact release artifacts
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
