@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from csvql.source import SourceDiagnostic
 
 SourceErrorCode = Literal[
     "unknown_source_kind",
@@ -40,10 +43,31 @@ class CSVQLError(Exception):
 
     exit_code = 1
 
-    def __init__(self, message: str, *, suggestion: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        suggestion: str | None = None,
+        diagnostic: SourceDiagnostic | None = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.suggestion = suggestion
+        self.diagnostic = diagnostic
+
+    def as_dict(self, *, redaction: str = "safe") -> dict[str, object]:
+        """Return a deterministic public failure payload."""
+
+        payload: dict[str, object] = {
+            "message": self.message,
+            "suggestion": self.suggestion,
+        }
+        if self.diagnostic is not None:
+            payload["diagnostic"] = {
+                "version": 1,
+                **self.diagnostic.as_dict(redaction=redaction),
+            }
+        return payload
 
 
 class SourceError(CSVQLError):
@@ -57,10 +81,15 @@ class SourceError(CSVQLError):
         kind: str | None = None,
         alias: str | None = None,
         suggestion: str | None = None,
+        diagnostic: SourceDiagnostic | None = None,
     ) -> None:
         """Create a source error with only structured boundary context."""
 
-        super().__init__(message, suggestion=suggestion)
+        super().__init__(
+            message,
+            suggestion=suggestion,
+            diagnostic=diagnostic,
+        )
         self.code = code
         self.kind = kind
         self.alias = alias
@@ -157,6 +186,17 @@ class ProjectConfigError(CSVQLError):
     """Raised when project catalog discovery, parsing, or validation fails."""
 
     exit_code = 8
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        suggestion: str | None = None,
+        code: str = "catalog.invalid",
+        diagnostic: SourceDiagnostic | None = None,
+    ) -> None:
+        super().__init__(message, suggestion=suggestion, diagnostic=diagnostic)
+        self.code = code
 
 
 class SQLFileError(CSVQLError):

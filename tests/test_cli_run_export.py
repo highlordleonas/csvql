@@ -984,7 +984,7 @@ def test_run_help_describes_limit_as_table_output_only() -> None:
     assert result.exit_code == 0, result.output
     assert "Maximum rows to display" in result.output
     assert "display in table" in result.output
-    assert "output." in result.output
+    assert "output only." in result.output
 
 
 def test_run_table_output_reports_byte_limit_truncation_truthfully(

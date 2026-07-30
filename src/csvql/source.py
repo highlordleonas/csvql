@@ -141,6 +141,12 @@ def canonical_source_options_bytes(options: FrozenSourceOptions) -> bytes:
     return canonical_source_json_bytes(FrozenJSONObject(options))
 
 
+def source_options_as_python(options: FrozenSourceOptions) -> dict[str, object]:
+    """Return frozen source options as an ordinary JSON-compatible mapping."""
+
+    return cast(dict[str, object], _thaw_source_value(FrozenJSONObject(options)))
+
+
 @dataclass(frozen=True, slots=True)
 class SourceApplicationContext:
     """Presentation and observability context excluded from source semantics."""
@@ -178,7 +184,8 @@ class SourceRequest:
             explicit_type = explicit_type.strip()
         normalized_anchor = None
         if self.anchor is not None:
-            normalized_anchor = Path(os.path.abspath(os.path.normpath(os.fspath(self.anchor))))
+            expanded_anchor = self.anchor.expanduser()
+            normalized_anchor = Path(os.path.abspath(os.path.normpath(os.fspath(expanded_anchor))))
         object.__setattr__(self, "locator", os.path.normpath(self.locator))
         object.__setattr__(self, "anchor", normalized_anchor)
         object.__setattr__(self, "explicit_type", explicit_type)
@@ -215,6 +222,39 @@ def build_source_request(
         explicit_type=explicit_type,
         options=freeze_source_options(options),
     )
+
+
+def source_request_as_json_value(
+    request: SourceRequest,
+    *,
+    redaction: Literal["none", "safe"] = "none",
+) -> FrozenJSONValue:
+    """Return one versioned provider-neutral request for deterministic automation."""
+
+    if redaction not in {"none", "safe"}:
+        raise ValueError("Source requests support only none or safe redaction.")
+    return freeze_source_value(
+        {
+            "version": 1,
+            "alias": request.alias,
+            "locator": (request.locator if redaction == "none" else request.safe_source_reference),
+            "anchor": (
+                str(request.anchor) if request.anchor is not None and redaction == "none" else None
+            ),
+            "explicit_type": request.explicit_type,
+            "options": source_options_as_python(request.options),
+        }
+    )
+
+
+def canonical_source_request_bytes(
+    request: SourceRequest,
+    *,
+    redaction: Literal["none", "safe"] = "none",
+) -> bytes:
+    """Serialize one source request with stable ordering and path policy."""
+
+    return canonical_source_json_bytes(source_request_as_json_value(request, redaction=redaction))
 
 
 class DiagnosticCode(StrEnum):
@@ -385,6 +425,13 @@ class SourceDiagnostic:
                 "causes": list(self.cause_classifications),
             }
         )
+
+    def as_dict(self, *, redaction: str = "safe") -> dict[str, object]:
+        """Return a deterministic diagnostic mapping with safe path redaction."""
+
+        if redaction != "safe":
+            raise ValueError("Source diagnostics support only safe redaction.")
+        return cast(dict[str, object], _thaw_source_value(self.as_json_value()))
 
 
 SelectionReason = Literal["explicit_type", "extension"]
@@ -643,7 +690,7 @@ class SourceSpec:
     kind: str
     locator: str
     anchor: Path
-    options: SourceOptions = ()
+    options: FrozenSourceOptions = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.alias, str) or not _SOURCE_ALIAS_PATTERN.fullmatch(self.alias):
@@ -657,7 +704,7 @@ class SourceSpec:
         if not isinstance(self.anchor, Path):
             raise TypeError("Source anchor must be an explicit pathlib.Path.")
 
-        normalized_options = source_options(self.options)
+        normalized_options = freeze_source_options(self.options)
         if self.kind == "csv" and normalized_options:
             raise SourceError(
                 "unsupported_source_option",
@@ -997,6 +1044,23 @@ class _NamedPathSource(Protocol):
     def path(self) -> Path: ...
 
 
+class _SourceDefinitionInput(Protocol):
+    @property
+    def alias(self) -> str: ...
+
+    @property
+    def locator(self) -> str: ...
+
+    @property
+    def source_type(self) -> str | None: ...
+
+    @property
+    def options(self) -> FrozenSourceOptions: ...
+
+    @property
+    def base_dir(self) -> Path | None: ...
+
+
 class _CatalogTableEntry(Protocol):
     @property
     def name(self) -> str: ...
@@ -1022,6 +1086,22 @@ def source_spec_from_table_source(
         kind="csv",
         locator=str(source_path),
         anchor=anchor,
+    )
+
+
+def source_request_from_definition(
+    source: _SourceDefinitionInput,
+    *,
+    default_type: str | None = None,
+) -> SourceRequest:
+    """Translate one public source transport value at the application boundary."""
+
+    return build_source_request(
+        alias=source.alias,
+        locator=source.locator,
+        anchor=source.base_dir,
+        explicit_type=source.source_type if source.source_type is not None else default_type,
+        options=source.options,
     )
 
 

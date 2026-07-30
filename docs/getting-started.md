@@ -16,7 +16,7 @@ csvql --version
 If `csvql` is not found after installation, see
 [Troubleshooting](troubleshooting.md#csvql-command-not-found).
 
-## Query a CSV
+## Query your first source
 
 Put a CSV in your working directory. For example, create `orders.csv` with a
 header row and a few rows of data, then run:
@@ -30,6 +30,43 @@ The command prints a result table. Use `--output json` when a script needs a
 structured result.
 
 ![Terminal screenshot of a LocalQL query over a CSV file](assets/localql-terminal-query.svg)
+
+## Query other local formats
+
+Recognized extensions select their provider deterministically:
+
+```console
+csvql query data/orders.parquet "SELECT COUNT(*) FROM orders"
+csvql query data/events.ndjson "SELECT event_type, COUNT(*) FROM events GROUP BY event_type"
+csvql query data/customers.json "SELECT * FROM customers LIMIT 5"
+```
+
+CSV, Parquet, JSON, and NDJSON use the same query path. Excel `.xlsx` workbooks
+use the same path when DuckDB's optional `excel` extension has already been
+provisioned in the environment:
+
+```console
+csvql query data/orders.xlsx "SELECT * FROM orders LIMIT 5" \
+  --type excel \
+  --option sheet=Orders \
+  --option range=A1:F500
+```
+
+LocalQL does not install optional DuckDB extensions while a command is running.
+If a dependency is missing, the diagnostic identifies it and tells you what
+must be provisioned.
+
+An explicit type always wins. Use one for extensionless files and directories:
+
+```console
+csvql query data/order_facts "SELECT COUNT(*) FROM order_facts" \
+  --type parquet \
+  --option partitioning=hive
+```
+
+LocalQL never recursively guesses a directory's format. Without an explicit
+type, bounded identification may list candidates, but it will require you to
+choose before any adapter is constructed.
 
 ## Understand previews and complete outputs
 
@@ -52,13 +89,32 @@ table name:
 
 ```console
 csvql init
-csvql add orders data/orders.csv
+csvql add orders data/orders.parquet --type parquet
+csvql add events data/events.ndjson --type ndjson
 csvql tables
 csvql query "SELECT status, COUNT(*) AS order_count FROM orders GROUP BY status"
 ```
 
-LocalQL stores the catalog in `.csvql.yml`. The catalog records table names and
-CSV paths; it does not upload data or run queries automatically.
+`csvql init` creates a version 2 catalog. It stores explicit source intent,
+rather than inferred runtime facts:
+
+```yaml
+version: 2
+tables:
+  orders:
+    source:
+      type: parquet
+      locator: data/orders.parquet
+  events:
+    source:
+      type: ndjson
+      locator: data/events.ndjson
+```
+
+Pass `--option key=value` to `csvql add` when a source needs explicit provider
+options. Existing version 1 catalogs remain valid and CSV-only; LocalQL does
+not silently migrate or rewrite them. The catalog does not upload data, inspect
+sources in the background, or run queries automatically.
 
 ## Run saved SQL and export results
 
@@ -82,10 +138,11 @@ csvql menu orders.csv
 ```
 
 You can also start with `csvql menu` and run source-free SQL such as `SELECT 1`
-before loading any CSVs.
+before loading any sources.
 
-The menu lets you add sources, write SQL, inspect results, and export a result
-without changing the core CLI workflow. See the
+The menu keeps legacy CSV paste and picker behavior. Press `a`, or paste a
+recognized non-CSV path, to open the structured source flow with alias, locator,
+type, options, bounded detection evidence, and confirmation. See the
 [Terminal menu guide](tui-guide.md) for keys and source actions.
 
 ![Terminal screenshot of the LocalQL TUI workbench with CSV sources, SQL, History, and a complete preserved result](assets/localql-tui-workbench.svg)

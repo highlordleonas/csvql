@@ -406,12 +406,16 @@ def test_query_inline_sql_explicit_table_selected_missing_catalog_table_returns_
     )
 
     assert result.exit_code == 4
-    assert "Error: CSV file not found for project catalog table 'customers':" in result.output
-    assert "private/location/missing_customers.csv" in result.output
-    assert (
-        "Suggestion: Update .csvql.yml, run csvql add customers <path> --replace," in result.output
+    payload = json.loads(result.output)
+    assert payload["message"] == (
+        "CSV file not found for project catalog table 'customers': "
+        "private/location/missing_customers.csv"
     )
-    assert "restore the CSV file." in result.output
+    assert payload["suggestion"] == (
+        "Update .csvql.yml, run csvql add customers <path> --replace, or restore the CSV file."
+    )
+    assert payload["diagnostic"]["code"] == "source.locator_shape_invalid"
+    assert payload["diagnostic"]["required_action"]["kind"] == "correct_locator"
     assert "SourceError" not in result.output
     assert "Traceback" not in result.output
 
@@ -463,12 +467,13 @@ def test_query_inline_sql_deleted_catalog_fallback_returns_public_error(
     )
 
     assert result.exit_code == 4
-    assert "Error: CSV file not found for project catalog table 'customers':" in result.output
-    assert "customers.csv" in result.output
-    assert (
-        "Suggestion: Update .csvql.yml, run csvql add customers <path> --replace," in result.output
-    )
-    assert "restore the CSV file." in result.output
+    payload = json.loads(result.output)
+    assert payload == {
+        "message": "CSV file not found for project catalog table 'customers': customers.csv",
+        "suggestion": (
+            "Update .csvql.yml, run csvql add customers <path> --replace, or restore the CSV file."
+        ),
+    }
     assert "SourceError" not in result.output
     assert "Traceback" not in result.output
 
@@ -976,4 +981,4 @@ def test_query_help_describes_limit_as_table_output_only() -> None:
     assert result.exit_code == 0, result.output
     assert "Maximum rows to display" in result.output
     assert "display in table" in result.output
-    assert "output." in result.output
+    assert "output only." in result.output

@@ -91,7 +91,7 @@ def test_getting_started_orders_the_core_query_before_the_optional_tui() -> None
     getting_started = read_doc("docs/getting-started.md")
 
     install_index = getting_started.index("## Install LocalQL")
-    query_index = getting_started.index("## Query a CSV")
+    query_index = getting_started.index("## Query your first source")
     first_query_index = getting_started.index(
         'csvql query orders.csv "SELECT * FROM orders LIMIT 5"'
     )
@@ -287,7 +287,7 @@ def test_roadmap_preserves_milestone_statuses_dependencies_and_scope() -> None:
     assert "not shipped" in v2_x_text
 
 
-def test_v1_1_result_and_source_contracts_are_publicly_documented() -> None:
+def test_result_and_provider_source_contracts_are_publicly_documented() -> None:
     cli_reference = " ".join(read_doc("docs/cli-reference.md").casefold().split())
     tui_guide = " ".join(read_doc("docs/tui-guide.md").casefold().split())
     architecture = " ".join(read_doc("docs/ARCHITECTURE.md").casefold().split())
@@ -314,10 +314,14 @@ def test_v1_1_result_and_source_contracts_are_publicly_documented() -> None:
         assert marker in tui_guide
 
     for marker in (
-        "sourcespec",
+        "sourcerequest",
+        "detectionresult",
+        "adapterfactory",
         "sourceadapter",
+        "resolvedsource",
+        "relationalbinding",
         "resultstream",
-        "boundedqueryresult",
+        "bounded preview",
         "streaming export",
         "tuiqueryrunner",
         "tuiresultstore",

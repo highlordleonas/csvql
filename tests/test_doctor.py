@@ -14,7 +14,7 @@ from csvql.doctor import (
 )
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import SourceError
-from csvql.project_config import ProjectConfig, ProjectContext, ProjectTable
+from csvql.project_config import CONFIG_FILENAME, ProjectConfig, ProjectContext, ProjectTable
 from csvql.source_adapter import RelationalBinding
 from csvql.source_operations import SourceOperations
 
@@ -43,6 +43,54 @@ def test_doctor_has_no_direct_connection_binding_or_query_ownership() -> None:
     observed = {ast.unparse(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
 
     assert forbidden_calls.isdisjoint(observed)
+
+
+def test_doctor_reports_version_2_parquet_and_json_sources_ready(
+    tmp_path: Path,
+) -> None:
+    parquet_path = tmp_path / "orders.parquet"
+    json_path = tmp_path / "customers.json"
+    connection = duckdb.connect()
+    try:
+        connection.sql(
+            "SELECT * FROM (VALUES (1, 10), (2, 20)) AS orders(order_id, customer_id)"
+        ).write_parquet(str(parquet_path))
+    finally:
+        connection.close()
+    json_path.write_text(
+        '[{"customer_id":10,"name":"alpha"},{"customer_id":20,"name":"beta"}]',
+        encoding="utf-8",
+    )
+    (tmp_path / CONFIG_FILENAME).write_text(
+        "version: 2\n"
+        "tables:\n"
+        "  customers:\n"
+        "    source:\n"
+        "      type: json\n"
+        "      locator: customers.json\n"
+        "  orders:\n"
+        "    source:\n"
+        "      type: parquet\n"
+        "      locator: orders.parquet\n",
+        encoding="utf-8",
+    )
+
+    result = run_doctor(tmp_path)
+
+    assert result.status == "passed"
+    assert any(
+        probe.name == "source_registry_composition" and probe.status == "passed"
+        for probe in result.probes
+    )
+    readiness = {
+        probe.table: (probe.status, probe.source_type)
+        for probe in result.probes
+        if probe.name == "table_readiness"
+    }
+    assert readiness == {
+        "customers": ("passed", "json"),
+        "orders": ("passed", "parquet"),
+    }
 
 
 def test_table_readiness_isolates_each_adapter_owned_probe(tmp_path: Path) -> None:
@@ -508,6 +556,7 @@ def test_run_doctor_omits_check_probes_when_table_readiness_failed(tmp_path: Pat
     assert [probe.name for probe in result.probes] == [
         "project_discovery",
         "config_load",
+        "source_registry_composition",
         "catalog_tables_present",
         "table_readiness",
     ]

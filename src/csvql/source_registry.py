@@ -102,6 +102,17 @@ class DescriptorView:
 
         return {option.key: _thaw(option.default) for option in self.options if option.has_default}
 
+    def option_definition(self, key: str) -> SourceOptionDefinition | None:
+        """Return import-free metadata for one explicitly named option."""
+
+        return next((option for option in self.options if option.key == key), None)
+
+    def accepts_option_value(self, key: str, value: object) -> bool:
+        """Return whether a frozen explicit value matches its basic metadata kind."""
+
+        option = self.option_definition(key)
+        return option is not None and _value_matches_kind(value, option.value_kind)
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderFactoryKey:

@@ -1,5 +1,6 @@
 """Typer command-line interface for CSVQL."""
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated
 
@@ -21,7 +22,6 @@ from csvql.export import (
     ExportFormat,
     resolve_export_path,
 )
-from csvql.inspection import inspect_csv_source, sample_csv_source
 from csvql.operation import OperationContext, OperationToken
 from csvql.output import (
     OutputFormat,
@@ -30,6 +30,7 @@ from csvql.output import (
     format_check_result_table,
     format_doctor_result_json,
     format_doctor_result_table,
+    format_error_json,
     format_inspect_result_json,
     format_inspect_result_table,
     format_json_result,
@@ -39,8 +40,8 @@ from csvql.output import (
     format_project_tables_table,
     format_sample_result_json,
     format_sample_result_table,
+    format_source_diagnostic_table,
 )
-from csvql.profiling import profile_csv_source
 from csvql.project_config import (
     add_project_table,
     build_project_tables_result,
@@ -55,16 +56,18 @@ from csvql.query_workflow import (
     execute_query_request,
     execute_query_request_stream,
 )
-from csvql.source_resolver import resolve_path_or_catalog_source
+from csvql.source_operations import SourceOperations
+from csvql.source_resolver import resolve_operation_source
 from csvql.sql_file import load_sql_file
 from csvql.streaming_export import write_streaming_export
+from csvql.table_mapping import parse_source_options
 from csvql.terminal_text import literal_terminal_text, terminal_safe_text
 from csvql.tui_launcher import run_menu_command
 from csvql.tui_result_store import DEFAULT_TUI_RESULT_CAPACITY_BYTES
 
 app = typer.Typer(
     add_completion=False,
-    help="Query local CSV files with DuckDB SQL.",
+    help="Query local structured data with DuckDB SQL.",
 )
 
 _JSON_LIMIT_MESSAGE = (
@@ -116,9 +119,9 @@ def _root(
 
 @app.command()
 def inspect(
-    csv_path: Annotated[
+    source: Annotated[
         str,
-        typer.Argument(help="CSV file to inspect."),
+        typer.Argument(help="Source locator or project catalog alias to inspect."),
     ],
     exact: Annotated[
         bool,
@@ -136,25 +139,48 @@ def inspect(
             help="Inspection output format.",
         ),
     ] = OutputFormat.table,
+    source_type: Annotated[
+        str | None,
+        typer.Option(
+            "--type",
+            help="Explicit source type (csv, parquet, json, ndjson, or excel).",
+        ),
+    ] = None,
+    option: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--option",
+            help="Source option in KEY=VALUE form. Repeat for multiple options.",
+        ),
+    ] = None,
 ) -> None:
-    """Inspect a local CSV file without running user-authored SQL."""
+    """Inspect a local source without running user-authored SQL."""
 
     try:
-        source = resolve_path_or_catalog_source(csv_path, base_dir=Path.cwd())
-        result = inspect_csv_source(source, exact=exact)
+        operation = OperationContext(OperationToken())
+        resolved = resolve_operation_source(
+            source,
+            source_type=source_type,
+            options=parse_source_options(option or ()),
+            base_dir=Path.cwd(),
+            operation=operation,
+        )
+        with CSVQLEngine(operation=operation) as engine:
+            result = SourceOperations(engine, resolved).inspect(exact=exact)
+        result = replace(result, source={**result.source, "display_path": source})
         if output is OutputFormat.json:
             typer.echo(format_inspect_result_json(result))
         else:
             typer.echo(format_inspect_result_table(result), nl=False)
     except CSVQLError as exc:
-        _exit_with_error(exc)
+        _exit_with_error(exc, output=output)
 
 
 @app.command()
 def sample(
-    csv_path: Annotated[
+    source: Annotated[
         str,
-        typer.Argument(help="CSV file to sample."),
+        typer.Argument(help="Source locator or project catalog alias to sample."),
     ],
     limit: Annotated[
         int,
@@ -173,25 +199,48 @@ def sample(
             help="Sample output format.",
         ),
     ] = OutputFormat.table,
+    source_type: Annotated[
+        str | None,
+        typer.Option(
+            "--type",
+            help="Explicit source type (csv, parquet, json, ndjson, or excel).",
+        ),
+    ] = None,
+    option: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--option",
+            help="Source option in KEY=VALUE form. Repeat for multiple options.",
+        ),
+    ] = None,
 ) -> None:
-    """Sample rows from a local CSV file without running user-authored SQL."""
+    """Sample rows from a local source without running user-authored SQL."""
 
     try:
-        source = resolve_path_or_catalog_source(csv_path, base_dir=Path.cwd())
-        result = sample_csv_source(source, limit=limit)
+        operation = OperationContext(OperationToken())
+        resolved = resolve_operation_source(
+            source,
+            source_type=source_type,
+            options=parse_source_options(option or ()),
+            base_dir=Path.cwd(),
+            operation=operation,
+        )
+        with CSVQLEngine(operation=operation) as engine:
+            result = SourceOperations(engine, resolved).sample(limit=limit)
+        result = replace(result, source={**result.source, "display_path": source})
         if output is OutputFormat.json:
             typer.echo(format_sample_result_json(result))
         else:
             typer.echo(format_sample_result_table(result), nl=False)
     except CSVQLError as exc:
-        _exit_with_error(exc)
+        _exit_with_error(exc, output=output)
 
 
 @app.command()
 def profile(
-    csv_path: Annotated[
+    source: Annotated[
         str,
-        typer.Argument(help="CSV file or project catalog alias to profile."),
+        typer.Argument(help="Source locator or project catalog alias to profile."),
     ],
     output: Annotated[
         OutputFormat,
@@ -202,18 +251,41 @@ def profile(
             help="Profile output format.",
         ),
     ] = OutputFormat.table,
+    source_type: Annotated[
+        str | None,
+        typer.Option(
+            "--type",
+            help="Explicit source type (csv, parquet, json, ndjson, or excel).",
+        ),
+    ] = None,
+    option: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--option",
+            help="Source option in KEY=VALUE form. Repeat for multiple options.",
+        ),
+    ] = None,
 ) -> None:
-    """Profile a local CSV file without running user-authored SQL."""
+    """Profile a local source without running user-authored SQL."""
 
     try:
-        source = resolve_path_or_catalog_source(csv_path, base_dir=Path.cwd())
-        result = profile_csv_source(source)
+        operation = OperationContext(OperationToken())
+        resolved = resolve_operation_source(
+            source,
+            source_type=source_type,
+            options=parse_source_options(option or ()),
+            base_dir=Path.cwd(),
+            operation=operation,
+        )
+        with CSVQLEngine(operation=operation) as engine:
+            result = SourceOperations(engine, resolved).profile()
+        result = replace(result, source={**result.source, "display_path": source})
         if output is OutputFormat.json:
             typer.echo(format_profile_result_json(result))
         else:
             typer.echo(format_profile_result_table(result), nl=False)
     except CSVQLError as exc:
-        _exit_with_error(exc)
+        _exit_with_error(exc, output=output)
 
 
 @app.command()
@@ -359,6 +431,41 @@ def query(
             help="Table mapping in name=path form. Repeat for multiple CSV files.",
         ),
     ] = None,
+    source: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--source",
+            help="Source mapping in NAME=LOCATOR form. Repeat for multiple sources.",
+        ),
+    ] = None,
+    source_types: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--source-type",
+            help="Source type mapping in NAME=TYPE form.",
+        ),
+    ] = None,
+    source_options: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--source-option",
+            help="Source option mapping in NAME.KEY=VALUE form.",
+        ),
+    ] = None,
+    single_source_type: Annotated[
+        str | None,
+        typer.Option(
+            "--type",
+            help="Explicit type for single-source shortcut mode.",
+        ),
+    ] = None,
+    option: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--option",
+            help="Single-source option in KEY=VALUE form.",
+        ),
+    ] = None,
     output: Annotated[
         OutputFormat,
         typer.Option(
@@ -373,22 +480,36 @@ def query(
         typer.Option(
             "--limit",
             min=1,
-            help="Maximum rows to display in table output.",
+            help="Maximum rows to display; display in table output only.",
         ),
     ] = None,
 ) -> None:
-    """Run SQL against one or more local CSV files."""
+    """Run SQL against one or more local structured sources."""
 
     try:
         _reject_json_limit(limit=limit, output=output)
         operation = OperationContext(token=OperationToken())
-        request = build_inline_query_request(
-            sql_or_csv,
-            sql,
-            table or [],
-            base_dir=Path.cwd(),
-            operation=operation,
-        )
+        if source or source_types or source_options or single_source_type or option:
+            request = build_inline_query_request(
+                sql_or_csv,
+                sql,
+                table or [],
+                source_mappings=source or (),
+                source_type_mappings=source_types or (),
+                source_option_mappings=source_options or (),
+                source_type=single_source_type,
+                source_options=option or (),
+                base_dir=Path.cwd(),
+                operation=operation,
+            )
+        else:
+            request = build_inline_query_request(
+                sql_or_csv,
+                sql,
+                table or [],
+                base_dir=Path.cwd(),
+                operation=operation,
+            )
         with CSVQLEngine(operation=operation) as engine:
             if output is OutputFormat.json:
                 result = execute_query_request(engine, request, operation=operation)
@@ -406,7 +527,7 @@ def query(
     except KeyboardInterrupt:
         _exit_with_error(_interrupted_query_error())
     except CSVQLError as exc:
-        _exit_with_error(exc)
+        _exit_with_error(exc, output=output)
 
 
 @app.command()
@@ -423,6 +544,27 @@ def run(
             help="Table mapping in name=path form. Repeat for multiple CSV files.",
         ),
     ] = None,
+    source: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--source",
+            help="Source mapping in NAME=LOCATOR form. Repeat for multiple sources.",
+        ),
+    ] = None,
+    source_types: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--source-type",
+            help="Source type mapping in NAME=TYPE form.",
+        ),
+    ] = None,
+    source_options: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--source-option",
+            help="Source option mapping in NAME.KEY=VALUE form.",
+        ),
+    ] = None,
     output: Annotated[
         OutputFormat,
         typer.Option(
@@ -437,7 +579,7 @@ def run(
         typer.Option(
             "--limit",
             min=1,
-            help="Maximum rows to display in table output.",
+            help="Maximum rows to display; display in table output only.",
         ),
     ] = None,
 ) -> None:
@@ -447,12 +589,23 @@ def run(
         _reject_json_limit(limit=limit, output=output)
         loaded_sql = load_sql_file(sql_file, base_dir=Path.cwd())
         operation = OperationContext(token=OperationToken())
-        request = build_saved_sql_query_request(
-            loaded_sql.sql,
-            table or [],
-            base_dir=Path.cwd(),
-            operation=operation,
-        )
+        if source or source_types or source_options:
+            request = build_saved_sql_query_request(
+                loaded_sql.sql,
+                table or [],
+                source_mappings=source or (),
+                source_type_mappings=source_types or (),
+                source_option_mappings=source_options or (),
+                base_dir=Path.cwd(),
+                operation=operation,
+            )
+        else:
+            request = build_saved_sql_query_request(
+                loaded_sql.sql,
+                table or [],
+                base_dir=Path.cwd(),
+                operation=operation,
+            )
         with CSVQLEngine(operation=operation) as engine:
             if output is OutputFormat.json:
                 result = execute_query_request(engine, request, operation=operation)
@@ -470,7 +623,7 @@ def run(
     except KeyboardInterrupt:
         _exit_with_error(_interrupted_query_error())
     except CSVQLError as exc:
-        _exit_with_error(exc)
+        _exit_with_error(exc, output=output)
 
 
 @app.command()
@@ -502,6 +655,27 @@ def export(
             help="Table mapping in name=path form. Repeat for multiple CSV files.",
         ),
     ] = None,
+    source: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--source",
+            help="Source mapping in NAME=LOCATOR form. Repeat for multiple sources.",
+        ),
+    ] = None,
+    source_types: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--source-type",
+            help="Source type mapping in NAME=TYPE form.",
+        ),
+    ] = None,
+    source_options: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--source-option",
+            help="Source option mapping in NAME.KEY=VALUE form.",
+        ),
+    ] = None,
     force: Annotated[
         bool,
         typer.Option(
@@ -516,12 +690,23 @@ def export(
         loaded_sql = load_sql_file(sql_file, base_dir=Path.cwd())
         output_path = resolve_export_path(out, base_dir=Path.cwd(), force=force)
         operation = OperationContext(token=OperationToken())
-        request = build_saved_sql_query_request(
-            loaded_sql.sql,
-            table or [],
-            base_dir=Path.cwd(),
-            operation=operation,
-        )
+        if source or source_types or source_options:
+            request = build_saved_sql_query_request(
+                loaded_sql.sql,
+                table or [],
+                source_mappings=source or (),
+                source_type_mappings=source_types or (),
+                source_option_mappings=source_options or (),
+                base_dir=Path.cwd(),
+                operation=operation,
+            )
+        else:
+            request = build_saved_sql_query_request(
+                loaded_sql.sql,
+                table or [],
+                base_dir=Path.cwd(),
+                operation=operation,
+            )
         with CSVQLEngine(operation=operation) as engine:
             stream = execute_query_request_stream(engine, request, operation=operation)
             write_streaming_export(
@@ -558,7 +743,7 @@ def init(
 @app.command()
 def add(
     name: Annotated[str, typer.Argument(help="Project catalog table name.")],
-    path_value: Annotated[str, typer.Argument(help="CSV file path to add.")],
+    path_value: Annotated[str, typer.Argument(help="Source locator to add.")],
     replace: Annotated[
         bool,
         typer.Option(
@@ -566,18 +751,43 @@ def add(
             help="Replace an existing project catalog table entry.",
         ),
     ] = False,
+    source_type: Annotated[
+        str | None,
+        typer.Option(
+            "--type",
+            help="Explicit source type (csv, parquet, json, ndjson, or excel).",
+        ),
+    ] = None,
+    option: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--option",
+            help="Source option in KEY=VALUE form. Repeat for multiple options.",
+        ),
+    ] = None,
 ) -> None:
     """Add a table to the nearest project catalog."""
 
     try:
         context = load_project()
-        updated_context = add_project_table(
-            context,
-            name,
-            path_value,
-            replace=replace,
-            invocation_dir=Path.cwd(),
-        )
+        if source_type is not None or option:
+            updated_context = add_project_table(
+                context,
+                name,
+                path_value,
+                source_type=source_type,
+                options=parse_source_options(option or ()),
+                replace=replace,
+                invocation_dir=Path.cwd(),
+            )
+        else:
+            updated_context = add_project_table(
+                context,
+                name,
+                path_value,
+                replace=replace,
+                invocation_dir=Path.cwd(),
+            )
         _echo_human_message(
             f"Added project catalog table '{name.strip()}' to {updated_context.config_path}."
         )
@@ -644,9 +854,22 @@ def _interrupted_query_error() -> CSVQLError:
     )
 
 
-def _exit_with_error(error: CSVQLError) -> None:
+def _exit_with_error(
+    error: CSVQLError,
+    *,
+    output: OutputFormat | None = None,
+) -> None:
+    if output is OutputFormat.json:
+        typer.echo(format_error_json(error), err=True)
+        raise typer.Exit(error.exit_code)
     console = Console(stderr=True, color_system=None, markup=False)
     console.print("Error: ", literal_terminal_text(error.message), sep="")
+    if error.diagnostic is not None:
+        console.print(
+            format_source_diagnostic_table(error.diagnostic),
+            end="",
+            soft_wrap=True,
+        )
     if error.suggestion:
         console.print("Suggestion: ", literal_terminal_text(error.suggestion), sep="")
     raise typer.Exit(error.exit_code)

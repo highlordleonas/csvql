@@ -23,13 +23,18 @@ from csvql.bounded_result import (
     PreviewPolicy,
     TruncationReason,
 )
+from csvql.private_artifacts import (
+    TUI_RESULT_SESSION_PREFIX,
+    is_private_result_artifact,
+    is_private_result_spill_name,
+    private_result_session_id,
+)
 from csvql.result_codec import decode_row_payload, encode_row_payload
 from csvql.result_spool import ResultSpoolError, ResultSpoolReader, ResultSpoolWriter
 from csvql.streaming_export import ExportRowSource
 
 TUI_RESULT_SPILL_ROW_THRESHOLD = 10_000
 TUI_RESULT_SPILL_CELL_THRESHOLD = 250_000
-TUI_RESULT_SESSION_PREFIX = "localql-tui-v1-"
 TUI_RESULT_MARKER_NAME = ".localql-session.json"
 TUI_RESULT_LEASE_NAME = ".lease"
 TUI_RESULT_MAX_TEMP_ENTRIES = 5_000
@@ -40,13 +45,6 @@ TUI_RESULT_MAX_RECOVERED_WORKSPACES = 20
 TUI_RESULT_ABANDONED_AFTER = timedelta(hours=24)
 DEFAULT_TUI_RESULT_CAPACITY_BYTES = 1_073_741_824
 
-_TUI_RESULT_DIRECTORY_PATTERN = re.compile(
-    rf"{re.escape(TUI_RESULT_SESSION_PREFIX)}(?P<session_id>[0-9a-f]{{32}})"
-)
-_TUI_RESULT_COMPLETED_SPILL_PATTERN = re.compile(r"(?:query|preview)-[1-9][0-9]*\.result")
-_TUI_RESULT_STAGING_SPILL_PATTERN = re.compile(
-    r"\.(?:query|preview)-[1-9][0-9]*-[0-9a-f]{16}\.result\.tmp"
-)
 _TUI_RESULT_TIMESTAMP_PATTERN = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{6})?Z"
 )
@@ -1761,10 +1759,9 @@ def _validate_recovery_candidate(
 ) -> _ValidatedRecoveryCandidate | None:
     if path.parent != temp_root:
         return None
-    directory_match = _TUI_RESULT_DIRECTORY_PATTERN.fullmatch(path.name)
-    if directory_match is None:
+    session_id = private_result_session_id(path.name)
+    if session_id is None:
         return None
-    session_id = directory_match.group("session_id")
 
     try:
         directory_stat = path.lstat()
@@ -2339,27 +2336,13 @@ def _stat_matches_validated_entry(
 
 
 def _is_recovery_spill_name(name: str) -> bool:
-    return (
-        _TUI_RESULT_COMPLETED_SPILL_PATTERN.fullmatch(name) is not None
-        or _TUI_RESULT_STAGING_SPILL_PATTERN.fullmatch(name) is not None
-    )
+    return is_private_result_spill_name(name)
 
 
 def _is_private_tui_result_artifact(path: Path) -> bool:
     """Return whether a path identifies a LocalQL-owned TUI result artifact."""
 
-    candidate_paths: tuple[Path, ...] = (path,)
-    try:
-        resolved_path = path.resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
-        pass
-    else:
-        candidate_paths += (resolved_path,)
-    return any(
-        _TUI_RESULT_DIRECTORY_PATTERN.fullmatch(candidate.parent.name) is not None
-        and _is_recovery_spill_name(candidate.name)
-        for candidate in candidate_paths
-    )
+    return is_private_result_artifact(path)
 
 
 def _directory_mode_is_private(result: os.stat_result) -> bool:

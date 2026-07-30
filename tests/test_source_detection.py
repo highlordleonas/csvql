@@ -80,6 +80,53 @@ def test_json_family_extensions_select_deterministically_case_insensitively(
     assert detected.extension_evidence == expected_extension
 
 
+def test_home_relative_locator_expands_before_detection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = home / "orders.csv"
+    source.write_text("id,value\n1,alpha\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    request = build_source_request(
+        alias="orders",
+        locator="~/orders.csv",
+        anchor=tmp_path / "ignored",
+    )
+
+    detected = _builtin_service().detect(request)
+
+    assert isinstance(detected, SelectedSource)
+    assert detected.provider_key == "csv"
+    assert detected.selection_reason == "extension"
+
+
+def test_home_relative_anchor_expands_at_request_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    source_dir = home / "project"
+    source_dir.mkdir(parents=True)
+    source = source_dir / "orders.csv"
+    source.write_text("id,value\n1,alpha\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    request = build_source_request(
+        alias="orders",
+        locator=source.name,
+        anchor=Path("~/project"),
+    )
+
+    detected = _builtin_service().detect(request)
+
+    assert request.anchor == source_dir
+    assert isinstance(detected, SelectedSource)
+    assert detected.provider_key == "csv"
+
+
 def test_excel_extension_selects_without_import_or_workbook_inspection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

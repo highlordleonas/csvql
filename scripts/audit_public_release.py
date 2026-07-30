@@ -114,6 +114,8 @@ PUBLIC_SOURCE_FILES: Final[frozenset[str]] = frozenset(
         "src/csvql/csv_adapter.py",
         "src/csvql/doctor.py",
         "src/csvql/engine.py",
+        "src/csvql/excel_adapter.py",
+        "src/csvql/excel_workbook.py",
         "src/csvql/exceptions.py",
         "src/csvql/export.py",
         "src/csvql/inspection.py",
@@ -123,6 +125,7 @@ PUBLIC_SOURCE_FILES: Final[frozenset[str]] = frozenset(
         "src/csvql/operation.py",
         "src/csvql/output.py",
         "src/csvql/parquet_adapter.py",
+        "src/csvql/private_artifacts.py",
         "src/csvql/profiling.py",
         "src/csvql/project_config.py",
         "src/csvql/quality.py",
@@ -161,6 +164,7 @@ PUBLIC_SOURCE_FILES: Final[frozenset[str]] = frozenset(
 )
 PUBLIC_TEST_FILES: Final[frozenset[str]] = frozenset(
     {
+        "tests/source_surface_vectors.py",
         "tests/test_api.py",
         "tests/test_adapter_contract.py",
         "tests/test_adapter_factory.py",
@@ -185,6 +189,9 @@ PUBLIC_TEST_FILES: Final[frozenset[str]] = frozenset(
         "tests/test_dependency_audit.py",
         "tests/test_engine_sources.py",
         "tests/test_example_project.py",
+        "tests/test_excel_adapter.py",
+        "tests/test_excel_integration.py",
+        "tests/test_excel_workbook.py",
         "tests/test_export.py",
         "tests/test_failure_gallery.py",
         "tests/test_inspection.py",
@@ -222,6 +229,7 @@ PUBLIC_TEST_FILES: Final[frozenset[str]] = frozenset(
         "tests/test_source_operations.py",
         "tests/test_source_registry.py",
         "tests/test_source_resolver.py",
+        "tests/test_source_surface_parity.py",
         "tests/test_sql_file.py",
         "tests/test_sql_utils.py",
         "tests/test_streaming_export.py",

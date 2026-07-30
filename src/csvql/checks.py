@@ -14,7 +14,11 @@ from csvql.exceptions import (
     SourceError,
 )
 from csvql.operation import OperationContext, OperationToken
-from csvql.project_config import ProjectContext, ProjectTable
+from csvql.project_config import (
+    ProjectContext,
+    ProjectTableValue,
+    project_tables_to_source_specs,
+)
 from csvql.quality import (
     CheckFailureSample,
     CheckResult,
@@ -25,7 +29,6 @@ from csvql.quality import (
 from csvql.source import (
     ResolvedSource,
     build_source_request,
-    source_spec_from_catalog_table,
 )
 from csvql.source_runtime import resolve_source_request
 from csvql.sql_utils import quote_identifier
@@ -103,21 +106,23 @@ def run_configured_checks(
         if exc.code == "source_bind_failed" and exc.alias is not None:
             raise CSVInspectionError(
                 (f"Failed to run data quality checks for project catalog table '{exc.alias}'."),
-                suggestion="Check that the configured CSV file exists and is readable.",
+                suggestion="Check that the configured source exists and is readable.",
+                diagnostic=exc.diagnostic,
             ) from exc
         raise CSVInspectionError(
             "Failed to run data quality checks.",
             suggestion=(
                 "Check that configured columns exist and values compare cleanly with "
-                "DuckDB-inferred CSV types."
+                "DuckDB-inferred source types."
             ),
+            diagnostic=exc.diagnostic,
         ) from exc
     except duckdb.Error as exc:
         raise CSVInspectionError(
             "Failed to run data quality checks.",
             suggestion=(
                 "Check that configured columns exist and values compare cleanly with "
-                "DuckDB-inferred CSV types."
+                "DuckDB-inferred source types."
             ),
         ) from exc
     except CSVQLError as exc:
@@ -125,7 +130,7 @@ def run_configured_checks(
             "Failed to run data quality checks.",
             suggestion=(
                 "Check that configured columns exist and values compare cleanly with "
-                "DuckDB-inferred CSV types."
+                "DuckDB-inferred source types."
             ),
         ) from exc
 
@@ -137,13 +142,16 @@ def run_configured_checks(
 
 def _resolve_required_sources(
     context: ProjectContext,
-    tables: Sequence[ProjectTable],
+    tables: Sequence[ProjectTableValue],
     *,
     operation: OperationContext,
 ) -> tuple[ResolvedSource, ...]:
     resolved: list[ResolvedSource] = []
+    specs_by_alias = {
+        spec.alias.casefold(): spec for spec in project_tables_to_source_specs(context)
+    }
     for table in tables:
-        spec = source_spec_from_catalog_table(table, project_root=context.project_root)
+        spec = specs_by_alias[table.name.casefold()]
         try:
             source = resolve_source_request(
                 build_source_request(
@@ -160,12 +168,17 @@ def _resolve_required_sources(
             resolved.append(source)
         except SourceError as exc:
             if exc.code == "source_missing":
+                display_kind = "CSV file" if spec.kind == "csv" else "Source"
                 raise FileMissingError(
-                    f"CSV file not found for project catalog table '{table.name}': {table.path}",
+                    (
+                        f"{display_kind} not found for project catalog table "
+                        f"'{table.name}': {spec.locator}"
+                    ),
                     suggestion=(
                         "Update .csvql.yml, run csvql add "
-                        f"{table.name} <path> --replace, or restore the CSV file."
+                        f"{table.name} <locator> --replace, or restore the source."
                     ),
+                    diagnostic=exc.diagnostic,
                 ) from exc
             raise
     return tuple(resolved)
@@ -173,7 +186,7 @@ def _resolve_required_sources(
 
 def _discover_columns(
     engine: CSVQLEngine,
-    tables: Sequence[ProjectTable],
+    tables: Sequence[ProjectTableValue],
 ) -> dict[str, tuple[str, ...]]:
     column_names_by_table: dict[str, tuple[str, ...]] = {}
     for table in tables:
@@ -185,9 +198,13 @@ def _discover_columns(
 def _select_tables(
     context: ProjectContext,
     table_name: str | None,
-) -> tuple[ProjectTable, ...]:
+) -> tuple[ProjectTableValue, ...]:
+    project_tables = cast(Sequence[ProjectTableValue], context.config.tables)
     tables = tuple(
-        sorted(context.config.tables, key=lambda table: (table.name.lower(), table.name))
+        sorted(
+            project_tables,
+            key=lambda table: (table.name.lower(), table.name),
+        )
     )
     if table_name is None:
         return tables
@@ -228,16 +245,17 @@ def validate_table_aliases(context: ProjectContext) -> None:
 
 def _required_tables(
     context: ProjectContext,
-    selected_tables: tuple[ProjectTable, ...],
-) -> tuple[ProjectTable, ...]:
-    tables_by_name = {table.name.lower(): table for table in context.config.tables}
+    selected_tables: tuple[ProjectTableValue, ...],
+) -> tuple[ProjectTableValue, ...]:
+    project_tables = cast(Sequence[ProjectTableValue], context.config.tables)
+    tables_by_name = {table.name.lower(): table for table in project_tables}
     required_names = {table.name.lower() for table in selected_tables}
     for table in selected_tables:
         for check in table.checks:
             if check.references is not None:
                 required_names.add(check.references.table.lower())
 
-    required_tables: list[ProjectTable] = []
+    required_tables: list[ProjectTableValue] = []
     for required_name in sorted(required_names):
         if required_name not in tables_by_name:
             raise ProjectConfigError(

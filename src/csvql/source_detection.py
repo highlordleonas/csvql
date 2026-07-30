@@ -360,7 +360,7 @@ class SourceDetectionService:
 
 
 def _local_locator(request: SourceRequest) -> Path:
-    locator = Path(request.locator)
+    locator = Path(request.locator).expanduser()
     if not locator.is_absolute():
         if request.anchor is None:
             return Path(os.path.abspath(os.path.normpath(os.fspath(locator))))

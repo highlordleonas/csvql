@@ -25,7 +25,7 @@ def test_root_help_is_still_shown_for_no_args() -> None:
 
     assert result.exit_code == 0, result.output
     assert "Usage:" in result.output
-    assert "Query local CSV files with DuckDB SQL." in result.output
+    assert "Query local structured data with DuckDB SQL." in result.output
 
 
 def test_menu_help_lists_startup_arguments() -> None:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import os
-import re
 import stat
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -24,6 +23,7 @@ from csvql.exceptions import (
 )
 from csvql.models import DialectInfo
 from csvql.operation import OperationCancelled, OperationContext, OperationToken
+from csvql.private_artifacts import is_private_result_artifact
 from csvql.source import (
     DiagnosticCode,
     DiagnosticEvidence,
@@ -53,11 +53,6 @@ __version__ = "1"
 
 SNIFF_BYTES = 64 * 1024
 _PROVIDER_KEY = "csv"
-_PRIVATE_RESULT_WORKSPACE_PATTERN = re.compile(r"localql-tui-v1-[0-9a-f]{32}")
-_PRIVATE_RESULT_FILE_PATTERN = re.compile(
-    r"(?:query|preview)-[1-9][0-9]*\.result"
-    r"|\.(?:query|preview)-[1-9][0-9]*-[0-9a-f]{16}\.result\.tmp"
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +95,7 @@ def _canonical_file(selected: SelectedSource) -> Path:
         raise _source_missing(request.alias) from exc
     if stat.S_ISLNK(locator_stat.st_mode) or not stat.S_ISREG(locator_stat.st_mode):
         raise _source_missing(request.alias)
-    if _is_private_result_artifact(canonical):
+    if is_private_result_artifact(canonical):
         raise SourceResolutionError(
             "source_missing",
             "CSV source is inside LocalQL private result storage.",
@@ -109,13 +104,6 @@ def _canonical_file(selected: SelectedSource) -> Path:
             suggestion="Use Save as source to create a normal CSV source.",
         )
     return canonical
-
-
-def _is_private_result_artifact(path: Path) -> bool:
-    return (
-        _PRIVATE_RESULT_WORKSPACE_PATTERN.fullmatch(path.parent.name) is not None
-        and _PRIVATE_RESULT_FILE_PATTERN.fullmatch(path.name) is not None
-    )
 
 
 def _snapshot(path: Path, *, alias: str) -> _CSVSnapshot:

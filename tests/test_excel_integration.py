@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import zipfile
@@ -10,11 +11,19 @@ from xml.sax.saxutils import escape, quoteattr
 
 import duckdb
 import pytest
+from typer.testing import CliRunner
 
 import csvql.engine as engine_module
+import csvql.source_runtime as source_runtime_module
+from csvql.api import CSVQLSession
+from csvql.cli import app
 from csvql.engine import CSVQLEngine
+from csvql.models import SourceDefinition
+from csvql.project_config import add_project_table, initialize_project, load_project
 from csvql.source import PreparedSources, SourcePreparationFailure, build_source_request
 from csvql.source_runtime import default_source_components, prepare_source_requests
+from csvql.tui_state import TUISource
+from csvql.tui_workflows import inspect_source, query_sources
 
 _EXTENSION_DIRECTORY_ENV = "LOCALQL_TEST_DUCKDB_EXTENSION_DIRECTORY"
 _REQUIRE_EXTENSION_ENV = "LOCALQL_REQUIRE_PROVISIONED_EXCEL"
@@ -22,6 +31,7 @@ _DUCKDB_SAFETY_CONFIG = {
     "autoinstall_known_extensions": "false",
     "autoload_known_extensions": "false",
 }
+_RUNNER = CliRunner()
 
 
 @pytest.fixture
@@ -48,6 +58,11 @@ def configured_extension_directory(monkeypatch: pytest.MonkeyPatch) -> None:
         return original_connect(database=database, config=merged_config, **kwargs)
 
     monkeypatch.setattr(engine_module.duckdb, "connect", connect_with_test_extensions)
+    monkeypatch.setattr(
+        source_runtime_module,
+        "_connect_activation_metadata",
+        connect_with_test_extensions,
+    )
 
 
 def _require_excel_extension() -> str:
@@ -245,3 +260,86 @@ def test_provisioned_excel_extension_runs_cross_format_contract(
         assert inferred_schema == (("id", "DOUBLE"), ("amount", "DOUBLE"))
         assert cleanup.succeeded
         assert engine.registered_aliases == ()
+
+
+def test_provisioned_excel_extension_executes_across_public_surfaces(
+    tmp_path: Path,
+    configured_extension_directory: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove CLI, Python, TUI, and catalog execution use one Excel source contract."""
+
+    _require_excel_extension()
+    workbook = tmp_path / "records.xlsx"
+    _write_excel_fixture(
+        workbook,
+        sheet="Records",
+        headers=("id", "name"),
+        rows=((1, "alpha"), (2, "beta")),
+    )
+    initialize_project(tmp_path)
+    options = {
+        "range": "A1:B3",
+        "sheet": "Records",
+        "type_mode": "text",
+    }
+    sql = "SELECT count(*) AS row_count FROM records"
+
+    monkeypatch.chdir(tmp_path)
+    cli_result = _RUNNER.invoke(
+        app,
+        [
+            "query",
+            workbook.name,
+            sql,
+            "--type",
+            "excel",
+            "--option",
+            "range=A1:B3",
+            "--option",
+            "sheet=Records",
+            "--option",
+            "type_mode=text",
+            "--output",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert cli_result.exit_code == 0, cli_result.output
+    assert json.loads(cli_result.output)["rows"] == [{"row_count": 2}]
+
+    definition = SourceDefinition(
+        "records",
+        workbook.name,
+        source_type="excel",
+        options=options,
+        base_dir=tmp_path,
+    )
+    session = CSVQLSession.from_config(tmp_path)
+    assert session.query(sql, sources=(definition,)).rows == ((2,),)
+
+    tui_source = TUISource(
+        name="records",
+        locator=workbook.name,
+        anchor=tmp_path,
+        source_type="excel",
+        options=options,
+        origin="session",
+    )
+    assert query_sources((tui_source,), sql).rows == ((2,),)
+    assert tuple(
+        (column.name, column.duckdb_type) for column in inspect_source(tui_source).columns
+    ) == (
+        ("id", "VARCHAR"),
+        ("name", "VARCHAR"),
+    )
+
+    add_project_table(
+        load_project(tmp_path),
+        "records",
+        workbook.name,
+        source_type="excel",
+        options=options,
+        invocation_dir=tmp_path,
+    )
+    assert CSVQLSession.from_config(tmp_path).query(sql).rows == ((2,),)

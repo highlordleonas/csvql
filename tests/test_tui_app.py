@@ -7,6 +7,7 @@ from pathlib import Path
 from types import MethodType
 from unittest.mock import Mock
 
+import duckdb
 import pytest
 from rich.text import Text
 
@@ -16,7 +17,7 @@ from textual import events
 from textual.coordinate import Coordinate
 from textual.geometry import Size
 from textual.pilot import Pilot
-from textual.widgets import DataTable, Input, Static, TextArea
+from textual.widgets import DataTable, Input, Select, Static, TextArea
 from textual.widgets._footer import FooterKey
 
 from csvql import tui_app as tui_app_module
@@ -440,6 +441,81 @@ def test_run_shortcuts_execute_source_free_sql(tmp_path: Path, key: str) -> None
     assert rows == (("0",), ("1",), ("2",))
     assert history_statuses == ["success"]
     assert "No sources loaded." not in status
+
+
+def test_tui_executes_cross_format_parquet_ndjson_join_through_worker_and_results(
+    tmp_path: Path,
+) -> None:
+    orders_path = tmp_path / "orders.parquet"
+    customers_path = tmp_path / "customers.ndjson"
+    connection = duckdb.connect()
+    try:
+        connection.sql(
+            """
+            SELECT *
+            FROM (VALUES (1, 10), (2, 20)) AS orders(order_id, customer_id)
+            """
+        ).write_parquet(str(orders_path))
+    finally:
+        connection.close()
+    customers_path.write_text(
+        '{"customer_id":10,"name":"alpha"}\n{"customer_id":20,"name":"beta"}\n',
+        encoding="utf-8",
+    )
+    state = TUISessionState()
+    state.add_source(
+        TUISource(
+            name="orders",
+            locator=orders_path.name,
+            anchor=tmp_path,
+            source_type="parquet",
+            origin="session",
+        )
+    )
+    state.add_source(
+        TUISource(
+            name="customers",
+            locator=customers_path.name,
+            anchor=tmp_path,
+            source_type="ndjson",
+            origin="session",
+        )
+    )
+
+    async def _inner() -> tuple[
+        tuple[str | None, ...],
+        tuple[str, ...],
+        tuple[tuple[str, ...], ...],
+        tuple[tuple[object, ...], ...],
+        list[str],
+    ]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text(
+                """
+                SELECT COUNT(*) AS matched
+                FROM orders
+                JOIN customers USING (customer_id)
+                """
+            )
+            await pilot.press("f4")
+            await _settled_query_idle(pilot, app)
+            return (
+                tuple(source.source_type for source in app.state.sources),
+                app.state.result_view.columns,
+                app.state.result_view.display_rows,
+                _active_stored_rows(app),
+                app_history_statuses(app.state),
+            )
+
+    source_types, columns, display_rows, stored_rows, history_statuses = asyncio.run(_inner())
+
+    assert source_types == ("parquet", "ndjson")
+    assert columns == ("matched",)
+    assert display_rows == (("2",),)
+    assert stored_rows == ((2,),)
+    assert history_statuses == ["success"]
 
 
 def test_direct_app_construction_does_not_recover_abandoned_workspaces(
@@ -4002,7 +4078,7 @@ def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
     expected_sql_footer = (
         ("F1", "Help"),
-        ("F3", "Open CSV"),
+        ("F3", "Open source"),
         ("F4", "Run current"),
         ("F5", "Results"),
         ("F6", "Sources"),
@@ -4014,7 +4090,7 @@ def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
     expected_sources_footer = (
         ("F1", "Help"),
         ("F2", "SQL"),
-        ("F3", "Open CSV"),
+        ("F3", "Open source"),
         ("F5", "Results"),
         ("F8", "History"),
         ("F9", "Quit"),
@@ -4306,7 +4382,7 @@ def test_terminal_size_warning_keeps_newer_status_after_recovery(tmp_path: Path)
     assert status == "Query finished."
 
 
-def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> None:
+def test_add_source_action_confirms_explicit_type_and_updates_table(tmp_path: Path) -> None:
     csv_path = _create_csv(
         tmp_path,
         "new_customers.csv",
@@ -4321,9 +4397,12 @@ def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> Non
             await pilot.press("a")
             await pilot.pause()
 
-            mapping_input = app.screen.query_one("#mapping-input", Input)
-            mapping_input.value = f"customers={csv_path}"
+            app.screen.query_one("#source-alias", Input).value = "customers"
+            app.screen.query_one("#source-locator", Input).value = str(csv_path)
+            app.screen.query_one("#source-type", Select).value = "csv"
             await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("y")
             await pilot.pause()
 
             sources = app.query_one("#sources", DataTable)
@@ -4339,7 +4418,7 @@ def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> Non
     assert selected_alias == "customers"
 
 
-def test_add_source_action_accepts_pasted_csv_path(tmp_path: Path) -> None:
+def test_add_source_action_confirms_auto_extension_selection(tmp_path: Path) -> None:
     csv_path = _create_csv(
         tmp_path,
         "new customers.csv",
@@ -4354,9 +4433,11 @@ def test_add_source_action_accepts_pasted_csv_path(tmp_path: Path) -> None:
             await pilot.press("a")
             await pilot.pause()
 
-            mapping_input = app.screen.query_one("#mapping-input", Input)
-            mapping_input.value = str(csv_path)
+            app.screen.query_one("#source-alias", Input).value = "new_customers"
+            app.screen.query_one("#source-locator", Input).value = str(csv_path)
             await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("y")
             await pilot.pause()
 
             sources = app.query_one("#sources", DataTable)
@@ -4429,7 +4510,38 @@ def test_choose_csv_source_action_handles_native_picker_cancel(
     sources, status = asyncio.run(_inner())
 
     assert sources == ()
-    assert "No CSV selected." in status
+    assert "No source selected." in status
+
+
+def test_native_picker_non_csv_selection_opens_structured_source_flow(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    parquet_path = tmp_path / "picker_orders.parquet"
+    parquet_path.write_bytes(b"PAR1")
+    monkeypatch.setattr(
+        "csvql.tui_app._choose_csv_paths_with_native_picker",
+        lambda: (str(parquet_path),),
+    )
+
+    async def _inner() -> tuple[str, str, str, str | None]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f3")
+            await pilot.pause()
+            screen_name = type(app.screen).__name__
+            alias = app.screen.query_one("#source-alias", Input).value
+            locator = app.screen.query_one("#source-locator", Input).value
+            selected_type = app.screen.query_one("#source-type", Select).value
+            return screen_name, alias, locator, selected_type
+
+    screen_name, alias, locator, selected_type = asyncio.run(_inner())
+
+    assert screen_name == "_SourceInputScreen"
+    assert alias == "picker_orders"
+    assert locator == str(parquet_path)
+    assert selected_type == "auto"
 
 
 def test_choose_csv_source_action_falls_back_to_path_prompt(
@@ -6147,7 +6259,7 @@ def test_sources_pane_keeps_origin_before_relative_project_path(tmp_path: Path) 
 
     columns, row_count, derived_path = asyncio.run(_inner())
 
-    assert columns == ("alias", "kind", "origin", "path")
+    assert columns == ("alias", "type", "origin", "locator")
     assert row_count == 2
     assert derived_path == ".csvql/results/order_names.csv"
 
@@ -6692,7 +6804,8 @@ def test_help_text_documents_workbench_keymap() -> None:
     assert "F4 / Ctrl+R         Run selected SQL, otherwise current statement" in help_text
     assert "Run selected SQL, otherwise current statement" in help_text
     assert "F12 / Ctrl+B        Run Buffer" in help_text
-    assert "F3 / Ctrl+O         Choose CSV file(s) or prompt for paths" in help_text
+    assert "F3 / Ctrl+O         Choose local source file(s) or prompt for a path" in help_text
+    assert "LocalQL displays bounded evidence and never guesses between candidates." in help_text
     assert "F1                  Help" in help_text
     assert "?                   Help" not in help_text
     assert "Also opens help" not in help_text
@@ -6727,7 +6840,7 @@ def test_tui_guide_documents_portable_fallbacks_and_run_labels() -> None:
 
     assert "| `F7` | Export active result |" in guide
     assert "| `F12` or `Ctrl+B` | Run the buffer as separate History rows |" in guide
-    assert "| `F3` or `Ctrl+O` | Choose CSV file(s) or prompt for paths |" in guide
+    assert "| `F3` or `Ctrl+O` | Choose local source file(s) or prompt for a path |" in guide
     assert "| `F9` or `q` | Quit outside text entry |" in guide
     assert "The History run column labels entries as `current` for F4/Ctrl+R runs," in guide
     assert "`buffer` for F12/Ctrl+B runs" in guide
@@ -6738,9 +6851,9 @@ def test_troubleshooting_documents_menu_entry_points() -> None:
     troubleshooting = _read_doc_text("docs/troubleshooting.md")
 
     assert "Use `F4` or `Ctrl+R` to run the current SQL." in troubleshooting
-    assert "`F3` opens a native CSV picker on macOS." in troubleshooting
-    assert "`Ctrl+O` opens the path prompt on every" in troubleshooting
-    assert "platform." in troubleshooting
+    assert "`F3` opens a native source picker on macOS." in troubleshooting
+    assert "`F3` or `Ctrl+O` opens the portable path prompt." in troubleshooting
+    assert "Press `a` in Sources for the" in troubleshooting
     assert "[Terminal menu guide](tui-guide.md)" in troubleshooting
 
 
@@ -6794,7 +6907,7 @@ def test_completion_docs_describe_tab_primary_and_ctrl_space_secondary() -> None
     guide_source_actions = _normalized_markdown_text(
         guide_text[
             guide_text.index("When the Sources pane is focused:") : guide_text.index(
-                "The Add source prompt accepts"
+                "The structured Add source flow collects"
             )
         ]
     )

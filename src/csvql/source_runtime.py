@@ -17,6 +17,7 @@ from csvql.adapter_factory import (
 from csvql.exceptions import SourceError, SourceErrorCode, SourceIdentityError
 from csvql.operation import OperationContext
 from csvql.source import (
+    DetectionResult,
     PreparedSources,
     ResolvedSource,
     SelectedSource,
@@ -31,6 +32,7 @@ from csvql.source_detection import SourceDetectionService
 from csvql.source_identifiers import build_builtin_identifier_table
 from csvql.source_registry import (
     DependencyRequirement,
+    DescriptorRegistry,
     build_builtin_descriptor_registry,
 )
 
@@ -39,6 +41,7 @@ from csvql.source_registry import (
 class SourceComponents:
     """Validated default source components constructed without provider imports."""
 
+    registry: DescriptorRegistry
     detection: SourceDetectionService
     factory: AdapterFactory
     coordinator: SourceCoordinator
@@ -51,6 +54,7 @@ def build_default_source_components() -> SourceComponents:
     detection = SourceDetectionService(registry, build_builtin_identifier_table())
     factory = AdapterFactory(registry, build_builtin_lazy_adapter_table())
     return SourceComponents(
+        registry=registry,
         detection=detection,
         factory=factory,
         coordinator=SourceCoordinator(detection, factory),
@@ -62,6 +66,27 @@ def default_source_components() -> SourceComponents:
     """Return one lazily constructed immutable default composition."""
 
     return build_default_source_components()
+
+
+def detect_source_request(
+    request: SourceRequest,
+    *,
+    operation: OperationContext | None = None,
+) -> DetectionResult:
+    """Detect one request without activating or constructing its adapter."""
+
+    return default_source_components().detection.detect(request, operation=operation)
+
+
+def source_kind_hint(request: SourceRequest) -> str | None:
+    """Return the deterministic explicit-type or extension kind without observing a locator."""
+
+    registry = default_source_components().registry
+    if request.explicit_type is not None:
+        descriptor = registry.resolve_type(request.explicit_type)
+        return None if descriptor is None else descriptor.source_kind
+    extension_match = registry.match_extension(request.locator)
+    return None if extension_match is None else extension_match[0].source_kind
 
 
 def default_activation_context() -> ActivationContext:
@@ -127,7 +152,7 @@ def resolve_source_request(
     """Resolve one request through detection and selected-only activation."""
 
     components = default_source_components()
-    outcome = components.detection.detect(request, operation=operation)
+    outcome = detect_source_request(request, operation=operation)
     if not isinstance(outcome, SelectedSource):
         raise SourceError(
             _legacy_error_code(outcome.diagnostic.code.value),
@@ -138,6 +163,7 @@ def resolve_source_request(
                 if outcome.required_action is None
                 else outcome.required_action.kind.replace("_", " ")
             ),
+            diagnostic=outcome.diagnostic,
         )
     adapter = components.factory.activate(
         outcome,
@@ -241,6 +267,7 @@ def raise_preparation_failure(
         kind=None if request is None else request.explicit_type,
         alias=None if request is None else request.alias,
         suggestion=_legacy_suggestion(diagnostic, request),
+        diagnostic=diagnostic,
     )
 
 

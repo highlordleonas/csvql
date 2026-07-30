@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         ProfileResult,
         QueryResult,
         SampleResult,
+        SourceDefinition,
         TableSource,
     )
     from csvql.project_config import ProjectTablesResult
@@ -29,6 +30,7 @@ __all__ = [
     "ProjectTablesResult",
     "QueryResult",
     "SampleResult",
+    "SourceDefinition",
     "TableSource",
 ]
 
@@ -44,6 +46,7 @@ _PUBLIC_IMPORTS = {
     "ProjectTablesResult": ("csvql.project_config", "ProjectTablesResult"),
     "QueryResult": ("csvql.models", "QueryResult"),
     "SampleResult": ("csvql.models", "SampleResult"),
+    "SourceDefinition": ("csvql.models", "SourceDefinition"),
     "TableSource": ("csvql.models", "TableSource"),
 }
 

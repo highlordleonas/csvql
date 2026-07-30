@@ -22,11 +22,17 @@ Source pane
   c                   Load/show selected source columns
   l                   Insert selected source alias
   x                   Open starter SQL templates
-  F3 / Ctrl+O         Choose CSV file(s) or prompt for paths
-  a                   Add source
-  paste .csv path     Add CSV path text as a session source
+  F3 / Ctrl+O         Choose local source file(s) or prompt for a path
+  a                   Add structured source intent
+  paste .csv path     Add CSV immediately
+  paste other path    Open type, option, detection, and confirmation flow
   d                   Remove selected source after confirmation
   w                   Save sources to project catalog
+
+Detection
+  Explicit type wins; otherwise a recognized extension selects its provider.
+  Extensionless files and directories require an explicit type when ambiguous.
+  LocalQL displays bounded evidence and never guesses between candidates.
 
 History pane
   highlight           Recall selected query result

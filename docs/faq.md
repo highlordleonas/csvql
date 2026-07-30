@@ -27,14 +27,28 @@ environment. Only run SQL you trust.
 
 ## Why use LocalQL instead of DuckDB directly?
 
-DuckDB executes SQL. LocalQL adds a local CSV workflow around table aliases,
-project catalogs, saved SQL files, readable terminal output, explicit exports,
-data-quality checks, troubleshooting commands, and the optional terminal menu.
+DuckDB executes SQL. LocalQL adds deterministic local-source selection, table
+aliases, project catalogs, saved SQL files, readable terminal output, explicit
+exports, data-quality checks, troubleshooting commands, and the optional
+terminal menu.
 
-## Does LocalQL support Parquet, cloud sources, or web dashboards?
+## Which source formats does LocalQL support?
 
-LocalQL v1 focuses on local CSV files, DuckDB SQL, project catalogs, exports,
-and the optional terminal menu. See the [Roadmap](ROADMAP.md) for planned work.
+LocalQL supports local CSV, Parquet (including explicitly typed partitioned
+datasets), JSON, NDJSON/JSON Lines, and Excel `.xlsx` sources. The Excel provider
+requires DuckDB's optional `excel` extension to be provisioned before LocalQL
+starts; LocalQL does not install it during a query.
+
+Cloud sources, remote databases, object stores, and web dashboards are outside
+this local-source release. See the [Roadmap](ROADMAP.md) for planned work.
+
+## How does LocalQL choose a source type?
+
+An explicit type always wins. Otherwise, one recognized extension selects its
+provider. If a file is extensionless or a directory is supplied without a type,
+LocalQL may inspect a bounded amount of local metadata to report possible
+matches, but it intentionally does not select from those matches. The
+diagnostic tells you which explicit choice is required.
 
 ## Where do terminal-menu result sources go?
 

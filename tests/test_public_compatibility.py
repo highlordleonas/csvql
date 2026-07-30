@@ -71,7 +71,7 @@ def _run_and_assert_source_unchanged(
     return result
 
 
-def test_public_exports_are_exact_and_exclude_private_source_foundations() -> None:
+def test_public_exports_add_source_definition_and_exclude_private_foundations() -> None:
     assert csvql.__all__ == [
         "CSVQLEngine",
         "CSVQLSession",
@@ -82,6 +82,7 @@ def test_public_exports_are_exact_and_exclude_private_source_foundations() -> No
         "ProjectTablesResult",
         "QueryResult",
         "SampleResult",
+        "SourceDefinition",
         "TableSource",
     ]
     assert not {
@@ -97,26 +98,34 @@ def test_public_exports_are_exact_and_exclude_private_source_foundations() -> No
     }.intersection(csvql.__all__)
 
 
-def test_public_session_and_engine_signatures_are_unchanged() -> None:
-    assert str(inspect.signature(CSVQLSession.query)) == "(self, sql: 'str') -> 'QueryResult'"
+def test_public_session_and_engine_signatures_retain_legacy_inputs_additively() -> None:
+    assert str(inspect.signature(CSVQLSession.query)) == (
+        "(self, sql: 'str', *, sources: "
+        "'Sequence[TableSource] | Sequence[SourceDefinition] | None' = None) -> 'QueryResult'"
+    )
     assert (
-        str(inspect.signature(CSVQLSession.run_file))
-        == "(self, path: 'str | Path') -> 'QueryResult'"
+        str(inspect.signature(CSVQLSession.run_file)) == "(self, path: 'str | Path', *, sources: "
+        "'Sequence[TableSource] | Sequence[SourceDefinition] | None' = None) -> 'QueryResult'"
     )
     assert str(inspect.signature(CSVQLSession.inspect)) == (
-        "(self, table: 'str', *, exact: 'bool' = False) -> 'InspectResult'"
+        "(self, table: 'str | TableSource | SourceDefinition', *, "
+        "exact: 'bool' = False) -> 'InspectResult'"
     )
     assert str(inspect.signature(CSVQLSession.sample)) == (
-        "(self, table: 'str', *, limit: 'int' = 10) -> 'SampleResult'"
+        "(self, table: 'str | TableSource | SourceDefinition', *, "
+        "limit: 'int' = 10) -> 'SampleResult'"
     )
-    assert str(inspect.signature(CSVQLSession.profile)) == "(self, table: 'str') -> 'ProfileResult'"
+    assert str(inspect.signature(CSVQLSession.profile)) == (
+        "(self, table: 'str | TableSource | SourceDefinition') -> 'ProfileResult'"
+    )
     assert str(inspect.signature(CSVQLSession.check)) == (
         "(self, table: 'str | None' = None, *, show_failures: 'bool' = False, "
         "failure_limit: 'int' = 5) -> 'CheckRunResult'"
     )
     assert str(inspect.signature(CSVQLSession.export)) == (
         "(self, sql_file: 'str | Path', out: 'str | Path', *, "
-        "format: 'ExportFormat | str' = <ExportFormat.json: 'json'>, force: 'bool' = False) "
+        "format: 'ExportFormat | str' = <ExportFormat.json: 'json'>, force: 'bool' = False, "
+        "sources: 'Sequence[TableSource] | Sequence[SourceDefinition] | None' = None) "
         "-> 'Path'"
     )
     assert str(inspect.signature(CSVQLEngine.register_tables)) == (
@@ -125,6 +134,9 @@ def test_public_session_and_engine_signatures_are_unchanged() -> None:
     assert str(inspect.signature(CSVQLEngine.query)) == (
         "(self, sql: str, params: collections.abc.Sequence[object] | None = None) "
         "-> csvql.models.QueryResult"
+    )
+    assert str(inspect.signature(CSVQLEngine.register_sources)) == (
+        "(self, sources: collections.abc.Iterable[csvql.models.SourceDefinition]) -> None"
     )
 
 

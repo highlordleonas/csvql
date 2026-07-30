@@ -3,39 +3,61 @@
 import os
 import shlex
 from collections.abc import Iterator, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import cast
 from urllib.parse import unquote, urlparse
 
 from csvql.atomic_write import write_text_atomic
 from csvql.bounded_result import PreviewPolicy
 from csvql.engine import CSVQLEngine
-from csvql.exceptions import CSVQLError, ExportError, ProjectConfigError, TableMappingError
+from csvql.exceptions import (
+    CSVQLError,
+    ExportError,
+    ProjectConfigError,
+    SourceError,
+    TableMappingError,
+)
 from csvql.export import ExportFormat, resolve_export_path
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
 from csvql.operation import OperationCancelled, OperationContext, OperationToken
 from csvql.project_config import (
+    CURRENT_VERSION,
     SUPPORTED_VERSION,
-    ProjectConfig,
+    CatalogSourceDefinition,
+    ProjectConfigV1,
+    ProjectConfigV2,
+    ProjectConfigValue,
     ProjectContext,
-    ProjectTable,
+    ProjectTableV1,
+    ProjectTableV2,
+    ProjectTableValue,
     _parse_project_config,
     _project_catalog_path_value,
     _project_config_payload,
     load_project,
+    project_tables_to_source_specs,
     resolve_catalog_path,
     save_project,
 )
 from csvql.query_workflow import _snapshot_optional_catalog
 from csvql.source import (
     ResolvedSource,
-    build_source_request,
-    source_spec_from_tui_source,
+    SelectedSource,
+    source_options_as_python,
+    source_request_from_definition,
 )
 from csvql.source_operations import SourceOperations
-from csvql.source_runtime import resolve_source_request
+from csvql.source_registry import SourceOptionDefinition, build_builtin_descriptor_registry
+from csvql.source_runtime import default_source_components, resolve_source_request
 from csvql.streaming_export import write_streaming_export
-from csvql.table_mapping import parse_table_mapping, source_from_single_csv, validate_table_alias
+from csvql.table_mapping import (
+    derive_alias_from_locator,
+    parse_source_options,
+    parse_table_mapping,
+    source_from_single_csv,
+    validate_table_alias,
+)
 from csvql.tui_query_runner import TUIRunRequest
 from csvql.tui_result_store import TUIResultHandle, TUIResultStore
 from csvql.tui_state import (
@@ -49,6 +71,157 @@ from csvql.tui_state import (
 
 _MISSING_PROJECT_PREFIX = "No .csvql.yml project catalog found."
 _DERIVED_RESULTS_DIR = Path(".csvql") / "results"
+
+
+@dataclass(frozen=True, slots=True)
+class TUISourceTypeChoice:
+    """Import-free source type and option metadata used by the TUI form."""
+
+    source_type: str
+    label: str
+    extensions: tuple[str, ...]
+    options: tuple[SourceOptionDefinition, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TUISourcePreview:
+    """Deterministic selected-source preview awaiting explicit TUI confirmation."""
+
+    source: TUISource
+    provider_key: str
+    selection_reason: str
+    extension_evidence: str | None
+
+    def confirmation_message(self) -> str:
+        """Describe exactly why the provider would be selected."""
+
+        if self.selection_reason == "explicit_type":
+            reason = f"explicit type '{self.provider_key}'"
+        else:
+            reason = f"recognized extension '{self.extension_evidence}'"
+        option_keys = tuple(key for key, _value in self.source.options)
+        option_text = (
+            f" Explicit options: {', '.join(option_keys)}."
+            if option_keys
+            else " No explicit options."
+        )
+        return (
+            f"Add source '{self.source.name}' as {self.provider_key} from "
+            f"'{self.source.locator}'? Selection reason: {reason}.{option_text}"
+        )
+
+
+def tui_source_type_choices() -> tuple[TUISourceTypeChoice, ...]:
+    """Return deterministic descriptor metadata without importing adapters."""
+
+    registry = build_builtin_descriptor_registry()
+    return tuple(
+        TUISourceTypeChoice(
+            source_type=descriptor.source_kind,
+            label=descriptor.source_kind.upper(),
+            extensions=descriptor.extensions,
+            options=descriptor.options,
+        )
+        for descriptor in registry.descriptors
+    )
+
+
+def build_tui_source_preview(
+    *,
+    alias: str,
+    locator: str,
+    source_type: str | None,
+    option_mappings: Sequence[str],
+    existing_sources: Sequence[TUISource],
+    start_dir: Path,
+) -> TUISourcePreview:
+    """Validate TUI source intent and return a shared-detection preview."""
+
+    source_name = validate_table_alias(alias)
+    if any(source.name.casefold() == source_name.casefold() for source in existing_sources):
+        raise TableMappingError(
+            f"Source alias '{source_name}' is already loaded.",
+            suggestion="Choose a different source alias or remove the existing source first.",
+        )
+    source = TUISource(
+        name=source_name,
+        locator=locator,
+        anchor=start_dir,
+        source_type=source_type,
+        options=parse_source_options(option_mappings),
+        origin="session",
+    )
+    request = source_request_from_definition(source.as_source_definition())
+    detected = default_source_components().detection.detect(request)
+    if not isinstance(detected, SelectedSource):
+        raise SourceError(
+            "unknown_source_kind",
+            detected.diagnostic.message,
+            alias=source.name,
+            suggestion=(
+                None
+                if detected.required_action is None
+                else detected.required_action.kind.replace("_", " ")
+            ),
+            diagnostic=detected.diagnostic,
+        )
+    return TUISourcePreview(
+        source=source,
+        provider_key=detected.provider_key,
+        selection_reason=detected.selection_reason,
+        extension_evidence=detected.extension_evidence,
+    )
+
+
+def structured_source_locator_from_text(
+    raw_text: str,
+    *,
+    start_dir: Path,
+) -> str | None:
+    """Return one non-CSV locator suitable for the structured TUI flow."""
+
+    cleaned = _path_value_from_terminal_token(_strip_terminal_quotes(raw_text.strip()))
+    if not cleaned or "\n" in cleaned or "\r" in cleaned:
+        return None
+    candidate = Path(cleaned).expanduser()
+    resolved = candidate if candidate.is_absolute() else start_dir / candidate
+    try:
+        is_directory = resolved.is_dir()
+        is_file = resolved.is_file()
+    except OSError:
+        return None
+    if not is_directory and not is_file:
+        return None
+    registry = build_builtin_descriptor_registry()
+    if is_directory:
+        return cleaned
+    if Path(cleaned).suffix.casefold() == ".csv":
+        return None
+    if registry.match_extension(cleaned) is not None:
+        return cleaned
+    if registry.match_unsupported_extension(cleaned) is not None:
+        return cleaned
+    return cleaned if not Path(cleaned).suffix else None
+
+
+def suggested_tui_source_alias(locator: str, *, start_dir: Path) -> str:
+    """Derive the same conservative alias used by other source surfaces."""
+
+    return derive_alias_from_locator(locator, base_dir=start_dir)
+
+
+def tui_source_option_mappings(raw_text: str) -> tuple[str, ...]:
+    """Split structured TUI option text into the shared repeatable mapping form."""
+
+    if not raw_text.strip():
+        return ()
+    try:
+        return tuple(shlex.split(raw_text))
+    except ValueError as exc:
+        raise TableMappingError(
+            "Invalid source option quoting.",
+            suggestion="Use space-separated key=value options with balanced quotes.",
+        ) from exc
 
 
 def build_initial_state(
@@ -289,6 +462,7 @@ def run_buffer_for_tui(
                         sql=sql,
                         error_message=exc.message,
                         suggestion=exc.suggestion,
+                        diagnostic=exc.diagnostic,
                     )
                 )
                 break
@@ -323,6 +497,7 @@ def run_query_for_tui(
             sql=sql,
             error_message=exc.message,
             suggestion=exc.suggestion,
+            diagnostic=exc.diagnostic,
         )
 
     if not result.columns:
@@ -489,13 +664,21 @@ def save_sources_to_project_catalog(
 
     context = _load_or_initialize_project(start_dir)
     tables = _stage_project_tables(context, sources, replace=replace)
+    config: ProjectConfigValue
+    if isinstance(context.config, ProjectConfigV1):
+        config = ProjectConfigV1(
+            version=SUPPORTED_VERSION,
+            tables=tuple(sorted(cast(list[ProjectTableV1], tables), key=lambda table: table.name)),
+        )
+    else:
+        config = ProjectConfigV2(
+            version=CURRENT_VERSION,
+            tables=tuple(sorted(cast(list[ProjectTableV2], tables), key=lambda table: table.name)),
+        )
     staged_context = ProjectContext(
         project_root=context.project_root,
         config_path=context.config_path,
-        config=ProjectConfig(
-            version=context.config.version,
-            tables=tuple(sorted(tables, key=lambda table: table.name)),
-        ),
+        config=config,
     )
     _validate_staged_project_context(staged_context)
     return save_project(staged_context)
@@ -510,19 +693,21 @@ def _catalog_sources(*, start_dir: Path) -> tuple[TUISource, ...]:
         raise
 
     sources: list[TUISource] = []
-    for table in context.config.tables:
-        candidate = Path(table.path).expanduser()
-        if not candidate.is_absolute():
-            candidate = context.project_root / candidate
+    tables = cast(Sequence[ProjectTableValue], context.config.tables)
+    specs = project_tables_to_source_specs(context)
+    for table, spec in zip(tables, specs, strict=True):
         # Validate artifact provenance before a provider is allowed to inspect it.
-        TUISource(name=table.name, path=candidate, origin="catalog")
-        sources.append(
-            TUISource(
-                name=table.name,
-                path=resolve_catalog_path(table, context),
-                origin="catalog",
-            )
+        source = TUISource(
+            name=spec.alias,
+            locator=spec.locator,
+            anchor=spec.anchor,
+            source_type=spec.kind,
+            options=source_options_as_python(spec.options),
+            origin="catalog",
         )
+        # Preserve startup missing-locator behavior without constructing an adapter.
+        resolve_catalog_path(table, context)
+        sources.append(source)
     return tuple(sources)
 
 
@@ -566,15 +751,8 @@ def _resolve_tui_source(
     *,
     operation: OperationContext,
 ) -> ResolvedSource:
-    spec = source_spec_from_tui_source(source)
     resolved = resolve_source_request(
-        build_source_request(
-            alias=spec.alias,
-            locator=spec.locator,
-            anchor=spec.anchor,
-            explicit_type=spec.kind,
-            options=spec.options,
-        ),
+        source_request_from_definition(source.as_source_definition()),
         operation=operation,
     )
     if not isinstance(resolved, ResolvedSource):
@@ -594,8 +772,8 @@ def _stage_project_tables(
     sources: Sequence[TUISource],
     *,
     replace: bool,
-) -> list[ProjectTable]:
-    tables = list(context.config.tables)
+) -> list[ProjectTableValue]:
+    tables = list(cast(Sequence[ProjectTableValue], context.config.tables))
     existing_indexes = {table.name.casefold(): index for index, table in enumerate(tables)}
     seen_batch_aliases: set[str] = set()
 
@@ -607,7 +785,24 @@ def _stage_project_tables(
                 suggestion="Use one entry per alias when saving sources to the project catalog.",
             )
         seen_batch_aliases.add(source_key)
+        if isinstance(context.config, ProjectConfigV1):
+            if source.source_type != "csv" or source.options:
+                raise ProjectConfigError(
+                    "Project catalog version 1 accepts only explicit option-free CSV sources.",
+                    suggestion=(
+                        "Create a version 2 catalog before saving provider-neutral source intent."
+                    ),
+                    code="catalog.v1_migration_required",
+                )
+        elif source.source_type is None:
+            raise ProjectConfigError(
+                f"Source '{source.name}' requires an explicit type before catalog save.",
+                suggestion="Choose a source type in the TUI and save again.",
+                code="catalog.source_type_required",
+            )
 
+    for source in sources:
+        source_key = source.name.casefold()
         operation = OperationContext(OperationToken())
         resolved = _resolve_tui_source(
             source,
@@ -617,6 +812,12 @@ def _stage_project_tables(
             engine.prepare_sources((resolved,))
         resolved_path = Path(resolved.canonical_locator)
         stored_path = _project_catalog_path_value(context.project_root, resolved_path)
+        if not stored_path and isinstance(context.config, ProjectConfigV2):
+            raise ProjectConfigError(
+                f"Missing source locator for project catalog table '{source.name}'.",
+                suggestion="Choose a non-empty local source locator and save again.",
+                code="catalog.source_locator_required",
+            )
         existing_index = existing_indexes.get(source_key)
 
         if existing_index is not None and not replace:
@@ -626,13 +827,36 @@ def _stage_project_tables(
             )
         if existing_index is not None:
             existing_table = tables[existing_index]
-            tables[existing_index] = ProjectTable(
-                name=source.name,
-                path=stored_path,
-                checks=existing_table.checks,
-            )
+            if isinstance(context.config, ProjectConfigV1):
+                tables[existing_index] = ProjectTableV1(
+                    name=source.name,
+                    path=stored_path,
+                    checks=existing_table.checks,
+                )
+            else:
+                tables[existing_index] = ProjectTableV2(
+                    name=source.name,
+                    source=CatalogSourceDefinition(
+                        source_type=resolved.source_kind,
+                        locator=stored_path,
+                        options=source.options,
+                    ),
+                    checks=existing_table.checks,
+                )
         else:
-            tables.append(ProjectTable(name=source.name, path=stored_path))
+            if isinstance(context.config, ProjectConfigV1):
+                tables.append(ProjectTableV1(name=source.name, path=stored_path))
+            else:
+                tables.append(
+                    ProjectTableV2(
+                        name=source.name,
+                        source=CatalogSourceDefinition(
+                            source_type=resolved.source_kind,
+                            locator=stored_path,
+                            options=source.options,
+                        ),
+                    )
+                )
 
     return tables
 
@@ -656,7 +880,7 @@ def _load_or_initialize_project(start_dir: Path) -> ProjectContext:
             return ProjectContext(
                 project_root=project_root,
                 config_path=project_root / ".csvql.yml",
-                config=ProjectConfig(version=SUPPORTED_VERSION, tables=()),
+                config=ProjectConfigV2(version=CURRENT_VERSION, tables=()),
             )
         raise
 

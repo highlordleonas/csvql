@@ -18,7 +18,7 @@ from csvql.exceptions import (
     SourceBindingError,
     SourceCleanupError,
 )
-from csvql.models import QueryResult, TableSource
+from csvql.models import QueryResult, SourceDefinition, TableSource
 from csvql.operation import OperationCancelled, OperationContext, OperationToken
 from csvql.result_stream import (
     CURSOR_CLEANUP_UNCERTAINTY_NOTE,
@@ -487,6 +487,28 @@ class CSVQLEngine:
         )
         from csvql.source import SourcePreparationFailure
 
+        if isinstance(outcome, SourcePreparationFailure):
+            raise_preparation_failure(outcome, requests=requests)
+        self._compatibility_scopes.append(outcome)
+
+    def register_sources(self, sources: Iterable[SourceDefinition]) -> None:
+        """Register provider-neutral public source definitions."""
+
+        from csvql.source import SourcePreparationFailure, source_request_from_definition
+        from csvql.source_runtime import (
+            prepare_source_requests,
+            raise_preparation_failure,
+        )
+
+        definitions = tuple(sources)
+        if not definitions:
+            return
+        requests = tuple(source_request_from_definition(definition) for definition in definitions)
+        outcome = prepare_source_requests(
+            requests,
+            engine_session=self,
+            operation=self._operation,
+        )
         if isinstance(outcome, SourcePreparationFailure):
             raise_preparation_failure(outcome, requests=requests)
         self._compatibility_scopes.append(outcome)

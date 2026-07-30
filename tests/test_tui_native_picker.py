@@ -48,8 +48,8 @@ def test_native_picker_maps_missing_osascript_to_csvql_error() -> None:
     with pytest.raises(CSVQLError) as exc_info:
         choose_csv_paths_with_native_picker(platform="darwin", run_command=fake_run)
 
-    assert exc_info.value.message == "Native CSV picker is unavailable."
-    assert exc_info.value.suggestion == "Use Add source and paste a CSV path instead."
+    assert exc_info.value.message == "Native source picker is unavailable."
+    assert exc_info.value.suggestion == "Use Add source and enter a local path instead."
 
 
 def test_native_picker_maps_non_cancel_failure_to_csvql_error() -> None:
@@ -64,5 +64,5 @@ def test_native_picker_maps_non_cancel_failure_to_csvql_error() -> None:
     with pytest.raises(CSVQLError) as exc_info:
         choose_csv_paths_with_native_picker(platform="darwin", run_command=fake_run)
 
-    assert exc_info.value.message == "Native CSV picker failed."
-    assert exc_info.value.suggestion == "Use Add source and paste a CSV path instead."
+    assert exc_info.value.message == "Native source picker failed."
+    assert exc_info.value.suggestion == "Use Add source and enter a local path instead."

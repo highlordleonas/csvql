@@ -6,7 +6,7 @@ by default and support JSON where noted. For a guided first use, start with
 
 ## Contents
 
-- [Query CSV files](#query-csv-files)
+- [Query local sources](#query-local-sources)
 - [Project catalogs](#project-catalogs)
 - [Run saved SQL](#run-saved-sql)
 - [Result-size behavior](#result-size-behavior)
@@ -16,15 +16,44 @@ by default and support JSON where noted. For a guided first use, start with
 - [Project health](#project-health)
 - [Python API](#python-api)
 
-## Query CSV files
+## Query local sources
 
-Query a CSV directly. The file name becomes the table name:
+Query a recognized local file directly. The file name becomes the table name:
 
 ```bash
 csvql query data/orders.csv "SELECT * FROM orders LIMIT 10"
+csvql query data/orders.parquet "SELECT COUNT(*) FROM orders"
+csvql query data/events.ndjson "SELECT * FROM events LIMIT 10"
 ```
 
-Use `--table` to name one or more CSV files explicitly, including joins:
+The recognized extensions are `.csv`, `.parquet`/`.parq`, `.json`,
+`.ndjson`/`.jsonl`, and `.xlsx`. Use `--type` for an explicit single-source
+override or an extensionless source:
+
+```bash
+csvql query data/order_facts "SELECT COUNT(*) FROM order_facts" \
+  --type parquet \
+  --option partitioning=hive
+```
+
+For multiple provider-neutral sources, repeat `--source`, and associate types
+and options by alias:
+
+```bash
+csvql query \
+  --source customers=data/customers.parquet \
+  --source events=data/events.ndjson \
+  --source-type events=ndjson \
+  --source-option events.sample_size=10000 \
+  "SELECT c.segment, COUNT(*) AS event_count
+   FROM customers AS c
+   JOIN events AS e USING (customer_id)
+   GROUP BY c.segment"
+```
+
+Every `--source-type NAME=TYPE` and `--source-option NAME.KEY=VALUE` must name
+exactly one `--source`. `--table NAME=PATH` remains the explicit-CSV
+compatibility syntax and may be repeated for CSV joins:
 
 ```bash
 csvql query \
@@ -37,6 +66,11 @@ csvql query \
    ORDER BY order_count DESC"
 ```
 
+Selection is deterministic: explicit type, then recognized extension. For an
+extensionless file or directory, LocalQL may perform bounded, read-only
+identification to report candidates, but it never selects one heuristically.
+Choose a type explicitly to continue.
+
 Add `--output json` when another program will consume the result. See the
 [JSON output reference](json-contracts.md) for the response shapes.
 
@@ -47,7 +81,8 @@ Initialize a project once, then add its sources:
 ```bash
 csvql init
 csvql add customers data/customers.csv
-csvql add orders data/orders.csv
+csvql add orders data/orders.parquet --type parquet
+csvql add events data/events.ndjson --type ndjson --option sample_size=10000
 csvql tables
 ```
 
@@ -57,6 +92,10 @@ paths:
 ```bash
 csvql query "SELECT COUNT(*) AS order_count FROM orders"
 ```
+
+New catalogs use the normalized version 2 `source.type`, `source.locator`, and
+optional `source.options` shape. Existing version 1 catalogs remain strict,
+CSV-only compatibility inputs; no implicit migration occurs.
 
 LocalQL stores the catalog in `.csvql.yml`. Read [Getting started](getting-started.md#use-a-project-catalog)
 for the expected layout and the [FAQ](faq.md) for the distribution-name and
@@ -115,21 +154,25 @@ The terminal menu can also save its active result to
 
 ## Inspect, sample, and profile
 
-Inspect a file or catalog alias to see its columns and detected dialect. Add
-`--exact` only when you want a full scan for an exact row count:
+Inspect a file or catalog alias to see its columns and source metadata. CSV
+inspection also reports its detected dialect. Add `--exact` only when you want
+a full scan for an exact row count:
 
 ```bash
 csvql inspect data/orders.csv
+csvql inspect data/orders.parquet --type parquet
 csvql inspect orders --exact --output json
 ```
 
-Sample a file or catalog alias without writing a query:
+Sample a file or catalog alias without writing a query. `inspect`, `sample`,
+and `profile` all accept repeatable `--option KEY=VALUE` values:
 
 ```bash
 csvql sample data/orders.csv --limit 10
+csvql sample data/events.json --type json --option 'record_path=$.events' --limit 10
 ```
 
-Profile a CSV or catalog alias:
+Profile a source or catalog alias:
 
 ```bash
 csvql profile data/orders.csv

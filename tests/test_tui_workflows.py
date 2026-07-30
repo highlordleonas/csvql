@@ -14,7 +14,13 @@ from csvql.exceptions import (
 )
 from csvql.export import ExportFormat
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
-from csvql.project_config import CONFIG_FILENAME, initialize_project, load_project
+from csvql.project_config import (
+    CONFIG_FILENAME,
+    ProjectConfigV2,
+    ProjectTableV2,
+    initialize_project,
+    load_project,
+)
 from csvql.result_codec import encode_row_payload
 from csvql.source import source_spec_from_tui_source
 from csvql.source_adapter import RelationalBinding
@@ -93,18 +99,20 @@ def test_build_initial_state_loads_catalog_sources_with_resolved_paths(
 
     state = build_initial_state(csv_path=None, table_mappings=(), start_dir=project_root)
 
-    assert state.sources == (
-        TUISource(
-            name="orders",
-            path=(project_root / "data" / "orders.csv").resolve(),
-            origin="catalog",
-        ),
-        TUISource(
-            name="customers",
-            path=(project_root / "data" / "customers.csv").resolve(),
-            origin="catalog",
-        ),
+    assert tuple(source.locator for source in state.sources) == (
+        "data/orders.csv",
+        "data/customers.csv",
     )
+    assert tuple(source.anchor for source in state.sources) == (
+        project_root.resolve(),
+        project_root.resolve(),
+    )
+    assert tuple(source.path for source in state.sources) == (
+        (project_root / "data" / "orders.csv").resolve(),
+        (project_root / "data" / "customers.csv").resolve(),
+    )
+    assert tuple(source.source_type for source in state.sources) == ("csv", "csv")
+    assert tuple(source.origin for source in state.sources) == ("catalog", "catalog")
     assert state.selected_alias == "orders"
 
 
@@ -625,10 +633,14 @@ def test_save_sources_to_project_catalog_creates_catalog_and_uses_relative_paths
 
     assert context.config_path == (project_root / CONFIG_FILENAME).resolve()
     assert context.project_root == project_root.resolve()
-    assert context.config.tables[0].path == "data/orders.csv"
+    assert isinstance(context.config, ProjectConfigV2)
+    assert context.config.tables[0].source.locator == "data/orders.csv"
+    assert context.config.tables[0].source.source_type == "csv"
+    assert context.config.tables[0].source.options == ()
 
     loaded_context = load_project(project_root)
-    assert loaded_context.config.tables[0].path == "data/orders.csv"
+    assert isinstance(loaded_context.config, ProjectConfigV2)
+    assert loaded_context.config.tables[0].source.locator == "data/orders.csv"
 
 
 def test_save_sources_to_project_catalog_rolls_back_failed_batch_without_mutating_file(
@@ -769,7 +781,7 @@ def test_save_sources_to_project_catalog_rejects_invalid_staged_config_without_m
 
     with pytest.raises(
         ProjectConfigError,
-        match=r"Missing CSV path for project catalog table 'orders'",
+        match=r"Missing source locator for project catalog table 'orders'",
     ):
         save_sources_to_project_catalog((source,), start_dir=project_root, replace=False)
 
@@ -1023,9 +1035,11 @@ def test_private_spill_handle_cannot_enter_catalog_but_committed_csv_can(
     assert committed.kind == "csv"
     assert committed.origin == "derived"
     assert len(context.config.tables) == 1
-    assert context.config.tables[0].name == "committed_ids"
-    assert Path(context.config.tables[0].path).suffix == ".csv"
-    assert private_spool.name not in context.config.tables[0].path
+    table = context.config.tables[0]
+    assert isinstance(table, ProjectTableV2)
+    assert table.name == "committed_ids"
+    assert Path(table.source.locator).suffix == ".csv"
+    assert private_spool.name not in table.source.locator
     assert private_spool.read_bytes() == b"private result bytes"
 
 

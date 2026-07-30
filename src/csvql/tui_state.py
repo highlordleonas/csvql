@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from csvql.bounded_result import TruncationReason
 from csvql.exceptions import TableMappingError
 from csvql.export import ExportFormat
-from csvql.models import QueryResult, TableSource
+from csvql.models import QueryResult, SourceDefinition, TableSource
+from csvql.source import (
+    FrozenSourceOptions,
+    SourceDiagnostic,
+    freeze_source_options,
+    source_options_as_python,
+)
 from csvql.table_mapping import validate_table_alias
 from csvql.tui_query_runner import TUIRunRequest
 from csvql.tui_result_store import (
@@ -19,7 +26,7 @@ from csvql.tui_result_store import (
 )
 
 SourceOrigin = Literal["argument", "catalog", "session", "derived"]
-SourceKind = Literal["csv"]
+SourceKind = Literal["auto", "csv", "parquet", "json", "ndjson", "excel"]
 TUILastResultStatus = Literal["none", "query", "no_result", "error"]
 TUIQueryHistoryStatus = Literal["success", "no_result", "error", "cancelled"]
 TUIFocusPane = Literal["sources", "editor", "results", "history"]
@@ -265,6 +272,7 @@ class TUIQueryOutcome:
     elapsed_ms: float | None = None
     error_message: str | None = None
     suggestion: str | None = None
+    diagnostic: SourceDiagnostic | None = None
 
     @classmethod
     def success(cls, *, sequence: int, sql: str, result: QueryResult) -> TUIQueryOutcome:
@@ -288,6 +296,7 @@ class TUIQueryOutcome:
         sql: str,
         error_message: str,
         suggestion: str | None,
+        diagnostic: SourceDiagnostic | None = None,
     ) -> TUIQueryOutcome:
         return cls(
             sequence=sequence,
@@ -295,6 +304,7 @@ class TUIQueryOutcome:
             status="error",
             error_message=error_message,
             suggestion=suggestion,
+            diagnostic=diagnostic,
         )
 
 
@@ -306,27 +316,101 @@ class TUISourceColumn:
     duckdb_type: str
 
 
-@dataclass(frozen=True, slots=True)
+_UNSET_SOURCE_TYPE = object()
+
+
+@dataclass(frozen=True, slots=True, init=False)
 class TUISource:
-    """A source available to the TUI session."""
+    """Provider-neutral source intent retained by the TUI session."""
 
     name: str
-    path: Path
+    locator: str
+    anchor: Path | None
+    source_type: str | None
+    options: FrozenSourceOptions
     origin: SourceOrigin
-    kind: SourceKind = "csv"
+    detection_summary: SourceDiagnostic | None
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "name", validate_table_alias(self.name))
+    def __init__(
+        self,
+        name: str,
+        path: Path | None = None,
+        origin: SourceOrigin = "session",
+        kind: SourceKind = "csv",
+        *,
+        locator: str | None = None,
+        anchor: Path | None = None,
+        source_type: str | None | object = _UNSET_SOURCE_TYPE,
+        options: Mapping[str, object] | FrozenSourceOptions | None = None,
+        detection_summary: SourceDiagnostic | None = None,
+    ) -> None:
+        """Freeze TUI source intent without retaining runtime resources."""
+
+        if path is not None and locator is not None:
+            raise ValueError("TUISource accepts path or locator, not both.")
+        if path is None and locator is None:
+            raise ValueError("TUISource requires a path or locator.")
+        locator_text = str(path) if locator is None else locator
+        explicit_type = (
+            (None if path is None and locator is not None else kind)
+            if source_type is _UNSET_SOURCE_TYPE
+            else cast(str | None, source_type)
+        )
+        normalized_anchor = None if anchor is None else anchor.expanduser().resolve(strict=False)
+        if options is None:
+            frozen_options: FrozenSourceOptions = ()
+        elif isinstance(options, Mapping):
+            frozen_options = freeze_source_options(options.items())
+        else:
+            frozen_options = freeze_source_options(options)
+        object.__setattr__(self, "name", validate_table_alias(name))
+        object.__setattr__(self, "locator", locator_text)
+        object.__setattr__(self, "anchor", normalized_anchor)
+        object.__setattr__(self, "source_type", explicit_type)
+        object.__setattr__(self, "options", frozen_options)
+        object.__setattr__(self, "origin", origin)
+        object.__setattr__(self, "detection_summary", detection_summary)
         if _is_private_tui_result_artifact(self.path):
             raise TableMappingError(
                 "Private TUI result artifacts cannot be used as sources.",
                 suggestion="Use Save as source to create a normal CSV source.",
             )
 
-    def as_table_source(self) -> TableSource:
-        """Convert the TUI source into a DuckDB registration source."""
+    @property
+    def path(self) -> Path:
+        """Return the locator resolved against its immutable anchor."""
 
+        path = Path(self.locator).expanduser()
+        if path.is_absolute() or self.anchor is None:
+            return path
+        return (self.anchor / path).resolve(strict=False)
+
+    @property
+    def kind(self) -> SourceKind:
+        """Return the display kind retained by the v1.1 TUI compatibility surface."""
+
+        return cast(SourceKind, self.source_type or "auto")
+
+    def as_table_source(self) -> TableSource:
+        """Convert only explicit CSV intent into the retained compatibility value."""
+
+        if self.source_type != "csv" or self.options:
+            raise TableMappingError(
+                "Only option-free CSV TUI sources can become TableSource values.",
+                suggestion="Use the provider-neutral TUI source workflow.",
+            )
         return TableSource(name=self.name, path=self.path)
+
+    def as_source_definition(self) -> SourceDefinition:
+        """Translate TUI intent at the shared Python transport boundary."""
+
+        return SourceDefinition(
+            self.name,
+            self.locator,
+            source_type=self.source_type,
+            options=source_options_as_python(self.options),
+            base_dir=self.anchor,
+        )
 
 
 def derive_result_capabilities(state: TUIResultState) -> TUIResultCapabilities:

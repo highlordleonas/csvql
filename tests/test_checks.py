@@ -75,6 +75,59 @@ def test_run_configured_checks_returns_global_warning_for_zero_checks(tmp_path: 
     assert result.warnings == ("No data quality checks configured.",)
 
 
+def test_version_2_checks_join_foreign_keys_across_parquet_and_ndjson(
+    tmp_path: Path,
+) -> None:
+    orders = tmp_path / "orders.parquet"
+    customers = tmp_path / "customers.ndjson"
+    connection = duckdb.connect()
+    try:
+        connection.sql(
+            """
+            SELECT *
+            FROM (VALUES (1, 10), (2, 20)) AS orders(order_id, customer_id)
+            """
+        ).write_parquet(str(orders))
+    finally:
+        connection.close()
+    customers.write_text(
+        '{"customer_id":10,"name":"alpha"}\n{"customer_id":20,"name":"beta"}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / CONFIG_FILENAME).write_text(
+        "version: 2\n"
+        "tables:\n"
+        "  customers:\n"
+        "    source:\n"
+        "      type: ndjson\n"
+        "      locator: customers.ndjson\n"
+        "  orders:\n"
+        "    source:\n"
+        "      type: parquet\n"
+        "      locator: orders.parquet\n"
+        "    checks:\n"
+        "      - name: customer_exists\n"
+        "        type: foreign_key\n"
+        "        column: customer_id\n"
+        "        references:\n"
+        "          table: customers\n"
+        "          column: customer_id\n",
+        encoding="utf-8",
+    )
+
+    result = run_configured_checks(
+        load_project(tmp_path),
+        table_name=None,
+        show_failures=True,
+        failure_limit=5,
+    )
+
+    assert result.status == "passed"
+    assert result.check_count == 1
+    assert result.checks[0].name == "customer_exists"
+    assert result.checks[0].failed_count == 0
+
+
 def test_checks_share_one_operation_context_from_resolve_through_bind(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
