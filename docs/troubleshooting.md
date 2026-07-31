@@ -145,7 +145,7 @@ by Show Desktop; use `Ctrl+S` to save a result as a derived source.
 `F3` opens a native source picker on macOS. When native selection is unavailable,
 `F3` or `Ctrl+O` opens the portable path prompt. Press `a` in Sources for the
 full alias, type, and option flow. See the
-[Terminal menu guide](tui-guide.md) for all keybindings.
+[Workbench guide](tui-guide.md) for all keybindings.
 
 ## Terminal-menu session capacity was exhausted
 

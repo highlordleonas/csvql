@@ -235,6 +235,10 @@ csvql query "SELECT * FROM revenue_health_result LIMIT 10"
 The terminal menu can also save its active result to
 `.csvql/results/{alias}.csv`. See [Save a result as a source](tui-guide.md#save-a-result-as-a-source).
 
+For measured end-to-end evidence across all five source providers and the
+NDJSON, Parquet, and Excel outputs, see the
+[LocalQL v1.2.0 benchmark snapshot](benchmarks.md).
+
 ## Inspect, sample, and profile
 
 Inspect a file or catalog alias to see its columns and source metadata. CSV
