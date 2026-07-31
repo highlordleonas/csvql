@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from rich.text import Text
+from typer.main import get_command
 from typer.testing import CliRunner
 
 import csvql.cli as cli_module
@@ -982,6 +983,8 @@ def test_run_table_keyboard_interrupt_closes_engine_and_reports_public_error(
 def test_run_help_describes_limit_as_table_output_only() -> None:
     result = runner.invoke(app, ["run", "--help"], terminal_width=200)
     output = " ".join(Text.from_ansi(result.output).plain.split())
+    command = get_command(app).commands["run"]
+    limit_help = next(parameter.help for parameter in command.params if parameter.name == "limit")
 
     assert result.exit_code == 0, result.output
     assert "CSV compatibility mapping in" in output
@@ -990,7 +993,7 @@ def test_run_help_describes_limit_as_table_output_only() -> None:
     assert "other providers" in output
     assert "Maximum rows to display" in output
     assert "display in table" in output
-    assert "output only." in output
+    assert limit_help == "Maximum rows to display; display in table output only."
 
 
 def test_export_help_explains_structured_source_compatibility() -> None:

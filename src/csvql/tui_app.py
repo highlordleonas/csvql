@@ -1253,6 +1253,9 @@ class CSVQLMenuApp(App[None]):
             return
 
         self._run_editor_pending = True
+        # A run submitted from History must stop treating queued highlight
+        # events as user navigation before the deferred editor snapshot starts.
+        self.query_one("#sql", TextArea).focus()
         self._update_static_text("#run-status", preparing_message)
         if not self.call_after_refresh(callback):
             self._run_editor_pending = False
