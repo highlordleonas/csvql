@@ -1,3 +1,4 @@
+import os
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -247,20 +248,21 @@ def test_v12_source_request_builder_is_provider_neutral_and_performs_no_path_io(
     def unexpected_path_io(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("SourceRequest construction must not inspect the filesystem.")
 
-    for method_name in ("exists", "is_dir", "is_file", "lstat", "stat"):
-        monkeypatch.setattr(Path, method_name, unexpected_path_io)
+    with monkeypatch.context() as path_io_guard:
+        for method_name in ("exists", "is_dir", "is_file", "lstat", "stat"):
+            path_io_guard.setattr(Path, method_name, unexpected_path_io)
 
-    request = build_source_request(
-        alias="CustomerOrders",
-        locator="missing/orders.data",
-        anchor=tmp_path / "project" / ".." / "project",
-        explicit_type="json",
-        options=(("schema", {"order_id": "VARCHAR"}),),
-    )
+        request = build_source_request(
+            alias="CustomerOrders",
+            locator="missing/orders.data",
+            anchor=tmp_path / "project" / ".." / "project",
+            explicit_type="json",
+            options=(("schema", {"order_id": "VARCHAR"}),),
+        )
 
     assert request.alias == "CustomerOrders"
     assert request.alias_key == "customerorders"
-    assert request.locator == "missing/orders.data"
+    assert request.locator == os.path.normpath("missing/orders.data")
     assert request.anchor == tmp_path / "project"
     assert request.explicit_type == "json"
 

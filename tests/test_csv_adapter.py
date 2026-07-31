@@ -171,6 +171,9 @@ def test_csv_resolution_accepts_committed_derived_csv(
     resolved = _adapter().resolve(_selected_csv(derived), _operation())
 
     assert resolved.canonical_locator == str(derived.resolve())
+    facts = {key: value for key, value in resolved.provider_facts.items}
+    assert facts["dialect_delimiter"] is None
+    assert facts["dialect_header"] is None
 
 
 def test_csv_binding_is_session_scoped_revalidates_and_closes_idempotently(

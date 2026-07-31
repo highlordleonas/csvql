@@ -129,7 +129,8 @@ def atomic_output_path(
         if not stage_path.is_file():
             raise OSError(f"Export writer did not create the staged file: {stage_path}")
 
-        sync_fd = os.open(stage_path, os.O_RDONLY)
+        # Windows rejects fsync on a descriptor opened read-only.
+        sync_fd = os.open(stage_path, os.O_RDWR)
         try:
             os.fsync(sync_fd)
         finally:

@@ -475,14 +475,14 @@ def _detect_dialect(sample: str, *, warnings: list[str]) -> DialectInfo:
         return _default_dialect()
 
     try:
-        sniffed = csv.Sniffer().sniff(sample)
+        sniffed = csv.Sniffer().sniff(sample, delimiters=",\t;|")
     except csv.Error:
         warnings.append("Could not detect CSV dialect from the bounded sample.")
         return _default_dialect()
 
     try:
         has_header = csv.Sniffer().has_header(sample)
-    except csv.Error:
+    except (csv.Error, ValueError):
         has_header = None
         warnings.append("Could not determine whether the CSV has a header row.")
 

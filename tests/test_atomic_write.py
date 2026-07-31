@@ -443,14 +443,24 @@ def test_atomic_text_output_manual_close_preserves_fsync_failure_if_sync_close_f
 
 def test_atomic_output_path_publishes_binary_file_and_removes_staging_directory(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output_path = tmp_path / "result.parquet"
+    real_open = os.open
+    open_flags: list[int] = []
+
+    def record_open(path: Path, flags: int) -> int:
+        open_flags.append(flags)
+        return real_open(path, flags)
+
+    monkeypatch.setattr("csvql.atomic_write.os.open", record_open)
 
     with atomic_output_path(output_path) as stage_path:
         assert stage_path.parent != tmp_path
         assert stage_path.parent.parent == tmp_path
         stage_path.write_bytes(b"parquet bytes")
 
+    assert open_flags == [os.O_RDWR]
     assert output_path.read_bytes() == b"parquet bytes"
     assert not tuple(tmp_path.glob(".result.parquet.*.tmp"))
 
