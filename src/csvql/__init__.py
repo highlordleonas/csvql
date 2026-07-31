@@ -34,7 +34,7 @@ __all__ = [
     "TableSource",
 ]
 
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 
 _PUBLIC_IMPORTS = {
     "CSVQLEngine": ("csvql.engine", "CSVQLEngine"),

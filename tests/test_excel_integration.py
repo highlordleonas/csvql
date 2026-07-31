@@ -18,6 +18,7 @@ import csvql.source_runtime as source_runtime_module
 from csvql.api import CSVQLSession
 from csvql.cli import app
 from csvql.engine import CSVQLEngine
+from csvql.export import ExportFormat
 from csvql.models import SourceDefinition
 from csvql.project_config import add_project_table, initialize_project, load_project
 from csvql.source import PreparedSources, SourcePreparationFailure, build_source_request
@@ -343,3 +344,80 @@ def test_provisioned_excel_extension_executes_across_public_surfaces(
         invocation_dir=tmp_path,
     )
     assert CSVQLSession.from_config(tmp_path).query(sql).rows == ((2,),)
+
+
+@pytest.mark.parametrize(
+    ("export_format", "suffix"),
+    (
+        (ExportFormat.ndjson, "ndjson"),
+        (ExportFormat.parquet, "parquet"),
+        (ExportFormat.excel, "xlsx"),
+    ),
+)
+def test_excel_source_exports_to_each_structured_result_format(
+    tmp_path: Path,
+    configured_extension_directory: None,
+    export_format: ExportFormat,
+    suffix: str,
+) -> None:
+    del configured_extension_directory
+    _require_excel_extension()
+    workbook = tmp_path / "records.xlsx"
+    _write_excel_fixture(
+        workbook,
+        sheet="Records",
+        headers=("id", "name"),
+        rows=((1, "alpha"), (2, "beta")),
+    )
+    initialize_project(tmp_path)
+    (tmp_path / "queries").mkdir(exist_ok=True)
+    (tmp_path / "output").mkdir(exist_ok=True)
+    (tmp_path / "queries" / "records.sql").write_text(
+        """
+        SELECT CAST(id AS INTEGER) AS id, CAST(name AS VARCHAR) AS name
+        FROM records
+        ORDER BY id
+        """,
+        encoding="utf-8",
+    )
+    definition = SourceDefinition(
+        "records",
+        workbook.name,
+        source_type="excel",
+        options={"range": "A1:B3", "sheet": "Records", "type_mode": "text"},
+        base_dir=tmp_path,
+    )
+    session = CSVQLSession.from_config(tmp_path)
+
+    output_path = session.export(
+        "queries/records.sql",
+        f"output/excel-to-{suffix}.{suffix}",
+        format=export_format,
+        sources=(definition,),
+    )
+
+    if export_format is ExportFormat.ndjson:
+        assert [
+            json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()
+        ] == [{"id": 1, "name": "alpha"}, {"id": 2, "name": "beta"}]
+        return
+
+    connection = duckdb.connect(database=":memory:", config=_DUCKDB_SAFETY_CONFIG)
+    try:
+        if export_format is ExportFormat.parquet:
+            rows = connection.execute(
+                "SELECT id, name FROM read_parquet(?) ORDER BY id",
+                [str(output_path)],
+            ).fetchall()
+        else:
+            connection.load_extension("excel")
+            rows = connection.execute(
+                "SELECT id, name FROM read_xlsx(?, header=true) ORDER BY id",
+                [str(output_path)],
+            ).fetchall()
+    finally:
+        connection.close()
+    assert [(int(row[0]), row[1]) for row in rows] == [
+        (1, "alpha"),
+        (2, "beta"),
+    ]

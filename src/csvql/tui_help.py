@@ -1,6 +1,6 @@
-"""Help text for the CSVQL Workbench TUI."""
+"""Help text for the LocalQL terminal workbench."""
 
-WORKBENCH_HELP = """CSVQL Workbench Lite
+WORKBENCH_HELP = """LocalQL Workbench
 
 Run SQL
   F4 / Ctrl+R         Run selected SQL, otherwise current statement
@@ -51,7 +51,7 @@ Results
 
 General
   F1                  Help
-  F7                  Export active result (.csv, .json, .md, .markdown, .txt)
+  F7                  Export active result (.csv, .json, .ndjson, .parquet, .xlsx, .md, .txt)
   F9 / q              Quit outside text entry
   Esc                 Cancel active execution or preservation; otherwise close help or modal
 

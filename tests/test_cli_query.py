@@ -977,8 +977,14 @@ def test_query_table_keyboard_interrupt_closes_engine_and_reports_public_error(
 
 def test_query_help_describes_limit_as_table_output_only() -> None:
     result = runner.invoke(app, ["query", "--help"])
+    output = " ".join(Text.from_ansi(result.output).plain.split())
 
     assert result.exit_code == 0, result.output
-    assert "Maximum rows to display" in result.output
-    assert "display in table" in result.output
-    assert "output only." in result.output
+    assert "local source locator" in output
+    assert "CSV compatibility mapping in" in output
+    assert "NAME=PATH" in output
+    assert "use --source" in output
+    assert "other providers" in output
+    assert "Maximum rows to display" in output
+    assert "display in table" in output
+    assert "output only." in output

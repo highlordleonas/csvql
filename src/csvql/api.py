@@ -40,9 +40,8 @@ from csvql.project_config import (
 from csvql.quality import CheckRunResult
 from csvql.query_workflow import (
     QueryRequest,
-    _adapt_result_stream_for_export,
-    execute_query_request_stream,
 )
+from csvql.result_export import write_query_request_export
 from csvql.source import (
     ResolvedSource,
     SourceRequest,
@@ -53,7 +52,6 @@ from csvql.source import (
 from csvql.source_operations import SourceOperations
 from csvql.source_runtime import resolve_source_request
 from csvql.sql_file import load_sql_file
-from csvql.streaming_export import write_streaming_export
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,17 +234,13 @@ class CSVQLSession:
         )
         try:
             with CSVQLEngine(operation=operation) as engine:
-                stream = execute_query_request_stream(
+                write_query_request_export(
                     engine,
                     request,
-                    operation=operation,
-                )
-                write_streaming_export(
-                    _adapt_result_stream_for_export(stream),
                     output_path,
                     export_format=export_format,
                     overwrite=force,
-                    token=operation.token,
+                    operation=operation,
                 )
         except SourceError as exc:
             source = next(
@@ -467,5 +461,5 @@ def _export_format(value: ExportFormat | str) -> ExportFormat:
     except ValueError as exc:
         raise ExportError(
             f"Unsupported export format: {value}",
-            suggestion="Use csv, json, or markdown.",
+            suggestion="Use csv, json, ndjson, parquet, excel, markdown, or text.",
         ) from exc

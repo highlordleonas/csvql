@@ -23,6 +23,22 @@ def test_terminal_safe_text_encodes_terminal_controls(
     assert terminal_safe_text(value) == expected
 
 
+def test_terminal_safe_multiline_text_preserves_only_line_feeds() -> None:
+    terminal_safe_multiline_text = getattr(
+        terminal_text,
+        "terminal_safe_multiline_text",
+        None,
+    )
+
+    assert terminal_safe_multiline_text is not None
+    assert (
+        terminal_safe_multiline_text(
+            "first\nsecond\x1b[31m\r\nthird\x00",
+        )
+        == "first\nsecond\\x1b[31m\\x0d\nthird\\x00"
+    )
+
+
 @pytest.mark.parametrize(
     "value",
     [

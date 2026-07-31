@@ -284,7 +284,7 @@ def test_pyproject_public_metadata_is_consistent() -> None:
     project = payload["project"]
 
     assert project["name"] == "localql"
-    assert project["version"] == "1.1.1"
+    assert project["version"] == "1.2.0"
     assert project["readme"] == "README.md"
     assert project["license"] == "MIT"
     assert "LICENSE" in payload["project"]["license-files"]
@@ -367,38 +367,42 @@ def test_current_release_version_surfaces_are_atomic_and_explicit() -> None:
     }
 
     assert observed == {
-        "pyproject": "1.1.1",
-        "uv_lock": "1.1.1",
-        "__version__": "1.1.1",
-        "verifier_expected_version": "1.1.1",
-        "verifier_expected_wheel": "localql-1.1.1-py3-none-any.whl",
-        "verifier_expected_sdist": "localql-1.1.1.tar.gz",
-        "publish_expected_tag": "v1.1.1",
-        "publish_expected_version": "1.1.1",
-        "constraints_comment": "# Python 3.12 build closure for LocalQL 1.1.1 artifacts.",
-        "changelog_heading": {"version": "1.1.1", "date": "2026-07-25"},
-        "release_notes_heading": "1.1.1",
-        "ci_expected_version_arg": "1.1.1",
+        "pyproject": "1.2.0",
+        "uv_lock": "1.2.0",
+        "__version__": "1.2.0",
+        "verifier_expected_version": "1.2.0",
+        "verifier_expected_wheel": "localql-1.2.0-py3-none-any.whl",
+        "verifier_expected_sdist": "localql-1.2.0.tar.gz",
+        "publish_expected_tag": "v1.2.0",
+        "publish_expected_version": "1.2.0",
+        "constraints_comment": "# Python 3.12 build closure for LocalQL 1.2.0 artifacts.",
+        "changelog_heading": {"version": "1.2.0", "date": "2026-07-30"},
+        "release_notes_heading": "1.2.0",
+        "ci_expected_version_arg": "1.2.0",
     }
 
 
 def test_current_release_wording_is_user_facing_and_contract_accurate() -> None:
-    changelog_section = markdown_section(read_text("CHANGELOG.md"), "[1.1.1] - 2026-07-25")
-    release_notes_section = markdown_section(read_text("docs/release-notes/v1.md"), "1.1.1")
+    changelog_section = markdown_section(read_text("CHANGELOG.md"), "[1.2.0] - 2026-07-30")
+    release_notes_section = markdown_section(read_text("docs/release-notes/v1.md"), "1.2.0")
     changelog_text = " ".join(changelog_section.casefold().split())
     release_notes_text = " ".join(release_notes_section.casefold().split())
 
     for release_text in (changelog_text, release_notes_text):
-        assert "1.1.0" in release_text
-        assert "not published" in release_text
-        assert "1,000" in release_text
-        assert "json" in release_text
-        assert "python api" in release_text
-        assert "complete" in release_text
-        assert "1 gib" in release_text
-        assert "no automatic eviction" in release_text
-        assert "sourcespec" in release_text
-        assert "sourceadapter" in release_text
+        for required in (
+            "csv",
+            "parquet",
+            "json",
+            "ndjson",
+            "excel",
+            "deterministic",
+            "cross-format",
+            "catalog",
+            "python api",
+            "csvql",
+            "public plugin",
+        ):
+            assert required in release_text
         assert "unreleased" not in release_text
         assert "release candidate" not in release_text
         assert "not yet published" not in release_text
@@ -480,7 +484,7 @@ def test_publish_workflow_uses_identity_bound_trusted_publishing() -> None:
         "--expected-version",
         "scripts/verify_release_artifacts.py",
         "artifact-manifest.json",
-        "localql-1.1.1-publish-bundle",
+        "localql-1.2.0-publish-bundle",
     ):
         assert required in build_runs or required in workflow
 
@@ -489,19 +493,19 @@ def test_publish_workflow_uses_identity_bound_trusted_publishing() -> None:
     for required in (
         "scripts/verify_dependency_audit.py",
         "scripts/verify_installed_artifacts.py",
-        "localql-1.1.1-publish-bundle",
-        "localql-1.1.1-verification-evidence",
+        "localql-1.2.0-publish-bundle",
+        "localql-1.2.0-verification-evidence",
     ):
         assert required in captured_verification_runs or required in captured_verification_text
 
-    assert "localql-1.1.1-publish-bundle" in publish_text
-    assert "localql-1.1.1-verification-evidence" not in publish_text
+    assert "localql-1.2.0-publish-bundle" in publish_text
+    assert "localql-1.2.0-verification-evidence" not in publish_text
     assert "verify-manifest release-bundle/artifacts --expected-version" in (
         pre_publish_verification_runs
     )
     assert "https://pypi.org/pypi/localql/" in pre_publish_verification_runs
     assert "--sdist" in captured_verification_runs
-    assert "localql-1.1.1.tar.gz" in captured_verification_runs
+    assert "localql-1.2.0.tar.gz" in captured_verification_runs
     assert "pypa/gh-action-pypi-publish@" in publish_uses
     assert "PYPI_TOKEN" not in publish_runs
     assert "twine upload" not in publish_runs
@@ -516,7 +520,7 @@ def test_publish_workflow_uses_identity_bound_trusted_publishing() -> None:
             "name": "Download immutable publication bundle",
             "uses": NODE24_ACTION_PINS["actions/download-artifact"],
             "with": {
-                "name": "localql-1.1.1-publish-bundle",
+                "name": "localql-1.2.0-publish-bundle",
                 "path": "release-bundle",
             },
         },
@@ -532,7 +536,7 @@ def test_publish_workflow_uses_identity_bound_trusted_publishing() -> None:
     ]
 
     for required in (
-        "localql-1.1.1-pypi-verification",
+        "localql-1.2.0-pypi-verification",
         'project_url = f"https://pypi.org/pypi/{PROJECT}/json"',
         "https://pypi.org/integrity/{PROJECT}/{VERSION}/",
         "verification-status.txt",
@@ -587,10 +591,10 @@ def test_ci_release_check_uses_pair_inspection_without_manifest_custody_inputs()
 
     assert (
         "uv run --frozen --no-sync python scripts/verify_release_artifacts.py \\\n"
-        "            output/ci-release-dist --expected-version 1.1.1"
+        "            output/ci-release-dist --expected-version 1.2.0"
     ) not in release_run
     assert "scripts/verify_release_artifacts.py" in release_run
-    assert "inspect output/ci-release-dist --expected-version 1.1.1" in release_run
+    assert "inspect output/ci-release-dist --expected-version 1.2.0" in release_run
     for forbidden in (
         "create-manifest",
         "verify-manifest",
@@ -629,8 +633,8 @@ def test_publish_build_job_requires_one_constrained_semantic_rebuild_before_mani
     assert build_runs.count("--build-constraints scripts/release-build-constraints.txt") == 2
     assert build_runs.count("--require-hashes") == 2
     assert 'REBUILD_DIR="${RUNNER_TEMP}/localql-constrained-rebuild"' in build_runs
-    assert "release-bundle/artifacts/localql-1.1.1.tar.gz" in build_runs
-    assert '"${REBUILD_DIR}/localql-1.1.1-py3-none-any.whl"' in build_runs
+    assert "release-bundle/artifacts/localql-1.2.0.tar.gz" in build_runs
+    assert '"${REBUILD_DIR}/localql-1.2.0-py3-none-any.whl"' in build_runs
     assert "rebuild-consumer" not in build_runs
     assert "release-bundle/artifacts" in build_runs
     assert "release-bundle/evidence" in build_runs
@@ -664,7 +668,7 @@ def test_release_consumers_verify_manifest_with_fresh_context_before_artifact_us
     assert "scripts/verify_release_artifacts.py" in captured_runs
     assert "verify-manifest captured-bundle/artifacts --expected-version" in captured_runs
     assert "scripts/verify_dependency_audit.py" in captured_runs
-    assert "localql-1.1.1.tar.gz" in captured_runs
+    assert "localql-1.2.0.tar.gz" in captured_runs
     assert '--work-dir "${RUNNER_TEMP}/localql-installed-smokes"' in captured_runs
     assert '--work-dir "${VERIFICATION_DIR}/installed-smokes"' not in captured_runs
     assert "${VERIFICATION_DIR}/python-identity.txt" in captured_runs
@@ -682,6 +686,7 @@ def test_release_consumers_verify_manifest_with_fresh_context_before_artifact_us
         "verify-manifest captured-bundle/artifacts --expected-version"
     ) < captured_runs.index("scripts/verify_installed_artifacts.py")
     assert '--work-dir "${RUNNER_TEMP}/localql-installed-smokes"' in captured_runs
+    assert "--require-source-format-smokes" in captured_runs
 
     pre_publish_runs = "\n".join(
         step_run(step) for step in workflow_job_steps(workflow_path, "pre-publish-verification")
@@ -729,7 +734,7 @@ def test_post_publish_readback_uses_exact_public_files_and_original_manifest() -
     assert "original-custody/evidence/artifact-manifest.json" in verification_runs
     assert "original-custody/evidence/SHA256SUMS.txt" in verification_runs
     assert "scripts/verify_dependency_audit.py" in verification_runs
-    assert "localql-1.1.1.tar.gz" in verification_runs
+    assert "localql-1.2.0.tar.gz" in verification_runs
     assert '--work-dir "${RUNNER_TEMP}/localql-post-publish-smoke"' in verification_runs
     assert "--work-dir post-publish-smoke" not in verification_runs
     assert "${PUBLIC_READBACK_VERIFICATION_DIR}/python-identity.txt" in verification_runs
@@ -743,9 +748,10 @@ def test_post_publish_readback_uses_exact_public_files_and_original_manifest() -
     ) < verification_runs.index("scripts/verify_installed_artifacts.py")
     assert "--public-index" not in verification_runs
     assert "scripts/verify_dependency_audit.py" in verification_runs
-    assert "localql-1.1.1.tar.gz" in verification_runs
-    assert "--sdist public-readback-artifacts/localql-1.1.1.tar.gz" in verification_runs
+    assert "localql-1.2.0.tar.gz" in verification_runs
+    assert "--sdist public-readback-artifacts/localql-1.2.0.tar.gz" in verification_runs
     assert '--work-dir "${RUNNER_TEMP}/localql-post-publish-smoke"' in verification_runs
+    assert "--require-source-format-smokes" in verification_runs
     assert '"exact_release_json_filenames_and_urls_verified": True' in verification_runs
     assert '"exact_release_json_verified": True' not in verification_runs
     assert "PyPI release metadata and filenames verified" not in verification_runs

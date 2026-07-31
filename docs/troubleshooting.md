@@ -63,12 +63,20 @@ Partitioned Parquet directories require explicit `--type parquet` intent.
 
 Provider activation is lazy. A missing optional dependency is reported only
 after its provider is selected, and LocalQL does not install it automatically.
-For Excel `.xlsx`, provision DuckDB's `excel` extension in the environment
-before running the command, then retry. The JSON extension must likewise be
-available for JSON and NDJSON sources.
+For Excel `.xlsx`, follow
+[Provision Excel support](getting-started.md#provision-excel-support) with the
+same Python environment that provides `csvql`. Confirm that the verification
+row begins with `True`, then retry the original LocalQL command.
+
+The supported DuckDB package provides the JSON extension used by JSON and
+NDJSON. If a custom DuckDB runtime reports that dependency as unavailable,
+replace it with a supported DuckDB runtime rather than asking LocalQL to acquire
+an extension during a query.
 
 The diagnostic includes the dependency key, lifecycle stage, and required next
-action without exposing raw exception details.
+action without exposing raw exception details. The
+[source provider options](cli-reference.md#source-provider-options) reference
+lists the valid options to check before retrying.
 
 ## No `.csvql.yml` project catalog found
 
@@ -107,6 +115,18 @@ csvql export queries/revenue_health.sql --format csv --out output/revenue-health
 ```
 
 Use `--force` only when replacing that file is intended.
+
+## Excel export says its dependency is unavailable
+
+Excel input and output use the same provisioned DuckDB `excel` extension. Follow
+[Provision Excel support](getting-started.md#provision-excel-support) with the
+Python environment that provides `csvql`, verify that the installed state is
+`True`, then retry the export. LocalQL intentionally does not install the
+extension during an export.
+
+If exact DuckDB logical types are required, export Parquet instead. Excel is a
+spreadsheet interchange format and applies the DuckDB Excel writer's type
+conversions.
 
 ## Terminal menu dependency is not installed
 

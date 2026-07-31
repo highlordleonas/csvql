@@ -20,6 +20,13 @@ def terminal_safe_text(value: object) -> str:
     return sanitize_terminal_text("" if value is None else str(value))
 
 
+def terminal_safe_multiline_text(value: object) -> str:
+    """Return control-safe display text while preserving line-feed boundaries."""
+
+    text = "" if value is None else str(value)
+    return "\n".join(sanitize_terminal_text(line) for line in text.split("\n"))
+
+
 def literal_terminal_text(value: object) -> Text:
     """Return control-safe Rich text that cannot be parsed as markup."""
 

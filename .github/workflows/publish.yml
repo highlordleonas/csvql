@@ -36,8 +36,8 @@ permissions:
   contents: read
 
 env:
-  EXPECTED_TAG: v1.1.1
-  EXPECTED_VERSION: "1.1.1"
+  EXPECTED_TAG: v1.2.0
+  EXPECTED_VERSION: "1.2.0"
 
 jobs:
   build-and-capture:
@@ -198,7 +198,7 @@ jobs:
           REBUILD_DIR="${RUNNER_TEMP}/localql-constrained-rebuild"
           test ! -e "${REBUILD_DIR}"
           mkdir -- "${REBUILD_DIR}"
-          uv build --wheel release-bundle/artifacts/localql-1.1.1.tar.gz \
+          uv build --wheel release-bundle/artifacts/localql-1.2.0.tar.gz \
             --python "${ARTIFACT_PYTHON}" \
             --no-create-gitignore \
             --out-dir "${REBUILD_DIR}" \
@@ -206,7 +206,7 @@ jobs:
             --require-hashes
           uv run --frozen --no-sync python scripts/verify_release_artifacts.py \
             verify-rebuild release-bundle/artifacts --expected-version "${EXPECTED_VERSION}" \
-            --rebuilt-wheel "${REBUILD_DIR}/localql-1.1.1-py3-none-any.whl"
+            --rebuilt-wheel "${REBUILD_DIR}/localql-1.2.0-py3-none-any.whl"
           uv run --frozen --no-sync python scripts/verify_release_artifacts.py \
             create-manifest release-bundle/artifacts --expected-version "${EXPECTED_VERSION}" \
             --manifest release-bundle/evidence/artifact-manifest.json \
@@ -221,7 +221,7 @@ jobs:
       - name: Capture immutable publication bundle
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: localql-1.1.1-publish-bundle
+          name: localql-1.2.0-publish-bundle
           path: release-bundle
           if-no-files-found: error
 
@@ -243,7 +243,7 @@ jobs:
       - name: Download immutable publication bundle
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
-          name: localql-1.1.1-publish-bundle
+          name: localql-1.2.0-publish-bundle
           path: captured-bundle
       - name: Install uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
@@ -283,8 +283,8 @@ jobs:
         run: |
           set -euo pipefail
           uvx --from twine==6.2.0 twine check \
-            captured-bundle/artifacts/localql-1.1.1-py3-none-any.whl \
-            captured-bundle/artifacts/localql-1.1.1.tar.gz
+            captured-bundle/artifacts/localql-1.2.0-py3-none-any.whl \
+            captured-bundle/artifacts/localql-1.2.0.tar.gz
       - name: Audit locked dependency paths
         run: |
           set -euo pipefail
@@ -294,19 +294,20 @@ jobs:
         run: |
           set -euo pipefail
           uv run --frozen --no-sync python scripts/verify_installed_artifacts.py \
-            --wheel captured-bundle/artifacts/localql-1.1.1-py3-none-any.whl \
-            --sdist captured-bundle/artifacts/localql-1.1.1.tar.gz \
+            --wheel captured-bundle/artifacts/localql-1.2.0-py3-none-any.whl \
+            --sdist captured-bundle/artifacts/localql-1.2.0.tar.gz \
             --core-requirements "${VERIFICATION_DIR}/dependency-audit/core-requirements.txt" \
             --tui-requirements "${VERIFICATION_DIR}/dependency-audit/tui-requirements.txt" \
             --work-dir "${RUNNER_TEMP}/localql-installed-smokes" \
             --expected-version "${EXPECTED_VERSION}" \
             --python "${ARTIFACT_PYTHON}" \
+            --require-source-format-smokes \
             > "${VERIFICATION_DIR}/installed-smokes.json"
       - name: Upload verification evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: localql-1.1.1-verification-evidence
+          name: localql-1.2.0-verification-evidence
           path: verification-evidence
           if-no-files-found: error
 
@@ -334,7 +335,7 @@ jobs:
       - name: Download immutable publication bundle
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
-          name: localql-1.1.1-publish-bundle
+          name: localql-1.2.0-publish-bundle
           path: release-bundle
       - name: Install uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
@@ -411,7 +412,7 @@ jobs:
       - name: Download immutable publication bundle
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
-          name: localql-1.1.1-publish-bundle
+          name: localql-1.2.0-publish-bundle
           path: release-bundle
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
@@ -440,7 +441,7 @@ jobs:
       - name: Download original custody bundle
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
-          name: localql-1.1.1-publish-bundle
+          name: localql-1.2.0-publish-bundle
           path: original-custody
       - name: Install uv without caching
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
@@ -582,7 +583,7 @@ jobs:
                   last_issue = "project or release JSON is not available"
               else:
                   write_evidence(VERIFICATION_DIR / "pypi-project.json", project_metadata)
-                  write_evidence(VERIFICATION_DIR / "pypi-release-1.1.1.json", release_metadata)
+                  write_evidence(VERIFICATION_DIR / "pypi-release-1.2.0.json", release_metadata)
                   published_files = release_file_records(release_metadata.get("urls"))
                   if set(published_files) != EXPECTED_FILES:
                       last_issue = "release JSON filenames do not match the exact wheel and sdist"
@@ -709,13 +710,14 @@ jobs:
         run: |
           set -euo pipefail
           uv run --frozen --no-sync python scripts/verify_installed_artifacts.py \
-            --wheel public-readback-artifacts/localql-1.1.1-py3-none-any.whl \
-            --sdist public-readback-artifacts/localql-1.1.1.tar.gz \
+            --wheel public-readback-artifacts/localql-1.2.0-py3-none-any.whl \
+            --sdist public-readback-artifacts/localql-1.2.0.tar.gz \
             --core-requirements "${PUBLIC_READBACK_VERIFICATION_DIR}/dependency-audit/core-requirements.txt" \
             --tui-requirements "${PUBLIC_READBACK_VERIFICATION_DIR}/dependency-audit/tui-requirements.txt" \
             --work-dir "${RUNNER_TEMP}/localql-post-publish-smoke" \
-            --expected-version 1.1.1 \
+            --expected-version 1.2.0 \
             --python 3.12.11 \
+            --require-source-format-smokes \
             > "${PUBLIC_READBACK_VERIFICATION_DIR}/installed-smokes.json"
       - name: Record failed verification outcome
         if: always() && (steps.verify_pypi_release.outcome != 'success' || steps.verify_exact_public_release_smoke.outcome != 'success')
@@ -736,6 +738,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: localql-1.1.1-pypi-verification
+          name: localql-1.2.0-pypi-verification
           path: pypi-verification
           if-no-files-found: error

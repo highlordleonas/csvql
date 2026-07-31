@@ -41,6 +41,7 @@ from csvql.project_config import (
     save_project,
 )
 from csvql.query_workflow import _snapshot_optional_catalog
+from csvql.result_export import write_row_source_export
 from csvql.source import (
     ResolvedSource,
     SelectedSource,
@@ -520,22 +521,31 @@ def export_last_result(
     base_dir: Path,
     force: bool = False,
     token: OperationToken | None = None,
+    operation: OperationContext | None = None,
 ) -> Path:
     """Export one preserved TUI result without materializing all rows in memory."""
 
+    output_path = resolve_export_path(path_value, base_dir=base_dir, force=force)
+    stored = result_store.describe(handle)
+    if stored.columns != columns:
+        raise ExportError(
+            "Stored result identity changed before export.",
+            suggestion="Run the query again before exporting it.",
+        )
     export_source = _StoredResultExportSource(
         result_store=result_store,
         handle=handle,
         columns=columns,
+        column_types=stored.column_types,
         elapsed_ms=elapsed_ms,
     )
-    output_path = resolve_export_path(path_value, base_dir=base_dir, force=force)
-    write_streaming_export(
+    write_row_source_export(
         export_source,
         output_path,
         export_format=export_format,
         overwrite=force,
         token=token,
+        operation=operation,
     )
     return output_path
 
@@ -721,10 +731,12 @@ class _StoredResultExportSource:
         handle: TUIResultHandle,
         columns: tuple[str, ...],
         elapsed_ms: float,
+        column_types: tuple[str, ...] = (),
     ) -> None:
         self._result_store = result_store
         self._handle = handle
         self._columns = columns
+        self._column_types = column_types
         self._elapsed_ms = elapsed_ms
         self._used = False
 
@@ -735,6 +747,10 @@ class _StoredResultExportSource:
     @property
     def elapsed_ms(self) -> float:
         return self._elapsed_ms
+
+    @property
+    def column_types(self) -> tuple[str, ...]:
+        return self._column_types
 
     def iter_rows(self) -> Iterator[tuple[object, ...]]:
         if self._used:

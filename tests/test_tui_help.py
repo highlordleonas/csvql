@@ -12,7 +12,7 @@ def _normalized_markdown_text(text: str) -> str:
 
 
 def test_workbench_help_freezes_current_keymap_and_export_language() -> None:
-    assert WORKBENCH_HELP.startswith("CSVQL Workbench Lite")
+    assert WORKBENCH_HELP.startswith("LocalQL Workbench")
     assert "F4 / Ctrl+R         Run selected SQL, otherwise current statement" in WORKBENCH_HELP
     assert "F12 / Ctrl+B        Run Buffer" in WORKBENCH_HELP
     assert "F3 / Ctrl+O         Choose local source file(s) or prompt for a path" in WORKBENCH_HELP
@@ -20,8 +20,8 @@ def test_workbench_help_freezes_current_keymap_and_export_language() -> None:
         WORKBENCH_HELP
     )
     assert (
-        "F7                  Export active result (.csv, .json, .md, .markdown, .txt)"
-        in WORKBENCH_HELP
+        "F7                  Export active result "
+        "(.csv, .json, .ndjson, .parquet, .xlsx, .md, .txt)" in WORKBENCH_HELP
     )
     assert "Ctrl+S              Save active result to .csvql/results/{alias}.csv" in WORKBENCH_HELP
     assert "r                   Rerun selected query with current session sources" in WORKBENCH_HELP

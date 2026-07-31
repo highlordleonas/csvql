@@ -98,6 +98,16 @@ def test_format_query_result_for_json_export_matches_query_json_shape() -> None:
     assert payload["rows"][0] == {"name": "Alex", "note": "pipe | value", "amount": 20.5}
 
 
+def test_format_query_result_for_ndjson_export_is_one_record_per_line() -> None:
+    output = format_query_result_for_export(_result(), ExportFormat.ndjson)
+
+    assert [json.loads(line) for line in output.splitlines()] == [
+        {"amount": 20.5, "name": "Alex", "note": "pipe | value"},
+        {"amount": None, "name": "Blair", "note": "line\nbreak"},
+    ]
+    assert output.endswith("\n")
+
+
 def test_format_query_result_for_markdown_export_escapes_cells() -> None:
     output = format_query_result_for_export(_result(), ExportFormat.markdown)
 

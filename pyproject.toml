@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "localql"
-version = "1.1.1"
+version = "1.2.0"
 description = "LocalQL packages csvql, a DuckDB-powered CLI for querying local structured data with SQL."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"

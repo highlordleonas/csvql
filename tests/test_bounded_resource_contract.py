@@ -84,7 +84,10 @@ def _counting_atomic_output(*args: Any, **kwargs: Any) -> Iterator[Any]:
     yield CountingWriter()
 
 
-@pytest.mark.parametrize("export_format", [ExportFormat.csv, ExportFormat.json])
+@pytest.mark.parametrize(
+    "export_format",
+    [ExportFormat.csv, ExportFormat.json, ExportFormat.ndjson],
+)
 def test_streaming_export_million_rows_does_not_accumulate_live_row_objects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

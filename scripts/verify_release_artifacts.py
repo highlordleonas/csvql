@@ -40,13 +40,13 @@ except ModuleNotFoundError:
         is_protected_package_path,
     )
 
-EXPECTED_VERSION = "1.1.1"
-EXPECTED_WHEEL = "localql-1.1.1-py3-none-any.whl"
-EXPECTED_SDIST = "localql-1.1.1.tar.gz"
+EXPECTED_VERSION = "1.2.0"
+EXPECTED_WHEEL = "localql-1.2.0-py3-none-any.whl"
+EXPECTED_SDIST = "localql-1.2.0.tar.gz"
 EXPECTED_ENTRY_POINT = "csvql = csvql.cli:main"
-EXPECTED_DIST_INFO = "localql-1.1.1.dist-info"
-EXPECTED_SDIST_ROOT = "localql-1.1.1"
-EXPECTED_RECORD = "localql-1.1.1.dist-info/RECORD"
+EXPECTED_DIST_INFO = "localql-1.2.0.dist-info"
+EXPECTED_SDIST_ROOT = "localql-1.2.0"
+EXPECTED_RECORD = "localql-1.2.0.dist-info/RECORD"
 
 METADATA_KEYS = (
     "Name",

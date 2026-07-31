@@ -1,4 +1,4 @@
-"""Minimal Textual shell for the CSVQL menu TUI."""
+"""Minimal Textual shell for the LocalQL terminal workbench."""
 
 import asyncio
 from collections.abc import Callable, Sequence
@@ -25,7 +25,11 @@ from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
 from csvql.operation import OperationCancelled, OperationContext, OperationToken
 from csvql.output import format_source_diagnostic_table
 from csvql.table_mapping import parse_table_mapping
-from csvql.terminal_text import literal_terminal_text, terminal_safe_text
+from csvql.terminal_text import (
+    literal_terminal_text,
+    terminal_safe_multiline_text,
+    terminal_safe_text,
+)
 from csvql.tui_editor import all_sql_statements, selected_or_current_sql
 from csvql.tui_help import WORKBENCH_HELP
 from csvql.tui_native_picker import (
@@ -540,6 +544,8 @@ class _TrackedThreadCallable:
 class CSVQLMenuApp(App[None]):
     """Minimal interactive menu for loading sources and running SQL."""
 
+    TITLE = "LocalQL Workbench"
+
     CSS = """
     #status {
         height: 1;
@@ -579,7 +585,9 @@ class CSVQLMenuApp(App[None]):
     }
 
     #results-message {
-        height: 1;
+        height: auto;
+        min-height: 1;
+        max-height: 6;
     }
 
     #result-tabs {
@@ -1626,7 +1634,8 @@ class CSVQLMenuApp(App[None]):
         prompt = _PromptInputScreen(
             (
                 "Export active result to path "
-                "(.csv, .json, .md, .markdown, .txt; blank suffix uses .csv)."
+                "(.csv, .json, .ndjson, .jsonl, .parquet, .parq, .xlsx, "
+                ".md, .markdown, .txt; blank suffix uses .csv)."
             ),
             input_id="export-path",
         )
@@ -2155,6 +2164,7 @@ class CSVQLMenuApp(App[None]):
                     base_dir=self.start_dir,
                     force=False,
                     token=operation.token,
+                    operation=operation,
                 )
             ),
         )
@@ -2946,6 +2956,7 @@ class CSVQLMenuApp(App[None]):
                             base_dir=self.start_dir,
                             force=False,
                             token=operation.token,
+                            operation=operation,
                         )
                     ),
                 )
@@ -4307,13 +4318,21 @@ def _export_path_and_format_for_prompt(path_value: str) -> tuple[str, ExportForm
         return cleaned_path, ExportFormat.csv
     if suffix == ".json":
         return cleaned_path, ExportFormat.json
+    if suffix in {".ndjson", ".jsonl"}:
+        return cleaned_path, ExportFormat.ndjson
+    if suffix in {".parquet", ".parq"}:
+        return cleaned_path, ExportFormat.parquet
+    if suffix == ".xlsx":
+        return cleaned_path, ExportFormat.excel
     if suffix in {".md", ".markdown"}:
         return cleaned_path, ExportFormat.markdown
     if suffix == ".txt":
         return cleaned_path, ExportFormat.text
     raise CSVQLError(
         f"Unsupported export file type: {suffix}",
-        suggestion="Use .csv, .json, .md, .markdown, or .txt.",
+        suggestion=(
+            "Use .csv, .json, .ndjson, .jsonl, .parquet, .parq, .xlsx, .md, .markdown, or .txt."
+        ),
     )
 
 
@@ -4330,13 +4349,13 @@ _PREVIOUS_RESULT_AVAILABLE = "Previous result is still available."
 
 
 def _error_message(error: CSVQLError) -> str:
-    lines = [f"Error: {terminal_safe_text(error.message)}"]
+    lines = [f"Error: {terminal_safe_multiline_text(error.message)}"]
     if error.suggestion:
-        lines.append(f"Suggestion: {terminal_safe_text(error.suggestion)}")
+        lines.append(f"Suggestion: {terminal_safe_multiline_text(error.suggestion)}")
     if error.diagnostic is not None:
         diagnostic = format_source_diagnostic_table(error.diagnostic).rstrip()
         if diagnostic:
-            lines.append(terminal_safe_text(diagnostic))
+            lines.append(terminal_safe_multiline_text(diagnostic))
     return "\n".join(lines)
 
 

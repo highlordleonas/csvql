@@ -1137,7 +1137,7 @@ def test_unmount_tracks_distinct_callables_with_aliased_operation_context(
 
 def test_tui_non_query_tables_statuses_and_errors_use_literal_control_safe_text() -> None:
     table_payload = "\x1b]0;spoof\x07[red]table[/red]\x85"
-    message_payload = "\x1b]0;message\x07[red]message[/red]\x00"
+    message_payload = "\x1b]0;message\x07[red]message[/red]\nnext\x00"
 
     async def _inner() -> tuple[object, object, object, object, object]:
         app = CSVQLMenuApp(start_dir=Path.cwd())
@@ -1166,17 +1166,49 @@ def test_tui_non_query_tables_statuses_and_errors_use_literal_control_safe_text(
     assert isinstance(cell, Text)
     assert cell.plain == r"\x1b]0;spoof\x07[red]table[/red]\x85"
     assert cell.spans == []
-    assert message.plain == r"\x1b]0;message\x07[red]message[/red]\x00"
+    assert message.plain == r"\x1b]0;message\x07[red]message[/red]\x0anext\x00"
     assert message.spans == []
     assert (
         status.plain == "Error: "
-        r"\x1b]0;message\x07[red]message[/red]\x00"
+        "\\x1b]0;message\\x07[red]message[/red]\nnext\\x00"
         "\nSuggestion: "
         r"\x1b]0;spoof\x07[red]table[/red]\x85"
     )
+    assert r"\x0a" not in status.plain
     assert status.spans == []
     assert error.plain == status.plain
     assert error.spans == []
+
+
+def test_tui_error_suggestion_is_visibly_rendered() -> None:
+    async def _inner() -> tuple[int, tuple[str, ...]]:
+        app = CSVQLMenuApp(start_dir=Path.cwd())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._show_error(
+                CSVQLError(
+                    "The selected source provider dependency is not available.",
+                    suggestion=(
+                        "Install the DuckDB excel extension explicitly in this environment."
+                    ),
+                )
+            )
+            await pilot.pause()
+            error = app.query_one("#results-message", Static)
+            return (
+                error.region.height,
+                tuple(error.render_line(row).text for row in range(error.region.height)),
+            )
+
+    height, visible_lines = asyncio.run(_inner())
+    visible_text = " ".join(" ".join(visible_lines).split())
+
+    assert height >= 2
+    assert "Error: The selected source provider dependency is not available." in visible_text
+    assert (
+        "Suggestion: Install the DuckDB excel extension explicitly in this environment."
+        in visible_text
+    )
 
 
 def test_app_rejects_injected_store_with_explicit_capacity_bytes(tmp_path: Path) -> None:
@@ -6810,7 +6842,8 @@ def test_help_text_documents_workbench_keymap() -> None:
     assert "?                   Help" not in help_text
     assert "Also opens help" not in help_text
     assert (
-        "F7                  Export active result (.csv, .json, .md, .markdown, .txt)" in help_text
+        "F7                  Export active result "
+        "(.csv, .json, .ndjson, .parquet, .xlsx, .md, .txt)" in help_text
     )
     assert "last successful tabular" not in help_text
     assert "[ / ]               Previous/next buffer result when Results is focused" in help_text
@@ -6833,6 +6866,33 @@ def test_help_screen_renders_current_workbench_help_text(tmp_path: Path) -> None
     help_text = asyncio.run(_inner())
 
     assert help_text == WORKBENCH_HELP
+
+
+@pytest.mark.parametrize(
+    ("path_value", "expected_path", "expected_format"),
+    (
+        ("result", "result.csv", ExportFormat.csv),
+        ("result.csv", "result.csv", ExportFormat.csv),
+        ("result.json", "result.json", ExportFormat.json),
+        ("result.ndjson", "result.ndjson", ExportFormat.ndjson),
+        ("result.jsonl", "result.jsonl", ExportFormat.ndjson),
+        ("result.parquet", "result.parquet", ExportFormat.parquet),
+        ("result.parq", "result.parq", ExportFormat.parquet),
+        ("result.xlsx", "result.xlsx", ExportFormat.excel),
+        ("result.md", "result.md", ExportFormat.markdown),
+        ("result.markdown", "result.markdown", ExportFormat.markdown),
+        ("result.txt", "result.txt", ExportFormat.text),
+    ),
+)
+def test_tui_export_path_suffix_selects_exact_format(
+    path_value: str,
+    expected_path: str,
+    expected_format: ExportFormat,
+) -> None:
+    assert tui_app_module._export_path_and_format_for_prompt(path_value) == (
+        expected_path,
+        expected_format,
+    )
 
 
 def test_tui_guide_documents_portable_fallbacks_and_run_labels() -> None:
@@ -6876,7 +6936,11 @@ def test_question_mark_types_in_sql_editor_and_f1_opens_help(tmp_path: Path) -> 
     editor_text, help_text = asyncio.run(_inner())
 
     assert editor_text == "?"
-    assert help_text.startswith("CSVQL Workbench Lite")
+    assert help_text.startswith("LocalQL Workbench")
+
+
+def test_tui_uses_public_localql_workbench_title() -> None:
+    assert CSVQLMenuApp.TITLE == "LocalQL Workbench"
 
 
 def test_tui_guide_documents_source_intelligence_keymap() -> None:

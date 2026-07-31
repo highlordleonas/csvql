@@ -1,4 +1,4 @@
-"""Atomic local text writes for CSVQL user-visible outputs."""
+"""Atomic local writes for CSVQL user-visible outputs."""
 
 from __future__ import annotations
 
@@ -100,6 +100,66 @@ def atomic_text_output(
                 temp_path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+@contextmanager
+def atomic_output_path(
+    path: Path,
+    *,
+    overwrite: bool = True,
+    token: OperationToken | None = None,
+) -> Iterator[Path]:
+    """Yield a private sibling path and atomically publish its file on success."""
+
+    if token is not None:
+        token.raise_if_cancelled()
+
+    stage_dir = Path(
+        tempfile.mkdtemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+        )
+    )
+    stage_path = stage_dir / path.name
+    committed = False
+    needs_post_publish_cleanup = False
+    try:
+        yield stage_path
+        if not stage_path.is_file():
+            raise OSError(f"Export writer did not create the staged file: {stage_path}")
+
+        sync_fd = os.open(stage_path, os.O_RDONLY)
+        try:
+            os.fsync(sync_fd)
+        finally:
+            os.close(sync_fd)
+
+        if token is not None:
+            token.raise_if_cancelled()
+
+        if overwrite:
+            os.replace(stage_path, path)
+            committed = True
+        else:
+            os.link(stage_path, path)
+            committed = True
+            needs_post_publish_cleanup = True
+            try:
+                stage_path.unlink(missing_ok=True)
+                needs_post_publish_cleanup = False
+            except OSError:
+                pass
+    finally:
+        if not committed or needs_post_publish_cleanup:
+            try:
+                stage_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            stage_dir.rmdir()
+        except OSError:
+            pass
 
 
 def write_text_atomic(

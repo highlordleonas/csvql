@@ -54,6 +54,12 @@ These commands share one result shape:
 }
 ```
 
+`csvql export --format ndjson` is intentionally a different file contract. It
+writes one JSON object per line without `columns`, `row_count`, or timing
+metadata, making the file directly usable as an NDJSON source. Values that are
+not native JSON types are serialized as strings. Parquet and Excel exports are
+binary file contracts and are not JSON output modes.
+
 ## Inspect and sample
 
 `csvql inspect --output json` returns source metadata, columns, row-count

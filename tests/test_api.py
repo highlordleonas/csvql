@@ -7,6 +7,7 @@ import pytest
 
 import csvql.api as api_module
 import csvql.query_workflow as query_workflow
+import csvql.result_export as result_export_module
 from csvql import (
     CSVQLSession,
     ExportFormat,
@@ -361,10 +362,9 @@ def test_session_export_streams_without_calling_query_materializer(
 
     monkeypatch.setattr(CSVQLEngine, "query", reject_materialization)
     monkeypatch.setattr(
-        api_module,
+        result_export_module,
         "write_streaming_export",
         recording_streaming_writer,
-        raising=False,
     )
 
     result_path = session.export(
@@ -529,7 +529,7 @@ def test_session_export_forwards_force_to_atomic_writer(
         writes.append((path, export_format, overwrite, list(source.iter_rows())))
         return object()
 
-    monkeypatch.setattr("csvql.api.write_streaming_export", fake_write_streaming_export)
+    monkeypatch.setattr(result_export_module, "write_streaming_export", fake_write_streaming_export)
 
     output_path = session.export(
         "queries/count_orders.sql",
@@ -662,7 +662,7 @@ def test_session_text_export_cancellation_cleans_row_stage_before_engine_resourc
 
     monkeypatch.setattr(api_module, "CSVQLEngine", FakeEngine)
     monkeypatch.setattr(
-        api_module,
+        result_export_module,
         "execute_query_request_stream",
         lambda *args, **kwargs: FakeStream(),
     )

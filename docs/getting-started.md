@@ -42,8 +42,36 @@ csvql query data/customers.json "SELECT * FROM customers LIMIT 5"
 ```
 
 CSV, Parquet, JSON, and NDJSON use the same query path. Excel `.xlsx` workbooks
-use the same path when DuckDB's optional `excel` extension has already been
-provisioned in the environment:
+use the same source contract. See the
+[source provider options](cli-reference.md#source-provider-options) reference
+for every accepted option, default, and entry-surface syntax.
+
+### Provision Excel support
+
+Excel requires DuckDB's optional `excel` extension. Run the following commands
+with the `python` interpreter from the same environment that provides `csvql`,
+so the DuckDB version and platform match.
+
+The first command is a separate, explicit networked action and may download the
+extension. It disables DuckDB's automatic install and load behavior, then asks
+for this one extension explicitly:
+
+```console
+python -c "import duckdb; connection=duckdb.connect(database=':memory:', config={'autoinstall_known_extensions':'false','autoload_known_extensions':'false'}); connection.install_extension('excel'); connection.close()"
+```
+
+Verify the installed state without loading the extension:
+
+```console
+python -c "import duckdb; connection=duckdb.connect(database=':memory:', config={'autoinstall_known_extensions':'false','autoload_known_extensions':'false'}); state=connection.execute('SELECT installed, extension_version, install_mode FROM duckdb_extensions() WHERE extension_name = ?', ['excel']).fetchone(); print(state); connection.close()"
+```
+
+The first value must be `True`. Re-run provisioning after changing the DuckDB
+version, operating-system platform, or Python environment. LocalQL itself never
+installs optional DuckDB extensions while starting, detecting, querying, or
+exporting.
+
+After provisioning, query a workbook:
 
 ```console
 csvql query data/orders.xlsx "SELECT * FROM orders LIMIT 5" \
@@ -52,9 +80,10 @@ csvql query data/orders.xlsx "SELECT * FROM orders LIMIT 5" \
   --option range=A1:F500
 ```
 
-LocalQL does not install optional DuckDB extensions while a command is running.
 If a dependency is missing, the diagnostic identifies it and tells you what
-must be provisioned.
+must be provisioned. See
+[Optional source dependency is missing](troubleshooting.md#optional-source-dependency-is-missing)
+for recovery guidance.
 
 An explicit type always wins. Use one for extensionless files and directories:
 
@@ -123,9 +152,16 @@ Keep a repeatable query in a file, then run or export it explicitly:
 ```console
 csvql run queries/orders_by_status.sql --output json
 csvql export queries/orders_by_status.sql --format csv --out orders_by_status.csv
+csvql export queries/orders_by_status.sql --format ndjson --out orders_by_status.ndjson
+csvql export queries/orders_by_status.sql --format parquet --out orders_by_status.parquet
+csvql export queries/orders_by_status.sql --format excel --out orders_by_status.xlsx
 ```
 
-Use `--force` only when you intend to replace an existing export.
+JSON export writes the LocalQL result envelope. NDJSON writes one record per
+line, while Parquet preserves DuckDB logical types for re-querying. Excel
+output requires the same explicitly provisioned DuckDB `excel` extension as
+Excel input and is intended for spreadsheet interchange. Use `--force` only
+when you intend to replace an existing export.
 
 ## Use the optional terminal menu
 

@@ -1,6 +1,7 @@
-"""Export query results to local text files."""
+"""Export query results to supported local file formats."""
 
 import csv
+import json
 from enum import StrEnum
 from html import escape
 from io import StringIO
@@ -17,8 +18,23 @@ class ExportFormat(StrEnum):
 
     csv = "csv"
     json = "json"
+    ndjson = "ndjson"
+    parquet = "parquet"
+    excel = "excel"
     markdown = "markdown"
     text = "text"
+
+
+STREAMING_EXPORT_FORMATS = frozenset(
+    {
+        ExportFormat.csv,
+        ExportFormat.json,
+        ExportFormat.ndjson,
+        ExportFormat.markdown,
+        ExportFormat.text,
+    }
+)
+NATIVE_EXPORT_FORMATS = frozenset({ExportFormat.parquet, ExportFormat.excel})
 
 
 def resolve_export_path(
@@ -59,13 +75,22 @@ def format_query_result_for_export(result: QueryResult, export_format: ExportFor
         return _format_csv(result)
     if export_format is ExportFormat.json:
         return format_json_result(result) + "\n"
+    if export_format is ExportFormat.ndjson:
+        return "".join(
+            json.dumps(record, default=str, sort_keys=True) + "\n" for record in result.as_records()
+        )
     if export_format is ExportFormat.markdown:
         return _format_markdown(result)
     if export_format is ExportFormat.text:
         return format_table_result(result)
+    if export_format in NATIVE_EXPORT_FORMATS:
+        raise ExportError(
+            f"{export_format.value} export requires the file export pipeline.",
+            suggestion="Use csvql export, CSVQLSession.export, or the TUI export action.",
+        )
     raise ExportError(
         f"Unsupported export format: {export_format}",
-        suggestion="Use csv, json, markdown, or text.",
+        suggestion="Use csv, json, ndjson, parquet, excel, markdown, or text.",
     )
 
 

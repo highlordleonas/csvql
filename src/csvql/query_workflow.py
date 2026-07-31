@@ -1,9 +1,10 @@
 """Shared query workflow orchestration."""
 
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import (
@@ -52,6 +53,7 @@ _DUCKDB_MISSING_TABLE_RE = re.compile(
     r"Table with name (?P<name>[A-Za-z_][A-Za-z0-9_]*) does not exist!"
 )
 _EXPORT_FETCH_BATCH_SIZE = 256
+_QueryAttemptResult = TypeVar("_QueryAttemptResult")
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +88,10 @@ class _ResultStreamExportSource:
     @property
     def elapsed_ms(self) -> float:
         return self._stream.elapsed_ms
+
+    @property
+    def column_types(self) -> tuple[str, ...]:
+        return self._stream.column_types
 
     def iter_rows(self) -> Iterator[tuple[object, ...]]:
         if self._iterated:
@@ -349,6 +355,28 @@ def execute_query_request_stream(
 ) -> ResultStream:
     """Prepare immutable sources and execute with bounded lazy fallback."""
 
+    return _execute_query_request_with_fallback(
+        engine,
+        request,
+        operation=operation,
+        execute_attempt=lambda prepared_scopes: engine.stream(
+            request.sql,
+            on_terminal=lambda: _release_query_sources(prepared_scopes),
+        ),
+        release_on_success=False,
+    )
+
+
+def _execute_query_request_with_fallback(
+    engine: CSVQLEngine,
+    request: QueryRequest,
+    *,
+    operation: OperationContext,
+    execute_attempt: Callable[[list[PreparedSources]], _QueryAttemptResult],
+    release_on_success: bool,
+) -> _QueryAttemptResult:
+    """Execute one query-shaped operation with the shared bounded fallback policy."""
+
     _require_matching_operation_context(engine, operation)
     operation.checkpoint()
     prepared_scopes: list[PreparedSources] = []
@@ -369,10 +397,10 @@ def execute_query_request_stream(
         try:
             operation.checkpoint()
             _revalidate_query_sources(prepared_scopes)
-            return engine.stream(
-                request.sql,
-                on_terminal=lambda: _release_query_sources(prepared_scopes),
-            )
+            result = execute_attempt(prepared_scopes)
+            if release_on_success:
+                _release_query_sources(prepared_scopes)
+            return result
         except QueryExecutionError as exc:
             if CURSOR_CLEANUP_UNCERTAINTY_NOTE in getattr(exc, "__notes__", ()):
                 _release_query_sources(prepared_scopes, primary=exc)

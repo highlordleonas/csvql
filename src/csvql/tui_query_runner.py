@@ -412,6 +412,7 @@ def _run_statement(
             writer = result_store.begin_complete(
                 sequence=sequence,
                 columns=stream.columns,
+                column_types=stream.column_types,
             )
         except TUIResultStorageError as exc:
             if exc.kind == "capacity":

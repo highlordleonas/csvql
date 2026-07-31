@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import csvql.result_export as result_export_module
 from csvql import tui_workflows
 from csvql.csv_adapter import CSVSourceAdapter
 from csvql.exceptions import (
@@ -600,7 +601,7 @@ def test_export_last_result_forwards_force_to_atomic_writer(
         assert token is None
         writes.append((source, path, overwrite))
 
-    monkeypatch.setattr("csvql.tui_workflows.write_streaming_export", fake_write_streaming_export)
+    monkeypatch.setattr(result_export_module, "write_streaming_export", fake_write_streaming_export)
 
     output_path = export_last_result(
         store,
@@ -874,7 +875,7 @@ def test_export_last_result_opens_store_rows_once_when_streaming_begins(
             tuple(source.iter_rows())
 
     monkeypatch.setattr(store, "open_rows", recording_open_rows)
-    monkeypatch.setattr("csvql.tui_workflows.write_streaming_export", fake_write_streaming_export)
+    monkeypatch.setattr(result_export_module, "write_streaming_export", fake_write_streaming_export)
 
     export_last_result(
         store,

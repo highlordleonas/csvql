@@ -37,10 +37,26 @@ terminal menu.
 LocalQL supports local CSV, Parquet (including explicitly typed partitioned
 datasets), JSON, NDJSON/JSON Lines, and Excel `.xlsx` sources. The Excel provider
 requires DuckDB's optional `excel` extension to be provisioned before LocalQL
-starts; LocalQL does not install it during a query.
+starts; LocalQL does not install it during a query or export. Follow
+[Provision Excel support](getting-started.md#provision-excel-support) for the
+explicit install-and-verify workflow, and use the
+[source provider options](cli-reference.md#source-provider-options) reference
+for format-specific controls and defaults.
 
 Cloud sources, remote databases, object stores, and web dashboards are outside
 this local-source release. See the [Roadmap](ROADMAP.md) for planned work.
+
+## Which result formats can LocalQL export?
+
+`csvql export`, `CSVQLSession.export`, and the LocalQL Workbench can write CSV,
+the LocalQL JSON result envelope, record-oriented NDJSON, typed Parquet, Excel
+`.xlsx`, Markdown, or text. NDJSON, Parquet, and Excel are the structured
+v1.2 result formats. Use Parquet when logical-type fidelity matters; Excel
+follows spreadsheet conversions and requires the explicitly provisioned
+DuckDB `excel` extension.
+
+Query/run `--output` remains for terminal tables or the JSON envelope. Parquet
+and Excel are file outputs rather than terminal output modes.
 
 ## How does LocalQL choose a source type?
 

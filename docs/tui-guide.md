@@ -125,6 +125,13 @@ source type, and space-separated `key=value` options. Auto selection uses only
 a recognized extension. Before adding the source, the menu shows the selected
 provider and deterministic evidence and asks for confirmation.
 
+Use lowercase `true` or `false` for Boolean options. For example, an Excel
+source can use `sheet=Orders range=A1:F500 type_mode=text`. The
+[source provider options](cli-reference.md#source-provider-options) reference
+lists every accepted option and default. Excel must be
+[provisioned explicitly](getting-started.md#provision-excel-support) before the
+menu can open a workbook.
+
 An extensionless file or directory may produce bounded candidate evidence, but
 LocalQL will not choose a provider from that evidence. The flow reopens so you
 can select CSV, Parquet, JSON, NDJSON, or Excel explicitly. No directory is
@@ -172,13 +179,18 @@ History clears when the TUI exits.
 ## Export Active Result
 
 Press `F7` to export the active tabular result shown in Results. LocalQL prompts
-for a file path. The file suffix chooses the format: `.csv`, `.json`, `.md`,
-`.markdown`, or `.txt`. If the path has no suffix, LocalQL writes `.csv` by
-default.
+for a file path. The file suffix chooses the format: `.csv`, `.json`,
+`.ndjson`/`.jsonl`, `.parquet`/`.parq`, `.xlsx`, `.md`/`.markdown`, or `.txt`.
+If the path has no suffix, LocalQL writes `.csv` by default.
 
 When a complete result was preserved, the export contains every row rather than
 only the retained preview. Export is unavailable for a preview-only result, and
 the menu reports why instead of writing a partial file.
+
+Parquet export uses the preserved DuckDB column types. NDJSON writes one object
+per row. Excel export requires an already-provisioned DuckDB `excel` extension
+and follows its spreadsheet type conversions. The menu never reruns the query
+to create an export.
 
 Relative export paths are resolved from the directory where you launched
 `csvql menu`.

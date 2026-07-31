@@ -27,6 +27,21 @@ import verify_installed_artifacts as verifier  # noqa: E402
 EXPECTED_QUERY = (
     "SELECT status, COUNT(*) AS order_count FROM orders GROUP BY status ORDER BY status"
 )
+EXPECTED_SOURCE_FORMAT_QUERY_ARGUMENTS = (
+    ("parquet", "orders.parquet", ()),
+    ("json", "orders.json", ()),
+    ("ndjson", "orders.ndjson", ()),
+    (
+        "excel",
+        "orders.xlsx",
+        ("--option", "sheet=Orders", "--option", "range=A1:B4"),
+    ),
+)
+EXPECTED_STRUCTURED_EXPORT_ARGUMENTS = (
+    ("ndjson", "orders-export.ndjson"),
+    ("parquet", "orders-export.parquet"),
+    ("excel", "orders-export.xlsx"),
+)
 EXPECTED_UV_IDENTITY = "uv 0.11.28"
 EXPECTED_PYTHON_IDENTITY = "Python 3.12.11"
 EXPECTED_API_SMOKE = textwrap.dedent(
@@ -52,9 +67,104 @@ EXPECTED_TUI_IMPORT_SMOKE = textwrap.dedent(
     import textual
     """
 ).strip()
+EXPECTED_SOURCE_FORMAT_FIXTURE_SMOKE = textwrap.dedent(
+    """
+    import json
+
+    import duckdb
+
+    connection = duckdb.connect(
+        database=":memory:",
+        config={
+            "autoinstall_known_extensions": "false",
+            "autoload_known_extensions": "false",
+        },
+    )
+    try:
+        connection.execute(
+            '''
+            CREATE TABLE orders AS
+            SELECT *
+            FROM (
+                VALUES
+                    ('ORD-1', 'paid'),
+                    ('ORD-2', 'pending'),
+                    ('ORD-3', 'paid')
+            ) AS source(order_id, status)
+            '''
+        )
+        connection.execute("COPY orders TO 'orders.parquet' (FORMAT PARQUET)")
+        connection.install_extension("excel")
+        extension_state = connection.execute(
+            '''
+            SELECT installed, extension_version, install_mode
+            FROM duckdb_extensions()
+            WHERE extension_name = 'excel'
+            '''
+        ).fetchone()
+    finally:
+        connection.close()
+
+    if extension_state is None or not extension_state[0]:
+        raise RuntimeError("DuckDB Excel extension provisioning did not complete.")
+    print(
+        json.dumps(
+            {
+                "duckdb_version": duckdb.__version__,
+                "excel_extension_version": str(
+                    extension_state[1] or extension_state[2] or "available"
+                ),
+            },
+            sort_keys=True,
+        )
+    )
+    """
+).strip()
+EXPECTED_STRUCTURED_EXPORT_OUTPUT_SMOKE = textwrap.dedent(
+    """
+    import json
+    from pathlib import Path
+
+    import duckdb
+
+    expected = [("paid", 2), ("pending", 1)]
+    ndjson_rows = [
+        (record["status"], int(record["order_count"]))
+        for record in (
+            json.loads(line)
+            for line in Path("orders-export.ndjson").read_text(encoding="utf-8").splitlines()
+        )
+    ]
+    connection = duckdb.connect(
+        database=":memory:",
+        config={
+            "autoinstall_known_extensions": "false",
+            "autoload_known_extensions": "false",
+        },
+    )
+    try:
+        parquet_rows = connection.execute(
+            "SELECT status, order_count FROM read_parquet(?) ORDER BY status",
+            ["orders-export.parquet"],
+        ).fetchall()
+        connection.load_extension("excel")
+        excel_rows = connection.execute(
+            "SELECT status, order_count FROM read_xlsx(?, header=true) ORDER BY status",
+            ["orders-export.xlsx"],
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert ndjson_rows == expected
+    assert [(row[0], int(row[1])) for row in parquet_rows] == expected
+    assert [(row[0], int(row[1])) for row in excel_rows] == expected
+    """
+).strip()
 EXPECTED_SMOKE_SNIPPETS = {
     EXPECTED_API_SMOKE,
     EXPECTED_CORE_WITHOUT_TEXTUAL_SMOKE,
+    EXPECTED_SOURCE_FORMAT_FIXTURE_SMOKE,
+    EXPECTED_STRUCTURED_EXPORT_OUTPUT_SMOKE,
     EXPECTED_TUI_IMPORT_SMOKE,
 }
 EXPECTED_INHERITED_ENVIRONMENT_NAMES = {
@@ -145,6 +255,22 @@ EXPECTED_CHECKS = {
     "uv_tool_tui_menu_help": "passed",
     "uv_tool_tui_version": "passed",
 }
+EXPECTED_SOURCE_FORMAT_CHECKS = {
+    "pip_core_export_excel": "passed",
+    "pip_core_export_ndjson": "passed",
+    "pip_core_export_parquet": "passed",
+    "pip_core_prepare_source_formats": "passed",
+    "pip_core_query_csv": "passed",
+    "pip_core_query_excel": "passed",
+    "pip_core_query_json": "passed",
+    "pip_core_query_ndjson": "passed",
+    "pip_core_query_parquet": "passed",
+    "pip_core_validate_structured_exports": "passed",
+}
+EXPECTED_SOURCE_FORMAT_IDENTITIES = {
+    "pip_core_duckdb": "1.5.4",
+    "pip_core_excel_extension": "f4c72b5",
+}
 EXPECTED_LOCAL_ASSURANCE = {
     "sdist": "current-index consumer install; not reproducible build-custody evidence",
     "wheel": "exact supplied artifact install",
@@ -161,6 +287,8 @@ class RecordingRunner:
         self.calls: list[dict[str, Any]] = []
         self.project_catalog: str | None = None
         self.project_csv: str | None = None
+        self.queried_sources: list[str] = []
+        self.exported_formats: list[str] = []
 
     def __call__(
         self,
@@ -188,9 +316,17 @@ class RecordingRunner:
             }
         )
         if len(command) > 1 and command[1] == "query":
+            self.queried_sources.append(command[2])
+            assert (Path(cwd) / command[2]).is_file(), "missing source smoke fixture"
             self.project_catalog = (Path(cwd) / ".csvql.yml").read_text(encoding="utf-8")
             self.project_csv = (Path(cwd) / "orders.csv").read_text(encoding="utf-8")
             stdout = json.dumps(EXPECTED_QUERY_PAYLOAD) + "\n"
+        elif len(command) > 1 and command[1] == "export":
+            export_format = command[command.index("--format") + 1]
+            output_path = Path(cwd) / command[command.index("--out") + 1]
+            self.exported_formats.append(export_format)
+            output_path.write_bytes(f"synthetic {export_format}".encode())
+            stdout = f"Wrote export to {output_path}.\n"
         elif command == ["uv", "--version"]:
             stdout = f"{EXPECTED_UV_IDENTITY} (unit-test build)\n"
         elif command[-1:] == ["--version"] and Path(command[0]).stem == "python":
@@ -201,7 +337,22 @@ class RecordingRunner:
             stdout = "Usage: csvql menu [OPTIONS]\n"
         elif len(command) == 3 and command[1] == "-c":
             assert command[2] in EXPECTED_SMOKE_SNIPPETS, "weakened smoke snippet"
-            stdout = ""
+            if command[2] == EXPECTED_SOURCE_FORMAT_FIXTURE_SMOKE:
+                (Path(cwd) / "orders.parquet").write_bytes(b"synthetic parquet")
+                stdout = (
+                    json.dumps(
+                        {
+                            "duckdb_version": EXPECTED_SOURCE_FORMAT_IDENTITIES["pip_core_duckdb"],
+                            "excel_extension_version": EXPECTED_SOURCE_FORMAT_IDENTITIES[
+                                "pip_core_excel_extension"
+                            ],
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+            else:
+                stdout = ""
         else:
             stdout = ""
         return CompletedProcess(args=command, returncode=0, stdout=stdout, stderr="")
@@ -269,13 +420,14 @@ def _expected_input_evidence(
 
 
 def _expected_local_v2_checks() -> dict[str, object]:
+    source_format_checks = EXPECTED_CHECKS | EXPECTED_SOURCE_FORMAT_CHECKS
     return {
         "preflight": {
             "package_contents": "passed",
             "release_pair_inspection": "passed",
         },
-        "wheel": EXPECTED_CHECKS,
-        "sdist": EXPECTED_CHECKS,
+        "wheel": source_format_checks,
+        "sdist": source_format_checks,
     }
 
 
@@ -286,6 +438,7 @@ def _expected_local_v2_identities() -> dict[str, str]:
         "uv": EXPECTED_UV_IDENTITY,
         "uv_tool_core_python": EXPECTED_PYTHON_IDENTITY,
         "uv_tool_tui_python": EXPECTED_PYTHON_IDENTITY,
+        **EXPECTED_SOURCE_FORMAT_IDENTITIES,
     }
 
 
@@ -328,6 +481,7 @@ def _verify_local(tmp_path: Path, runner: RecordingRunner) -> tuple[dict[str, ob
         python_version="3.12.11",
         public_index=False,
         allow_published_version_check=False,
+        require_source_format_smokes=True,
         run_command=runner,
     )
     return evidence, work_dir.resolve()
@@ -487,7 +641,9 @@ def test_local_mode_composes_exact_pip_and_uv_tool_commands(tmp_path: Path) -> N
     }
 
 
-def test_local_mode_runs_query_api_and_optional_dependency_smokes(tmp_path: Path) -> None:
+def test_local_mode_runs_multiformat_query_api_and_optional_dependency_smokes(
+    tmp_path: Path,
+) -> None:
     runner = RecordingRunner()
     _, work_dir = _verify_local(tmp_path, runner)
     commands = [call["args"] for call in runner.calls]
@@ -504,8 +660,47 @@ def test_local_mode_runs_query_api_and_optional_dependency_smokes(tmp_path: Path
             "--output",
             "json",
         ] in commands
+        assert [str(core_python), "-c", EXPECTED_SOURCE_FORMAT_FIXTURE_SMOKE] in commands
+        for _, source_path, extra_arguments in EXPECTED_SOURCE_FORMAT_QUERY_ARGUMENTS:
+            assert [
+                str(core_csvql),
+                "query",
+                source_path,
+                EXPECTED_QUERY,
+                "--output",
+                "json",
+                *extra_arguments,
+            ] in commands
+        for export_format, output_path in EXPECTED_STRUCTURED_EXPORT_ARGUMENTS:
+            assert [
+                str(core_csvql),
+                "export",
+                "orders.sql",
+                "--format",
+                export_format,
+                "--out",
+                output_path,
+            ] in commands
+        assert [
+            str(core_python),
+            "-c",
+            EXPECTED_STRUCTURED_EXPORT_OUTPUT_SMOKE,
+        ] in commands
         assert [str(core_python), "-c", EXPECTED_API_SMOKE] in commands
         assert [str(core_python), "-c", EXPECTED_CORE_WITHOUT_TEXTUAL_SMOKE] in commands
+    assert runner.queried_sources == [
+        source_path
+        for _ in ("wheel", "sdist")
+        for source_path in (
+            "orders.csv",
+            *(item[1] for item in EXPECTED_SOURCE_FORMAT_QUERY_ARGUMENTS),
+        )
+    ]
+    assert runner.exported_formats == [
+        export_format
+        for _ in ("wheel", "sdist")
+        for export_format, _output_path in EXPECTED_STRUCTURED_EXPORT_ARGUMENTS
+    ]
     assert runner.project_catalog == "version: 1\ntables:\n  orders:\n    path: orders.csv\n"
     assert runner.project_csv == ("order_id,status\nORD-1,paid\nORD-2,pending\nORD-3,paid\n")
 
@@ -536,7 +731,13 @@ def test_tui_smokes_use_isolated_python_and_cli(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "production_constant",
-    ["API_SMOKE", "CORE_WITHOUT_TEXTUAL_SMOKE", "TUI_IMPORT_SMOKE"],
+    [
+        "API_SMOKE",
+        "CORE_WITHOUT_TEXTUAL_SMOKE",
+        "SOURCE_FORMAT_FIXTURE_SMOKE",
+        "STRUCTURED_EXPORT_OUTPUT_SMOKE",
+        "TUI_IMPORT_SMOKE",
+    ],
 )
 def test_weakened_production_smoke_cannot_yield_success(
     tmp_path: Path,
@@ -555,6 +756,7 @@ def test_subprocess_boundary_is_sanitized_bounded_and_outside_repo(
 ) -> None:
     hostile_environment = {
         "CONDA_PREFIX": "/hostile/conda",
+        "HOME": "/hostile/home",
         "PDM_PROJECT_ROOT": "/hostile/pdm",
         "PIP_BUILD_CONSTRAINT": "/hostile/pip-build-constraints.txt",
         "PIP_CACHE_DIR": "/hostile/pip-cache",
@@ -596,6 +798,7 @@ def test_subprocess_boundary_is_sanitized_bounded_and_outside_repo(
         "UV_TOOL_DIR": "/hostile/default-tools",
         "UV_WORKING_DIR": "/hostile/working-dir",
         "VIRTUAL_ENV": "/hostile/venv",
+        "USERPROFILE": "/hostile/user-profile",
     }
     for name, value in hostile_environment.items():
         monkeypatch.setenv(name, value)
@@ -614,6 +817,8 @@ def test_subprocess_boundary_is_sanitized_bounded_and_outside_repo(
                 "TEMP",
                 "TMP",
                 "TMPDIR",
+                "HOME",
+                "USERPROFILE",
                 "UV_CACHE_DIR",
                 "UV_PYTHON_INSTALL_DIR",
             }:
@@ -632,6 +837,8 @@ def test_subprocess_boundary_is_sanitized_bounded_and_outside_repo(
         assert environment["TEMP"] == str(environment_root / "tmp")
         assert environment["TMP"] == str(environment_root / "tmp")
         assert environment["TMPDIR"] == str(environment_root / "tmp")
+        assert environment["HOME"] == str(environment_root / "home")
+        assert environment["USERPROFILE"] == str(environment_root / "home")
         assert set(environment) <= (
             EXPECTED_INHERITED_ENVIRONMENT_NAMES
             | set(EXPECTED_EXPLICIT_ENVIRONMENT)
@@ -648,6 +855,7 @@ def test_subprocess_boundary_is_sanitized_bounded_and_outside_repo(
         assert (work_dir / environment_name / "uv-cache").is_dir()
         assert (work_dir / environment_name / "uv-python").is_dir()
         assert (work_dir / environment_name / "tmp").is_dir()
+        assert (work_dir / environment_name / "home").is_dir()
 
     tool_calls = [call for call in runner.calls if call["args"][:3] == ["uv", "tool", "install"]]
     assert len(tool_calls) == 4
@@ -722,6 +930,32 @@ def test_public_index_mode_uses_only_exact_published_requirements(tmp_path: Path
     }
 
 
+def test_public_index_source_format_smokes_require_explicit_opt_in(tmp_path: Path) -> None:
+    runner = RecordingRunner()
+    evidence = verifier.verify_installed_artifacts(
+        wheel=None,
+        sdist=None,
+        core_requirements=None,
+        tui_requirements=None,
+        work_dir=tmp_path / "public-work",
+        expected_version="1.0.2",
+        python_version="3.12.11",
+        public_index=True,
+        allow_published_version_check=True,
+        require_source_format_smokes=True,
+        run_command=runner,
+    )
+
+    assert runner.queried_sources == [
+        "orders.csv",
+        *(item[1] for item in EXPECTED_SOURCE_FORMAT_QUERY_ARGUMENTS),
+    ]
+    assert evidence["identities"] == {
+        "public_index": _expected_identities() | EXPECTED_SOURCE_FORMAT_IDENTITIES
+    }
+    assert evidence["public_index"] == {"checks": EXPECTED_CHECKS | EXPECTED_SOURCE_FORMAT_CHECKS}
+
+
 def test_local_mode_requires_exact_sdist_input(tmp_path: Path) -> None:
     wheel, _, core_requirements, tui_requirements = _write_local_inputs_with_sdist(tmp_path)
     runner = RecordingRunner()
@@ -774,6 +1008,7 @@ def test_local_mode_emits_schema_v2_for_both_formats(tmp_path: Path) -> None:
         python_version="3.12.11",
         public_index=False,
         allow_published_version_check=False,
+        require_source_format_smokes=True,
         run_command=runner,
     )
 
@@ -1505,6 +1740,32 @@ def test_subprocess_os_error_rejects_hostile_non_numeric_errno(tmp_path: Path) -
     assert excinfo.value.__suppress_context__ is True
 
 
+def test_source_format_fixture_evidence_requires_exact_safe_identities(tmp_path: Path) -> None:
+    class WrongFixtureEvidenceRunner(RecordingRunner):
+        def __call__(self, args: Sequence[object], **kwargs: Any) -> CompletedProcess[str]:
+            completed = super().__call__(args, **kwargs)
+            command = [str(part) for part in args]
+            if command[-2:] == ["-c", EXPECTED_SOURCE_FORMAT_FIXTURE_SMOKE]:
+                return CompletedProcess(
+                    args=command,
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "duckdb_version": "1.5.4",
+                            "token": "secret-payload",
+                        }
+                    ),
+                    stderr="",
+                )
+            return completed
+
+    with pytest.raises(verifier.InstalledArtifactVerificationError) as excinfo:
+        _verify_local(tmp_path, WrongFixtureEvidenceRunner())
+
+    assert "fixture evidence had an invalid shape" in str(excinfo.value)
+    assert "secret-payload" not in str(excinfo.value)
+
+
 def test_query_evidence_requires_exact_semantic_subset(tmp_path: Path) -> None:
     class WrongQueryRunner(RecordingRunner):
         def __call__(self, args: Sequence[object], **kwargs: Any) -> CompletedProcess[str]:
@@ -1566,6 +1827,7 @@ def test_cli_prints_deterministic_json_evidence_without_running_real_commands(
             "1.0.2",
             "--python",
             "3.12.11",
+            "--require-source-format-smokes",
         ],
         run_command=runner,
     )

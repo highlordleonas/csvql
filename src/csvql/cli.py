@@ -50,16 +50,15 @@ from csvql.project_config import (
 )
 from csvql.query_workflow import (
     QueryRequest,
-    _adapt_result_stream_for_export,
     build_inline_query_request,
     build_saved_sql_query_request,
     execute_query_request,
     execute_query_request_stream,
 )
+from csvql.result_export import write_query_request_export
 from csvql.source_operations import SourceOperations
 from csvql.source_resolver import resolve_operation_source
 from csvql.sql_file import load_sql_file
-from csvql.streaming_export import write_streaming_export
 from csvql.table_mapping import parse_source_options
 from csvql.terminal_text import literal_terminal_text, terminal_safe_text
 from csvql.tui_launcher import run_menu_command
@@ -292,14 +291,19 @@ def profile(
 def menu(
     csv_path: Annotated[
         str | None,
-        typer.Argument(help="CSV file to preload into the TUI session."),
+        typer.Argument(
+            help=(
+                "Optional CSV shortcut to preload; use the catalog or TUI source flow "
+                "for other formats."
+            ),
+        ),
     ] = None,
     table: Annotated[
         list[str] | None,
         typer.Option(
             "--table",
             "-t",
-            help="Table mapping in name=path form. Repeat for multiple CSV files.",
+            help=("CSV compatibility mapping in NAME=PATH form. Repeat to preload CSV files."),
         ),
     ] = None,
     limit: Annotated[
@@ -319,7 +323,7 @@ def menu(
         ),
     ] = DEFAULT_TUI_RESULT_CAPACITY_BYTES // _MEBIBYTE,
 ) -> None:
-    """Open the interactive CSVQL terminal menu."""
+    """Open the interactive LocalQL terminal workbench."""
 
     try:
         result_store_capacity_bytes = _capacity_bytes_from_mib(spool_capacity_mib)
@@ -416,7 +420,9 @@ def query(
     sql_or_csv: Annotated[
         str,
         typer.Argument(
-            help="Inline SQL, or a CSV path when SQL is supplied as the second argument.",
+            help=(
+                "Inline SQL, or a local source locator when SQL is supplied as the second argument."
+            ),
         ),
     ],
     sql: Annotated[
@@ -428,7 +434,7 @@ def query(
         typer.Option(
             "--table",
             "-t",
-            help="Table mapping in name=path form. Repeat for multiple CSV files.",
+            help=("CSV compatibility mapping in NAME=PATH form; use --source for other providers."),
         ),
     ] = None,
     source: Annotated[
@@ -541,7 +547,7 @@ def run(
         typer.Option(
             "--table",
             "-t",
-            help="Table mapping in name=path form. Repeat for multiple CSV files.",
+            help=("CSV compatibility mapping in NAME=PATH form; use --source for other providers."),
         ),
     ] = None,
     source: Annotated[
@@ -652,7 +658,7 @@ def export(
         typer.Option(
             "--table",
             "-t",
-            help="Table mapping in name=path form. Repeat for multiple CSV files.",
+            help=("CSV compatibility mapping in NAME=PATH form; use --source for other providers."),
         ),
     ] = None,
     source: Annotated[
@@ -708,13 +714,13 @@ def export(
                 operation=operation,
             )
         with CSVQLEngine(operation=operation) as engine:
-            stream = execute_query_request_stream(engine, request, operation=operation)
-            write_streaming_export(
-                _adapt_result_stream_for_export(stream),
+            write_query_request_export(
+                engine,
+                request,
                 output_path,
                 export_format=export_format,
                 overwrite=force,
-                token=operation.token,
+                operation=operation,
             )
         _echo_human_message(f"Wrote export to {output_path}.")
     except CSVQLError as exc:

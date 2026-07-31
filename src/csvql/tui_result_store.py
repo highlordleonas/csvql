@@ -113,6 +113,7 @@ class TUIStoredResult:
     kind: TUIResultKind
     reason: TUIResultReason | None
     columns: tuple[str, ...]
+    column_types: tuple[str, ...]
     stored_row_count: int
     elapsed_ms: float
     logical_bytes: int
@@ -382,6 +383,10 @@ class _TUIResultRowSource:
     def elapsed_ms(self) -> float:
         return self._elapsed_ms
 
+    @property
+    def column_types(self) -> tuple[str, ...]:
+        return self._reader.column_types
+
     def iter_rows(self) -> Iterator[tuple[object, ...]]:
         if self._used:
             raise _result_unavailable_error(self._sequence)
@@ -408,6 +413,7 @@ class TUIResultWriter:
         spool_writer: ResultSpoolWriter,
         sequence: int,
         columns: tuple[str, ...],
+        column_types: tuple[str, ...],
         staging_path: Path,
         final_path: Path,
         kind: TUIResultKind,
@@ -422,6 +428,7 @@ class TUIResultWriter:
         self._spool_writer = spool_writer
         self._sequence = sequence
         self._columns = columns
+        self._column_types = column_types
         self._staging_path = staging_path
         self._final_path = final_path
         self._kind = kind
@@ -512,12 +519,14 @@ class TUIResultStore:
         *,
         sequence: int,
         columns: tuple[str, ...],
+        column_types: tuple[str, ...] = (),
     ) -> TUIResultWriter:
         """Start the session's sole complete-result writer."""
 
         return self._begin_writer(
             sequence=sequence,
             columns=columns,
+            column_types=column_types,
             kind="complete",
             reason=None,
         )
@@ -569,6 +578,7 @@ class TUIResultStore:
             writer = self._begin_writer(
                 sequence=sequence,
                 columns=preview.columns,
+                column_types=(),
                 kind="preview_only",
                 reason=reason,
                 preview_payload_bytes=sum(len(payload) for payload in payloads),
@@ -618,6 +628,12 @@ class TUIResultStore:
                 sequence=handle.sequence,
                 invalidate=lambda: self._invalidate_record(record),
             )
+
+    def describe(self, handle: TUIResultHandle) -> TUIStoredResult:
+        """Return validated immutable metadata for one registered result."""
+
+        with self._lock:
+            return self._record_for_handle(handle).stored
 
     def load_preview(
         self,
@@ -799,6 +815,7 @@ class TUIResultStore:
         *,
         sequence: int,
         columns: tuple[str, ...],
+        column_types: tuple[str, ...],
         kind: TUIResultKind,
         reason: TUIResultReason | None,
         preview_payload_bytes: int = 0,
@@ -813,12 +830,24 @@ class TUIResultStore:
                 isinstance(column, str) for column in columns
             ):
                 raise ValueError("columns must be an immutable tuple of strings.")
+            normalized_column_types = (
+                tuple("VARCHAR" for _column in columns) if not column_types else column_types
+            )
+            if (
+                not isinstance(normalized_column_types, tuple)
+                or len(normalized_column_types) != len(columns)
+                or not all(
+                    isinstance(column_type, str) and bool(column_type)
+                    for column_type in normalized_column_types
+                )
+            ):
+                raise ValueError("column_types must match the result columns.")
             if self._active_writer is not None:
                 raise RuntimeError("A TUI result writer is already active.")
             if sequence in self._record_nonce_by_sequence:
                 raise ValueError(f"result sequence {sequence} is already stored.")
 
-            header_bytes = _spool_header_bytes(columns)
+            header_bytes = _spool_header_bytes(columns, normalized_column_types)
             initial_reserved_bytes = header_bytes + _SPOOL_FOOTER_BYTES
             capacity_reserved = False
             spool_writer: ResultSpoolWriter | None = None
@@ -835,6 +864,7 @@ class TUIResultStore:
                     staging_path=staging_path,
                     final_path=final_path,
                     columns=columns,
+                    column_types=normalized_column_types,
                     workspace_identity=self._workspace_identity,
                 )
                 self._pending_cleanup_paths.add(staging_path)
@@ -874,6 +904,7 @@ class TUIResultStore:
                 spool_writer=spool_writer,
                 sequence=sequence,
                 columns=columns,
+                column_types=normalized_column_types,
                 staging_path=staging_path,
                 final_path=final_path,
                 kind=kind,
@@ -988,6 +1019,7 @@ class TUIResultStore:
                 metadata.logical_bytes != expected_logical_bytes
                 or metadata.row_count != writer._rows_written
                 or metadata.columns != writer._columns
+                or metadata.column_types != writer._column_types
                 or writer._spool_writer.staging_identity is None
             ):
                 self._discard_unregistered_commit(writer)
@@ -1009,6 +1041,7 @@ class TUIResultStore:
                 kind=writer._kind,
                 reason=writer._reason,
                 columns=writer._columns,
+                column_types=writer._column_types,
                 stored_row_count=writer._rows_written,
                 elapsed_ms=elapsed_ms,
                 logical_bytes=expected_logical_bytes,
@@ -2426,8 +2459,17 @@ def _is_positive_integer(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
-def _spool_header_bytes(columns: tuple[str, ...]) -> int:
+def _spool_header_bytes(
+    columns: tuple[str, ...],
+    column_types: tuple[str, ...],
+) -> int:
     schema_bytes = _SPOOL_LENGTH_BYTES + sum(
-        _SPOOL_LENGTH_BYTES + len(column.encode("utf-8")) for column in columns
+        (
+            _SPOOL_LENGTH_BYTES
+            + len(column.encode("utf-8"))
+            + _SPOOL_LENGTH_BYTES
+            + len(column_type.encode("utf-8"))
+        )
+        for column, column_type in zip(columns, column_types, strict=True)
     )
     return _SPOOL_HEADER_PREFIX_BYTES + schema_bytes
