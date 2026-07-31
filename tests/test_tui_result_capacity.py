@@ -25,17 +25,31 @@ _FRAME_PREFIX_BYTES = 9
 _FOOTER_BYTES = 9
 
 
-def _header_bytes(columns: tuple[str, ...]) -> int:
+def _header_bytes(
+    columns: tuple[str, ...],
+    column_types: tuple[str, ...] = (),
+) -> int:
+    normalized_types = column_types or tuple("VARCHAR" for _column in columns)
     return (
         _HEADER_PREFIX_BYTES
         + _LENGTH_BYTES
-        + sum(_LENGTH_BYTES + len(column.encode("utf-8")) for column in columns)
+        + sum(
+            _LENGTH_BYTES
+            + len(column.encode("utf-8"))
+            + _LENGTH_BYTES
+            + len(column_type.encode("utf-8"))
+            for column, column_type in zip(columns, normalized_types, strict=True)
+        )
     )
 
 
-def _artifact_bytes(columns: tuple[str, ...], payloads: tuple[bytes, ...]) -> int:
+def _artifact_bytes(
+    columns: tuple[str, ...],
+    payloads: tuple[bytes, ...],
+    column_types: tuple[str, ...] = (),
+) -> int:
     return (
-        _header_bytes(columns)
+        _header_bytes(columns, column_types)
         + sum(_FRAME_PREFIX_BYTES + len(payload) for payload in payloads)
         + _FOOTER_BYTES
     )

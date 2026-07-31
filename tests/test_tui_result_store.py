@@ -163,6 +163,23 @@ def test_complete_result_round_trips_from_framed_storage(tmp_path: Path) -> None
         source.iter_rows()
 
 
+def test_complete_result_exposes_recorded_duckdb_column_types(tmp_path: Path) -> None:
+    store = TUIResultStore(temp_root=tmp_path)
+    writer = store.begin_complete(
+        sequence=1,
+        columns=("id", "amount"),
+        column_types=("INTEGER", "DECIMAL(10,2)"),
+    )
+    writer.append_payload(encode_row_payload((1, "12.34")))
+    stored = writer.commit(elapsed_ms=2.5)
+
+    source = store.open_rows(stored.handle)
+
+    assert stored.column_types == ("INTEGER", "DECIMAL(10,2)")
+    assert store.describe(stored.handle) is stored
+    assert source.column_types == stored.column_types
+
+
 def test_store_uses_exact_workspace_grammar_and_registry_only_path(
     tmp_path: Path,
 ) -> None:

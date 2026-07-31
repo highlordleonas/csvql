@@ -60,11 +60,20 @@ def _request(
     )
 
 
-def _header_bytes(columns: tuple[str, ...]) -> int:
+def _header_bytes(
+    columns: tuple[str, ...],
+    column_types: tuple[str, ...],
+) -> int:
     return (
         _HEADER_PREFIX_BYTES
         + _LENGTH_BYTES
-        + sum(_LENGTH_BYTES + len(column.encode("utf-8")) for column in columns)
+        + sum(
+            _LENGTH_BYTES
+            + len(column.encode("utf-8"))
+            + _LENGTH_BYTES
+            + len(column_type.encode("utf-8"))
+            for column, column_type in zip(columns, column_types, strict=True)
+        )
     )
 
 
@@ -122,6 +131,7 @@ class _StaticStream:
         interrupt_error: BaseException | None = None,
     ) -> None:
         self.columns = ("value",)
+        self.column_types = ("BIGINT",)
         self.elapsed_ms = elapsed_ms
         self._batches = list(batches)
         self._close_error = close_error
@@ -285,7 +295,11 @@ def test_capacity_after_preview_rolls_back_full_spool_and_persists_preview_only(
 ) -> None:
     columns = ("value",)
     payload = encode_row_payload((0,))
-    capacity = _header_bytes(columns) + _FOOTER_BYTES + (2 * (_FRAME_PREFIX_BYTES + len(payload)))
+    capacity = (
+        _header_bytes(columns, ("BIGINT",))
+        + _FOOTER_BYTES
+        + (2 * (_FRAME_PREFIX_BYTES + len(payload)))
+    )
     store = TUIResultStore(temp_root=tmp_path, capacity_bytes=capacity)
     events: list[object] = []
 
@@ -322,7 +336,7 @@ def test_initial_full_spool_capacity_shortfall_still_yields_same_execution_previ
     columns = ("value",)
     store = TUIResultStore(
         temp_root=tmp_path,
-        capacity_bytes=_header_bytes(columns) + _FOOTER_BYTES - 1,
+        capacity_bytes=_header_bytes(columns, ("BIGINT",)) + _FOOTER_BYTES - 1,
     )
 
     def emit(event: object) -> None:
@@ -364,7 +378,7 @@ def test_mid_spool_capacity_before_preview_finalization_keeps_same_execution_pre
     columns = ("value",)
     store = TUIResultStore(
         temp_root=tmp_path,
-        capacity_bytes=_header_bytes(columns) + _FOOTER_BYTES,
+        capacity_bytes=_header_bytes(columns, ("BIGINT",)) + _FOOTER_BYTES,
     )
 
     run_tui_request(
@@ -392,7 +406,7 @@ def test_initial_capacity_preview_only_carries_interrupt_cleanup_note(tmp_path: 
     columns = ("value",)
     store = TUIResultStore(
         temp_root=tmp_path,
-        capacity_bytes=_header_bytes(columns) + _FOOTER_BYTES - 1,
+        capacity_bytes=_header_bytes(columns, ("BIGINT",)) + _FOOTER_BYTES - 1,
     )
     stream = _StaticStream(
         [
@@ -965,7 +979,7 @@ def test_engine_exit_cleanup_notes_attach_to_preserved_terminal_event(tmp_path: 
     columns = ("value",)
     store = TUIResultStore(
         temp_root=tmp_path,
-        capacity_bytes=_header_bytes(columns) + _FOOTER_BYTES - 1,
+        capacity_bytes=_header_bytes(columns, ("BIGINT",)) + _FOOTER_BYTES - 1,
     )
     stream = _StaticStream(
         [

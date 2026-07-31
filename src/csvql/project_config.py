@@ -1,34 +1,77 @@
 """Project catalog configuration loading and discovery."""
 
+import os
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import cast
+from typing import TypeAlias, cast
 
 import yaml  # type: ignore[import-untyped]
 
 from csvql.atomic_write import write_text_atomic
 from csvql.exceptions import FileMissingError, ProjectConfigError, TableMappingError
 from csvql.models import TableSource
+from csvql.private_artifacts import is_private_result_artifact
 from csvql.quality import CheckType, ConfiguredCheck, ForeignKeyReference
 from csvql.source import (
+    DetectionResult,
+    FrozenSourceOptions,
+    SelectedSource,
     SourceSpec,
+    build_source_request,
+    freeze_source_options,
     resolve_csv_path,
+    source_options_as_python,
     source_spec_from_catalog_table,
 )
+from csvql.source_registry import DescriptorView, build_builtin_descriptor_registry
+from csvql.source_runtime import detect_source_request
 from csvql.table_mapping import validate_table_alias
 
 CONFIG_FILENAME = ".csvql.yml"
+# Retained for callers that construct the strict version-1 compatibility model.
 SUPPORTED_VERSION = 1
+CURRENT_VERSION = 2
+SUPPORTED_VERSIONS = (SUPPORTED_VERSION, CURRENT_VERSION)
 
 
 @dataclass(frozen=True, slots=True)
-class ProjectTable:
-    """A project catalog table entry."""
+class ProjectTableV1:
+    """A strict version-1 CSV project catalog table entry."""
 
     name: str
     path: str
     checks: tuple[ConfiguredCheck, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogSourceDefinition:
+    """Normalized version-2 source intent persisted without runtime facts."""
+
+    source_type: str
+    locator: str
+    options: FrozenSourceOptions = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source_type, str) or not self.source_type:
+            raise ValueError("Catalog source type must be a non-empty string.")
+        if not isinstance(self.locator, str) or not self.locator or "\x00" in self.locator:
+            raise ValueError("Catalog source locator must be a non-empty local path string.")
+        object.__setattr__(self, "options", freeze_source_options(self.options))
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectTableV2:
+    """A strict version-2 provider-neutral project catalog table entry."""
+
+    name: str
+    source: CatalogSourceDefinition
+    checks: tuple[ConfiguredCheck, ...] = ()
+
+
+ProjectTable = ProjectTableV1
+ProjectTableValue: TypeAlias = ProjectTableV1 | ProjectTableV2
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +81,8 @@ class ProjectTableListing:
     name: str
     path: str
     resolved_path: Path
+    source_type: str = "csv"
+    options: FrozenSourceOptions = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,11 +95,23 @@ class ProjectTablesResult:
 
 
 @dataclass(frozen=True, slots=True)
-class ProjectConfig:
-    """The on-disk project catalog configuration."""
+class ProjectConfigV1:
+    """Strict version-1 project catalog configuration."""
 
     version: int
-    tables: tuple[ProjectTable, ...]
+    tables: tuple[ProjectTableV1, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectConfigV2:
+    """Strict version-2 project catalog configuration."""
+
+    version: int
+    tables: tuple[ProjectTableV2, ...]
+
+
+ProjectConfig = ProjectConfigV1
+ProjectConfigValue: TypeAlias = ProjectConfigV1 | ProjectConfigV2
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +120,7 @@ class ProjectContext:
 
     project_root: Path
     config_path: Path
-    config: ProjectConfig
+    config: ProjectConfigValue
 
 
 def initialize_project(project_root: Path, *, force: bool = False) -> ProjectContext:
@@ -80,7 +137,7 @@ def initialize_project(project_root: Path, *, force: bool = False) -> ProjectCon
     context = ProjectContext(
         project_root=resolved_root,
         config_path=config_path,
-        config=ProjectConfig(version=SUPPORTED_VERSION, tables=()),
+        config=ProjectConfigV2(version=CURRENT_VERSION, tables=()),
     )
     try:
         return save_project(context, overwrite=force)
@@ -135,6 +192,7 @@ def save_project(context: ProjectContext, *, overwrite: bool = True) -> ProjectC
     """Persist a project catalog using the requested overwrite policy."""
 
     config_path = context.config_path
+    _validate_private_catalog_locators(context)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     payload = _project_config_payload(context.config)
     write_text_atomic(
@@ -145,17 +203,20 @@ def save_project(context: ProjectContext, *, overwrite: bool = True) -> ProjectC
     return context
 
 
-def resolve_catalog_path(table: ProjectTable, context: ProjectContext) -> Path:
-    """Resolve a table path relative to the project root."""
+def resolve_catalog_path(table: ProjectTableValue, context: ProjectContext) -> Path:
+    """Resolve a catalog locator relative to the project root."""
 
+    locator = _catalog_table_locator(table)
     try:
-        return resolve_csv_path(table.path, base_dir=context.project_root)
+        if isinstance(table, ProjectTableV1):
+            return resolve_csv_path(locator, base_dir=context.project_root)
+        return _resolve_source_locator(locator, base_dir=context.project_root)
     except FileMissingError as exc:
         raise FileMissingError(
-            f"CSV file not found for project catalog table '{table.name}': {table.path}",
+            f"Source locator not found for project catalog table '{table.name}': {locator}",
             suggestion=(
                 "Update .csvql.yml, run csvql add "
-                f"{table.name} <path> --replace, or restore the CSV file."
+                f"{table.name} <locator> --replace, or restore the source."
             ),
         ) from exc
 
@@ -165,6 +226,8 @@ def add_project_table(
     name: str,
     path_value: str,
     *,
+    source_type: str | None = None,
+    options: Mapping[str, object] | None = None,
     replace: bool = False,
     invocation_dir: Path | None = None,
 ) -> ProjectContext:
@@ -179,10 +242,49 @@ def add_project_table(
             or "Use letters, numbers, and underscores; start with a letter or underscore.",
         ) from exc
 
+    frozen_options = freeze_source_options(() if options is None else options.items())
+    if isinstance(context.config, ProjectConfigV1):
+        if source_type not in {None, "csv"} or frozen_options:
+            raise ProjectConfigError(
+                "Project catalog version 1 accepts only CSV path entries.",
+                suggestion=(
+                    "Create a version 2 catalog entry with source.type, "
+                    "source.locator, and optional source.options."
+                ),
+                code="catalog.v1_migration_required",
+            )
+        return _add_project_table_v1(
+            context,
+            table_name,
+            path_value,
+            replace=replace,
+            invocation_dir=invocation_dir,
+        )
+
+    return _add_project_table_v2(
+        context,
+        table_name,
+        path_value,
+        source_type=source_type,
+        options=frozen_options,
+        replace=replace,
+        invocation_dir=invocation_dir,
+    )
+
+
+def _add_project_table_v1(
+    context: ProjectContext,
+    table_name: str,
+    path_value: str,
+    *,
+    replace: bool,
+    invocation_dir: Path | None,
+) -> ProjectContext:
+    config = cast(ProjectConfigV1, context.config)
     base_dir = (invocation_dir or Path.cwd()).expanduser().resolve()
     resolved_path = resolve_csv_path(path_value, base_dir=base_dir)
     stored_path = _project_catalog_path_value(context.project_root, resolved_path)
-    tables = list(context.config.tables)
+    tables = list(config.tables)
     table_key = table_name.casefold()
     existing_index = next(
         (index for index, table in enumerate(tables) if table.name.casefold() == table_key),
@@ -195,19 +297,89 @@ def add_project_table(
         )
     if existing_index is not None:
         existing_table = tables[existing_index]
-        tables[existing_index] = ProjectTable(
+        tables[existing_index] = ProjectTableV1(
             name=table_name,
             path=stored_path,
             checks=existing_table.checks,
         )
     else:
-        tables.append(ProjectTable(name=table_name, path=stored_path))
+        tables.append(ProjectTableV1(name=table_name, path=stored_path))
 
     updated_context = ProjectContext(
         project_root=context.project_root,
         config_path=context.config_path,
-        config=ProjectConfig(
-            version=context.config.version,
+        config=ProjectConfigV1(
+            version=SUPPORTED_VERSION,
+            tables=tuple(sorted(tables, key=lambda table: table.name)),
+        ),
+    )
+    return save_project(updated_context)
+
+
+def _add_project_table_v2(
+    context: ProjectContext,
+    table_name: str,
+    path_value: str,
+    *,
+    source_type: str | None,
+    options: FrozenSourceOptions,
+    replace: bool,
+    invocation_dir: Path | None,
+) -> ProjectContext:
+    config = cast(ProjectConfigV2, context.config)
+    base_dir = (invocation_dir or Path.cwd()).expanduser().resolve()
+    request = build_source_request(
+        alias=table_name,
+        locator=path_value,
+        anchor=base_dir,
+        explicit_type=source_type,
+        options=options,
+    )
+    detection = detect_source_request(request)
+    if not isinstance(detection, SelectedSource):
+        raise _catalog_detection_error(
+            detection,
+            table_name=table_name,
+            path_value=path_value,
+        )
+    descriptor = detection.descriptor
+    _validate_catalog_source_options(descriptor, options, table_name=table_name)
+    resolved_path = _resolve_source_locator(path_value, base_dir=base_dir)
+    _reject_private_catalog_locator(
+        resolved_path,
+        table_name=table_name,
+    )
+    stored_locator = _project_catalog_path_value(context.project_root, resolved_path)
+    source = CatalogSourceDefinition(
+        source_type=descriptor.source_kind,
+        locator=stored_locator,
+        options=options,
+    )
+    tables = list(config.tables)
+    table_key = table_name.casefold()
+    existing_index = next(
+        (index for index, table in enumerate(tables) if table.name.casefold() == table_key),
+        None,
+    )
+    if existing_index is not None and not replace:
+        raise ProjectConfigError(
+            f"Project catalog table '{table_name}' already exists in {context.config_path}.",
+            suggestion="Pass --replace to update the existing table entry.",
+        )
+    if existing_index is not None:
+        existing_table = tables[existing_index]
+        tables[existing_index] = ProjectTableV2(
+            name=table_name,
+            source=source,
+            checks=existing_table.checks,
+        )
+    else:
+        tables.append(ProjectTableV2(name=table_name, source=source))
+    updated_context = ProjectContext(
+        project_root=context.project_root,
+        config_path=context.config_path,
+        config=ProjectConfigV2(
+            version=CURRENT_VERSION,
             tables=tuple(sorted(tables, key=lambda table: table.name)),
         ),
     )
@@ -217,13 +389,16 @@ def add_project_table(
 def build_project_tables_result(context: ProjectContext) -> ProjectTablesResult:
     """Build a sorted, resolved view of the project catalog tables."""
 
+    project_tables = cast(Sequence[ProjectTableValue], context.config.tables)
     tables = tuple(
         ProjectTableListing(
             name=table.name,
-            path=table.path,
+            path=_catalog_table_locator(table),
             resolved_path=resolve_catalog_path(table, context),
+            source_type=_catalog_table_source_type(table),
+            options=_catalog_table_options(table),
         )
-        for table in sorted(context.config.tables, key=lambda table: table.name)
+        for table in sorted(project_tables, key=lambda table: table.name)
     )
     return ProjectTablesResult(
         project_root=context.project_root,
@@ -235,6 +410,11 @@ def build_project_tables_result(context: ProjectContext) -> ProjectTablesResult:
 def project_tables_to_sources(context: ProjectContext) -> list[TableSource]:
     """Convert project catalog tables into queryable table sources."""
 
+    if isinstance(context.config, ProjectConfigV2):
+        raise ProjectConfigError(
+            "Version 2 catalog sources cannot be represented as legacy TableSource values.",
+            suggestion="Use SourceDefinition or the provider-neutral project workflow.",
+        )
     return [
         TableSource(name=table.name, path=resolve_catalog_path(table, context))
         for table in context.config.tables
@@ -244,30 +424,42 @@ def project_tables_to_sources(context: ProjectContext) -> list[TableSource]:
 def project_tables_to_source_specs(context: ProjectContext) -> list[SourceSpec]:
     """Convert catalog declarations using the immutable project-root anchor."""
 
+    if isinstance(context.config, ProjectConfigV1):
+        return [
+            source_spec_from_catalog_table(table, project_root=context.project_root)
+            for table in context.config.tables
+        ]
     return [
-        source_spec_from_catalog_table(table, project_root=context.project_root)
+        SourceSpec(
+            alias=table.name,
+            kind=table.source.source_type,
+            locator=table.source.locator,
+            anchor=context.project_root,
+            options=table.source.options,
+        )
         for table in context.config.tables
     ]
 
 
-def _project_config_payload(config: ProjectConfig) -> dict[str, object]:
-    if config.version != SUPPORTED_VERSION:
-        raise ProjectConfigError(
-            f"Unsupported project catalog version: {config.version}.",
-            suggestion=f"Use version {SUPPORTED_VERSION} or reinitialize the project catalog.",
-        )
-
+def _project_config_payload(config: ProjectConfigValue) -> dict[str, object]:
+    if isinstance(config, ProjectConfigV1):
+        if config.version != SUPPORTED_VERSION:
+            raise _unsupported_catalog_version(config.version)
+        tables_payload = {
+            table.name: _project_table_v1_payload(table)
+            for table in sorted(config.tables, key=lambda table: table.name)
+        }
+        return {"version": SUPPORTED_VERSION, "tables": tables_payload}
+    if config.version != CURRENT_VERSION:
+        raise _unsupported_catalog_version(config.version)
     tables_payload = {
-        table.name: _project_table_payload(table)
+        table.name: _project_table_v2_payload(table)
         for table in sorted(config.tables, key=lambda table: table.name)
     }
-    return {
-        "version": config.version,
-        "tables": tables_payload,
-    }
+    return {"version": CURRENT_VERSION, "tables": tables_payload}
 
 
-def _parse_project_config(raw_config: object, *, config_path: Path) -> ProjectConfig:
+def _parse_project_config(raw_config: object, *, config_path: Path) -> ProjectConfigValue:
     if not isinstance(raw_config, dict):
         raise ProjectConfigError(
             f"Project catalog {config_path} must contain a mapping.",
@@ -294,18 +486,15 @@ def _parse_project_config(raw_config: object, *, config_path: Path) -> ProjectCo
     if version is None:
         raise ProjectConfigError(
             f"Missing version in {config_path}.",
-            suggestion=f"Set version: {SUPPORTED_VERSION} in .csvql.yml.",
+            suggestion=f"Set version: {CURRENT_VERSION} in .csvql.yml.",
         )
     if type(version) is not int:
         raise ProjectConfigError(
             f"Project catalog version in {config_path} must be an integer.",
-            suggestion=f"Set version: {SUPPORTED_VERSION} in .csvql.yml.",
+            suggestion=f"Set version: {CURRENT_VERSION} in .csvql.yml.",
         )
-    if version != SUPPORTED_VERSION:
-        raise ProjectConfigError(
-            f"Unsupported project catalog version: {version}.",
-            suggestion=f"Use version {SUPPORTED_VERSION} or reinitialize the project catalog.",
-        )
+    if version not in SUPPORTED_VERSIONS:
+        raise _unsupported_catalog_version(version)
 
     tables = raw_config.get("tables")
     if tables is None:
@@ -320,17 +509,29 @@ def _parse_project_config(raw_config: object, *, config_path: Path) -> ProjectCo
             "for example orders: {path: data/orders.csv}.",
         )
 
+    parser = (
+        _parse_project_table_v1_entry
+        if version == SUPPORTED_VERSION
+        else _parse_project_table_v2_entry
+    )
     project_tables = tuple(
-        _parse_project_table_entry(name, table_value, config_path=config_path)
-        for name, table_value in tables.items()
+        parser(name, table_value, config_path=config_path) for name, table_value in tables.items()
     )
     _validate_case_insensitive_table_aliases(project_tables, config_path=config_path)
     _validate_project_table_references(project_tables, config_path=config_path)
-    return ProjectConfig(version=SUPPORTED_VERSION, tables=project_tables)
+    if version == SUPPORTED_VERSION:
+        return ProjectConfigV1(
+            version=SUPPORTED_VERSION,
+            tables=cast(tuple[ProjectTableV1, ...], project_tables),
+        )
+    return ProjectConfigV2(
+        version=CURRENT_VERSION,
+        tables=cast(tuple[ProjectTableV2, ...], project_tables),
+    )
 
 
 def _validate_case_insensitive_table_aliases(
-    tables: tuple[ProjectTable, ...],
+    tables: Sequence[ProjectTableValue],
     *,
     config_path: Path,
 ) -> None:
@@ -354,12 +555,12 @@ def _validate_case_insensitive_table_aliases(
         )
 
 
-def _parse_project_table_entry(
+def _parse_project_table_v1_entry(
     raw_name: object,
     raw_table: object,
     *,
     config_path: Path,
-) -> ProjectTable:
+) -> ProjectTableV1:
     if not isinstance(raw_name, str):
         raise ProjectConfigError(
             f"Project catalog table names in {config_path} must be strings.",
@@ -417,11 +618,130 @@ def _parse_project_table_entry(
             config_path=config_path,
         )
 
-    return ProjectTable(name=name, path=raw_path, checks=checks)
+    return ProjectTableV1(name=name, path=raw_path, checks=checks)
 
 
-def _project_table_payload(table: ProjectTable) -> dict[str, object]:
+def _parse_project_table_v2_entry(
+    raw_name: object,
+    raw_table: object,
+    *,
+    config_path: Path,
+) -> ProjectTableV2:
+    name = _parse_project_table_name(raw_name, config_path=config_path)
+    if not isinstance(raw_table, dict):
+        raise ProjectConfigError(
+            f"Project catalog table '{name}' in {config_path} must be a mapping.",
+            suggestion="Use source and optional checks mappings for each version 2 table.",
+        )
+    allowed_keys = {"source", "checks"}
+    extra_keys = set(raw_table) - allowed_keys
+    if extra_keys:
+        raise ProjectConfigError(
+            (
+                f"Unsupported metadata for project catalog table '{name}' "
+                f"in {config_path}: {_sorted_key_display(extra_keys)}."
+            ),
+            suggestion="Use only source and optional checks keys in each version 2 entry.",
+        )
+    raw_source = raw_table.get("source")
+    if not isinstance(raw_source, dict):
+        raise ProjectConfigError(
+            f"Project catalog table '{name}' in {config_path} must define source as a mapping.",
+            suggestion="Use source: {type: parquet, locator: data/orders.parquet}.",
+        )
+    source = _parse_catalog_source_definition(raw_source, table_name=name, config_path=config_path)
+    checks = _parse_project_table_checks(
+        raw_table.get("checks"),
+        table_name=name,
+        config_path=config_path,
+    )
+    return ProjectTableV2(name=name, source=source, checks=checks)
+
+
+def _parse_project_table_name(raw_name: object, *, config_path: Path) -> str:
+    if not isinstance(raw_name, str):
+        raise ProjectConfigError(
+            f"Project catalog table names in {config_path} must be strings.",
+            suggestion="Use safe table aliases such as orders or customer_orders.",
+        )
+    try:
+        return validate_table_alias(raw_name)
+    except TableMappingError as exc:
+        raise ProjectConfigError(
+            f"Invalid project catalog table alias '{raw_name}'.",
+            suggestion="Use letters, numbers, and underscores; start with a letter or underscore.",
+        ) from exc
+
+
+def _parse_catalog_source_definition(
+    raw_source: dict[object, object],
+    *,
+    table_name: str,
+    config_path: Path,
+) -> CatalogSourceDefinition:
+    allowed_keys = {"type", "locator", "options"}
+    extra_keys = set(raw_source) - allowed_keys
+    if extra_keys:
+        raise ProjectConfigError(
+            (
+                f"Unsupported source metadata for project catalog table '{table_name}' "
+                f"in {config_path}: {_sorted_key_display(extra_keys)}."
+            ),
+            suggestion="Use only type, locator, and optional options keys.",
+        )
+    raw_type = raw_source.get("type")
+    if not isinstance(raw_type, str) or not raw_type.strip():
+        raise ProjectConfigError(
+            f"Project catalog table '{table_name}' in {config_path} requires source.type.",
+            suggestion="Set source.type to csv, parquet, json, ndjson, or excel.",
+        )
+    descriptor = _catalog_descriptor(raw_type, table_name=table_name)
+    raw_locator = raw_source.get("locator")
+    if not isinstance(raw_locator, str) or not raw_locator.strip() or "\x00" in raw_locator:
+        raise ProjectConfigError(
+            f"Project catalog table '{table_name}' in {config_path} requires source.locator.",
+            suggestion="Set source.locator to a non-empty local path string.",
+        )
+    _reject_private_catalog_locator(
+        _absolute_source_locator(raw_locator, base_dir=config_path.parent),
+        table_name=table_name,
+    )
+    raw_options = raw_source.get("options", {})
+    if not isinstance(raw_options, dict) or not all(isinstance(key, str) for key in raw_options):
+        raise ProjectConfigError(
+            f"Project catalog table '{table_name}' in {config_path} has invalid source.options.",
+            suggestion="Use a string-keyed mapping of JSON-compatible option values.",
+        )
+    try:
+        options = freeze_source_options(cast(dict[str, object], raw_options).items())
+    except (TypeError, ValueError) as exc:
+        raise ProjectConfigError(
+            f"Project catalog table '{table_name}' in {config_path} has invalid source.options.",
+            suggestion="Use finite JSON-compatible option values.",
+        ) from exc
+    _validate_catalog_source_options(descriptor, options, table_name=table_name)
+    return CatalogSourceDefinition(
+        source_type=descriptor.source_kind,
+        locator=raw_locator,
+        options=options,
+    )
+
+
+def _project_table_v1_payload(table: ProjectTableV1) -> dict[str, object]:
     payload: dict[str, object] = {"path": table.path}
+    if table.checks:
+        payload["checks"] = [_project_check_payload(check) for check in table.checks]
+    return payload
+
+
+def _project_table_v2_payload(table: ProjectTableV2) -> dict[str, object]:
+    source: dict[str, object] = {
+        "type": table.source.source_type,
+        "locator": table.source.locator,
+    }
+    if table.source.options:
+        source["options"] = source_options_as_python(table.source.options)
+    payload: dict[str, object] = {"source": source}
     if table.checks:
         payload["checks"] = [_project_check_payload(check) for check in table.checks]
     return payload
@@ -810,7 +1130,7 @@ def _validate_project_table_check_names(
 
 
 def _validate_project_table_references(
-    tables: tuple[ProjectTable, ...],
+    tables: Sequence[ProjectTableValue],
     *,
     config_path: Path,
 ) -> None:
@@ -831,6 +1151,152 @@ def _validate_project_table_references(
                         "update the foreign_key reference table."
                     ),
                 )
+
+
+def _unsupported_catalog_version(version: object) -> ProjectConfigError:
+    return ProjectConfigError(
+        f"Unsupported project catalog version: {version}.",
+        suggestion=(
+            f"Use version {SUPPORTED_VERSION} for an existing CSV-only project "
+            f"or version {CURRENT_VERSION} for provider-neutral sources."
+        ),
+        code="catalog.version_unsupported",
+    )
+
+
+def _catalog_descriptor(source_type: str, *, table_name: str) -> DescriptorView:
+    descriptor = build_builtin_descriptor_registry().resolve_type(source_type.strip())
+    if descriptor is None:
+        raise ProjectConfigError(
+            f"Unknown source type '{source_type}' for project catalog table '{table_name}'.",
+            suggestion="Use csv, parquet, json, ndjson, or excel.",
+            code="catalog.source_type_unknown",
+        )
+    return descriptor
+
+
+def _catalog_detection_error(
+    detection: DetectionResult,
+    *,
+    table_name: str,
+    path_value: str,
+) -> FileMissingError | ProjectConfigError:
+    if isinstance(detection, SelectedSource):
+        raise TypeError("Selected catalog detection cannot be translated into an error.")
+    diagnostic = detection.diagnostic
+    is_missing = any(
+        evidence.evidence_kind == "locator_shape" and evidence.stable_detail == "locator_missing"
+        for evidence in diagnostic.evidence
+    )
+    suggestion = (
+        None
+        if diagnostic.required_action is None
+        else diagnostic.required_action.kind.replace("_", " ")
+    )
+    if is_missing:
+        return FileMissingError(
+            f"Source locator not found: {path_value}",
+            suggestion="Check the path or restore the source before adding it.",
+            diagnostic=diagnostic,
+        )
+    return ProjectConfigError(
+        f"Cannot register project catalog table '{table_name}': {diagnostic.message}",
+        suggestion=suggestion,
+        code=diagnostic.code.value,
+        diagnostic=diagnostic,
+    )
+
+
+def _validate_catalog_source_options(
+    descriptor: DescriptorView,
+    options: FrozenSourceOptions,
+    *,
+    table_name: str,
+) -> None:
+    for key, value in options:
+        option = descriptor.option_definition(key)
+        if option is None:
+            raise ProjectConfigError(
+                (
+                    f"Unknown source option '{key}' for type '{descriptor.source_kind}' "
+                    f"on project catalog table '{table_name}'."
+                ),
+                suggestion="Remove the option or choose one declared by the source descriptor.",
+                code="catalog.source_option_unknown",
+            )
+        if not descriptor.accepts_option_value(key, value):
+            raise ProjectConfigError(
+                (
+                    f"Source option '{key}' for type '{descriptor.source_kind}' "
+                    f"on project catalog table '{table_name}' must be {option.value_kind}."
+                ),
+                suggestion="Use a value matching the descriptor's basic option type.",
+                code="catalog.source_option_type",
+            )
+    missing_required = tuple(
+        option.key
+        for option in descriptor.options
+        if option.required and all(key != option.key for key, _value in options)
+    )
+    if missing_required:
+        raise ProjectConfigError(
+            (
+                f"Project catalog table '{table_name}' is missing required source options: "
+                f"{', '.join(missing_required)}."
+            ),
+            suggestion="Persist every required option explicitly.",
+            code="catalog.source_option_required",
+        )
+
+
+def _catalog_table_locator(table: ProjectTableValue) -> str:
+    return table.path if isinstance(table, ProjectTableV1) else table.source.locator
+
+
+def _catalog_table_source_type(table: ProjectTableValue) -> str:
+    return "csv" if isinstance(table, ProjectTableV1) else table.source.source_type
+
+
+def _catalog_table_options(table: ProjectTableValue) -> FrozenSourceOptions:
+    return () if isinstance(table, ProjectTableV1) else table.source.options
+
+
+def _resolve_source_locator(path_value: str, *, base_dir: Path) -> Path:
+    resolved = _absolute_source_locator(path_value, base_dir=base_dir)
+    try:
+        resolved.lstat()
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        raise FileMissingError(
+            f"Source locator not found: {path_value}",
+            suggestion="Check the path or restore the source before adding it.",
+        ) from exc
+    return resolved
+
+
+def _absolute_source_locator(path_value: str, *, base_dir: Path) -> Path:
+    expanded = Path(path_value).expanduser()
+    candidate = expanded if expanded.is_absolute() else base_dir / expanded
+    return Path(os.path.abspath(os.path.normpath(os.fspath(candidate))))
+
+
+def _validate_private_catalog_locators(context: ProjectContext) -> None:
+    if not isinstance(context.config, ProjectConfigV2):
+        return
+    for table in context.config.tables:
+        _reject_private_catalog_locator(
+            _absolute_source_locator(table.source.locator, base_dir=context.project_root),
+            table_name=table.name,
+        )
+
+
+def _reject_private_catalog_locator(locator: Path, *, table_name: str) -> None:
+    if not is_private_result_artifact(locator):
+        return
+    raise ProjectConfigError(
+        f"Project catalog table '{table_name}' cannot reference LocalQL private result storage.",
+        suggestion="Use Save as source to create a normal source before catalog registration.",
+        code="catalog.private_result_artifact",
+    )
 
 
 def _project_catalog_path_value(project_root: Path, resolved_path: Path) -> str:

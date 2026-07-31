@@ -22,20 +22,20 @@ open a new terminal after changing `PATH`.
 | Exit code | What it usually means | What to try |
 | --- | --- | --- |
 | `1` | A query or another runtime command failed. | Read the error, then check SQL or the command-specific requirement. |
-| `4` | A CSV file is missing. | Correct the path or update `.csvql.yml`. |
-| `6` | A `--table name=path` mapping is invalid. | Use a non-empty path and valid table alias. |
-| `7` | A CSV could not be inspected, sampled, or profiled. | Check that it is a readable CSV with a header row. |
+| `4` | A configured local source is missing. | Correct the path or update `.csvql.yml`. |
+| `6` | A source or legacy `--table name=path` mapping is invalid. | Use a non-empty path, valid alias, and matching source type. |
+| `7` | A source could not be inspected, sampled, or profiled. | Check that the locator, type, options, and dependency are valid. |
 | `8` | The project catalog cannot be found or validated. | Run `csvql init`, `csvql add`, or repair `.csvql.yml`. |
 | `9` | A saved SQL file is missing, unreadable, or empty. | Create or correct the SQL file. |
 | `10` | An export destination already exists. | Choose a new path or use `--force`. |
 | `11` | A configured data-quality check failed. | Inspect the failed checks and repair the data or rule. |
 | `12` | `csvql doctor` found a project-health problem. | Correct the catalog, sources, or check configuration. |
 
-## CSV file not found
+## Local source not found
 
 Typical causes are a moved file, a path relative to a different working
-directory, or a stale path in `.csvql.yml`. Check the path, then retry with the
-correct CSV:
+directory, or a stale locator in `.csvql.yml`. Check the path, then retry with
+the correct source:
 
 ```console
 csvql query orders.csv "SELECT * FROM orders LIMIT 5"
@@ -44,6 +44,39 @@ csvql add orders data/orders.csv --replace
 
 For project catalogs, LocalQL resolves table paths relative to the directory
 that contains `.csvql.yml`.
+
+## Source type is ambiguous
+
+LocalQL does not choose a provider heuristically. An extensionless file or
+untyped directory may produce a diagnostic with candidate evidence and the
+required action `specify_type`. Retry with an explicit type:
+
+```console
+csvql inspect data/order_facts --type parquet
+csvql query data/order_facts "SELECT COUNT(*) FROM order_facts" --type parquet
+```
+
+Directories are never recursively scanned to guess their dataset type.
+Partitioned Parquet directories require explicit `--type parquet` intent.
+
+## Optional source dependency is missing
+
+Provider activation is lazy. A missing optional dependency is reported only
+after its provider is selected, and LocalQL does not install it automatically.
+For Excel `.xlsx`, follow
+[Provision Excel support](getting-started.md#provision-excel-support) with the
+same Python environment that provides `csvql`. Confirm that the verification
+row begins with `True`, then retry the original LocalQL command.
+
+The supported DuckDB package provides the JSON extension used by JSON and
+NDJSON. If a custom DuckDB runtime reports that dependency as unavailable,
+replace it with a supported DuckDB runtime rather than asking LocalQL to acquire
+an extension during a query.
+
+The diagnostic includes the dependency key, lifecycle stage, and required next
+action without exposing raw exception details. The
+[source provider options](cli-reference.md#source-provider-options) reference
+lists the valid options to check before retrying.
 
 ## No `.csvql.yml` project catalog found
 
@@ -64,9 +97,9 @@ csvql query --table revenue_movements=data/revenue_movements.csv "SELECT COUNT(*
 
 ## DuckDB query failed
 
-Check that the table alias matches the CSV file stem or `--table` mapping, and
-that the SQL column names match the CSV header. These commands help inspect a
-source:
+Check that the table alias matches the source file stem, `--source` mapping, or
+legacy CSV `--table` mapping, and that SQL column names match the source schema.
+These commands help inspect a source:
 
 ```console
 csvql inspect revenue_movements --output json
@@ -83,6 +116,18 @@ csvql export queries/revenue_health.sql --format csv --out output/revenue-health
 
 Use `--force` only when replacing that file is intended.
 
+## Excel export says its dependency is unavailable
+
+Excel input and output use the same provisioned DuckDB `excel` extension. Follow
+[Provision Excel support](getting-started.md#provision-excel-support) with the
+Python environment that provides `csvql`, verify that the installed state is
+`True`, then retry the export. LocalQL intentionally does not install the
+extension during an export.
+
+If exact DuckDB logical types are required, export Parquet instead. Excel is a
+spreadsheet interchange format and applies the DuckDB Excel writer's type
+conversions.
+
 ## Terminal menu dependency is not installed
 
 Install the optional extra, then open the menu again:
@@ -97,8 +142,10 @@ csvql menu
 Use `F4` or `Ctrl+R` to run the current SQL. On macOS, `F11` may be intercepted
 by Show Desktop; use `Ctrl+S` to save a result as a derived source.
 
-`F3` opens a native CSV picker on macOS. `Ctrl+O` opens the path prompt on every
-platform. See the [Terminal menu guide](tui-guide.md) for all keybindings.
+`F3` opens a native source picker on macOS. When native selection is unavailable,
+`F3` or `Ctrl+O` opens the portable path prompt. Press `a` in Sources for the
+full alias, type, and option flow. See the
+[Terminal menu guide](tui-guide.md) for all keybindings.
 
 ## Terminal-menu session capacity was exhausted
 

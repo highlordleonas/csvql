@@ -1,0 +1,351 @@
+"""Application composition root for the internal source-provider runtime."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from functools import lru_cache
+from typing import Never
+
+import duckdb
+from duckdb import connect as _connect_activation_metadata
+
+from csvql.adapter_factory import (
+    ActivationContext,
+    AdapterFactory,
+    build_builtin_lazy_adapter_table,
+)
+from csvql.exceptions import SourceError, SourceErrorCode, SourceIdentityError
+from csvql.operation import OperationContext
+from csvql.source import (
+    DetectionResult,
+    PreparedSources,
+    ResolvedSource,
+    SelectedSource,
+    SourceDiagnostic,
+    SourcePreparationFailure,
+    SourceRequest,
+    build_source_request,
+)
+from csvql.source_adapter import EngineSession
+from csvql.source_coordinator import PreparationContext, SourceCoordinator
+from csvql.source_detection import SourceDetectionService
+from csvql.source_identifiers import build_builtin_identifier_table
+from csvql.source_registry import (
+    DependencyRequirement,
+    DescriptorRegistry,
+    build_builtin_descriptor_registry,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceComponents:
+    """Validated default source components constructed without provider imports."""
+
+    registry: DescriptorRegistry
+    detection: SourceDetectionService
+    factory: AdapterFactory
+    coordinator: SourceCoordinator
+
+
+def build_default_source_components() -> SourceComponents:
+    """Build validated import-free metadata, detection, factory, and coordinator."""
+
+    registry = build_builtin_descriptor_registry()
+    detection = SourceDetectionService(registry, build_builtin_identifier_table())
+    factory = AdapterFactory(registry, build_builtin_lazy_adapter_table())
+    return SourceComponents(
+        registry=registry,
+        detection=detection,
+        factory=factory,
+        coordinator=SourceCoordinator(detection, factory),
+    )
+
+
+@lru_cache(maxsize=1)
+def default_source_components() -> SourceComponents:
+    """Return one lazily constructed immutable default composition."""
+
+    return build_default_source_components()
+
+
+def detect_source_request(
+    request: SourceRequest,
+    *,
+    operation: OperationContext | None = None,
+) -> DetectionResult:
+    """Detect one request without activating or constructing its adapter."""
+
+    return default_source_components().detection.detect(request, operation=operation)
+
+
+def source_kind_hint(request: SourceRequest) -> str | None:
+    """Return the deterministic explicit-type or extension kind without observing a locator."""
+
+    registry = default_source_components().registry
+    if request.explicit_type is not None:
+        descriptor = registry.resolve_type(request.explicit_type)
+        return None if descriptor is None else descriptor.source_kind
+    extension_match = registry.match_extension(request.locator)
+    return None if extension_match is None else extension_match[0].source_kind
+
+
+def default_activation_context() -> ActivationContext:
+    """Return the retained JSON activation context for compatibility callers."""
+
+    requirement = build_builtin_descriptor_registry().descriptor("json").dependency
+    return activation_context_for_dependency(requirement)
+
+
+def activation_context_for_dependency(
+    requirement: DependencyRequirement | None,
+) -> ActivationContext:
+    """Inspect only one selected dependency without loading or installing it."""
+
+    if requirement is None or requirement.kind == "builtin":
+        return ActivationContext(duckdb_version=duckdb.__version__)
+    if requirement.kind != "duckdb_extension" or not requirement.key.startswith(
+        "duckdb.extension."
+    ):
+        return ActivationContext(duckdb_version=duckdb.__version__)
+    extension_name = requirement.key.removeprefix("duckdb.extension.")
+    connection = _connect_activation_metadata(
+        database=":memory:",
+        config={
+            "autoinstall_known_extensions": "false",
+            "autoload_known_extensions": "false",
+        },
+    )
+    try:
+        extension_rows = connection.execute(
+            """
+            SELECT installed, loaded, extension_version, install_mode
+            FROM duckdb_extensions()
+            WHERE extension_name = ?
+            """,
+            [extension_name],
+        ).fetchall()
+    finally:
+        connection.close()
+    available = bool(extension_rows and (extension_rows[0][0] or extension_rows[0][1]))
+    dependency_versions = (
+        ()
+        if not available
+        else (
+            (
+                requirement.key,
+                str(extension_rows[0][2] or extension_rows[0][3] or "available"),
+            ),
+        )
+    )
+    return ActivationContext(
+        available_dependencies=(frozenset((requirement.key,)) if available else frozenset()),
+        dependency_versions=dependency_versions,
+        duckdb_version=duckdb.__version__,
+    )
+
+
+def resolve_source_request(
+    request: SourceRequest,
+    *,
+    operation: OperationContext,
+) -> ResolvedSource:
+    """Resolve one request through detection and selected-only activation."""
+
+    components = default_source_components()
+    outcome = detect_source_request(request, operation=operation)
+    if not isinstance(outcome, SelectedSource):
+        raise SourceError(
+            _legacy_error_code(outcome.diagnostic.code.value),
+            outcome.diagnostic.message,
+            alias=request.alias,
+            suggestion=(
+                None
+                if outcome.required_action is None
+                else outcome.required_action.kind.replace("_", " ")
+            ),
+            diagnostic=outcome.diagnostic,
+        )
+    adapter = components.factory.activate(
+        outcome,
+        activation_context_for_dependency(outcome.descriptor.dependency),
+    )
+    return adapter.resolve(outcome, operation)
+
+
+def prepare_source_requests(
+    requests: tuple[SourceRequest, ...],
+    *,
+    engine_session: EngineSession,
+    operation: OperationContext,
+    resolved_snapshots: tuple[ResolvedSource, ...] | None = None,
+) -> PreparedSources | SourcePreparationFailure:
+    """Prepare one request batch through the default coordinator."""
+
+    return default_source_components().coordinator.prepare(
+        requests,
+        engine_session,
+        PreparationContext(operation=operation),
+        resolved_snapshots=resolved_snapshots,
+    )
+
+
+def prepare_resolved_sources(
+    resolved_sources: tuple[ResolvedSource, ...],
+    *,
+    engine_session: EngineSession,
+    operation: OperationContext,
+) -> PreparedSources:
+    """Compatibility bridge that re-prepares and revalidates resolved snapshots."""
+
+    requests = tuple(
+        build_source_request(
+            alias=source.alias,
+            locator=source.canonical_locator,
+            anchor=None,
+            explicit_type=source.provider_key,
+            options=(*source.semantic_options, *source.operational_options),
+        )
+        for source in resolved_sources
+    )
+    outcome = prepare_source_requests(
+        requests,
+        engine_session=engine_session,
+        operation=operation,
+        resolved_snapshots=resolved_sources,
+    )
+    if isinstance(outcome, SourcePreparationFailure):
+        raise_preparation_failure(outcome, requests=requests)
+    expected_identities = tuple(source.identity for source in resolved_sources)
+    actual_identities = tuple(source.identity for source in outcome.resolved_sources)
+    if actual_identities != expected_identities:
+        default_source_components().coordinator.release(outcome)
+        first = resolved_sources[0]
+        raise SourceIdentityError(
+            "source_changed",
+            f"{first.source_kind.upper()} source changed after submission.",
+            kind=first.source_kind,
+            alias=first.alias,
+            suggestion=(
+                "Submit the operation again to capture the current "
+                f"{first.source_kind.upper()} source."
+            ),
+        )
+    return outcome
+
+
+def raise_preparation_failure(
+    failure: SourcePreparationFailure,
+    *,
+    requests: tuple[SourceRequest, ...] = (),
+) -> Never:
+    """Translate one typed internal preparation outcome for legacy boundaries."""
+
+    diagnostic = failure.diagnostics[0]
+    diagnostic_alias = next(
+        (
+            evidence.stable_detail
+            for evidence in diagnostic.evidence
+            if evidence.evidence_kind == "source_alias"
+        ),
+        None,
+    )
+    request = next(
+        (
+            candidate
+            for candidate in requests
+            if (diagnostic_alias is not None and candidate.alias == diagnostic_alias)
+            or (
+                diagnostic_alias is None
+                and candidate.safe_source_reference == diagnostic.safe_source_reference
+            )
+        ),
+        requests[0] if requests else None,
+    )
+    raise SourceError(
+        _legacy_error_code(diagnostic.code.value),
+        diagnostic.message,
+        kind=None if request is None else request.explicit_type,
+        alias=None if request is None else request.alias,
+        suggestion=_legacy_suggestion(diagnostic, request),
+        diagnostic=diagnostic,
+    )
+
+
+def _legacy_suggestion(
+    diagnostic: SourceDiagnostic,
+    request: SourceRequest | None,
+) -> str | None:
+    required_action = diagnostic.required_action
+    if required_action is None:
+        return None
+    if required_action.kind == "resubmit_source":
+        source_kind = "source" if request is None else (request.explicit_type or "source")
+        display_kind = {
+            "csv": "CSV",
+            "excel": "Excel",
+            "json": "JSON",
+            "ndjson": "NDJSON",
+            "parquet": "Parquet",
+        }.get(source_kind, source_kind)
+        return f"Submit the operation again to capture the current {display_kind} source."
+    if required_action.kind == "satisfy_provider_dependency":
+        guidance = next(
+            (
+                evidence.stable_detail
+                for evidence in diagnostic.evidence
+                if evidence.evidence_kind == "dependency_guidance"
+            ),
+            None,
+        )
+        if guidance is not None:
+            return guidance
+    return required_action.kind.replace("_", " ")
+
+
+def _legacy_error_code(code: str) -> SourceErrorCode:
+    if code in {
+        "source.bind_failed",
+        "source.json_record_not_object",
+        "source.json_record_path_missing",
+        "source.json_record_path_not_array",
+        "source.json_record_shape_invalid",
+        "source.json_schema_cast_failed",
+        "source.parquet_schema_mismatch",
+        "source.provider_contract_invalid",
+    }:
+        return "source_bind_failed"
+    if code in {
+        "source.dataset_changed",
+        "source.identity_changed",
+        "source.identity_invalid",
+        "source.identity_unavailable",
+        "source.identity_strength_unavailable",
+    }:
+        return "source_changed"
+    if code in {
+        "source.dataset_manifest_limit",
+        "source.dataset_symlink_rejected",
+        "source.json_invalid",
+        "source.json_record_path_invalid",
+        "source.json_schema_invalid",
+        "source.ndjson_invalid",
+        "source.excel_invalid",
+        "source.excel_metadata_limit",
+        "source.excel_range_invalid",
+        "source.excel_range_required",
+        "source.excel_sheet_ambiguous",
+        "source.excel_sheet_missing",
+        "source.locator_shape_invalid",
+        "source.parquet_dataset_empty",
+        "source.parquet_invalid",
+        "source.partitioning_invalid",
+        "source.resolution_failed",
+    }:
+        return "source_missing"
+    if code == "source.excel_schema_inference_failed":
+        return "source_bind_failed"
+    if code == "source.json_dependency_missing":
+        return "missing_optional_dependency"
+    if code.startswith("source.activation"):
+        return "missing_optional_dependency"
+    return "unknown_source_kind"

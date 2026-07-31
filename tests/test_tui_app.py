@@ -7,6 +7,7 @@ from pathlib import Path
 from types import MethodType
 from unittest.mock import Mock
 
+import duckdb
 import pytest
 from rich.text import Text
 
@@ -16,20 +17,18 @@ from textual import events
 from textual.coordinate import Coordinate
 from textual.geometry import Size
 from textual.pilot import Pilot
-from textual.widgets import DataTable, Input, Static, TextArea
+from textual.widgets import DataTable, Input, Select, Static, TextArea
 from textual.widgets._footer import FooterKey
 
 from csvql import tui_app as tui_app_module
 from csvql.atomic_write import OperationToken
 from csvql.bounded_result import BoundedQueryResult, PreviewPolicy
-from csvql.csv_adapter import CSVSourceAdapter
 from csvql.engine import CSVQLEngine
-from csvql.exceptions import CSVQLError, SourceError, TableMappingError
+from csvql.exceptions import CSVQLError, TableMappingError
 from csvql.export import ExportFormat
 from csvql.models import QueryResult
 from csvql.operation import OperationCancelled, OperationContext
 from csvql.result_codec import encode_row_payload
-from csvql.source import SourceCapabilityStatus
 from csvql.tui_app import CSVQLMenuApp
 from csvql.tui_help import WORKBENCH_HELP
 from csvql.tui_query_runner import (
@@ -90,100 +89,6 @@ def _make_source_state(tmp_path: Path, *, alias: str = "customers") -> TUISessio
     state = TUISessionState()
     state.add_source(TUISource(name=alias, path=csv_path, origin="argument"))
     return state
-
-
-def test_unavailable_source_action_reports_exact_capability_guidance(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state = _make_source_state(tmp_path)
-    unavailable = SourceCapabilityStatus(
-        operation="sample",
-        state="unavailable",
-        reason_code="missing_driver",
-        remediation="Install the csv-driver extra.",
-    )
-    monkeypatch.setattr(
-        tui_app_module,
-        "source_capability_status",
-        lambda source, operation: unavailable,
-        raising=False,
-    )
-
-    async def _inner() -> tuple[str, bool]:
-        app = CSVQLMenuApp(start_dir=tmp_path, initial_state=state)
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.query_one("#sources", DataTable).focus()
-            app.action_sample_source()
-            await pilot.pause()
-            return (
-                app.query_one("#status", Static).content,
-                app.state.operation_run.is_running,
-            )
-
-    status, is_running = asyncio.run(_inner())
-
-    assert "missing_driver" in status
-    assert "Install the csv-driver extra." in status
-    assert is_running is False
-
-
-@pytest.mark.parametrize(
-    ("action_name", "operation"),
-    [
-        ("action_inspect_source", "inspect"),
-        ("action_sample_source", "sample"),
-        ("action_profile_source", "profile"),
-        ("action_show_source_columns", "inspect"),
-    ],
-)
-@pytest.mark.parametrize("capability_state", ["unavailable", "unsupported"])
-def test_contextual_source_actions_reject_exact_capability_without_worker(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    action_name: str,
-    operation: str,
-    capability_state: str,
-) -> None:
-    state = _make_source_state(tmp_path)
-    reason_code = f"{capability_state}_test_reason"
-    remediation = f"Remediate {capability_state} {operation}."
-    worker_calls: list[object] = []
-    monkeypatch.setattr(
-        tui_app_module,
-        "source_capability_status",
-        lambda source, requested_operation: SourceCapabilityStatus(
-            operation=requested_operation,
-            state=capability_state,
-            reason_code=reason_code,
-            remediation=remediation,
-        ),
-    )
-    monkeypatch.setattr(
-        CSVQLMenuApp,
-        "_start_operation_worker",
-        lambda self, **kwargs: worker_calls.append((self, kwargs)),
-    )
-
-    async def _inner() -> tuple[str, bool]:
-        app = CSVQLMenuApp(start_dir=tmp_path, initial_state=state)
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.query_one("#sources", DataTable).focus()
-            getattr(app, action_name)()
-            await pilot.pause()
-            return (
-                app.query_one("#status", Static).content,
-                app.state.operation_run.is_running,
-            )
-
-    status, is_running = asyncio.run(_inner())
-
-    assert f"'{operation}' is {capability_state} ({reason_code})" in status
-    assert remediation in status
-    assert worker_calls == []
-    assert is_running is False
 
 
 def _result_grid_snapshot(app: CSVQLMenuApp) -> tuple[tuple[str, ...], int, str]:
@@ -536,6 +441,81 @@ def test_run_shortcuts_execute_source_free_sql(tmp_path: Path, key: str) -> None
     assert rows == (("0",), ("1",), ("2",))
     assert history_statuses == ["success"]
     assert "No sources loaded." not in status
+
+
+def test_tui_executes_cross_format_parquet_ndjson_join_through_worker_and_results(
+    tmp_path: Path,
+) -> None:
+    orders_path = tmp_path / "orders.parquet"
+    customers_path = tmp_path / "customers.ndjson"
+    connection = duckdb.connect()
+    try:
+        connection.sql(
+            """
+            SELECT *
+            FROM (VALUES (1, 10), (2, 20)) AS orders(order_id, customer_id)
+            """
+        ).write_parquet(str(orders_path))
+    finally:
+        connection.close()
+    customers_path.write_text(
+        '{"customer_id":10,"name":"alpha"}\n{"customer_id":20,"name":"beta"}\n',
+        encoding="utf-8",
+    )
+    state = TUISessionState()
+    state.add_source(
+        TUISource(
+            name="orders",
+            locator=orders_path.name,
+            anchor=tmp_path,
+            source_type="parquet",
+            origin="session",
+        )
+    )
+    state.add_source(
+        TUISource(
+            name="customers",
+            locator=customers_path.name,
+            anchor=tmp_path,
+            source_type="ndjson",
+            origin="session",
+        )
+    )
+
+    async def _inner() -> tuple[
+        tuple[str | None, ...],
+        tuple[str, ...],
+        tuple[tuple[str, ...], ...],
+        tuple[tuple[object, ...], ...],
+        list[str],
+    ]:
+        app = CSVQLMenuApp(initial_state=state, start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#sql", TextArea).load_text(
+                """
+                SELECT COUNT(*) AS matched
+                FROM orders
+                JOIN customers USING (customer_id)
+                """
+            )
+            await pilot.press("f4")
+            await _settled_query_idle(pilot, app)
+            return (
+                tuple(source.source_type for source in app.state.sources),
+                app.state.result_view.columns,
+                app.state.result_view.display_rows,
+                _active_stored_rows(app),
+                app_history_statuses(app.state),
+            )
+
+    source_types, columns, display_rows, stored_rows, history_statuses = asyncio.run(_inner())
+
+    assert source_types == ("parquet", "ndjson")
+    assert columns == ("matched",)
+    assert display_rows == (("2",),)
+    assert stored_rows == ((2,),)
+    assert history_statuses == ["success"]
 
 
 def test_direct_app_construction_does_not_recover_abandoned_workspaces(
@@ -1157,7 +1137,7 @@ def test_unmount_tracks_distinct_callables_with_aliased_operation_context(
 
 def test_tui_non_query_tables_statuses_and_errors_use_literal_control_safe_text() -> None:
     table_payload = "\x1b]0;spoof\x07[red]table[/red]\x85"
-    message_payload = "\x1b]0;message\x07[red]message[/red]\x00"
+    message_payload = "\x1b]0;message\x07[red]message[/red]\nnext\x00"
 
     async def _inner() -> tuple[object, object, object, object, object]:
         app = CSVQLMenuApp(start_dir=Path.cwd())
@@ -1186,17 +1166,49 @@ def test_tui_non_query_tables_statuses_and_errors_use_literal_control_safe_text(
     assert isinstance(cell, Text)
     assert cell.plain == r"\x1b]0;spoof\x07[red]table[/red]\x85"
     assert cell.spans == []
-    assert message.plain == r"\x1b]0;message\x07[red]message[/red]\x00"
+    assert message.plain == r"\x1b]0;message\x07[red]message[/red]\x0anext\x00"
     assert message.spans == []
     assert (
         status.plain == "Error: "
-        r"\x1b]0;message\x07[red]message[/red]\x00"
+        "\\x1b]0;message\\x07[red]message[/red]\nnext\\x00"
         "\nSuggestion: "
         r"\x1b]0;spoof\x07[red]table[/red]\x85"
     )
+    assert r"\x0a" not in status.plain
     assert status.spans == []
     assert error.plain == status.plain
     assert error.spans == []
+
+
+def test_tui_error_suggestion_is_visibly_rendered() -> None:
+    async def _inner() -> tuple[int, tuple[str, ...]]:
+        app = CSVQLMenuApp(start_dir=Path.cwd())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._show_error(
+                CSVQLError(
+                    "The selected source provider dependency is not available.",
+                    suggestion=(
+                        "Install the DuckDB excel extension explicitly in this environment."
+                    ),
+                )
+            )
+            await pilot.pause()
+            error = app.query_one("#results-message", Static)
+            return (
+                error.region.height,
+                tuple(error.render_line(row).text for row in range(error.region.height)),
+            )
+
+    height, visible_lines = asyncio.run(_inner())
+    visible_text = " ".join(" ".join(visible_lines).split())
+
+    assert height >= 2
+    assert "Error: The selected source provider dependency is not available." in visible_text
+    assert (
+        "Suggestion: Install the DuckDB excel extension explicitly in this environment."
+        in visible_text
+    )
 
 
 def test_app_rejects_injected_store_with_explicit_capacity_bytes(tmp_path: Path) -> None:
@@ -2469,7 +2481,8 @@ def test_function_key_runs_query_from_sql_editor(tmp_path: Path) -> None:
             sql.load_text("SELECT * FROM customers")
 
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
+            await pilot.pause()
 
             status = app.query_one("#status", Static).content
             results = app.query_one("#results", DataTable)
@@ -3730,7 +3743,10 @@ def test_programmatic_history_refresh_does_not_restore_focused_history_row(
             history = app.query_one("#history", DataTable)
             history.focus()
             history.move_cursor(row=8)
-            await pilot.pause()
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if app.state.active_result.sequence == 9:
+                    break
             selected_sequence = app.state.active_result.sequence
 
             _record_stored_result(
@@ -4098,7 +4114,7 @@ def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
     state = _make_source_state(tmp_path)
     expected_sql_footer = (
         ("F1", "Help"),
-        ("F3", "Open CSV"),
+        ("F3", "Open source"),
         ("F4", "Run current"),
         ("F5", "Results"),
         ("F6", "Sources"),
@@ -4110,7 +4126,7 @@ def test_footer_is_contextual_between_primary_panes(tmp_path: Path) -> None:
     expected_sources_footer = (
         ("F1", "Help"),
         ("F2", "SQL"),
-        ("F3", "Open CSV"),
+        ("F3", "Open source"),
         ("F5", "Results"),
         ("F8", "History"),
         ("F9", "Quit"),
@@ -4402,7 +4418,7 @@ def test_terminal_size_warning_keeps_newer_status_after_recovery(tmp_path: Path)
     assert status == "Query finished."
 
 
-def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> None:
+def test_add_source_action_confirms_explicit_type_and_updates_table(tmp_path: Path) -> None:
     csv_path = _create_csv(
         tmp_path,
         "new_customers.csv",
@@ -4417,9 +4433,12 @@ def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> Non
             await pilot.press("a")
             await pilot.pause()
 
-            mapping_input = app.screen.query_one("#mapping-input", Input)
-            mapping_input.value = f"customers={csv_path}"
+            app.screen.query_one("#source-alias", Input).value = "customers"
+            app.screen.query_one("#source-locator", Input).value = str(csv_path)
+            app.screen.query_one("#source-type", Select).value = "csv"
             await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("y")
             await pilot.pause()
 
             sources = app.query_one("#sources", DataTable)
@@ -4435,7 +4454,7 @@ def test_add_source_action_adds_mapping_and_updates_table(tmp_path: Path) -> Non
     assert selected_alias == "customers"
 
 
-def test_add_source_action_accepts_pasted_csv_path(tmp_path: Path) -> None:
+def test_add_source_action_confirms_auto_extension_selection(tmp_path: Path) -> None:
     csv_path = _create_csv(
         tmp_path,
         "new customers.csv",
@@ -4450,9 +4469,11 @@ def test_add_source_action_accepts_pasted_csv_path(tmp_path: Path) -> None:
             await pilot.press("a")
             await pilot.pause()
 
-            mapping_input = app.screen.query_one("#mapping-input", Input)
-            mapping_input.value = str(csv_path)
+            app.screen.query_one("#source-alias", Input).value = "new_customers"
+            app.screen.query_one("#source-locator", Input).value = str(csv_path)
             await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("y")
             await pilot.pause()
 
             sources = app.query_one("#sources", DataTable)
@@ -4525,7 +4546,38 @@ def test_choose_csv_source_action_handles_native_picker_cancel(
     sources, status = asyncio.run(_inner())
 
     assert sources == ()
-    assert "No CSV selected." in status
+    assert "No source selected." in status
+
+
+def test_native_picker_non_csv_selection_opens_structured_source_flow(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    parquet_path = tmp_path / "picker_orders.parquet"
+    parquet_path.write_bytes(b"PAR1")
+    monkeypatch.setattr(
+        "csvql.tui_app._choose_csv_paths_with_native_picker",
+        lambda: (str(parquet_path),),
+    )
+
+    async def _inner() -> tuple[str, str, str, str | None]:
+        app = CSVQLMenuApp(start_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("f3")
+            await pilot.pause()
+            screen_name = type(app.screen).__name__
+            alias = app.screen.query_one("#source-alias", Input).value
+            locator = app.screen.query_one("#source-locator", Input).value
+            selected_type = app.screen.query_one("#source-type", Select).value
+            return screen_name, alias, locator, selected_type
+
+    screen_name, alias, locator, selected_type = asyncio.run(_inner())
+
+    assert screen_name == "_SourceInputScreen"
+    assert alias == "picker_orders"
+    assert locator == str(parquet_path)
+    assert selected_type == "auto"
 
 
 def test_choose_csv_source_action_falls_back_to_path_prompt(
@@ -5064,7 +5116,7 @@ def test_inspect_sample_and_profile_selected_source_update_output(tmp_path: Path
             app.query_one("#sources", DataTable).focus()
 
             await pilot.press("i")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
             inspect_status = app.query_one("#status", Static).content
             inspect_table = app.query_one("#results", DataTable)
             inspect_columns = tuple(str(column.label) for column in inspect_table.columns.values())
@@ -5074,7 +5126,7 @@ def test_inspect_sample_and_profile_selected_source_update_output(tmp_path: Path
             )
 
             await pilot.press("s")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
             sample_status = app.query_one("#status", Static).content
             sample_results = app.query_one("#results", DataTable)
             sample_columns = tuple(str(column.label) for column in sample_results.columns.values())
@@ -5082,7 +5134,7 @@ def test_inspect_sample_and_profile_selected_source_update_output(tmp_path: Path
             sample_message = app.query_one("#results-message", Static).content
 
             await pilot.press("p")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
             profile_status = app.query_one("#status", Static).content
             profile_results = app.query_one("#results", DataTable)
             profile_columns = tuple(
@@ -5174,11 +5226,11 @@ def test_source_intelligence_action_uses_operation_worker(
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("i")
-            await pilot.pause(0.1)
+            assert await asyncio.to_thread(started.wait, 2.0)
             running = app.state.operation_run.is_running
             status = app.query_one("#status", Static).content
             release.set()
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
             final_status = app.query_one("#status", Static).content
             return running, status, final_status
 
@@ -5216,7 +5268,7 @@ def test_source_worker_failure_preserves_csv_error_message_and_suggestion(
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("i")
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
             return (
                 app.query_one("#status", Static).content,
                 app.query_one("#results-message", Static).content,
@@ -5261,7 +5313,7 @@ def test_unexpected_operation_worker_failure_sanitizes_details(
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("i")
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
             return (
                 app.query_one("#status", Static).content,
                 app.query_one("#results-message", Static).content,
@@ -5309,7 +5361,7 @@ def test_sample_worker_failure_preserves_previous_active_result(
             sql = app.query_one("#sql", TextArea)
             sql.load_text("SELECT * FROM customers")
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             previous_result = app.state.active_query_result_record()
             previous_active_result = app.state.active_result
@@ -5318,14 +5370,14 @@ def test_sample_worker_failure_preserves_previous_active_result(
 
             app.query_one("#sources", DataTable).focus()
             await pilot.press("s")
-            await pilot.pause(0.1)
+            assert await asyncio.to_thread(started.wait, 2.0)
 
             running_result_preserved = app.state.active_query_result_record() == previous_result
             running_active_result_preserved = app.state.active_result == previous_active_result
             running_view_preserved = app.state.result_view == previous_view
 
             release.set()
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
 
             return (
                 running_result_preserved,
@@ -5381,11 +5433,11 @@ def test_escape_cancels_running_source_operation(
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("i")
-            await pilot.pause(0.1)
+            assert await asyncio.to_thread(started.wait, 2.0)
             await pilot.press("escape")
             await pilot.pause()
             release.set()
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
             return app.query_one("#status", Static).content, app.state.operation_run.is_running
 
     status, is_running = asyncio.run(_inner())
@@ -5428,10 +5480,9 @@ def test_escape_requests_shared_context_interrupt_and_worker_cleanup(
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("i")
-            await pilot.pause(0.1)
-            assert started.is_set()
+            assert await asyncio.to_thread(started.wait, 2.0)
             await pilot.press("escape")
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
             return (
                 app.query_one("#status", Static).content,
                 app.state.operation_run.is_running,
@@ -5475,7 +5526,7 @@ def test_cancelled_sample_worker_preserves_previous_active_result(
             sql = app.query_one("#sql", TextArea)
             sql.load_text("SELECT * FROM customers")
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             previous_result = app.state.active_query_result_record()
             previous_active_result = app.state.active_result
@@ -5485,7 +5536,7 @@ def test_cancelled_sample_worker_preserves_previous_active_result(
 
             app.query_one("#sources", DataTable).focus()
             await pilot.press("s")
-            await pilot.pause(0.1)
+            assert await asyncio.to_thread(started.wait, 2.0)
 
             running_result_preserved = app.state.active_query_result_record() == previous_result
             running_active_result_preserved = app.state.active_result == previous_active_result
@@ -5494,7 +5545,7 @@ def test_cancelled_sample_worker_preserves_previous_active_result(
             await pilot.press("escape")
             await pilot.pause(0.1)
             release.set()
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
 
             return (
                 running_result_preserved,
@@ -5907,21 +5958,7 @@ def test_queued_source_fingerprint_mutation_terminalizes_as_source_changed(
     release_first = threading.Event()
     seen_requests: list[TUIRunRequest] = []
     second_events: list[object] = []
-    source_error_codes: list[str] = []
     real_run_tui_request = tui_app_module.run_tui_request
-    real_bind = CSVSourceAdapter.bind
-
-    def recording_bind(
-        adapter: CSVSourceAdapter,
-        connection: object,
-        source: object,
-        operation: OperationContext,
-    ):
-        try:
-            return real_bind(adapter, connection, source, operation)  # type: ignore[arg-type]
-        except SourceError as exc:
-            source_error_codes.append(exc.code)
-            raise
 
     def controlled_run_tui_request(
         request: TUIRunRequest,
@@ -5953,7 +5990,6 @@ def test_queued_source_fingerprint_mutation_terminalizes_as_source_changed(
             operation=operation,
         )
 
-    monkeypatch.setattr(CSVSourceAdapter, "bind", recording_bind)
     monkeypatch.setattr(tui_app_module, "run_tui_request", controlled_run_tui_request)
 
     async def _inner() -> tuple[object, tuple[object, ...], bool]:
@@ -6001,7 +6037,6 @@ def test_queued_source_fingerprint_mutation_terminalizes_as_source_changed(
     ]
 
     assert queued_fingerprint is not None
-    assert source_error_codes == ["source_changed"]
     assert len(failed_events) == 1
     assert failed_events[0].error_message == "CSV source changed after submission."
     assert failed_events[0].suggestion == (
@@ -6259,7 +6294,7 @@ def test_sources_pane_keeps_origin_before_relative_project_path(tmp_path: Path) 
 
     columns, row_count, derived_path = asyncio.run(_inner())
 
-    assert columns == ("alias", "kind", "origin", "path")
+    assert columns == ("alias", "type", "origin", "locator")
     assert row_count == 2
     assert derived_path == ".csvql/results/order_names.csv"
 
@@ -6804,12 +6839,14 @@ def test_help_text_documents_workbench_keymap() -> None:
     assert "F4 / Ctrl+R         Run selected SQL, otherwise current statement" in help_text
     assert "Run selected SQL, otherwise current statement" in help_text
     assert "F12 / Ctrl+B        Run Buffer" in help_text
-    assert "F3 / Ctrl+O         Choose CSV file(s) or prompt for paths" in help_text
+    assert "F3 / Ctrl+O         Choose local source file(s) or prompt for a path" in help_text
+    assert "LocalQL displays bounded evidence and never guesses between candidates." in help_text
     assert "F1                  Help" in help_text
     assert "?                   Help" not in help_text
     assert "Also opens help" not in help_text
     assert (
-        "F7                  Export active result (.csv, .json, .md, .markdown, .txt)" in help_text
+        "F7                  Export active result "
+        "(.csv, .json, .ndjson, .parquet, .xlsx, .md, .txt)" in help_text
     )
     assert "last successful tabular" not in help_text
     assert "[ / ]               Previous/next buffer result when Results is focused" in help_text
@@ -6834,12 +6871,39 @@ def test_help_screen_renders_current_workbench_help_text(tmp_path: Path) -> None
     assert help_text == WORKBENCH_HELP
 
 
+@pytest.mark.parametrize(
+    ("path_value", "expected_path", "expected_format"),
+    (
+        ("result", "result.csv", ExportFormat.csv),
+        ("result.csv", "result.csv", ExportFormat.csv),
+        ("result.json", "result.json", ExportFormat.json),
+        ("result.ndjson", "result.ndjson", ExportFormat.ndjson),
+        ("result.jsonl", "result.jsonl", ExportFormat.ndjson),
+        ("result.parquet", "result.parquet", ExportFormat.parquet),
+        ("result.parq", "result.parq", ExportFormat.parquet),
+        ("result.xlsx", "result.xlsx", ExportFormat.excel),
+        ("result.md", "result.md", ExportFormat.markdown),
+        ("result.markdown", "result.markdown", ExportFormat.markdown),
+        ("result.txt", "result.txt", ExportFormat.text),
+    ),
+)
+def test_tui_export_path_suffix_selects_exact_format(
+    path_value: str,
+    expected_path: str,
+    expected_format: ExportFormat,
+) -> None:
+    assert tui_app_module._export_path_and_format_for_prompt(path_value) == (
+        expected_path,
+        expected_format,
+    )
+
+
 def test_tui_guide_documents_portable_fallbacks_and_run_labels() -> None:
     guide = _read_doc_text("docs/tui-guide.md")
 
     assert "| `F7` | Export active result |" in guide
     assert "| `F12` or `Ctrl+B` | Run the buffer as separate History rows |" in guide
-    assert "| `F3` or `Ctrl+O` | Choose CSV file(s) or prompt for paths |" in guide
+    assert "| `F3` or `Ctrl+O` | Choose local source file(s) or prompt for a path |" in guide
     assert "| `F9` or `q` | Quit outside text entry |" in guide
     assert "The History run column labels entries as `current` for F4/Ctrl+R runs," in guide
     assert "`buffer` for F12/Ctrl+B runs" in guide
@@ -6850,9 +6914,9 @@ def test_troubleshooting_documents_menu_entry_points() -> None:
     troubleshooting = _read_doc_text("docs/troubleshooting.md")
 
     assert "Use `F4` or `Ctrl+R` to run the current SQL." in troubleshooting
-    assert "`F3` opens a native CSV picker on macOS." in troubleshooting
-    assert "`Ctrl+O` opens the path prompt on every" in troubleshooting
-    assert "platform." in troubleshooting
+    assert "`F3` opens a native source picker on macOS." in troubleshooting
+    assert "`F3` or `Ctrl+O` opens the portable path prompt." in troubleshooting
+    assert "Press `a` in Sources for the" in troubleshooting
     assert "[Terminal menu guide](tui-guide.md)" in troubleshooting
 
 
@@ -6875,7 +6939,11 @@ def test_question_mark_types_in_sql_editor_and_f1_opens_help(tmp_path: Path) -> 
     editor_text, help_text = asyncio.run(_inner())
 
     assert editor_text == "?"
-    assert help_text.startswith("CSVQL Workbench Lite")
+    assert help_text.startswith("LocalQL Workbench")
+
+
+def test_tui_uses_public_localql_workbench_title() -> None:
+    assert CSVQLMenuApp.TITLE == "LocalQL Workbench"
 
 
 def test_tui_guide_documents_source_intelligence_keymap() -> None:
@@ -6906,7 +6974,7 @@ def test_completion_docs_describe_tab_primary_and_ctrl_space_secondary() -> None
     guide_source_actions = _normalized_markdown_text(
         guide_text[
             guide_text.index("When the Sources pane is focused:") : guide_text.index(
-                "The Add source prompt accepts"
+                "The structured Add source flow collects"
             )
         ]
     )
@@ -10262,7 +10330,7 @@ def test_source_columns_loads_grid_and_disables_export(tmp_path: Path) -> None:
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("c")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
             column_status = app.query_one("#status", Static).content
             columns_table = app.query_one("#results", DataTable)
             column_headers = tuple(str(column.label) for column in columns_table.columns.values())
@@ -10791,12 +10859,12 @@ def test_remove_source_is_blocked_while_inspect_operation_runs(
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("i")
-            await pilot.pause(0.1)
+            assert await asyncio.to_thread(started.wait, 2.0)
             await pilot.press("d")
             await pilot.press("y")
-            await pilot.pause(0.1)
+            await pilot.pause()
             release.set()
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
             return app.query_one("#sources", DataTable).row_count, app.query_one(
                 "#status", Static
             ).content

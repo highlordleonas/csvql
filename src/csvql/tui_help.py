@@ -1,6 +1,6 @@
-"""Help text for the CSVQL Workbench TUI."""
+"""Help text for the LocalQL terminal workbench."""
 
-WORKBENCH_HELP = """CSVQL Workbench Lite
+WORKBENCH_HELP = """LocalQL Workbench
 
 Run SQL
   F4 / Ctrl+R         Run selected SQL, otherwise current statement
@@ -22,11 +22,17 @@ Source pane
   c                   Load/show selected source columns
   l                   Insert selected source alias
   x                   Open starter SQL templates
-  F3 / Ctrl+O         Choose CSV file(s) or prompt for paths
-  a                   Add source
-  paste .csv path     Add CSV path text as a session source
+  F3 / Ctrl+O         Choose local source file(s) or prompt for a path
+  a                   Add structured source intent
+  paste .csv path     Add CSV immediately
+  paste other path    Open type, option, detection, and confirmation flow
   d                   Remove selected source after confirmation
   w                   Save sources to project catalog
+
+Detection
+  Explicit type wins; otherwise a recognized extension selects its provider.
+  Extensionless files and directories require an explicit type when ambiguous.
+  LocalQL displays bounded evidence and never guesses between candidates.
 
 History pane
   highlight           Recall selected query result
@@ -45,7 +51,7 @@ Results
 
 General
   F1                  Help
-  F7                  Export active result (.csv, .json, .md, .markdown, .txt)
+  F7                  Export active result (.csv, .json, .ndjson, .parquet, .xlsx, .md, .txt)
   F9 / q              Quit outside text entry
   Esc                 Cancel active execution or preservation; otherwise close help or modal
 

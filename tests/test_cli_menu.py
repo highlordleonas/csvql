@@ -25,14 +25,19 @@ def test_root_help_is_still_shown_for_no_args() -> None:
 
     assert result.exit_code == 0, result.output
     assert "Usage:" in result.output
-    assert "Query local CSV files with DuckDB SQL." in result.output
+    assert "Query local structured data with DuckDB SQL." in result.output
 
 
 def test_menu_help_lists_startup_arguments() -> None:
     result = runner.invoke(app, ["menu", "--help"], terminal_width=120)
 
     assert result.exit_code == 0, result.output
-    assert "Open the interactive CSVQL terminal menu." in result.output
+    output = " ".join(Text.from_ansi(result.output).plain.split())
+    assert "Open the interactive LocalQL terminal workbench." in output
+    assert "Optional CSV shortcut to preload" in output
+    assert "TUI source flow for other formats" in output
+    assert "CSV compatibility" in output
+    assert "NAME=PATH" in output
 
 
 def test_menu_help_keeps_csv_path_and_table_contract_before_session_options() -> None:

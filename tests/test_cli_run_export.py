@@ -5,9 +5,11 @@ from pathlib import Path
 
 import pytest
 from rich.text import Text
+from typer.main import get_command
 from typer.testing import CliRunner
 
 import csvql.cli as cli_module
+import csvql.result_export as result_export_module
 from csvql.bounded_result import BoundedQueryResult, PreviewPolicy
 from csvql.cli import app
 from csvql.exceptions import CSVQLError
@@ -171,10 +173,9 @@ def test_cli_export_streams_without_calling_query_materializer(
 
     monkeypatch.setattr(cli_module, "execute_query_request", reject_materialization)
     monkeypatch.setattr(
-        cli_module,
+        result_export_module,
         "write_streaming_export",
         recording_streaming_writer,
-        raising=False,
     )
 
     result = runner.invoke(
@@ -239,7 +240,7 @@ def test_export_success_output_encodes_terminal_controls_in_output_path(
         assert token is not None
         write_calls.append(output_path)
 
-    monkeypatch.setattr("csvql.cli.write_streaming_export", fake_write_streaming_export)
+    monkeypatch.setattr(result_export_module, "write_streaming_export", fake_write_streaming_export)
 
     result = runner.invoke(
         app,
@@ -524,7 +525,7 @@ def test_cli_export_header_failure_cleans_eager_stream_before_destination_and_en
         lambda *args, **kwargs: object(),
     )
     monkeypatch.setattr(
-        cli_module,
+        result_export_module,
         "execute_query_request_stream",
         lambda *args, **kwargs: FakeStream(),
     )
@@ -660,10 +661,11 @@ def test_run_and_export_cli_use_one_operation_context_across_builder_engine_and_
     )
     monkeypatch.setattr("csvql.cli.execute_query_request", fake_execute_query_request)
     monkeypatch.setattr(
-        "csvql.cli.execute_query_request_stream",
+        result_export_module,
+        "execute_query_request_stream",
         fake_execute_query_request_stream,
     )
-    monkeypatch.setattr("csvql.cli.write_streaming_export", fake_write_streaming_export)
+    monkeypatch.setattr(result_export_module, "write_streaming_export", fake_write_streaming_export)
 
     run_result = runner.invoke(app, ["run", "count_orders.sql", "--output", "json"])
     assert run_result.exit_code == 0, run_result.output
@@ -979,12 +981,30 @@ def test_run_table_keyboard_interrupt_closes_engine_and_reports_public_error(
 
 
 def test_run_help_describes_limit_as_table_output_only() -> None:
-    result = runner.invoke(app, ["run", "--help"])
+    result = runner.invoke(app, ["run", "--help"], terminal_width=200)
+    output = " ".join(Text.from_ansi(result.output).plain.split())
+    command = get_command(app).commands["run"]
+    limit_help = next(parameter.help for parameter in command.params if parameter.name == "limit")
 
     assert result.exit_code == 0, result.output
-    assert "Maximum rows to display" in result.output
-    assert "display in table" in result.output
-    assert "output." in result.output
+    assert "CSV compatibility mapping in" in output
+    assert "NAME=PATH" in output
+    assert "use --source" in output
+    assert "other providers" in output
+    assert "Maximum rows to display" in output
+    assert "display in table" in output
+    assert limit_help == "Maximum rows to display; display in table output only."
+
+
+def test_export_help_explains_structured_source_compatibility() -> None:
+    result = runner.invoke(app, ["export", "--help"])
+    output = " ".join(Text.from_ansi(result.output).plain.split())
+
+    assert result.exit_code == 0, result.output
+    assert "CSV compatibility" in output
+    assert "NAME=PATH" in output
+    assert "use --source" in output
+    assert "other providers" in output
 
 
 def test_run_table_output_reports_byte_limit_truncation_truthfully(

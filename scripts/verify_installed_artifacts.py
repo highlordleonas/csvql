@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,6 +59,21 @@ EXPECTED_QUERY_SUBSET: Mapping[str, object] = {
     ],
     "row_count": 2,
 }
+SOURCE_FORMAT_QUERY_ARGUMENTS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("parquet", "orders.parquet", ()),
+    ("json", "orders.json", ()),
+    ("ndjson", "orders.ndjson", ()),
+    (
+        "excel",
+        "orders.xlsx",
+        ("--option", "sheet=Orders", "--option", "range=A1:B4"),
+    ),
+)
+STRUCTURED_EXPORT_ARGUMENTS: tuple[tuple[str, str], ...] = (
+    ("ndjson", "orders-export.ndjson"),
+    ("parquet", "orders-export.parquet"),
+    ("excel", "orders-export.xlsx"),
+)
 API_SMOKE = textwrap.dedent(
     """
     from csvql import CSVQLSession
@@ -81,6 +97,99 @@ TUI_IMPORT_SMOKE = textwrap.dedent(
     import textual
     """
 ).strip()
+SOURCE_FORMAT_FIXTURE_SMOKE = textwrap.dedent(
+    """
+    import json
+
+    import duckdb
+
+    connection = duckdb.connect(
+        database=":memory:",
+        config={
+            "autoinstall_known_extensions": "false",
+            "autoload_known_extensions": "false",
+        },
+    )
+    try:
+        connection.execute(
+            '''
+            CREATE TABLE orders AS
+            SELECT *
+            FROM (
+                VALUES
+                    ('ORD-1', 'paid'),
+                    ('ORD-2', 'pending'),
+                    ('ORD-3', 'paid')
+            ) AS source(order_id, status)
+            '''
+        )
+        connection.execute("COPY orders TO 'orders.parquet' (FORMAT PARQUET)")
+        connection.install_extension("excel")
+        extension_state = connection.execute(
+            '''
+            SELECT installed, extension_version, install_mode
+            FROM duckdb_extensions()
+            WHERE extension_name = 'excel'
+            '''
+        ).fetchone()
+    finally:
+        connection.close()
+
+    if extension_state is None or not extension_state[0]:
+        raise RuntimeError("DuckDB Excel extension provisioning did not complete.")
+    print(
+        json.dumps(
+            {
+                "duckdb_version": duckdb.__version__,
+                "excel_extension_version": str(
+                    extension_state[1] or extension_state[2] or "available"
+                ),
+            },
+            sort_keys=True,
+        )
+    )
+    """
+).strip()
+STRUCTURED_EXPORT_OUTPUT_SMOKE = textwrap.dedent(
+    """
+    import json
+    from pathlib import Path
+
+    import duckdb
+
+    expected = [("paid", 2), ("pending", 1)]
+    ndjson_rows = [
+        (record["status"], int(record["order_count"]))
+        for record in (
+            json.loads(line)
+            for line in Path("orders-export.ndjson").read_text(encoding="utf-8").splitlines()
+        )
+    ]
+    connection = duckdb.connect(
+        database=":memory:",
+        config={
+            "autoinstall_known_extensions": "false",
+            "autoload_known_extensions": "false",
+        },
+    )
+    try:
+        parquet_rows = connection.execute(
+            "SELECT status, order_count FROM read_parquet(?) ORDER BY status",
+            ["orders-export.parquet"],
+        ).fetchall()
+        connection.load_extension("excel")
+        excel_rows = connection.execute(
+            "SELECT status, order_count FROM read_xlsx(?, header=true) ORDER BY status",
+            ["orders-export.xlsx"],
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert ndjson_rows == expected
+    assert [(row[0], int(row[1])) for row in parquet_rows] == expected
+    assert [(row[0], int(row[1])) for row in excel_rows] == expected
+    """
+).strip()
 
 RunCommand = Callable[..., CompletedProcess[str]]
 
@@ -99,6 +208,7 @@ class SmokeFormatPaths:
     """Per-format isolated paths for installed-artifact smoke execution."""
 
     root: Path
+    home_dir: Path
     tmp_dir: Path
     uv_cache_dir: Path
     uv_python_install_dir: Path
@@ -126,6 +236,25 @@ SMOKE_CHECKS: dict[str, str] = {
     "uv_tool_tui_menu_help": "passed",
     "uv_tool_tui_version": "passed",
 }
+SOURCE_FORMAT_SMOKE_CHECKS: dict[str, str] = {
+    "pip_core_export_excel": "passed",
+    "pip_core_export_ndjson": "passed",
+    "pip_core_export_parquet": "passed",
+    "pip_core_prepare_source_formats": "passed",
+    "pip_core_query_csv": "passed",
+    "pip_core_query_excel": "passed",
+    "pip_core_query_json": "passed",
+    "pip_core_query_ndjson": "passed",
+    "pip_core_query_parquet": "passed",
+    "pip_core_validate_structured_exports": "passed",
+}
+
+
+def _smoke_checks(*, require_source_format_smokes: bool) -> dict[str, str]:
+    checks = dict(SMOKE_CHECKS)
+    if require_source_format_smokes:
+        checks.update(SOURCE_FORMAT_SMOKE_CHECKS)
+    return checks
 
 
 def environment_executable_path(
@@ -232,6 +361,7 @@ def _sanitized_environment(
     uv_cache_dir: Path,
     uv_python_install_dir: Path,
     tmp_dir: Path | None = None,
+    home_dir: Path | None = None,
 ) -> dict[str, str]:
     environment = {
         name: os.environ[name] for name in INHERITED_ENVIRONMENT_ALLOWLIST if name in os.environ
@@ -256,6 +386,13 @@ def _sanitized_environment(
                 "TEMP": str(tmp_dir),
                 "TMP": str(tmp_dir),
                 "TMPDIR": str(tmp_dir),
+            }
+        )
+    if home_dir is not None:
+        environment.update(
+            {
+                "HOME": str(home_dir),
+                "USERPROFILE": str(home_dir),
             }
         )
     return environment
@@ -414,6 +551,7 @@ def _format_smoke_paths(work_dir: Path, format_name: str) -> SmokeFormatPaths:
     root = _make_isolated_directory(work_dir / format_name)
     return SmokeFormatPaths(
         root=root,
+        home_dir=_make_isolated_directory(root / "home"),
         tmp_dir=_make_isolated_directory(root / "tmp"),
         uv_cache_dir=_make_isolated_directory(root / "uv-cache"),
         uv_python_install_dir=_make_isolated_directory(root / "uv-python"),
@@ -502,7 +640,90 @@ def _require_query_evidence(completed: CompletedProcess[str]) -> None:
         )
 
 
-def _write_smoke_project(project_dir: Path) -> None:
+def _require_source_format_fixture_evidence(
+    completed: CompletedProcess[str],
+) -> dict[str, str]:
+    try:
+        payload = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise InstalledArtifactVerificationError(
+            "source format fixture evidence was not valid JSON"
+        ) from exc
+    if not isinstance(payload, dict) or set(payload) != {
+        "duckdb_version",
+        "excel_extension_version",
+    }:
+        raise InstalledArtifactVerificationError(
+            "source format fixture evidence had an invalid shape"
+        )
+    duckdb_version = payload["duckdb_version"]
+    excel_extension_version = payload["excel_extension_version"]
+    if (
+        not isinstance(duckdb_version, str)
+        or not duckdb_version
+        or not isinstance(excel_extension_version, str)
+        or not excel_extension_version
+    ):
+        raise InstalledArtifactVerificationError("source format fixture identities were invalid")
+    return {
+        "pip_core_duckdb": duckdb_version,
+        "pip_core_excel_extension": excel_extension_version,
+    }
+
+
+def _write_excel_smoke_fixture(path: Path) -> None:
+    content_types = (
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" '
+        'ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        "</Types>"
+    )
+    package_relationships = (
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
+        'officeDocument" Target="xl/workbook.xml"/>'
+        "</Relationships>"
+    )
+    workbook = (
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Orders" sheetId="1" r:id="rId1"/></sheets></workbook>'
+    )
+    workbook_relationships = (
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
+        'worksheet" Target="worksheets/sheet1.xml"/>'
+        "</Relationships>"
+    )
+    worksheet = (
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<dimension ref="A1:B4"/><sheetData>'
+        '<row r="1"><c r="A1" t="inlineStr"><is><t>order_id</t></is></c>'
+        '<c r="B1" t="inlineStr"><is><t>status</t></is></c></row>'
+        '<row r="2"><c r="A2" t="inlineStr"><is><t>ORD-1</t></is></c>'
+        '<c r="B2" t="inlineStr"><is><t>paid</t></is></c></row>'
+        '<row r="3"><c r="A3" t="inlineStr"><is><t>ORD-2</t></is></c>'
+        '<c r="B3" t="inlineStr"><is><t>pending</t></is></c></row>'
+        '<row r="4"><c r="A4" t="inlineStr"><is><t>ORD-3</t></is></c>'
+        '<c r="B4" t="inlineStr"><is><t>paid</t></is></c></row>'
+        "</sheetData></worksheet>"
+    )
+    with zipfile.ZipFile(path, "x", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", package_relationships)
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_relationships)
+        archive.writestr("xl/worksheets/sheet1.xml", worksheet)
+
+
+def _write_smoke_project(project_dir: Path, *, include_source_formats: bool) -> None:
     (project_dir / ".csvql.yml").write_text(
         "version: 1\ntables:\n  orders:\n    path: orders.csv\n",
         encoding="utf-8",
@@ -511,6 +732,23 @@ def _write_smoke_project(project_dir: Path) -> None:
         "order_id,status\nORD-1,paid\nORD-2,pending\nORD-3,paid\n",
         encoding="utf-8",
     )
+    (project_dir / "orders.sql").write_text(QUERY_SQL, encoding="utf-8")
+    if not include_source_formats:
+        return
+    records = (
+        {"order_id": "ORD-1", "status": "paid"},
+        {"order_id": "ORD-2", "status": "pending"},
+        {"order_id": "ORD-3", "status": "paid"},
+    )
+    (project_dir / "orders.json").write_text(
+        json.dumps(records, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    (project_dir / "orders.ndjson").write_text(
+        "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    _write_excel_smoke_fixture(project_dir / "orders.xlsx")
 
 
 def _run_pip_smokes(
@@ -523,6 +761,7 @@ def _run_pip_smokes(
     expected_version: str,
     python_version: str,
     public_index: bool,
+    require_source_format_smokes: bool,
     environment: Mapping[str, str],
     run_command: RunCommand,
 ) -> dict[str, str]:
@@ -593,6 +832,56 @@ def _run_pip_smokes(
         run_command=run_command,
     )
     _require_query_evidence(completed)
+    source_format_identities: dict[str, str] = {}
+    if require_source_format_smokes:
+        completed = _run_checked(
+            [str(core_python), "-c", SOURCE_FORMAT_FIXTURE_SMOKE],
+            role="prepare installed source format fixtures",
+            cwd=project_dir,
+            environment=environment,
+            run_command=run_command,
+        )
+        source_format_identities = _require_source_format_fixture_evidence(completed)
+        for source_format, source_path, extra_arguments in SOURCE_FORMAT_QUERY_ARGUMENTS:
+            completed = _run_checked(
+                [
+                    str(core_csvql),
+                    "query",
+                    source_path,
+                    QUERY_SQL,
+                    "--output",
+                    "json",
+                    *extra_arguments,
+                ],
+                role=f"run core {source_format} query smoke",
+                cwd=project_dir,
+                environment=environment,
+                run_command=run_command,
+            )
+            _require_query_evidence(completed)
+        for export_format, output_path in STRUCTURED_EXPORT_ARGUMENTS:
+            _run_checked(
+                [
+                    str(core_csvql),
+                    "export",
+                    "orders.sql",
+                    "--format",
+                    export_format,
+                    "--out",
+                    output_path,
+                ],
+                role=f"run core {export_format} export smoke",
+                cwd=project_dir,
+                environment=environment,
+                run_command=run_command,
+            )
+        _run_checked(
+            [str(core_python), "-c", STRUCTURED_EXPORT_OUTPUT_SMOKE],
+            role="validate installed structured export outputs",
+            cwd=project_dir,
+            environment=environment,
+            run_command=run_command,
+        )
     _run_checked(
         [str(core_python), "-c", API_SMOKE],
         role="run installed Python API smoke",
@@ -677,6 +966,7 @@ def _run_pip_smokes(
     return {
         "pip_core_python": core_python_identity,
         "pip_tui_python": tui_python_identity,
+        **source_format_identities,
     }
 
 
@@ -848,12 +1138,15 @@ def verify_installed_artifacts(
     python_version: str,
     public_index: bool,
     allow_published_version_check: bool,
+    require_source_format_smokes: bool = False,
     run_command: RunCommand = subprocess.run,
 ) -> dict[str, object]:
     """Run isolated pip and uv-tool release smokes and return JSON evidence.
 
     The injected runner is the only subprocess boundary. Local paths are exact,
-    regular inputs, and public-index mode cannot accept them.
+    regular inputs, and public-index mode cannot accept them. Source-format
+    smokes use an isolated home and explicitly provision the Excel extension
+    before LocalQL runs; LocalQL itself never installs that dependency.
     """
 
     _validate_expected_version(expected_version)
@@ -931,6 +1224,7 @@ def verify_installed_artifacts(
             uv_cache_dir=format_paths.uv_cache_dir,
             uv_python_install_dir=format_paths.uv_python_install_dir,
             tmp_dir=format_paths.tmp_dir,
+            home_dir=format_paths.home_dir,
         )
         with tempfile.TemporaryDirectory(prefix="project-", dir=format_paths.root) as project_text:
             project_dir = Path(project_text).resolve()
@@ -938,7 +1232,10 @@ def verify_installed_artifacts(
                 raise InstalledArtifactVerificationError(
                     "temporary smoke project must be outside the repository source tree"
                 )
-            _write_smoke_project(project_dir)
+            _write_smoke_project(
+                project_dir,
+                include_source_formats=require_source_format_smokes,
+            )
             completed = _run_checked(
                 ["uv", "--version"],
                 role="verify selected uv",
@@ -957,6 +1254,7 @@ def verify_installed_artifacts(
                     expected_version=expected_version,
                     python_version=python_version,
                     public_index=True,
+                    require_source_format_smokes=require_source_format_smokes,
                     environment=environment,
                     run_command=run_command,
                 )
@@ -984,7 +1282,9 @@ def verify_installed_artifacts(
             "inputs": {},
             "mode": "public-index",
             "python": python_version,
-            "public_index": {"checks": dict(SMOKE_CHECKS)},
+            "public_index": {
+                "checks": _smoke_checks(require_source_format_smokes=require_source_format_smokes)
+            },
             "schema_version": 2,
         }
 
@@ -997,6 +1297,7 @@ def verify_installed_artifacts(
         uv_cache_dir=preflight_paths.uv_cache_dir,
         uv_python_install_dir=preflight_paths.uv_python_install_dir,
         tmp_dir=preflight_paths.tmp_dir,
+        home_dir=preflight_paths.home_dir,
     )
     artifact_dir = resolved_wheel.parent
     _run_checked(
@@ -1037,6 +1338,7 @@ def verify_installed_artifacts(
             uv_cache_dir=format_paths.uv_cache_dir,
             uv_python_install_dir=format_paths.uv_python_install_dir,
             tmp_dir=format_paths.tmp_dir,
+            home_dir=format_paths.home_dir,
         )
         with tempfile.TemporaryDirectory(prefix="project-", dir=format_paths.root) as project_text:
             project_dir = Path(project_text).resolve()
@@ -1044,7 +1346,10 @@ def verify_installed_artifacts(
                 raise InstalledArtifactVerificationError(
                     "temporary smoke project must be outside the repository source tree"
                 )
-            _write_smoke_project(project_dir)
+            _write_smoke_project(
+                project_dir,
+                include_source_formats=require_source_format_smokes,
+            )
             completed = _run_checked(
                 ["uv", "--version"],
                 role=f"verify selected uv for {format_name}",
@@ -1063,6 +1368,7 @@ def verify_installed_artifacts(
                     expected_version=expected_version,
                     python_version=python_version,
                     public_index=False,
+                    require_source_format_smokes=require_source_format_smokes,
                     environment=environment,
                     run_command=run_command,
                 )
@@ -1093,8 +1399,8 @@ def verify_installed_artifacts(
                 "package_contents": "passed",
                 "release_pair_inspection": "passed",
             },
-            "sdist": dict(SMOKE_CHECKS),
-            "wheel": dict(SMOKE_CHECKS),
+            "sdist": _smoke_checks(require_source_format_smokes=require_source_format_smokes),
+            "wheel": _smoke_checks(require_source_format_smokes=require_source_format_smokes),
         },
         "expected_version": expected_version,
         "identities": identities,
@@ -1118,6 +1424,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--python", dest="python_version", required=True)
     parser.add_argument("--public-index", action="store_true")
     parser.add_argument("--allow-published-version-check", action="store_true")
+    parser.add_argument(
+        "--require-source-format-smokes",
+        action="store_true",
+        help=(
+            "Require installed CSV, Parquet, JSON, NDJSON, and Excel queries; "
+            "the verifier explicitly provisions Excel in its isolated environment."
+        ),
+    )
     return parser
 
 
@@ -1141,6 +1455,7 @@ def main(
             python_version=args.python_version,
             public_index=args.public_index,
             allow_published_version_check=args.allow_published_version_check,
+            require_source_format_smokes=args.require_source_format_smokes,
             run_command=run_command,
         )
     except InstalledArtifactVerificationError as exc:

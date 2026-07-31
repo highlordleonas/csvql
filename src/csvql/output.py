@@ -11,6 +11,7 @@ from rich.text import Text
 
 from csvql.bounded_result import MAX_PREVIEW_PAYLOAD_BYTES, BoundedQueryResult
 from csvql.doctor import DoctorProbeResult, DoctorRunResult
+from csvql.exceptions import CSVQLError
 from csvql.models import (
     InspectResult,
     ProfileResult,
@@ -20,6 +21,7 @@ from csvql.models import (
 )
 from csvql.project_config import ProjectTablesResult
 from csvql.quality import CheckRunResult
+from csvql.source import SourceDiagnostic, source_options_as_python
 from csvql.terminal_text import literal_terminal_text, terminal_safe_text
 
 
@@ -88,11 +90,59 @@ def format_project_tables_json(result: ProjectTablesResult) -> str:
                 "name": table.name,
                 "path": table.path,
                 "resolved_path": _format_path(table.resolved_path),
+                "source_type": table.source_type,
+                "options": source_options_as_python(table.options),
             }
             for table in result.tables
         ],
     }
     return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def format_error_json(error: CSVQLError) -> str:
+    """Format one public application failure without raw exception details."""
+
+    return json.dumps(
+        error.as_dict(redaction="safe"),
+        default=str,
+        indent=2,
+        sort_keys=True,
+    )
+
+
+def format_source_diagnostic_table(diagnostic: SourceDiagnostic) -> str:
+    """Format shared source evidence and required action for a human surface."""
+
+    console = _recording_console(width=120)
+    console.print("Code: ", _format_cell(diagnostic.code.value), sep="")
+    console.print("Stage: ", _format_cell(diagnostic.stage.value), sep="")
+    if diagnostic.safe_source_reference:
+        console.print(
+            "Source: ",
+            _format_cell(diagnostic.safe_source_reference),
+            sep="",
+        )
+    if diagnostic.evidence:
+        console.print("Evidence:")
+        for evidence in diagnostic.evidence:
+            provider = f"{evidence.provider_key}: " if evidence.provider_key else ""
+            console.print(
+                "- ",
+                _format_cell(f"{provider}{evidence.evidence_kind}={evidence.stable_detail}"),
+                sep="",
+            )
+    if diagnostic.required_action is not None:
+        providers = (
+            f" ({', '.join(diagnostic.required_action.provider_keys)})"
+            if diagnostic.required_action.provider_keys
+            else ""
+        )
+        console.print(
+            "Required action: ",
+            _format_cell(f"{diagnostic.required_action.kind}{providers}"),
+            sep="",
+        )
+    return console.export_text(clear=True)
 
 
 def format_table_result(result: QueryResult) -> str:
@@ -268,12 +318,20 @@ def format_project_tables_table(result: ProjectTablesResult) -> str:
     table.add_column("kind")
     table.add_column("path")
     table.add_column("resolved_path")
+    table.add_column("options")
     for listing in result.tables:
         table.add_row(
             _format_cell(listing.name),
-            _format_cell("csv"),
+            _format_cell(listing.source_type),
             _format_cell(listing.path),
             _format_cell(_format_path(listing.resolved_path)),
+            _format_cell(
+                json.dumps(
+                    source_options_as_python(listing.options),
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            ),
         )
     console.print(table)
     return console.export_text(clear=True)

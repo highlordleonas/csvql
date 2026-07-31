@@ -3,6 +3,62 @@
 This page records user-visible changes in each LocalQL release. For a guided
 overview of the v1 feature set, see the [v1 release notes](docs/release-notes/v1.md).
 
+## [1.2.0] - 2026-07-30
+
+LocalQL 1.2.0 expands the CSV-first foundation into one deterministic local
+structured-source workflow. CSV, Parquet, JSON, NDJSON, and Excel sources now
+participate through the same CLI, terminal workbench, catalog, and Python API
+contracts.
+
+### Added
+
+- Added Parquet files and explicitly typed partitioned Parquet directories,
+  JSON documents, NDJSON/JSON Lines records, and Excel `.xlsx` workbooks as
+  relational sources alongside CSV.
+- Added deterministic source selection: an explicit type wins, a recognized
+  file extension selects its provider, and bounded identification reports
+  evidence without guessing when a file or directory remains ambiguous.
+- Added provider-specific options for Parquet partitioning and schema union,
+  bounded JSON/NDJSON inference and explicit schemas or record paths, and Excel
+  sheet, range, header, empty-row, and type-conversion behavior.
+- Added cross-format joins plus shared inspect, sample, and profile behavior
+  across the supported local providers.
+- Added normalized version 2 source definitions to project catalogs while
+  keeping version 1 catalogs readable. The CLI, terminal workbench, and Python
+  `SourceDefinition` API use the same source intent.
+- Added complete result export to record-oriented NDJSON, typed Parquet, and
+  Excel `.xlsx` across the CLI, Python API, and LocalQL Workbench. Existing CSV,
+  JSON-envelope, Markdown, and text exports remain available.
+- Added an end-to-end multi-format export benchmark that crosses all five source
+  providers with NDJSON, Parquet, and Excel outputs and validates every
+  generated artifact outside the timed interval.
+
+### Changed
+
+- Source detection, activation, resolution, and binding now follow one
+  registered-provider workflow across entry surfaces. Provider activation stays
+  lazy, and LocalQL never installs optional dependencies while starting,
+  detecting, querying, or exporting.
+- Excel support requires DuckDB's `excel` extension to be provisioned
+  explicitly in the same environment before Excel input or output; missing
+  availability produces an actionable diagnostic.
+- Parquet result export preserves DuckDB logical column types. NDJSON writes one
+  record per line, while the existing JSON export retains the LocalQL result
+  envelope with columns, row count, and elapsed time.
+- The terminal experience is now presented as **LocalQL Workbench**, and CLI
+  help distinguishes the CSV-compatible `--table` option from multi-format
+  `--source`, `--source-type`, and `--source-option` usage.
+- The installable distribution remains `localql`; the `csvql` command, Python
+  import package, and `.csvql.yml` project convention remain compatible.
+- The provider registration boundary remains internal. LocalQL 1.2.0 does not
+  introduce a public plugin SDK, remote connectors, recursive directory
+  guessing, or silent dependency installation.
+
+### Fixed
+
+- Terminal-workbench errors now preserve readable multiline diagnostics and
+  suggestions while continuing to escape terminal control characters.
+
 ## [1.1.1] - 2026-07-25
 
 LocalQL 1.1.1 carries the complete v1.1 feature set forward from the

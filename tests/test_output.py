@@ -606,8 +606,10 @@ def test_format_project_tables_json_is_deterministic() -> None:
         "tables": [
             {
                 "name": "orders",
+                "options": {},
                 "path": "data/orders.csv",
                 "resolved_path": "/path/to/project/data/orders.csv",
+                "source_type": "csv",
             }
         ],
     }
@@ -639,7 +641,7 @@ def test_format_project_tables_table_contains_catalog_paths() -> None:
     assert "/path/to/project/data/orders.csv" in output
 
 
-def test_format_project_tables_json_does_not_add_source_kind() -> None:
+def test_format_project_tables_json_adds_provider_neutral_source_intent() -> None:
     result = ProjectTablesResult(
         project_root=Path("/path/to/project"),
         config_path=Path("/path/to/project/.csvql.yml"),
@@ -657,7 +659,9 @@ def test_format_project_tables_json_does_not_add_source_kind() -> None:
     assert payload["tables"] == [
         {
             "name": "orders",
+            "options": {},
             "path": "data/orders.csv",
             "resolved_path": "/path/to/project/data/orders.csv",
+            "source_type": "csv",
         }
     ]

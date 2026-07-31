@@ -53,6 +53,8 @@ def write_streaming_export(
             return _write_csv_export(source, path, overwrite=overwrite, token=token)
         if export_format is ExportFormat.json:
             return _write_json_export(source, path, overwrite=overwrite, token=token)
+        if export_format is ExportFormat.ndjson:
+            return _write_ndjson_export(source, path, overwrite=overwrite, token=token)
         if export_format is ExportFormat.markdown:
             return _write_markdown_export(source, path, overwrite=overwrite, token=token)
         if export_format is ExportFormat.text:
@@ -71,7 +73,7 @@ def write_streaming_export(
         ) from exc
     raise ExportError(
         f"Unsupported export format: {export_format}",
-        suggestion="Use csv, json, markdown, or text.",
+        suggestion="Use csv, json, ndjson, markdown, or text for row-stream export.",
     )
 
 
@@ -115,6 +117,23 @@ def _write_json_export(
             output.write(f'  "row_count": {row_count},\n')
             output.write(f'  "elapsed_ms": {round(source.elapsed_ms, 3)}\n')
             output.write("}\n")
+    return ExportSummary(row_count=row_count, elapsed_ms=source.elapsed_ms)
+
+
+def _write_ndjson_export(
+    source: ExportRowSource,
+    path: Path,
+    *,
+    overwrite: bool,
+    token: OperationToken | None,
+) -> ExportSummary:
+    with atomic_text_output(path, newline="", overwrite=overwrite, token=token) as output:
+        with _owned_source_iterator(source) as iterator:
+            row_count = 0
+            for row in _iter_rows(iterator, token=token):
+                output.write(_json_dumps(dict(zip(source.columns, row, strict=True))))
+                output.write("\n")
+                row_count += 1
     return ExportSummary(row_count=row_count, elapsed_ms=source.elapsed_ms)
 
 

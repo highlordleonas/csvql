@@ -6,10 +6,20 @@ import threading
 from _thread import RLock
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 
 class OperationCancelled(Exception):
     """Raised when a cancellable operation reaches a cancellation checkpoint."""
+
+
+class OperationState(StrEnum):
+    """Lifecycle state used to establish a synchronous execution barrier."""
+
+    READY = "ready"
+    EXECUTING = "executing"
+    CANCELLING = "cancelling"
+    TERMINAL = "terminal"
 
 
 class OperationToken:
@@ -45,6 +55,23 @@ class OperationContext:
     # This is reentrant because an interrupt callback may detach its own owner.
     _lock: RLock = field(default_factory=RLock, init=False, repr=False)
     _interrupt_requested: bool = field(default=False, init=False, repr=False)
+    _state: OperationState = field(
+        default=OperationState.READY,
+        init=False,
+        repr=False,
+    )
+    _terminal: threading.Event = field(
+        default_factory=threading.Event,
+        init=False,
+        repr=False,
+    )
+
+    @property
+    def state(self) -> OperationState:
+        """Return the current execution lifecycle state."""
+
+        with self._lock:
+            return self._state
 
     def attach_interrupt(self, callback: Callable[[], None]) -> None:
         """Register the interrupt callback while its owner is live."""
@@ -63,11 +90,38 @@ class OperationContext:
 
         self.token.raise_if_cancelled()
 
+    def begin_execution(self) -> None:
+        """Acquire one serial execution phase and clear its terminal barrier."""
+
+        self.token.raise_if_cancelled()
+        with self._lock:
+            if self._state in {
+                OperationState.EXECUTING,
+                OperationState.CANCELLING,
+            }:
+                raise RuntimeError("Operation execution is already active.")
+            self._terminal.clear()
+            self._state = OperationState.EXECUTING
+
+    def mark_terminal(self) -> None:
+        """Mark execution terminal and wake cleanup waiters."""
+
+        with self._lock:
+            self._state = OperationState.TERMINAL
+            self._terminal.set()
+
+    def await_terminal(self, *, timeout: float | None = None) -> bool:
+        """Wait for the current execution phase to reach a terminal state."""
+
+        return self._terminal.wait(timeout=timeout)
+
     def request_cancel(self) -> None:
         """Mark cancellation, then make one best-effort interrupt request."""
 
         self.token.cancel()
         with self._lock:
+            if self._state is not OperationState.TERMINAL:
+                self._state = OperationState.CANCELLING
             if self._interrupt_requested or self._interrupt is None:
                 return
             callback = self._interrupt

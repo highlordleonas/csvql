@@ -7,6 +7,7 @@ from csvql.exceptions import CSVQLError, QueryExecutionError, TableMappingError
 from csvql.models import TableSource
 from csvql.operation import OperationContext, OperationToken
 from csvql.query_workflow import (
+    QueryRequest,
     build_inline_query_request,
     build_saved_sql_query_request,
     execute_query_request,
@@ -197,6 +198,73 @@ def test_execute_query_request_stream_only_applies_fallback_while_starting(
     assert second.exhausted is True
 
 
+def test_query_stream_releases_sources_at_its_terminal_barrier(
+    tmp_path: Path,
+) -> None:
+    """The application workflow, not engine shutdown, owns source cleanup."""
+
+    orders = tmp_path / "orders.csv"
+    _write_csv(orders, "order_id\nORD-001\n")
+    operation = OperationContext(token=OperationToken())
+    request = build_inline_query_request(
+        "SELECT * FROM orders",
+        None,
+        [f"orders={orders}"],
+        base_dir=tmp_path,
+        operation=operation,
+    )
+
+    with CSVQLEngine(operation=operation) as engine:
+        stream = execute_query_request_stream(engine, request, operation=operation)
+        assert engine.registered_aliases == ("orders",)
+
+        stream.close()
+
+        assert engine.registered_aliases == ()
+        assert engine.query("SELECT 1").rows == ((1,),)
+
+
+def test_query_start_failure_releases_prepared_sources(
+    tmp_path: Path,
+) -> None:
+    """A terminal start failure must not retain dormant source bindings."""
+
+    orders = tmp_path / "orders.csv"
+    _write_csv(orders, "order_id\nORD-001\n")
+    operation = OperationContext(token=OperationToken())
+    request = build_inline_query_request(
+        "SELECT * FROM absent_relation",
+        None,
+        [f"orders={orders}"],
+        base_dir=tmp_path,
+        operation=operation,
+    )
+
+    with CSVQLEngine(operation=operation) as engine:
+        with pytest.raises(QueryExecutionError, match="absent_relation"):
+            execute_query_request_stream(engine, request, operation=operation)
+
+        assert engine.registered_aliases == ()
+        assert engine.query("SELECT 1").rows == ((1,),)
+
+
+def test_query_workflow_allows_source_free_sql() -> None:
+    """The universal request boundary must not make sources mandatory for SQL."""
+
+    operation = OperationContext(token=OperationToken())
+    request = QueryRequest(
+        sql="SELECT 1 AS value",
+        required_sources=(),
+        fallback_sources=(),
+    )
+
+    with CSVQLEngine(operation=operation) as engine:
+        result = execute_query_request(engine, request, operation=operation)
+
+        assert result.rows == ((1,),)
+        assert engine.registered_aliases == ()
+
+
 def test_execute_query_request_does_not_retry_after_stream_fetch_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -221,10 +289,16 @@ def test_execute_query_request_does_not_retry_after_stream_fetch_failure(
     real_stream = CSVQLEngine.stream
     calls = 0
 
-    def failing_stream(self: CSVQLEngine, sql: str, params=None):
+    def failing_stream(
+        self: CSVQLEngine,
+        sql: str,
+        params=None,
+        *,
+        on_terminal=None,
+    ):
         nonlocal calls
         calls += 1
-        stream = real_stream(self, sql, params)
+        stream = real_stream(self, sql, params, on_terminal=on_terminal)
 
         def fail_once(max_rows: int):
             raise QueryExecutionError(
@@ -280,7 +354,14 @@ def test_execute_query_request_stream_start_failure_with_cleanup_uncertainty_nev
     )
     calls = 0
 
-    def failing_stream(self: CSVQLEngine, sql: str, params=None):
+    def failing_stream(
+        self: CSVQLEngine,
+        sql: str,
+        params=None,
+        *,
+        on_terminal=None,
+    ):
+        del on_terminal
         del params
         nonlocal calls
         calls += 1

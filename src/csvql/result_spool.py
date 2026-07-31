@@ -14,7 +14,7 @@ from typing import BinaryIO
 from csvql.result_codec import RowPayloadCodecError, decode_row_payload
 
 SPOOL_MAGIC = b"LQLRS"
-SPOOL_VERSION = 1
+SPOOL_VERSION = 2
 ROW_FRAME = 1
 FOOTER_FRAME = 2
 
@@ -33,6 +33,7 @@ class ResultSpoolError(ValueError):
 @dataclass(frozen=True, slots=True)
 class ResultSpoolMetadata:
     columns: tuple[str, ...]
+    column_types: tuple[str, ...]
     row_count: int
     logical_bytes: int
 
@@ -45,11 +46,13 @@ class ResultSpoolReader:
         file: BinaryIO,
         *,
         columns: tuple[str, ...],
+        column_types: tuple[str, ...],
         data_offset: int,
         logical_bytes: int,
     ) -> None:
         self._file = file
         self._columns = columns
+        self._column_types = column_types
         self._data_offset = data_offset
         self._logical_bytes = logical_bytes
         self._closed = False
@@ -67,10 +70,11 @@ class ResultSpoolReader:
         if schema_length > remaining - _FOOTER.size:
             raise ResultSpoolError("invalid schema length")
         schema = _read_exact(file, schema_length, "truncated schema metadata")
-        columns = _decode_schema(schema)
+        columns, column_types = _decode_schema(schema)
         return cls(
             file,
             columns=columns,
+            column_types=column_types,
             data_offset=file.tell(),
             logical_bytes=logical_bytes,
         )
@@ -78,6 +82,10 @@ class ResultSpoolReader:
     @property
     def columns(self) -> tuple[str, ...]:
         return self._columns
+
+    @property
+    def column_types(self) -> tuple[str, ...]:
+        return self._column_types
 
     def close(self) -> None:
         if self._closed:
@@ -133,11 +141,13 @@ class ResultSpoolWriter:
         staging_path: Path,
         final_path: Path,
         columns: tuple[str, ...],
+        column_types: tuple[str, ...] | None = None,
         workspace_identity: tuple[int, int] | None = None,
     ) -> None:
         self._staging_path = staging_path
         self._final_path = final_path
         self._columns = columns
+        self._column_types = _normalize_column_types(columns, column_types)
         self._workspace_identity = workspace_identity
         self._row_count = 0
         self._logical_bytes = 0
@@ -172,6 +182,7 @@ class ResultSpoolWriter:
         if self._committed:
             return ResultSpoolMetadata(
                 columns=self._columns,
+                column_types=self._column_types,
                 row_count=self._row_count,
                 logical_bytes=self._logical_bytes,
             )
@@ -194,6 +205,7 @@ class ResultSpoolWriter:
         self._committed = True
         return ResultSpoolMetadata(
             columns=self._columns,
+            column_types=self._column_types,
             row_count=self._row_count,
             logical_bytes=self._logical_bytes,
         )
@@ -227,7 +239,7 @@ class ResultSpoolWriter:
         if self._file is None:
             raise ResultSpoolError("spool writer is closed")
         self._assert_active_workspace()
-        schema = _encode_schema(self._columns)
+        schema = _encode_schema(self._columns, self._column_types)
         self._file.write(_HEADER.pack(SPOOL_MAGIC, SPOOL_VERSION, len(schema)))
         self._file.write(schema)
 
@@ -279,23 +291,30 @@ class ResultSpoolWriter:
         return _stat_identity(result) == expected_identity
 
 
-def _encode_schema(columns: tuple[str, ...]) -> bytes:
+def _encode_schema(
+    columns: tuple[str, ...],
+    column_types: tuple[str, ...],
+) -> bytes:
     pieces = bytearray()
     pieces.extend(_COUNT.pack(len(columns)))
-    for column in columns:
+    for column, column_type in zip(columns, column_types, strict=True):
         encoded = column.encode("utf-8")
         pieces.extend(_COUNT.pack(len(encoded)))
         pieces.extend(encoded)
+        encoded_type = column_type.encode("utf-8")
+        pieces.extend(_COUNT.pack(len(encoded_type)))
+        pieces.extend(encoded_type)
     return bytes(pieces)
 
 
-def _decode_schema(schema: bytes) -> tuple[str, ...]:
+def _decode_schema(schema: bytes) -> tuple[tuple[str, ...], tuple[str, ...]]:
     offset = 0
     if len(schema) < _COUNT.size:
         raise ResultSpoolError("truncated schema metadata")
     column_count = _COUNT.unpack_from(schema, offset)[0]
     offset += _COUNT.size
     columns: list[str] = []
+    column_types: list[str] = []
     for _index in range(column_count):
         if len(schema) - offset < _COUNT.size:
             raise ResultSpoolError("truncated schema metadata")
@@ -309,9 +328,36 @@ def _decode_schema(schema: bytes) -> tuple[str, ...]:
             raise ResultSpoolError("malformed schema metadata") from exc
         offset += name_length
         columns.append(name)
+        if len(schema) - offset < _COUNT.size:
+            raise ResultSpoolError("truncated schema metadata")
+        type_length = _COUNT.unpack_from(schema, offset)[0]
+        offset += _COUNT.size
+        if len(schema) - offset < type_length:
+            raise ResultSpoolError("truncated schema metadata")
+        try:
+            column_type = schema[offset : offset + type_length].decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ResultSpoolError("malformed schema metadata") from exc
+        offset += type_length
+        if not column_type:
+            raise ResultSpoolError("malformed schema metadata")
+        column_types.append(column_type)
     if offset != len(schema):
         raise ResultSpoolError("malformed schema metadata")
-    return tuple(columns)
+    return tuple(columns), tuple(column_types)
+
+
+def _normalize_column_types(
+    columns: tuple[str, ...],
+    column_types: tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    if column_types is None or not column_types:
+        return tuple("VARCHAR" for _column in columns)
+    if len(column_types) != len(columns) or not all(
+        isinstance(column_type, str) and bool(column_type) for column_type in column_types
+    ):
+        raise ResultSpoolError("column types must match the result columns")
+    return column_types
 
 
 def _read_exact(file: BinaryIO, size: int, message: str) -> bytes:

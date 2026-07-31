@@ -1,17 +1,19 @@
 """Shared query workflow orchestration."""
 
 import re
-from collections.abc import Iterator
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
-from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
 from csvql.engine import CSVQLEngine
 from csvql.exceptions import (
     CSVQLError,
     FileMissingError,
     QueryExecutionError,
+    SourceCleanupError,
     SourceError,
+    SourceIdentityError,
     TableMappingError,
 )
 from csvql.models import QueryResult
@@ -23,17 +25,35 @@ from csvql.project_config import (
 )
 from csvql.result_stream import CURSOR_CLEANUP_UNCERTAINTY_NOTE, ResultStream
 from csvql.source import (
+    IdentityRequirement,
+    IdentityValidationStatus,
+    PreparedSources,
     ResolvedSource,
     SourceFingerprint,
+    SourceIdentity,
+    SourceRequest,
     SourceSpec,
+    build_source_request,
+    source_request_from_definition,
     source_spec_from_cli_mapping,
 )
-from csvql.table_mapping import derive_alias_from_path, validate_table_alias
+from csvql.source_runtime import (
+    default_source_components,
+    prepare_resolved_sources,
+    resolve_source_request,
+    source_kind_hint,
+)
+from csvql.table_mapping import (
+    build_single_source_definition,
+    build_source_definitions,
+    validate_table_alias,
+)
 
 _DUCKDB_MISSING_TABLE_RE = re.compile(
     r"Table with name (?P<name>[A-Za-z_][A-Za-z0-9_]*) does not exist!"
 )
 _EXPORT_FETCH_BATCH_SIZE = 256
+_QueryAttemptResult = TypeVar("_QueryAttemptResult")
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +61,7 @@ class SourceCandidate:
     """Immutable dormant source declaration and its submission-time identity."""
 
     spec: SourceSpec
-    expected_fingerprint: SourceFingerprint | None
+    expected_fingerprint: SourceFingerprint | SourceIdentity | None
     submission_error: SourceError | None
 
 
@@ -68,6 +88,10 @@ class _ResultStreamExportSource:
     @property
     def elapsed_ms(self) -> float:
         return self._stream.elapsed_ms
+
+    @property
+    def column_types(self) -> tuple[str, ...]:
+        return self._stream.column_types
 
     def iter_rows(self) -> Iterator[tuple[object, ...]]:
         if self._iterated:
@@ -164,28 +188,41 @@ def _adapt_result_stream_for_export(
 def build_inline_query_request(
     sql_or_csv: str,
     sql: str | None,
-    table_mappings: list[str],
+    table_mappings: Sequence[str],
     *,
+    source_mappings: Sequence[str] = (),
+    source_type_mappings: Sequence[str] = (),
+    source_option_mappings: Sequence[str] = (),
+    source_type: str | None = None,
+    source_options: Sequence[str] = (),
     base_dir: Path | None = None,
     operation: OperationContext,
 ) -> QueryRequest:
-    """Build a query request for existing `csvql query` modes."""
+    """Build one provider-neutral request for all `csvql query` modes."""
 
     if sql is None:
-        explicit_specs = tuple(
-            _source_spec_from_table_mapping(mapping, base_dir=base_dir)
-            for mapping in table_mappings
+        if source_type is not None or source_options:
+            raise TableMappingError(
+                "--type and --option require single-source shortcut mode.",
+                suggestion='Use csvql query SOURCE "SELECT ..." --type TYPE --option KEY=VALUE.',
+            )
+        explicit_requests = _requests_from_cli_sources(
+            table_mappings,
+            source_mappings=source_mappings,
+            source_type_mappings=source_type_mappings,
+            source_option_mappings=source_option_mappings,
+            base_dir=base_dir,
         )
-        if explicit_specs:
+        if explicit_requests:
             return QueryRequest(
                 sql=sql_or_csv,
                 required_sources=tuple(
-                    _resolve_required_source(
-                        spec,
-                        display_path=spec.locator,
+                    _resolve_required_request(
+                        request,
+                        display_path=request.locator,
                         operation=operation,
                     )
-                    for spec in explicit_specs
+                    for request in explicit_requests
                 ),
                 fallback_sources=_snapshot_optional_catalog(
                     start_dir=base_dir,
@@ -199,14 +236,32 @@ def build_inline_query_request(
             fallback_sources=(),
         )
 
-    if table_mappings:
+    if table_mappings or source_mappings or source_type_mappings or source_option_mappings:
+        if table_mappings and not (
+            source_mappings or source_type_mappings or source_option_mappings
+        ):
+            raise TableMappingError(
+                "Single-file shortcut mode cannot be combined with --table mappings.",
+                suggestion=(
+                    'Use either csvql query data/orders.csv "SELECT ..." or --table mappings.'
+                ),
+            )
         raise TableMappingError(
-            "Single-file shortcut mode cannot be combined with --table mappings.",
-            suggestion='Use either csvql query data/orders.csv "SELECT ..." or --table mappings.',
+            "Single-source shortcut mode cannot be combined with source mappings.",
+            suggestion=(
+                'Use either csvql query SOURCE "SELECT ..." or inline SQL with '
+                "--table/--source mappings."
+            ),
         )
-    required_source = _resolved_single_csv(
+    definition = build_single_source_definition(
         sql_or_csv,
+        source_type=source_type,
+        option_mappings=source_options,
         base_dir=base_dir,
+    )
+    required_source = _resolve_required_request(
+        source_request_from_definition(definition),
+        display_path=sql_or_csv,
         operation=operation,
     )
     return QueryRequest(
@@ -221,26 +276,33 @@ def build_inline_query_request(
 
 def build_saved_sql_query_request(
     sql: str,
-    table_mappings: list[str],
+    table_mappings: Sequence[str],
     *,
+    source_mappings: Sequence[str] = (),
+    source_type_mappings: Sequence[str] = (),
+    source_option_mappings: Sequence[str] = (),
     base_dir: Path | None = None,
     operation: OperationContext,
 ) -> QueryRequest:
     """Build a query request for SQL loaded from a saved file."""
 
-    explicit_specs = tuple(
-        _source_spec_from_table_mapping(mapping, base_dir=base_dir) for mapping in table_mappings
+    explicit_requests = _requests_from_cli_sources(
+        table_mappings,
+        source_mappings=source_mappings,
+        source_type_mappings=source_type_mappings,
+        source_option_mappings=source_option_mappings,
+        base_dir=base_dir,
     )
-    if explicit_specs:
+    if explicit_requests:
         return QueryRequest(
             sql=sql,
             required_sources=tuple(
-                _resolve_required_source(
-                    spec,
-                    display_path=spec.locator,
+                _resolve_required_request(
+                    request,
+                    display_path=request.locator,
                     operation=operation,
                 )
-                for spec in explicit_specs
+                for request in explicit_requests
             ),
             fallback_sources=_snapshot_optional_catalog(
                 start_dir=base_dir,
@@ -293,19 +355,59 @@ def execute_query_request_stream(
 ) -> ResultStream:
     """Prepare immutable sources and execute with bounded lazy fallback."""
 
+    return _execute_query_request_with_fallback(
+        engine,
+        request,
+        operation=operation,
+        execute_attempt=lambda prepared_scopes: engine.stream(
+            request.sql,
+            on_terminal=lambda: _release_query_sources(prepared_scopes),
+        ),
+        release_on_success=False,
+    )
+
+
+def _execute_query_request_with_fallback(
+    engine: CSVQLEngine,
+    request: QueryRequest,
+    *,
+    operation: OperationContext,
+    execute_attempt: Callable[[list[PreparedSources]], _QueryAttemptResult],
+    release_on_success: bool,
+) -> _QueryAttemptResult:
+    """Execute one query-shaped operation with the shared bounded fallback policy."""
+
     _require_matching_operation_context(engine, operation)
     operation.checkpoint()
-    engine.prepare_sources(request.required_sources)
-    attempted_aliases = {source.spec.alias.casefold() for source in request.required_sources}
+    prepared_scopes: list[PreparedSources] = []
+    try:
+        if request.required_sources:
+            prepared_scopes.append(
+                prepare_resolved_sources(
+                    request.required_sources,
+                    engine_session=engine,
+                    operation=operation,
+                )
+            )
+    except BaseException as exc:
+        _release_query_sources(prepared_scopes, primary=exc)
+        raise
+    attempted_aliases = {source.alias_key for source in request.required_sources}
     while True:
-        operation.checkpoint()
         try:
-            return engine.stream(request.sql)
+            operation.checkpoint()
+            _revalidate_query_sources(prepared_scopes)
+            result = execute_attempt(prepared_scopes)
+            if release_on_success:
+                _release_query_sources(prepared_scopes)
+            return result
         except QueryExecutionError as exc:
             if CURSOR_CLEANUP_UNCERTAINTY_NOTE in getattr(exc, "__notes__", ()):
+                _release_query_sources(prepared_scopes, primary=exc)
                 raise
             missing_name = _missing_duckdb_table_name(exc)
             if missing_name is None:
+                _release_query_sources(prepared_scopes, primary=exc)
                 raise
 
             missing_key = missing_name.casefold()
@@ -319,9 +421,83 @@ def execute_query_request_stream(
                 None,
             )
             if candidate is None:
+                _release_query_sources(prepared_scopes, primary=exc)
                 raise
             attempted_aliases.add(missing_key)
-            engine.prepare_sources((_resolve_fallback_candidate(candidate, operation=operation),))
+            try:
+                prepared_scopes.append(
+                    prepare_resolved_sources(
+                        (
+                            _resolve_fallback_candidate(
+                                candidate,
+                                operation=operation,
+                            ),
+                        ),
+                        engine_session=engine,
+                        operation=operation,
+                    )
+                )
+            except BaseException as fallback_error:
+                _release_query_sources(prepared_scopes, primary=fallback_error)
+                raise
+        except BaseException as exc:
+            _release_query_sources(prepared_scopes, primary=exc)
+            raise
+
+
+def _revalidate_query_sources(prepared_scopes: list[PreparedSources]) -> None:
+    """Confirm submission identity immediately before each execution attempt."""
+
+    coordinator = default_source_components().coordinator
+    for prepared in prepared_scopes:
+        outcome = coordinator.revalidate(prepared, IdentityRequirement())
+        first_failure = next(
+            (
+                result
+                for result in outcome.results
+                if result.status is not IdentityValidationStatus.CONFIRMED
+            ),
+            None,
+        )
+        if first_failure is None:
+            continue
+        diagnostic = first_failure.diagnostic
+        raise SourceIdentityError(
+            "source_changed",
+            (
+                diagnostic.message
+                if diagnostic is not None
+                else "Source identity could not be confirmed before execution."
+            ),
+            alias=first_failure.alias,
+            suggestion="Submit the operation again to capture the current source.",
+        )
+
+
+def _release_query_sources(
+    prepared_scopes: list[PreparedSources],
+    *,
+    primary: BaseException | None = None,
+) -> None:
+    """Release query-owned sources in reverse scope order at the terminal barrier."""
+
+    coordinator = default_source_components().coordinator
+    cleanup_failed = False
+    while prepared_scopes:
+        report = coordinator.release(prepared_scopes.pop())
+        cleanup_failed = cleanup_failed or not report.succeeded
+    if not cleanup_failed:
+        return
+    if primary is not None:
+        primary.add_note(
+            "Cleanup uncertainty: one or more query source bindings could not be closed."
+        )
+        return
+    raise SourceCleanupError(
+        "source_cleanup_failed",
+        "Query source cleanup did not complete with certainty.",
+        suggestion="Close this LocalQL engine before retrying.",
+    )
 
 
 def _missing_duckdb_table_name(error: QueryExecutionError) -> str | None:
@@ -361,7 +537,7 @@ def _snapshot_candidate(
         )
     return SourceCandidate(
         spec=spec,
-        expected_fingerprint=resolved.fingerprint,
+        expected_fingerprint=resolved.fingerprint or resolved.identity,
         submission_error=None,
     )
 
@@ -381,13 +557,22 @@ def _resolve_fallback_candidate(
         if exc.code != "source_missing":
             raise
         raise _build_fallback_catalog_file_missing(candidate) from exc
-    if resolved.fingerprint != candidate.expected_fingerprint:
-        raise SourceError(
+    expected_identity = candidate.expected_fingerprint
+    actual_identity: SourceFingerprint | SourceIdentity | None
+    if isinstance(expected_identity, SourceFingerprint):
+        actual_identity = resolved.fingerprint
+    else:
+        actual_identity = resolved.identity
+    if actual_identity != expected_identity:
+        raise SourceIdentityError(
             "source_changed",
-            "CSV source changed after submission.",
+            f"{candidate.spec.kind.upper()} source changed after submission.",
             kind=candidate.spec.kind,
             alias=candidate.spec.alias,
-            suggestion="Submit the operation again to capture the current CSV source.",
+            suggestion=(
+                "Submit the operation again to capture the current "
+                f"{candidate.spec.kind.upper()} source."
+            ),
         )
     return resolved
 
@@ -395,14 +580,24 @@ def _resolve_fallback_candidate(
 def _build_fallback_catalog_file_missing(
     candidate: SourceCandidate,
 ) -> FileMissingError:
+    display_kind = "CSV file" if candidate.spec.kind == "csv" else "Source"
+    suggestion = (
+        "Update .csvql.yml, run csvql add "
+        f"{candidate.spec.alias} <path> --replace, or restore the CSV file."
+        if candidate.spec.kind == "csv"
+        else (
+            "Update .csvql.yml, run csvql add "
+            f"{candidate.spec.alias} <locator> --replace, or restore the source."
+        )
+    )
     return FileMissingError(
         (
-            "CSV file not found for project catalog table "
+            f"{display_kind} not found for project catalog table "
             f"'{candidate.spec.alias}': {candidate.spec.locator}"
         ),
-        suggestion=(
-            "Update .csvql.yml, run csvql add "
-            f"{candidate.spec.alias} <path> --replace, or restore the CSV file."
+        suggestion=suggestion,
+        diagnostic=(
+            None if candidate.submission_error is None else candidate.submission_error.diagnostic
         ),
     )
 
@@ -413,24 +608,53 @@ def _resolve_required_catalog(
     operation: OperationContext,
 ) -> tuple[ResolvedSource, ...]:
     resolved: list[ResolvedSource] = []
-    for table, spec in zip(
-        context.config.tables,
-        project_tables_to_source_specs(context),
-        strict=True,
-    ):
+    for spec in project_tables_to_source_specs(context):
         try:
             resolved.append(_resolve_source(spec, operation=operation))
         except SourceError as exc:
-            if exc.code != "source_missing":
+            if not _is_missing_source_error(exc):
                 raise
-            raise FileMissingError(
-                f"CSV file not found for project catalog table '{table.name}': {table.path}",
-                suggestion=(
+            display_kind = "CSV file" if spec.kind == "csv" else "Source"
+            suggestion = (
+                "Update .csvql.yml, run csvql add "
+                f"{spec.alias} <path> --replace, or restore the CSV file."
+                if spec.kind == "csv"
+                else (
                     "Update .csvql.yml, run csvql add "
-                    f"{table.name} <path> --replace, or restore the CSV file."
+                    f"{spec.alias} <locator> --replace, or restore the source."
+                )
+            )
+            raise FileMissingError(
+                (
+                    f"{display_kind} not found for project catalog table "
+                    f"'{spec.alias}': {spec.locator}"
                 ),
+                suggestion=suggestion,
+                diagnostic=exc.diagnostic,
             ) from exc
     return tuple(resolved)
+
+
+def _resolve_required_request(
+    request: SourceRequest,
+    *,
+    display_path: str,
+    operation: OperationContext,
+) -> ResolvedSource:
+    try:
+        resolved = resolve_source_request(request, operation=operation)
+    except SourceError as exc:
+        if not _is_missing_source_error(exc):
+            raise
+        display_kind = "CSV file" if source_kind_hint(request) == "csv" else "Source"
+        raise FileMissingError(
+            f"{display_kind} not found: {display_path}",
+            suggestion="Check the locator or run from the directory that contains the source.",
+            diagnostic=exc.diagnostic,
+        ) from exc
+    if not isinstance(resolved, ResolvedSource):
+        raise RuntimeError("Source resolution returned an invalid value.")
+    return resolved
 
 
 def _resolve_required_source(
@@ -439,15 +663,17 @@ def _resolve_required_source(
     display_path: str,
     operation: OperationContext,
 ) -> ResolvedSource:
-    try:
-        return _resolve_source(spec, operation=operation)
-    except SourceError as exc:
-        if exc.code != "source_missing":
-            raise
-        raise FileMissingError(
-            f"CSV file not found: {display_path}",
-            suggestion="Check the path or run from the directory that contains the CSV file.",
-        ) from exc
+    return _resolve_required_request(
+        build_source_request(
+            alias=spec.alias,
+            locator=spec.locator,
+            anchor=spec.anchor,
+            explicit_type=spec.kind,
+            options=spec.options,
+        ),
+        display_path=display_path,
+        operation=operation,
+    )
 
 
 def _resolve_source(
@@ -455,15 +681,26 @@ def _resolve_source(
     *,
     operation: OperationContext,
 ) -> ResolvedSource:
-    adapter = DEFAULT_SOURCE_ADAPTER_REGISTRY.create(spec.kind, capability="query")
-    return adapter.resolve(spec, operation)
+    resolved = resolve_source_request(
+        build_source_request(
+            alias=spec.alias,
+            locator=spec.locator,
+            anchor=spec.anchor,
+            explicit_type=spec.kind,
+            options=spec.options,
+        ),
+        operation=operation,
+    )
+    if not isinstance(resolved, ResolvedSource):
+        raise RuntimeError("Source resolution returned an invalid value.")
+    return resolved
 
 
 def _require_matching_operation_context(
     engine: CSVQLEngine,
     operation: OperationContext,
 ) -> None:
-    if getattr(engine, "_operation", None) is operation:
+    if engine.operation_context is operation:
         return
     raise CSVQLError(
         "LocalQL query workflow requires one shared operation context.",
@@ -477,6 +714,47 @@ def _add_cleanup_note(primary: BaseException) -> None:
     notes = getattr(primary, "__notes__", ())
     if CURSOR_CLEANUP_UNCERTAINTY_NOTE not in notes:
         primary.add_note(CURSOR_CLEANUP_UNCERTAINTY_NOTE)
+
+
+def _requests_from_cli_sources(
+    table_mappings: Sequence[str],
+    *,
+    source_mappings: Sequence[str],
+    source_type_mappings: Sequence[str],
+    source_option_mappings: Sequence[str],
+    base_dir: Path | None,
+) -> tuple[SourceRequest, ...]:
+    legacy_specs = tuple(
+        _source_spec_from_table_mapping(mapping, base_dir=base_dir) for mapping in table_mappings
+    )
+    definitions = build_source_definitions(
+        source_mappings,
+        source_type_mappings,
+        source_option_mappings,
+        base_dir=base_dir,
+    )
+    requests = (
+        *(
+            build_source_request(
+                alias=spec.alias,
+                locator=spec.locator,
+                anchor=spec.anchor,
+                explicit_type="csv",
+            )
+            for spec in legacy_specs
+        ),
+        *(source_request_from_definition(definition) for definition in definitions),
+    )
+    aliases: dict[str, str] = {}
+    for request in requests:
+        existing = aliases.get(request.alias_key)
+        if existing is not None:
+            raise TableMappingError(
+                f"Source alias collision between '{existing}' and '{request.alias}'.",
+                suggestion="Use one unique alias across --table and --source declarations.",
+            )
+        aliases[request.alias_key] = request.alias
+    return tuple(requests)
 
 
 def _source_spec_from_table_mapping(
@@ -503,29 +781,11 @@ def _source_spec_from_table_mapping(
     )
 
 
-def _resolved_single_csv(
-    path_value: str,
-    *,
-    base_dir: Path | None,
-    operation: OperationContext,
-) -> ResolvedSource:
-    placeholder = source_spec_from_cli_mapping(
-        alias="csv_source",
-        path_value=path_value,
-        anchor=base_dir or Path.cwd(),
-    )
-    resolved = _resolve_required_source(
-        placeholder,
-        display_path=path_value,
-        operation=operation,
-    )
-    canonical_path = Path(resolved.canonical_locator)
-    return replace(
-        resolved,
-        spec=replace(
-            resolved.spec,
-            alias=derive_alias_from_path(canonical_path),
-            locator=resolved.canonical_locator,
-            anchor=canonical_path.parent,
-        ),
+def _is_missing_source_error(error: SourceError) -> bool:
+    diagnostic = error.diagnostic
+    if diagnostic is None:
+        return error.code == "source_missing"
+    return any(
+        evidence.evidence_kind == "locator_shape" and evidence.stable_detail == "locator_missing"
+        for evidence in diagnostic.evidence
     )

@@ -1,24 +1,37 @@
 """Project-health result objects and workflow for `csvql doctor`."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import duckdb
 
 from csvql.checks import resolve_configured_column_name, validate_table_aliases
-from csvql.csv_adapter import DEFAULT_SOURCE_ADAPTER_REGISTRY
 from csvql.engine import CSVQLEngine
-from csvql.exceptions import CSVQLError, FileMissingError, ProjectConfigError, SourceError
+from csvql.exceptions import (
+    ConfigurationFailure,
+    CSVQLError,
+    FileMissingError,
+    ProjectConfigError,
+    SourceError,
+)
 from csvql.operation import OperationContext, OperationToken
 from csvql.project_config import (
     ProjectContext,
-    ProjectTable,
+    ProjectTableValue,
     discover_project,
     load_project,
+    project_tables_to_source_specs,
 )
-from csvql.source import source_spec_from_catalog_table
+from csvql.source import (
+    ResolvedSource,
+    SourceDiagnostic,
+    SourceSpec,
+    build_source_request,
+)
 from csvql.source_operations import SourceOperations
+from csvql.source_runtime import default_source_components, resolve_source_request
 
 DoctorScope = Literal["project", "table", "check"]
 DoctorStatus = Literal["passed", "warning", "failed"]
@@ -48,6 +61,8 @@ class DoctorProbeResult:
     column: str | None = None
     reference_table: str | None = None
     reference_column: str | None = None
+    source_type: str | None = None
+    diagnostic: SourceDiagnostic | None = None
 
     def as_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -70,6 +85,13 @@ class DoctorProbeResult:
             payload["reference_table"] = self.reference_table
         if self.reference_column is not None:
             payload["reference_column"] = self.reference_column
+        if self.source_type is not None:
+            payload["source_type"] = self.source_type
+        if self.diagnostic is not None:
+            payload["diagnostic"] = {
+                "version": 1,
+                **self.diagnostic.as_dict(redaction="safe"),
+            }
         return payload
 
 
@@ -186,9 +208,37 @@ def run_doctor(start_dir: Path | None = None) -> DoctorRunResult:
         )
     )
 
-    tables = tuple(
-        sorted(context.config.tables, key=lambda table: (table.name.lower(), table.name))
+    try:
+        default_source_components()
+    except ConfigurationFailure:
+        probes.append(
+            DoctorProbeResult(
+                name="source_registry_composition",
+                scope="project",
+                status="failed",
+                message="LocalQL source-provider registry composition is invalid.",
+                path=context.config_path,
+                resolved_path=context.config_path,
+            )
+        )
+        return DoctorRunResult(
+            project_root=context.project_root,
+            config_path=context.config_path,
+            probes=tuple(probes),
+        )
+    probes.append(
+        DoctorProbeResult(
+            name="source_registry_composition",
+            scope="project",
+            status="passed",
+            message="Validated source-provider registry and lazy factory composition.",
+            path=context.config_path,
+            resolved_path=context.config_path,
+        )
     )
+
+    project_tables = cast(Sequence[ProjectTableValue], context.config.tables)
+    tables = tuple(sorted(project_tables, key=lambda table: (table.name.lower(), table.name)))
     if not tables:
         probes.append(
             DoctorProbeResult(
@@ -229,19 +279,32 @@ def run_doctor(start_dir: Path | None = None) -> DoctorRunResult:
 
 def _run_table_readiness_probes(
     context: ProjectContext,
-    tables: tuple[ProjectTable, ...],
+    tables: tuple[ProjectTableValue, ...],
 ) -> tuple[tuple[DoctorProbeResult, ...], dict[str, tuple[str, ...]]]:
     probes: list[DoctorProbeResult] = []
     column_names_by_table: dict[str, tuple[str, ...]] = {}
+    specs_by_alias = {
+        spec.alias.casefold(): spec for spec in project_tables_to_source_specs(context)
+    }
     for table in tables:
         operation = OperationContext(OperationToken())
-        spec = source_spec_from_catalog_table(table, project_root=context.project_root)
+        spec = specs_by_alias[table.name.casefold()]
         resolved = None
         readiness_error: BaseException | None = None
         try:
-            adapter = DEFAULT_SOURCE_ADAPTER_REGISTRY.create(spec.kind, capability="sample")
-            adapter.validate_options(spec)
-            resolved = adapter.resolve(spec, operation)
+            candidate = resolve_source_request(
+                build_source_request(
+                    alias=spec.alias,
+                    locator=spec.locator,
+                    anchor=spec.anchor,
+                    explicit_type=spec.kind,
+                    options=spec.options,
+                ),
+                operation=operation,
+            )
+            if not isinstance(candidate, ResolvedSource):
+                raise RuntimeError("Doctor source resolution returned an invalid value.")
+            resolved = candidate
             with CSVQLEngine(operation=operation) as engine:
                 sample = SourceOperations(engine, resolved).sample(limit=1)
             column_names_by_table[table.name.lower()] = sample.columns
@@ -262,8 +325,18 @@ def _run_table_readiness_probes(
                     name="table_readiness",
                     scope="table",
                     status="failed",
-                    message=_table_readiness_error_message(readiness_error, table),
+                    message=_table_readiness_error_message(
+                        readiness_error,
+                        table,
+                        spec,
+                    ),
                     table=table.name,
+                    source_type=spec.kind,
+                    diagnostic=(
+                        readiness_error.diagnostic
+                        if isinstance(readiness_error, CSVQLError)
+                        else None
+                    ),
                 )
             )
             continue
@@ -276,10 +349,11 @@ def _run_table_readiness_probes(
                 name="table_readiness",
                 scope="table",
                 status="passed",
-                message="Registered and read configured CSV through DuckDB.",
+                message=(f"Registered and read configured {spec.kind} source through DuckDB."),
                 table=table.name,
-                path=Path(table.path),
+                path=Path(spec.locator),
                 resolved_path=Path(resolved.canonical_locator),
+                source_type=spec.kind,
             )
         )
 
@@ -288,12 +362,16 @@ def _run_table_readiness_probes(
 
 def _table_readiness_error_message(
     error: BaseException,
-    table: ProjectTable,
+    table: ProjectTableValue,
+    spec: SourceSpec,
 ) -> str:
     message: str
     if isinstance(error, SourceError):
         if error.code == "source_missing":
-            message = f"CSV file not found for project catalog table '{table.name}': {table.path}"
+            display_kind = "CSV file" if spec.kind == "csv" else "Source"
+            message = (
+                f"{display_kind} not found for project catalog table '{table.name}': {spec.locator}"
+            )
             return _with_cleanup_uncertainty(message, error)
         if error.code == "source_bind_failed" and error.__cause__ is not None:
             message = str(error.__cause__)
@@ -344,7 +422,11 @@ def _run_check_schema_probes(
     column_names_by_table: dict[str, tuple[str, ...]],
 ) -> tuple[DoctorProbeResult, ...]:
     probes: list[DoctorProbeResult] = []
-    for table in sorted(context.config.tables, key=lambda item: (item.name.lower(), item.name)):
+    project_tables = cast(Sequence[ProjectTableValue], context.config.tables)
+    for table in sorted(
+        project_tables,
+        key=lambda item: (item.name.lower(), item.name),
+    ):
         if table.name.lower() not in column_names_by_table:
             continue
         for check in table.checks:

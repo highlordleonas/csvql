@@ -12,13 +12,16 @@ def _normalized_markdown_text(text: str) -> str:
 
 
 def test_workbench_help_freezes_current_keymap_and_export_language() -> None:
-    assert WORKBENCH_HELP.startswith("CSVQL Workbench Lite")
+    assert WORKBENCH_HELP.startswith("LocalQL Workbench")
     assert "F4 / Ctrl+R         Run selected SQL, otherwise current statement" in WORKBENCH_HELP
     assert "F12 / Ctrl+B        Run Buffer" in WORKBENCH_HELP
-    assert "F3 / Ctrl+O         Choose CSV file(s) or prompt for paths" in WORKBENCH_HELP
+    assert "F3 / Ctrl+O         Choose local source file(s) or prompt for a path" in WORKBENCH_HELP
+    assert "LocalQL displays bounded evidence and never guesses between candidates." in (
+        WORKBENCH_HELP
+    )
     assert (
-        "F7                  Export active result (.csv, .json, .md, .markdown, .txt)"
-        in WORKBENCH_HELP
+        "F7                  Export active result "
+        "(.csv, .json, .ndjson, .parquet, .xlsx, .md, .txt)" in WORKBENCH_HELP
     )
     assert "Ctrl+S              Save active result to .csvql/results/{alias}.csv" in WORKBENCH_HELP
     assert "r                   Rerun selected query with current session sources" in WORKBENCH_HELP
@@ -51,6 +54,7 @@ def test_tui_docs_freeze_run_labels_and_menu_entry_points() -> None:
     assert "`buffer` for F12/Ctrl+B runs" in guide
     assert "`rerun` for History reruns." in guide
     assert "Use `F4` or `Ctrl+R` to run the current SQL." in troubleshooting
-    assert "`F3` opens a native CSV picker on macOS." in troubleshooting
-    assert "`Ctrl+O` opens the path prompt on every" in troubleshooting
+    assert "`F3` opens a native source picker on macOS." in troubleshooting
+    assert "`F3` or `Ctrl+O` opens the portable path prompt." in troubleshooting
+    assert "Press `a` in Sources for the" in troubleshooting
     assert "[Terminal menu guide](tui-guide.md)" in troubleshooting

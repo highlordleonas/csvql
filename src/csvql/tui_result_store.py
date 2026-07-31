@@ -23,13 +23,18 @@ from csvql.bounded_result import (
     PreviewPolicy,
     TruncationReason,
 )
+from csvql.private_artifacts import (
+    TUI_RESULT_SESSION_PREFIX,
+    is_private_result_artifact,
+    is_private_result_spill_name,
+    private_result_session_id,
+)
 from csvql.result_codec import decode_row_payload, encode_row_payload
 from csvql.result_spool import ResultSpoolError, ResultSpoolReader, ResultSpoolWriter
 from csvql.streaming_export import ExportRowSource
 
 TUI_RESULT_SPILL_ROW_THRESHOLD = 10_000
 TUI_RESULT_SPILL_CELL_THRESHOLD = 250_000
-TUI_RESULT_SESSION_PREFIX = "localql-tui-v1-"
 TUI_RESULT_MARKER_NAME = ".localql-session.json"
 TUI_RESULT_LEASE_NAME = ".lease"
 TUI_RESULT_MAX_TEMP_ENTRIES = 5_000
@@ -40,13 +45,6 @@ TUI_RESULT_MAX_RECOVERED_WORKSPACES = 20
 TUI_RESULT_ABANDONED_AFTER = timedelta(hours=24)
 DEFAULT_TUI_RESULT_CAPACITY_BYTES = 1_073_741_824
 
-_TUI_RESULT_DIRECTORY_PATTERN = re.compile(
-    rf"{re.escape(TUI_RESULT_SESSION_PREFIX)}(?P<session_id>[0-9a-f]{{32}})"
-)
-_TUI_RESULT_COMPLETED_SPILL_PATTERN = re.compile(r"(?:query|preview)-[1-9][0-9]*\.result")
-_TUI_RESULT_STAGING_SPILL_PATTERN = re.compile(
-    r"\.(?:query|preview)-[1-9][0-9]*-[0-9a-f]{16}\.result\.tmp"
-)
 _TUI_RESULT_TIMESTAMP_PATTERN = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{6})?Z"
 )
@@ -115,6 +113,7 @@ class TUIStoredResult:
     kind: TUIResultKind
     reason: TUIResultReason | None
     columns: tuple[str, ...]
+    column_types: tuple[str, ...]
     stored_row_count: int
     elapsed_ms: float
     logical_bytes: int
@@ -384,6 +383,10 @@ class _TUIResultRowSource:
     def elapsed_ms(self) -> float:
         return self._elapsed_ms
 
+    @property
+    def column_types(self) -> tuple[str, ...]:
+        return self._reader.column_types
+
     def iter_rows(self) -> Iterator[tuple[object, ...]]:
         if self._used:
             raise _result_unavailable_error(self._sequence)
@@ -410,6 +413,7 @@ class TUIResultWriter:
         spool_writer: ResultSpoolWriter,
         sequence: int,
         columns: tuple[str, ...],
+        column_types: tuple[str, ...],
         staging_path: Path,
         final_path: Path,
         kind: TUIResultKind,
@@ -424,6 +428,7 @@ class TUIResultWriter:
         self._spool_writer = spool_writer
         self._sequence = sequence
         self._columns = columns
+        self._column_types = column_types
         self._staging_path = staging_path
         self._final_path = final_path
         self._kind = kind
@@ -514,12 +519,14 @@ class TUIResultStore:
         *,
         sequence: int,
         columns: tuple[str, ...],
+        column_types: tuple[str, ...] = (),
     ) -> TUIResultWriter:
         """Start the session's sole complete-result writer."""
 
         return self._begin_writer(
             sequence=sequence,
             columns=columns,
+            column_types=column_types,
             kind="complete",
             reason=None,
         )
@@ -571,6 +578,7 @@ class TUIResultStore:
             writer = self._begin_writer(
                 sequence=sequence,
                 columns=preview.columns,
+                column_types=(),
                 kind="preview_only",
                 reason=reason,
                 preview_payload_bytes=sum(len(payload) for payload in payloads),
@@ -620,6 +628,12 @@ class TUIResultStore:
                 sequence=handle.sequence,
                 invalidate=lambda: self._invalidate_record(record),
             )
+
+    def describe(self, handle: TUIResultHandle) -> TUIStoredResult:
+        """Return validated immutable metadata for one registered result."""
+
+        with self._lock:
+            return self._record_for_handle(handle).stored
 
     def load_preview(
         self,
@@ -801,6 +815,7 @@ class TUIResultStore:
         *,
         sequence: int,
         columns: tuple[str, ...],
+        column_types: tuple[str, ...],
         kind: TUIResultKind,
         reason: TUIResultReason | None,
         preview_payload_bytes: int = 0,
@@ -815,12 +830,24 @@ class TUIResultStore:
                 isinstance(column, str) for column in columns
             ):
                 raise ValueError("columns must be an immutable tuple of strings.")
+            normalized_column_types = (
+                tuple("VARCHAR" for _column in columns) if not column_types else column_types
+            )
+            if (
+                not isinstance(normalized_column_types, tuple)
+                or len(normalized_column_types) != len(columns)
+                or not all(
+                    isinstance(column_type, str) and bool(column_type)
+                    for column_type in normalized_column_types
+                )
+            ):
+                raise ValueError("column_types must match the result columns.")
             if self._active_writer is not None:
                 raise RuntimeError("A TUI result writer is already active.")
             if sequence in self._record_nonce_by_sequence:
                 raise ValueError(f"result sequence {sequence} is already stored.")
 
-            header_bytes = _spool_header_bytes(columns)
+            header_bytes = _spool_header_bytes(columns, normalized_column_types)
             initial_reserved_bytes = header_bytes + _SPOOL_FOOTER_BYTES
             capacity_reserved = False
             spool_writer: ResultSpoolWriter | None = None
@@ -837,6 +864,7 @@ class TUIResultStore:
                     staging_path=staging_path,
                     final_path=final_path,
                     columns=columns,
+                    column_types=normalized_column_types,
                     workspace_identity=self._workspace_identity,
                 )
                 self._pending_cleanup_paths.add(staging_path)
@@ -876,6 +904,7 @@ class TUIResultStore:
                 spool_writer=spool_writer,
                 sequence=sequence,
                 columns=columns,
+                column_types=normalized_column_types,
                 staging_path=staging_path,
                 final_path=final_path,
                 kind=kind,
@@ -990,6 +1019,7 @@ class TUIResultStore:
                 metadata.logical_bytes != expected_logical_bytes
                 or metadata.row_count != writer._rows_written
                 or metadata.columns != writer._columns
+                or metadata.column_types != writer._column_types
                 or writer._spool_writer.staging_identity is None
             ):
                 self._discard_unregistered_commit(writer)
@@ -1011,6 +1041,7 @@ class TUIResultStore:
                 kind=writer._kind,
                 reason=writer._reason,
                 columns=writer._columns,
+                column_types=writer._column_types,
                 stored_row_count=writer._rows_written,
                 elapsed_ms=elapsed_ms,
                 logical_bytes=expected_logical_bytes,
@@ -1761,10 +1792,9 @@ def _validate_recovery_candidate(
 ) -> _ValidatedRecoveryCandidate | None:
     if path.parent != temp_root:
         return None
-    directory_match = _TUI_RESULT_DIRECTORY_PATTERN.fullmatch(path.name)
-    if directory_match is None:
+    session_id = private_result_session_id(path.name)
+    if session_id is None:
         return None
-    session_id = directory_match.group("session_id")
 
     try:
         directory_stat = path.lstat()
@@ -2339,27 +2369,13 @@ def _stat_matches_validated_entry(
 
 
 def _is_recovery_spill_name(name: str) -> bool:
-    return (
-        _TUI_RESULT_COMPLETED_SPILL_PATTERN.fullmatch(name) is not None
-        or _TUI_RESULT_STAGING_SPILL_PATTERN.fullmatch(name) is not None
-    )
+    return is_private_result_spill_name(name)
 
 
 def _is_private_tui_result_artifact(path: Path) -> bool:
     """Return whether a path identifies a LocalQL-owned TUI result artifact."""
 
-    candidate_paths: tuple[Path, ...] = (path,)
-    try:
-        resolved_path = path.resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
-        pass
-    else:
-        candidate_paths += (resolved_path,)
-    return any(
-        _TUI_RESULT_DIRECTORY_PATTERN.fullmatch(candidate.parent.name) is not None
-        and _is_recovery_spill_name(candidate.name)
-        for candidate in candidate_paths
-    )
+    return is_private_result_artifact(path)
 
 
 def _directory_mode_is_private(result: os.stat_result) -> bool:
@@ -2443,8 +2459,17 @@ def _is_positive_integer(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
-def _spool_header_bytes(columns: tuple[str, ...]) -> int:
+def _spool_header_bytes(
+    columns: tuple[str, ...],
+    column_types: tuple[str, ...],
+) -> int:
     schema_bytes = _SPOOL_LENGTH_BYTES + sum(
-        _SPOOL_LENGTH_BYTES + len(column.encode("utf-8")) for column in columns
+        (
+            _SPOOL_LENGTH_BYTES
+            + len(column.encode("utf-8"))
+            + _SPOOL_LENGTH_BYTES
+            + len(column_type.encode("utf-8"))
+        )
+        for column, column_type in zip(columns, column_types, strict=True)
     )
     return _SPOOL_HEADER_PREFIX_BYTES + schema_bytes

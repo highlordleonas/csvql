@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from rich.text import Text
+from typer.main import get_command
 from typer.testing import CliRunner
 
 import csvql.cli as cli_module
@@ -406,12 +407,16 @@ def test_query_inline_sql_explicit_table_selected_missing_catalog_table_returns_
     )
 
     assert result.exit_code == 4
-    assert "Error: CSV file not found for project catalog table 'customers':" in result.output
-    assert "private/location/missing_customers.csv" in result.output
-    assert (
-        "Suggestion: Update .csvql.yml, run csvql add customers <path> --replace," in result.output
+    payload = json.loads(result.output)
+    assert payload["message"] == (
+        "CSV file not found for project catalog table 'customers': "
+        "private/location/missing_customers.csv"
     )
-    assert "restore the CSV file." in result.output
+    assert payload["suggestion"] == (
+        "Update .csvql.yml, run csvql add customers <path> --replace, or restore the CSV file."
+    )
+    assert payload["diagnostic"]["code"] == "source.locator_shape_invalid"
+    assert payload["diagnostic"]["required_action"]["kind"] == "correct_locator"
     assert "SourceError" not in result.output
     assert "Traceback" not in result.output
 
@@ -463,12 +468,13 @@ def test_query_inline_sql_deleted_catalog_fallback_returns_public_error(
     )
 
     assert result.exit_code == 4
-    assert "Error: CSV file not found for project catalog table 'customers':" in result.output
-    assert "customers.csv" in result.output
-    assert (
-        "Suggestion: Update .csvql.yml, run csvql add customers <path> --replace," in result.output
-    )
-    assert "restore the CSV file." in result.output
+    payload = json.loads(result.output)
+    assert payload == {
+        "message": "CSV file not found for project catalog table 'customers': customers.csv",
+        "suggestion": (
+            "Update .csvql.yml, run csvql add customers <path> --replace, or restore the CSV file."
+        ),
+    }
     assert "SourceError" not in result.output
     assert "Traceback" not in result.output
 
@@ -971,9 +977,17 @@ def test_query_table_keyboard_interrupt_closes_engine_and_reports_public_error(
 
 
 def test_query_help_describes_limit_as_table_output_only() -> None:
-    result = runner.invoke(app, ["query", "--help"])
+    result = runner.invoke(app, ["query", "--help"], terminal_width=200)
+    output = " ".join(Text.from_ansi(result.output).plain.split())
+    command = get_command(app).commands["query"]
+    limit_help = next(parameter.help for parameter in command.params if parameter.name == "limit")
 
     assert result.exit_code == 0, result.output
-    assert "Maximum rows to display" in result.output
-    assert "display in table" in result.output
-    assert "output." in result.output
+    assert "local source locator" in output
+    assert "CSV compatibility mapping in" in output
+    assert "NAME=PATH" in output
+    assert "use --source" in output
+    assert "other providers" in output
+    assert "Maximum rows to display" in output
+    assert "display in table" in output
+    assert limit_help == "Maximum rows to display; display in table output only."

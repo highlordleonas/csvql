@@ -184,7 +184,7 @@ def test_verify_release_readiness_returns_local_compatibility_evidence(tmp_path:
             return CompletedProcess(
                 args=args,
                 returncode=0,
-                stdout="Open the interactive CSVQL terminal menu.\n",
+                stdout="Open the interactive LocalQL terminal workbench.\n",
                 stderr="",
             )
         if command[1:3] == ["query", str(repo_root / "out" / "smoke" / "orders.csv")]:
@@ -208,7 +208,7 @@ def test_verify_release_readiness_returns_local_compatibility_evidence(tmp_path:
         '{"columns":["order_count"],"rows":[{"order_count":1}],"row_count":1}'
     )
     assert result.tui_import_output == "tui-extra-ok"
-    assert "interactive CSVQL terminal menu" in result.menu_help_output
+    assert "interactive LocalQL terminal workbench" in result.menu_help_output
     assert result.distribution_name == "localql"
     assert result.pyproject_version == "0.1.0"
     assert result.package_version == "0.1.0"
@@ -420,7 +420,7 @@ def test_format_release_readiness_summary_includes_local_compatibility_language(
         query_output='{"columns":["order_count"],"rows":[{"order_count":1}],"row_count":1}',
         inspect_output='{"row_count":{"mode":"not_counted"}}',
         tui_import_output="tui-extra-ok",
-        menu_help_output="Open the interactive CSVQL terminal menu.",
+        menu_help_output="Open the interactive LocalQL terminal workbench.",
     )
 
     summary = format_release_readiness_summary(result)
@@ -432,7 +432,7 @@ def test_format_release_readiness_summary_includes_local_compatibility_language(
     assert "localql-0.1.0-py3-none-any.whl" in summary
     assert '"order_count":1' in summary
     assert "tui-extra-ok" in summary
-    assert "Open the interactive CSVQL terminal menu." in summary
+    assert "Open the interactive LocalQL terminal workbench." in summary
 
 
 def test_verify_release_readiness_main_help_mentions_local_compatibility_and_denial(

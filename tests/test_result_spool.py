@@ -60,6 +60,7 @@ def _write_spool(
     tmp_path: Path,
     *,
     columns: tuple[str, ...] = ("id",),
+    column_types: tuple[str, ...] | None = None,
     rows: tuple[tuple[object, ...], ...] = ((1,),),
 ) -> tuple[Path, object]:
     staging_path = tmp_path / ".query-1-aaaaaaaaaaaaaaaa.result.tmp"
@@ -68,6 +69,7 @@ def _write_spool(
         staging_path=staging_path,
         final_path=final_path,
         columns=columns,
+        column_types=column_types,
     )
     for row in rows:
         writer.append_payload(encode_row_payload(row))
@@ -103,6 +105,21 @@ def test_result_spool_round_trips_zero_rows_with_exact_eof(tmp_path: Path) -> No
     assert tuple(reader.iter_rows()) == ()
     assert metadata.row_count == 0
     assert spool_path.read_bytes().endswith(struct.pack(">BQ", FOOTER_FRAME, 0))
+
+
+def test_result_spool_round_trips_exact_duckdb_column_types(tmp_path: Path) -> None:
+    spool_path, metadata = _write_spool(
+        tmp_path,
+        columns=("id", "amount"),
+        column_types=("INTEGER", "DECIMAL(10,2)"),
+        rows=((1, Decimal("12.34")),),
+    )
+
+    reader = _reader_for(spool_path)
+
+    assert metadata.column_types == ("INTEGER", "DECIMAL(10,2)")
+    assert reader.column_types == metadata.column_types
+    assert tuple(reader.iter_rows()) == ((1, Decimal("12.34")),)
 
 
 def test_result_spool_writer_uses_owner_only_staging_and_atomic_final_name(tmp_path: Path) -> None:

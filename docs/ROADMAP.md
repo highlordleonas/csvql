@@ -34,18 +34,26 @@ or connector described below is available today.
 
 ## Current foundation
 
-LocalQL v1.1.1 is the shipped CSV-first foundation. It can:
+LocalQL v1.2.0 is the shipped local structured-format foundation. It can:
 
-- query one CSV or join named CSV tables with DuckDB SQL;
-- save repeatable work in `.csvql.yml` project catalogs;
-- run saved SQL and export complete results;
+- query and join CSV, Parquet, JSON, NDJSON, and Excel sources with DuckDB SQL;
+- open explicitly typed partitioned Parquet directories without recursive
+  dataset guessing;
+- select a provider deterministically from explicit intent or a recognized
+  extension, while reporting bounded evidence and requiring a choice when a
+  source remains ambiguous;
+- use the same normalized source definitions and provider options across the
+  CLI, LocalQL Workbench, project catalogs, and Python API;
+- write version 2 `.csvql.yml` source definitions while keeping version 1
+  catalogs readable;
+- inspect, sample, profile, and validate supported local sources;
+- run saved SQL and export complete results as CSV, the LocalQL JSON envelope,
+  record-oriented NDJSON, typed Parquet, Excel, Markdown, or text;
 - bound interactive `csvql query` and `csvql run` table previews to 1,000 rows
   while keeping query/run JSON output, Python API results, and exports complete;
-- inspect, sample, profile, and validate local sources;
-- route CSV access through private `SourceSpec` and `SourceAdapter` contracts;
 - produce JSON output for automation-oriented commands; and
-- provide an optional interactive terminal menu with preserved complete results
-  under one 1 GiB session capacity and no automatic eviction.
+- provide the optional LocalQL Workbench with preserved complete results under
+  one 1 GiB session capacity and no automatic eviction.
 
 See the [changelog](../CHANGELOG.md) for release history. Future priorities
 remain evidence-led and require concrete planning and validation before
@@ -79,16 +87,29 @@ Shipped in LocalQL 1.1.1.
 
 ### v1.2 — Local Structured Formats
 
-Status: `Planned`
+Status: `Shipped`
 
 Depends on v1.1.
 
-- Add Parquet, including partitioned datasets.
-- Add JSON and NDJSON with explicit record-path and schema hints.
-- Add Excel with sheet selection and documented type conversion.
-- Provide safe source detection with explicit overrides.
-- Support cross-format joins.
-- Keep optional catalog metadata compatible with readable v1 catalogs.
+Shipped in LocalQL 1.2.0.
+
+- Added Parquet files and explicitly typed partitioned datasets.
+- Added JSON and NDJSON with bounded inference, explicit schemas, and fixed
+  record paths.
+- Added Excel with explicit dependency provisioning, sheet and range selection,
+  and documented type conversion.
+- Centralized deterministic source detection: explicit type first, recognized
+  extension second, and bounded evidence without heuristic selection for
+  ambiguous files or directories.
+- Added provider-option and diagnostic parity across the CLI, LocalQL
+  Workbench, project catalog, and Python API.
+- Added cross-format joins and shared inspect, sample, and profile operations.
+- Added NDJSON, Parquet, and Excel result exports across the CLI, Python API,
+  and Workbench, with an end-to-end multi-format benchmark matrix.
+- Added normalized version 2 source definitions while preserving readable
+  version 1 catalogs.
+- Kept provider registration internal rather than introducing a public plugin
+  SDK before first-party providers prove the extension boundary.
 
 Network databases, APIs, object stores, warehouses, and credential handling
 remain outside v1.x.
@@ -97,11 +118,12 @@ remain outside v1.x.
 
 Status: `Planned`
 
-This is planned product direction, not shipped behavior.
+This is planned product direction for extending the v1.2 registered-provider
+foundation beyond local files. The remote and database behavior below is not
+shipped behavior.
 
-- Support one-shot source detection and optional reusable catalog entries.
-- Cover files, databases, object stores, warehouses, and structured HTTP APIs
-  through explicit source capabilities.
+- Extend explicit source registration to databases, object stores, warehouses,
+  and structured HTTP APIs without changing deterministic selection rules.
 - Prefer DuckDB-native adapters where available and use a bounded Arrow
   fallback where needed.
 - Keep source-specific dependencies in explicit optional extras, with a
@@ -154,10 +176,12 @@ These ideas remain useful but are not scheduled milestones:
 
 ## Product boundaries and non-goals
 
-LocalQL v1.1.1 does not ship remote or cloud connectors or a plugin ecosystem.
-Future connector support remains planned or candidate work, and a third-party
-SDK remains conditional on first-party contract proof. LocalQL is not a hosted
-analytics platform and does not claim universal connector support.
+LocalQL v1.2.0 does not ship remote or cloud connectors or a public plugin
+ecosystem. It provides an internal registered-provider boundary for its five
+local source types. Future connector support remains planned or candidate work,
+and a third-party SDK remains conditional on additional first-party contract
+proof. LocalQL is not a hosted analytics platform and does not claim universal
+connector support.
 
 The roadmap does not pursue:
 

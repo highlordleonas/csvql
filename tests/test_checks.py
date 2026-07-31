@@ -15,7 +15,7 @@ from csvql.project_config import (
     load_project,
 )
 from csvql.quality import ConfiguredCheck, ForeignKeyReference
-from csvql.source_adapter import PreparedBinding
+from csvql.source_adapter import RelationalBinding
 
 
 def test_checks_module_has_no_managed_direct_csv_read() -> None:
@@ -75,6 +75,59 @@ def test_run_configured_checks_returns_global_warning_for_zero_checks(tmp_path: 
     assert result.warnings == ("No data quality checks configured.",)
 
 
+def test_version_2_checks_join_foreign_keys_across_parquet_and_ndjson(
+    tmp_path: Path,
+) -> None:
+    orders = tmp_path / "orders.parquet"
+    customers = tmp_path / "customers.ndjson"
+    connection = duckdb.connect()
+    try:
+        connection.sql(
+            """
+            SELECT *
+            FROM (VALUES (1, 10), (2, 20)) AS orders(order_id, customer_id)
+            """
+        ).write_parquet(str(orders))
+    finally:
+        connection.close()
+    customers.write_text(
+        '{"customer_id":10,"name":"alpha"}\n{"customer_id":20,"name":"beta"}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / CONFIG_FILENAME).write_text(
+        "version: 2\n"
+        "tables:\n"
+        "  customers:\n"
+        "    source:\n"
+        "      type: ndjson\n"
+        "      locator: customers.ndjson\n"
+        "  orders:\n"
+        "    source:\n"
+        "      type: parquet\n"
+        "      locator: orders.parquet\n"
+        "    checks:\n"
+        "      - name: customer_exists\n"
+        "        type: foreign_key\n"
+        "        column: customer_id\n"
+        "        references:\n"
+        "          table: customers\n"
+        "          column: customer_id\n",
+        encoding="utf-8",
+    )
+
+    result = run_configured_checks(
+        load_project(tmp_path),
+        table_name=None,
+        show_failures=True,
+        failure_limit=5,
+    )
+
+    assert result.status == "passed"
+    assert result.check_count == 1
+    assert result.checks[0].name == "customer_exists"
+    assert result.checks[0].failed_count == 0
+
+
 def test_checks_share_one_operation_context_from_resolve_through_bind(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -96,13 +149,13 @@ def test_checks_share_one_operation_context_from_resolve_through_bind(
     real_resolve = CSVSourceAdapter.resolve
     real_bind = CSVSourceAdapter.bind
 
-    def recording_resolve(self, spec, operation):
+    def recording_resolve(self, selected, operation):
         resolve_operations.append(operation)
-        return real_resolve(self, spec, operation)
+        return real_resolve(self, selected, operation)
 
-    def recording_bind(self, connection, source, operation):
-        bind_operations.append(operation)
-        return real_bind(self, connection, source, operation)
+    def recording_bind(self, source, engine_session, binding_context):
+        bind_operations.append(binding_context.operation)
+        return real_bind(self, source, engine_session, binding_context)
 
     monkeypatch.setattr(CSVSourceAdapter, "resolve", recording_resolve)
     monkeypatch.setattr(CSVSourceAdapter, "bind", recording_bind)
@@ -110,7 +163,10 @@ def test_checks_share_one_operation_context_from_resolve_through_bind(
     run_configured_checks(context, table_name=None, show_failures=False, failure_limit=5)
 
     assert len(resolve_operations) == 1
-    assert bind_operations == resolve_operations
+    assert len(bind_operations) == 1
+    assert all(
+        context is resolve_operations[0] for context in (*resolve_operations, *bind_operations)
+    )
 
 
 def test_run_configured_checks_returns_table_specific_warning_for_zero_checks(
@@ -705,7 +761,7 @@ def test_required_bind_failure_prevents_all_check_sql_and_cleans_reverse_order(
     real_bind = CSVSourceAdapter.bind
 
     class RecordingBinding:
-        def __init__(self, binding: PreparedBinding) -> None:
+        def __init__(self, binding: RelationalBinding) -> None:
             self._binding = binding
 
         @property
@@ -713,20 +769,27 @@ def test_required_bind_failure_prevents_all_check_sql_and_cleans_reverse_order(
             return self._binding.alias
 
         @property
-        def source(self):
-            return self._binding.source
+        def resolved_source(self):
+            return self._binding.resolved_source
 
         @property
-        def capabilities(self):
-            return self._binding.capabilities
+        def engine_session_id(self) -> str:
+            return self._binding.engine_session_id
 
-        def close(self) -> None:
+        @property
+        def state(self):
+            return self._binding.state
+
+        def revalidate(self, requirement, operation):
+            return self._binding.revalidate(requirement, operation)
+
+        def close(self, operation) -> None:
             cleanup_order.append(self.alias)
-            self._binding.close()
+            self._binding.close(operation)
 
-    def recording_bind(self, connection, source, operation):
-        bind_attempts.append(source.spec.alias)
-        binding = real_bind(self, connection, source, operation)
+    def recording_bind(self, source, engine_session, binding_context):
+        bind_attempts.append(source.alias)
+        binding = real_bind(self, source, engine_session, binding_context)
         return RecordingBinding(binding)
 
     def unexpected_query(self, sql: str, params: object = None):

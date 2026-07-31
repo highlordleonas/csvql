@@ -5,10 +5,10 @@
 [![Python](https://img.shields.io/pypi/pyversions/localql.svg)](https://pypi.org/project/localql/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/highlordleonas/csvql/blob/main/LICENSE)
 
-LocalQL is a DuckDB-powered tool for querying local CSV files with SQL. Install
-the `localql` package to use the `csvql` command, organize repeatable work in a
-`.csvql.yml` project catalog, export results, and optionally work in a terminal
-menu.
+LocalQL is a DuckDB-powered tool for querying local CSV, Parquet, JSON, NDJSON,
+and Excel `.xlsx` sources with SQL. Install the `localql` package to use the
+`csvql` command, organize repeatable work in a `.csvql.yml` project catalog,
+export results, and optionally work in a terminal menu.
 
 ![LocalQL: Query local CSVs with SQL](https://raw.githubusercontent.com/highlordleonas/csvql/main/docs/assets/localql-social-preview.jpg)
 
@@ -40,7 +40,7 @@ csvql query orders.csv "SELECT * FROM orders LIMIT 5"
 The file name becomes the SQL table name, so `orders.csv` is available as
 `orders`. A successful command prints a table with the CSV rows. See
 [Getting started](https://github.com/highlordleonas/csvql/blob/main/docs/getting-started.md)
-for project catalogs, saved SQL, and exports.
+for other source formats, project catalogs, saved SQL, and exports.
 
 ![Terminal screenshot of a LocalQL query over a CSV file](https://raw.githubusercontent.com/highlordleonas/csvql/main/docs/assets/localql-terminal-query.svg)
 
@@ -67,7 +67,8 @@ csvql menu orders.csv
 ```
 
 You can also start with `csvql menu` and run source-free SQL such as `SELECT 1`
-before loading any CSVs.
+before loading any sources. In the Sources pane, press `a` to add structured
+source intent with an explicit type and provider options.
 
 All core commands remain available without the extra. See the
 [Terminal menu guide](https://github.com/highlordleonas/csvql/blob/main/docs/tui-guide.md)
@@ -82,18 +83,24 @@ LocalQL supports Python 3.11 through 3.14 on macOS, Linux, and Windows.
 LocalQL treats user-authored SQL as trusted local DuckDB SQL. It does not
 sandbox DuckDB or restrict filesystem access. Run only SQL you trust.
 
+Source selection is deterministic. An explicit `--type` wins, a recognized
+extension selects one provider, and an extensionless file or directory that
+could match a provider requires an explicit choice. Bounded identification
+produces evidence and guidance; it never silently chooses between candidates.
+
 ## Core workflows
 
 | When you want to… | Start here |
 | --- | --- |
-| Query a CSV or join named tables | [CLI reference](https://github.com/highlordleonas/csvql/blob/main/docs/cli-reference.md#query-csv-files) |
+| Query a local source or join named tables | [CLI reference](https://github.com/highlordleonas/csvql/blob/main/docs/cli-reference.md#query-local-sources) |
 | Reuse a project catalog and saved SQL | [Project catalogs](https://github.com/highlordleonas/csvql/blob/main/docs/cli-reference.md#project-catalogs) |
 | Inspect, sample, or profile a source | [Inspect, sample, and profile](https://github.com/highlordleonas/csvql/blob/main/docs/cli-reference.md#inspect-sample-and-profile) |
 | Export a result or reuse it as a CSV source | [Save and reuse results](https://github.com/highlordleonas/csvql/blob/main/docs/cli-reference.md#save-and-reuse-results) |
 | Check configured data-quality rules | [Data-quality checks](https://github.com/highlordleonas/csvql/blob/main/docs/cli-reference.md#data-quality-checks) |
 
-DuckDB executes SQL; LocalQL manages local CSV table aliases, project
-configuration, output, and explicit exports.
+DuckDB executes SQL and relational operations; LocalQL manages deterministic
+source selection, local table aliases, project configuration, output, and
+explicit exports.
 
 ## Get help and stay current
 

@@ -62,7 +62,12 @@ class ResultStream:
         self._request_interrupt = request_interrupt
         self._now = now
         self._discard_cursor = discard_cursor or cursor.close
-        self._columns = tuple(str(column[0]) for column in cursor.description or ())
+        description = cursor.description or ()
+        self._columns = tuple(str(column[0]) for column in description)
+        self._column_types = tuple(
+            str(column[1]) if len(column) > 1 and column[1] is not None else "VARCHAR"
+            for column in description
+        )
         self._elapsed_ms = 0.0
         self._closed = False
         self._close_failure: BaseException | None = None
@@ -71,6 +76,10 @@ class ResultStream:
     @property
     def columns(self) -> tuple[str, ...]:
         return self._columns
+
+    @property
+    def column_types(self) -> tuple[str, ...]:
+        return self._column_types
 
     @property
     def elapsed_ms(self) -> float:

@@ -93,6 +93,20 @@ def test_result_stream_captures_columns_and_fetches_only_requested_rows() -> Non
     assert cursor.fetch_sizes == [2, 5, 1]
 
 
+def test_result_stream_captures_duckdb_column_types() -> None:
+    cursor = RecordingCursor(
+        description=(
+            ("id", duckdb.sqltype("INTEGER")),
+            ("amount", duckdb.sqltype("DECIMAL(10,2)")),
+        )
+    )
+
+    stream = _stream(cursor)
+
+    assert stream.columns == ("id", "amount")
+    assert stream.column_types == ("INTEGER", "DECIMAL(10,2)")
+
+
 def test_result_stream_rejects_non_positive_fetch_size() -> None:
     stream = _stream(RecordingCursor())
 

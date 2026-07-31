@@ -184,6 +184,31 @@ def test_streaming_json_export_preserves_shape_and_rounds_elapsed_ms(tmp_path: P
     assert source._iterator.close_calls == 1
 
 
+def test_streaming_ndjson_export_writes_requeryable_records(tmp_path: Path) -> None:
+    output_path = tmp_path / "result.ndjson"
+    source = _OneShotSource(
+        ("id", "value"),
+        [(1, "alpha"), (2, None)],
+        elapsed_ms=1.23456,
+    )
+
+    summary = write_streaming_export(
+        source,
+        output_path,
+        export_format=ExportFormat.ndjson,
+        overwrite=False,
+    )
+
+    assert summary.row_count == 2
+    assert summary.elapsed_ms == pytest.approx(1.23456)
+    assert [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()] == [
+        {"id": 1, "value": "alpha"},
+        {"id": 2, "value": None},
+    ]
+    assert source.iter_calls == 1
+    assert source._iterator.close_calls == 1
+
+
 def test_streaming_markdown_export_preserves_existing_escaping(tmp_path: Path) -> None:
     output_path = tmp_path / "result.md"
     source = _OneShotSource(
@@ -243,6 +268,7 @@ def test_streaming_text_export_uses_sidecar_second_pass_without_rerunning_source
     [
         (ExportFormat.csv, ".csv"),
         (ExportFormat.json, ".json"),
+        (ExportFormat.ndjson, ".ndjson"),
         (ExportFormat.markdown, ".md"),
         (ExportFormat.text, ".txt"),
     ],
@@ -269,6 +295,8 @@ def test_streaming_export_zero_rows_keeps_columns_and_reports_empty_summary(
         assert _csv_rows(output_path) == [["alpha", "beta"]]
     elif export_format is ExportFormat.json:
         assert json.loads(output_path.read_text(encoding="utf-8"))["rows"] == []
+    elif export_format is ExportFormat.ndjson:
+        assert output_path.read_text(encoding="utf-8") == ""
     elif export_format is ExportFormat.markdown:
         assert output_path.read_text(encoding="utf-8") == "| alpha | beta |\n| --- | --- |\n"
     else:
@@ -281,7 +309,16 @@ def test_streaming_export_zero_rows_keeps_columns_and_reports_empty_summary(
         )
 
 
-@pytest.mark.parametrize("export_format", list(ExportFormat))
+@pytest.mark.parametrize(
+    "export_format",
+    (
+        ExportFormat.csv,
+        ExportFormat.json,
+        ExportFormat.ndjson,
+        ExportFormat.markdown,
+        ExportFormat.text,
+    ),
+)
 def test_streaming_export_cleans_up_output_and_sidecar_when_row_iteration_fails(
     tmp_path: Path,
     export_format: ExportFormat,
@@ -289,6 +326,7 @@ def test_streaming_export_cleans_up_output_and_sidecar_when_row_iteration_fails(
     suffix = {
         ExportFormat.csv: ".csv",
         ExportFormat.json: ".json",
+        ExportFormat.ndjson: ".ndjson",
         ExportFormat.markdown: ".md",
         ExportFormat.text: ".txt",
     }[export_format]

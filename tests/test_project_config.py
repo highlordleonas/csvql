@@ -11,12 +11,18 @@ from csvql.exceptions import FileMissingError, ProjectConfigError
 from csvql.models import TableSource
 from csvql.project_config import (
     CONFIG_FILENAME,
+    CURRENT_VERSION,
     SUPPORTED_VERSION,
+    CatalogSourceDefinition,
     ProjectConfig,
+    ProjectConfigV1,
+    ProjectConfigV2,
     ProjectContext,
     ProjectTable,
     ProjectTableListing,
     ProjectTablesResult,
+    ProjectTableV1,
+    ProjectTableV2,
     add_project_table,
     build_project_tables_result,
     discover_project,
@@ -35,11 +41,11 @@ def test_initialize_project_writes_default_config_and_returns_context(tmp_path: 
     assert context == ProjectContext(
         project_root=tmp_path.resolve(),
         config_path=config_path.resolve(),
-        config=ProjectConfig(version=SUPPORTED_VERSION, tables=()),
+        config=ProjectConfigV2(version=CURRENT_VERSION, tables=()),
     )
-    assert config_path.read_text(encoding="utf-8") == "version: 1\ntables: {}\n"
+    assert config_path.read_text(encoding="utf-8") == "version: 2\ntables: {}\n"
     assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == {
-        "version": SUPPORTED_VERSION,
+        "version": CURRENT_VERSION,
         "tables": {},
     }
 
@@ -87,8 +93,8 @@ def test_initialize_project_force_rewrites_existing_config(tmp_path: Path) -> No
 
     context = initialize_project(tmp_path, force=True)
 
-    assert context.config == ProjectConfig(version=SUPPORTED_VERSION, tables=())
-    assert config_path.read_text(encoding="utf-8") == "version: 1\ntables: {}\n"
+    assert context.config == ProjectConfigV2(version=CURRENT_VERSION, tables=())
+    assert config_path.read_text(encoding="utf-8") == "version: 2\ntables: {}\n"
 
 
 def test_discover_project_walks_up_from_subdirectory(tmp_path: Path) -> None:
@@ -126,10 +132,239 @@ def test_load_project_rejects_empty_file(tmp_path: Path) -> None:
 
 def test_load_project_rejects_unsupported_version(tmp_path: Path) -> None:
     config_path = tmp_path / CONFIG_FILENAME
-    config_path.write_text("version: 2\ntables: {}\n", encoding="utf-8")
+    config_path.write_text("version: 3\ntables: {}\n", encoding="utf-8")
 
     with pytest.raises(ProjectConfigError):
         load_project(tmp_path)
+
+
+def test_load_project_preserves_strict_version_1_model(tmp_path: Path) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    original = "version: 1\ntables:\n  orders:\n    path: data/orders.csv\n"
+    config_path.write_text(original, encoding="utf-8")
+
+    context = load_project(tmp_path)
+    save_project(context)
+
+    assert context.config == ProjectConfigV1(
+        version=SUPPORTED_VERSION,
+        tables=(ProjectTableV1(name="orders", path="data/orders.csv"),),
+    )
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_load_project_accepts_normalized_version_2_source_intent(tmp_path: Path) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 2\n"
+        "tables:\n"
+        "  orders:\n"
+        "    source:\n"
+        "      type: parquet\n"
+        "      locator: data/orders\n"
+        "      options:\n"
+        "        partitioning: hive\n",
+        encoding="utf-8",
+    )
+
+    context = load_project(tmp_path)
+
+    assert context.config == ProjectConfigV2(
+        version=CURRENT_VERSION,
+        tables=(
+            ProjectTableV2(
+                name="orders",
+                source=CatalogSourceDefinition(
+                    source_type="parquet",
+                    locator="data/orders",
+                    options=(("partitioning", "hive"),),
+                ),
+            ),
+        ),
+    )
+    assert project_config.project_tables_to_source_specs(context) == [
+        project_config.SourceSpec(
+            alias="orders",
+            kind="parquet",
+            locator="data/orders",
+            anchor=tmp_path,
+            options=(("partitioning", "hive"),),
+        )
+    ]
+
+
+def test_load_project_version_2_normalizes_type_alias_and_rejects_bad_options(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 2\n"
+        "tables:\n"
+        "  workbook:\n"
+        "    source:\n"
+        "      type: xlsx\n"
+        "      locator: workbook.xlsx\n"
+        "      options:\n"
+        "        header: true\n",
+        encoding="utf-8",
+    )
+
+    context = load_project(tmp_path)
+
+    assert isinstance(context.config, ProjectConfigV2)
+    assert context.config.tables[0].source.source_type == "excel"
+
+    config_path.write_text(
+        "version: 2\n"
+        "tables:\n"
+        "  workbook:\n"
+        "    source:\n"
+        "      type: excel\n"
+        "      locator: workbook.xlsx\n"
+        "      options:\n"
+        "        header: text\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ProjectConfigError) as error:
+        load_project(tmp_path)
+    assert error.value.code == "catalog.source_option_type"
+
+
+def test_version_1_rejects_non_csv_add_without_writing(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "orders.parquet"
+    parquet_path.write_bytes(b"PAR1")
+    config_path = tmp_path / CONFIG_FILENAME
+    original = "version: 1\ntables: {}\n"
+    config_path.write_text(original, encoding="utf-8")
+    context = load_project(tmp_path)
+
+    with pytest.raises(ProjectConfigError) as error:
+        add_project_table(
+            context,
+            "orders",
+            str(parquet_path),
+            source_type="parquet",
+            invocation_dir=tmp_path,
+        )
+
+    assert error.value.code == "catalog.v1_migration_required"
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_version_2_add_persists_only_explicit_source_intent(tmp_path: Path) -> None:
+    parquet_directory = tmp_path / "warehouse"
+    parquet_directory.mkdir()
+    context = initialize_project(tmp_path)
+
+    updated = add_project_table(
+        context,
+        "warehouse",
+        str(parquet_directory),
+        source_type="parquet",
+        options={"partitioning": "hive"},
+        invocation_dir=tmp_path,
+    )
+
+    assert isinstance(updated.config, ProjectConfigV2)
+    assert (tmp_path / CONFIG_FILENAME).read_text(encoding="utf-8") == (
+        "version: 2\n"
+        "tables:\n"
+        "  warehouse:\n"
+        "    source:\n"
+        "      type: parquet\n"
+        "      locator: warehouse\n"
+        "      options:\n"
+        "        partitioning: hive\n"
+    )
+
+
+def test_version_2_load_rejects_private_result_artifact_without_rewriting(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / f"localql-tui-v1-{'a' * 32}"
+    workspace.mkdir()
+    private_result = workspace / "query-1.result"
+    private_result.write_bytes(b"private framed result")
+    config_path = tmp_path / CONFIG_FILENAME
+    original = yaml.safe_dump(
+        {
+            "version": CURRENT_VERSION,
+            "tables": {
+                "private_result": {
+                    "source": {
+                        "type": "parquet",
+                        "locator": str(private_result),
+                    }
+                }
+            },
+        },
+        sort_keys=False,
+    )
+    config_path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ProjectConfigError) as error:
+        load_project(tmp_path)
+
+    assert error.value.code == "catalog.private_result_artifact"
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_version_2_add_rejects_private_result_artifact_without_writing(
+    tmp_path: Path,
+) -> None:
+    context = initialize_project(tmp_path)
+    config_path = tmp_path / CONFIG_FILENAME
+    original = config_path.read_text(encoding="utf-8")
+    workspace = tmp_path / f"localql-tui-v1-{'a' * 32}"
+    workspace.mkdir()
+    private_result = workspace / "query-1.result"
+    private_result.write_bytes(b"private framed result")
+
+    with pytest.raises(ProjectConfigError) as error:
+        add_project_table(
+            context,
+            "private_result",
+            str(private_result),
+            source_type="parquet",
+            invocation_dir=tmp_path,
+        )
+
+    assert error.value.code == "catalog.private_result_artifact"
+    assert config_path.read_text(encoding="utf-8") == original
+    assert private_result.read_bytes() == b"private framed result"
+
+
+def test_version_2_save_rejects_private_result_artifact_without_writing(
+    tmp_path: Path,
+) -> None:
+    context = initialize_project(tmp_path)
+    config_path = tmp_path / CONFIG_FILENAME
+    original = config_path.read_text(encoding="utf-8")
+    private_result = (
+        tmp_path / f"localql-tui-v1-{'a' * 32}" / ".preview-2-abcdef0123456789.result.tmp"
+    )
+    unsafe_context = ProjectContext(
+        project_root=context.project_root,
+        config_path=context.config_path,
+        config=ProjectConfigV2(
+            version=CURRENT_VERSION,
+            tables=(
+                ProjectTableV2(
+                    name="private_result",
+                    source=CatalogSourceDefinition(
+                        source_type="json",
+                        locator=str(private_result),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(ProjectConfigError) as error:
+        save_project(unsafe_context)
+
+    assert error.value.code == "catalog.private_result_artifact"
+    assert config_path.read_text(encoding="utf-8") == original
 
 
 @pytest.mark.parametrize("payload", ["version: true\ntables: {}\n", "version: 1.0\ntables: {}\n"])
@@ -654,9 +889,19 @@ def test_add_project_table_stores_project_relative_path_for_internal_file(
         invocation_dir=project_root,
     )
 
-    assert updated_context.config.tables == (ProjectTable(name="orders", path="data/orders.csv"),)
+    assert updated_context.config.tables == (
+        ProjectTableV2(
+            name="orders",
+            source=CatalogSourceDefinition(source_type="csv", locator="data/orders.csv"),
+        ),
+    )
     assert updated_context.config_path.read_text(encoding="utf-8") == (
-        "version: 1\ntables:\n  orders:\n    path: data/orders.csv\n"
+        "version: 2\n"
+        "tables:\n"
+        "  orders:\n"
+        "    source:\n"
+        "      type: csv\n"
+        "      locator: data/orders.csv\n"
     )
 
 
@@ -665,11 +910,17 @@ def test_version_one_catalog_round_trips_relative_table_path(tmp_path: Path) -> 
     csv_path = project_root / "data" / "orders.csv"
     csv_path.parent.mkdir(parents=True)
     csv_path.write_text("order_id,total_amount\nORD-1,12.34\n", encoding="utf-8")
-    context = initialize_project(project_root)
+    config_path = project_root / CONFIG_FILENAME
+    config_path.write_text(
+        "version: 1\ntables:\n  orders:\n    path: data/orders.csv\n",
+        encoding="utf-8",
+    )
+    context = load_project(project_root)
     updated_context = add_project_table(
         context,
         "orders",
         "data/orders.csv",
+        replace=True,
         invocation_dir=project_root,
     )
 
@@ -677,7 +928,9 @@ def test_version_one_catalog_round_trips_relative_table_path(tmp_path: Path) -> 
 
     assert reloaded_context.config == updated_context.config
     assert reloaded_context.config.version == 1
-    assert reloaded_context.config.tables == (ProjectTable(name="orders", path="data/orders.csv"),)
+    assert reloaded_context.config.tables == (
+        ProjectTableV1(name="orders", path="data/orders.csv"),
+    )
 
 
 def test_add_project_table_uses_invocation_dir_for_relative_input(
@@ -698,9 +951,19 @@ def test_add_project_table_uses_invocation_dir_for_relative_input(
         invocation_dir=invocation_dir,
     )
 
-    assert updated_context.config.tables == (ProjectTable(name="orders", path="data/orders.csv"),)
+    assert updated_context.config.tables == (
+        ProjectTableV2(
+            name="orders",
+            source=CatalogSourceDefinition(source_type="csv", locator="data/orders.csv"),
+        ),
+    )
     assert updated_context.config_path.read_text(encoding="utf-8") == (
-        "version: 1\ntables:\n  orders:\n    path: data/orders.csv\n"
+        "version: 2\n"
+        "tables:\n"
+        "  orders:\n"
+        "    source:\n"
+        "      type: csv\n"
+        "      locator: data/orders.csv\n"
     )
 
 
@@ -722,7 +985,13 @@ def test_add_project_table_stores_absolute_path_for_external_file(
     )
 
     assert updated_context.config.tables == (
-        ProjectTable(name="orders", path=str(csv_path.resolve())),
+        ProjectTableV2(
+            name="orders",
+            source=CatalogSourceDefinition(
+                source_type="csv",
+                locator=str(csv_path.resolve()),
+            ),
+        ),
     )
 
 
@@ -759,7 +1028,12 @@ def test_add_project_table_rejects_duplicate_without_replace(
             invocation_dir=project_root,
         )
 
-    assert context.config.tables == (ProjectTable(name="orders", path="data/orders.csv"),)
+    assert context.config.tables == (
+        ProjectTableV2(
+            name="orders",
+            source=CatalogSourceDefinition(source_type="csv", locator="data/orders.csv"),
+        ),
+    )
 
 
 def test_add_project_table_rejects_case_variant_duplicate_without_replace(
@@ -787,7 +1061,12 @@ def test_add_project_table_rejects_case_variant_duplicate_without_replace(
             invocation_dir=project_root,
         )
 
-    assert context.config.tables == (ProjectTable(name="Orders", path="data/first.csv"),)
+    assert context.config.tables == (
+        ProjectTableV2(
+            name="Orders",
+            source=CatalogSourceDefinition(source_type="csv", locator="data/first.csv"),
+        ),
+    )
 
 
 def test_add_project_table_replace_matches_alias_case_insensitively(tmp_path: Path) -> None:
@@ -813,7 +1092,12 @@ def test_add_project_table_replace_matches_alias_case_insensitively(tmp_path: Pa
         invocation_dir=project_root,
     )
 
-    assert updated_context.config.tables == (ProjectTable(name="orders", path="data/second.csv"),)
+    assert updated_context.config.tables == (
+        ProjectTableV2(
+            name="orders",
+            source=CatalogSourceDefinition(source_type="csv", locator="data/second.csv"),
+        ),
+    )
 
 
 def test_add_project_table_replace_updates_only_matching_table(
@@ -839,12 +1123,26 @@ def test_add_project_table_replace_updates_only_matching_table(
     )
 
     assert updated_context.config.tables == (
-        ProjectTable(name="customers", path="customers.csv"),
-        ProjectTable(name="orders", path="data/orders_v2.csv"),
+        ProjectTableV2(
+            name="customers",
+            source=CatalogSourceDefinition(source_type="csv", locator="customers.csv"),
+        ),
+        ProjectTableV2(
+            name="orders",
+            source=CatalogSourceDefinition(source_type="csv", locator="data/orders_v2.csv"),
+        ),
     )
     assert updated_context.config_path.read_text(encoding="utf-8") == (
-        "version: 1\ntables:\n  customers:\n    path: customers.csv\n"
-        "  orders:\n    path: data/orders_v2.csv\n"
+        "version: 2\n"
+        "tables:\n"
+        "  customers:\n"
+        "    source:\n"
+        "      type: csv\n"
+        "      locator: customers.csv\n"
+        "  orders:\n"
+        "    source:\n"
+        "      type: csv\n"
+        "      locator: data/orders_v2.csv\n"
     )
 
 

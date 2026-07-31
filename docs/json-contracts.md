@@ -13,12 +13,14 @@ table output when you are working interactively.
 - [Profile](#profile)
 - [Checks and project health](#checks-and-project-health)
 - [Tables](#tables)
+- [Source diagnostics](#source-diagnostics)
 - [Shared behavior](#shared-behavior)
 
 ## Stable fields and changing values
 
 Field names, nesting, and when fields are omitted are documented behavior in
-LocalQL v1. Some values change with the input file, computer, or run:
+the documented LocalQL release. Some values change with the input source,
+computer, or run:
 
 - `elapsed_ms` varies by run.
 - Source paths, modification timestamps, and file sizes depend on the machine
@@ -52,10 +54,17 @@ These commands share one result shape:
 }
 ```
 
+`csvql export --format ndjson` is intentionally a different file contract. It
+writes one JSON object per line without `columns`, `row_count`, or timing
+metadata, making the file directly usable as an NDJSON source. Values that are
+not native JSON types are serialized as strings. Parquet and Excel exports are
+binary file contracts and are not JSON output modes.
+
 ## Inspect and sample
 
-`csvql inspect --output json` returns source metadata, detected CSV dialect,
-columns, row-count metadata, and warnings.
+`csvql inspect --output json` returns source metadata, columns, row-count
+metadata, and warnings. CSV sources also populate detected dialect values;
+non-CSV providers may leave dialect fields null.
 
 ```json
 {
@@ -199,15 +208,69 @@ defined tables:
   "tables": [
     {
       "name": "orders",
+      "options": {},
       "path": "data/orders.csv",
-      "resolved_path": "<absolute-path>"
+      "resolved_path": "<absolute-path>",
+      "source_type": "csv"
     }
   ]
 }
 ```
 
 The catalog and resolved-path fields are absolute paths on the computer running
-the command.
+the command. `path` is the stored locator compatibility field. `source_type`
+and `options` expose normalized catalog intent; `options` is present even when
+empty.
+
+## Source diagnostics
+
+Commands that already support JSON output return a versioned `diagnostic`
+object when a source request fails. The top-level `message` and `suggestion`
+remain present:
+
+```json
+{
+  "diagnostic": {
+    "causes": [],
+    "code": "source.ambiguous",
+    "evidence": [
+      {
+        "detail": "<stable-evidence>",
+        "kind": "<evidence-kind>",
+        "provider_key": "parquet"
+      }
+    ],
+    "message": "The source type is ambiguous.",
+    "required_action": {
+      "kind": "specify_type",
+      "provider_keys": ["parquet"]
+    },
+    "source": "warehouse",
+    "stage": "detection",
+    "version": 1
+  },
+  "message": "The source type is ambiguous.",
+  "suggestion": "specify type"
+}
+```
+
+The exact message and evidence depend on the outcome. The structural contract
+is:
+
+| Field | Meaning |
+| --- | --- |
+| `version` | Diagnostic schema version. |
+| `code` | Stable machine-readable source code. |
+| `stage` | Lifecycle stage: request, composition, detection, activation, resolution, binding, identity, or cleanup. |
+| `message` | Sanitized human explanation. |
+| `source` | Safe source reference; absolute parent directories are removed. |
+| `evidence` | Deterministically ordered provider, kind, and stable-detail records. |
+| `required_action` | Machine-readable next action and sorted provider keys, or null. |
+| `causes` | Sorted sanitized cause classifications. |
+
+Human CLI errors, Python exceptions, and TUI errors carry the same code,
+evidence, and required-action semantics. Raw exception representations and
+unredacted absolute source parents are not part of this contract.
 
 ## Shared behavior
 
@@ -217,3 +280,5 @@ the command.
 - `inspect.row_count` is structured metadata; `profile.row_count` is an integer.
 - `check` and `doctor` have status-bearing result shapes that are separate from
   query results.
+- Source diagnostic evidence and candidate ordering are deterministic across
+  CLI, Python, TUI, catalog, and automation boundaries.

@@ -18,7 +18,7 @@ from csvql.query_workflow import (
 )
 from csvql.result_codec import encode_row_payload
 from csvql.result_stream import CURSOR_CLEANUP_UNCERTAINTY_NOTE, ResultStream
-from csvql.source import ResolvedSource
+from csvql.source import ResolvedSource, SourceDiagnostic
 from csvql.tui_result_store import (
     TUIResultReason,
     TUIResultStorageError,
@@ -147,6 +147,7 @@ class TUIFailedBeforePreviewEvent:
     sequence: int
     error_message: str
     suggestion: str | None = None
+    diagnostic: SourceDiagnostic | None = None
     cleanup_notes: tuple[str, ...] = field(default_factory=tuple)
     kind: Literal["failed_before_preview"] = field(
         init=False,
@@ -192,6 +193,7 @@ class _DeferredFailedBeforePreviewOutcome:
     sequence: int
     error_message: str
     suggestion: str | None
+    diagnostic: SourceDiagnostic | None = None
     cleanup_notes: tuple[str, ...] = ()
 
 
@@ -326,6 +328,7 @@ def run_tui_request(
                 sequence=first_sequence,
                 error_message=message,
                 suggestion=suggestion,
+                diagnostic=_public_diagnostic(exc),
                 cleanup_notes=_notes_tuple(exc),
             )
         )
@@ -409,6 +412,7 @@ def _run_statement(
             writer = result_store.begin_complete(
                 sequence=sequence,
                 columns=stream.columns,
+                column_types=stream.column_types,
             )
         except TUIResultStorageError as exc:
             if exc.kind == "capacity":
@@ -612,6 +616,7 @@ def _run_statement(
             sequence=sequence,
             error_message=message,
             suggestion=suggestion,
+            diagnostic=_public_diagnostic(exc),
             cleanup_notes=_notes_tuple(exc, cleanup_notes),
         )
 
@@ -661,6 +666,7 @@ def _publish_deferred_terminal(
             sequence=outcome.sequence,
             error_message=outcome.error_message,
             suggestion=outcome.suggestion,
+            diagnostic=outcome.diagnostic,
             cleanup_notes=outcome.cleanup_notes,
         ),
     )
@@ -870,6 +876,12 @@ def _public_failure(error: BaseException) -> tuple[str, str | None]:
     )
 
 
+def _public_diagnostic(error: BaseException) -> SourceDiagnostic | None:
+    if isinstance(error, CSVQLError):
+        return error.diagnostic
+    return None
+
+
 def _add_cleanup_note(primary: BaseException) -> None:
     if CURSOR_CLEANUP_UNCERTAINTY_NOTE not in getattr(primary, "__notes__", ()):
         primary.add_note(CURSOR_CLEANUP_UNCERTAINTY_NOTE)
@@ -933,6 +945,7 @@ def _with_cleanup_notes(
         sequence=outcome.sequence,
         error_message=outcome.error_message,
         suggestion=outcome.suggestion,
+        diagnostic=outcome.diagnostic,
         cleanup_notes=_merge_cleanup_notes(outcome.cleanup_notes, cleanup_notes),
     )
 

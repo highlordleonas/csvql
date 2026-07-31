@@ -7,6 +7,7 @@ import pytest
 from csvql.atomic_write import (
     OperationCancelled,
     OperationToken,
+    atomic_output_path,
     atomic_text_output,
     write_text_atomic,
 )
@@ -438,6 +439,107 @@ def test_atomic_text_output_manual_close_preserves_fsync_failure_if_sync_close_f
 
     assert not output_path.exists()
     assert not tuple(tmp_path.glob(".result.txt.*.tmp"))
+
+
+def test_atomic_output_path_publishes_binary_file_and_removes_staging_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_path = tmp_path / "result.parquet"
+    real_open = os.open
+    open_flags: list[int] = []
+
+    def record_open(path: Path, flags: int) -> int:
+        open_flags.append(flags)
+        return real_open(path, flags)
+
+    monkeypatch.setattr("csvql.atomic_write.os.open", record_open)
+
+    with atomic_output_path(output_path) as stage_path:
+        assert stage_path.parent != tmp_path
+        assert stage_path.parent.parent == tmp_path
+        stage_path.write_bytes(b"parquet bytes")
+
+    assert open_flags == [os.O_RDWR]
+    assert output_path.read_bytes() == b"parquet bytes"
+    assert not tuple(tmp_path.glob(".result.parquet.*.tmp"))
+
+
+def test_atomic_output_path_cancels_before_staging_directory_is_created(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "result.parquet"
+    token = OperationToken()
+    token.cancel()
+
+    with pytest.raises(OperationCancelled):
+        with atomic_output_path(output_path, token=token):
+            pytest.fail("cancelled token should not yield a staging path")
+
+    assert not output_path.exists()
+    assert not tuple(tmp_path.glob(".result.parquet.*.tmp"))
+
+
+def test_atomic_output_path_preserves_existing_file_when_cancelled_before_publish(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "result.parquet"
+    output_path.write_bytes(b"old")
+    token = OperationToken()
+
+    with pytest.raises(OperationCancelled):
+        with atomic_output_path(output_path, token=token) as stage_path:
+            stage_path.write_bytes(b"new")
+            token.cancel()
+
+    assert output_path.read_bytes() == b"old"
+    assert not tuple(tmp_path.glob(".result.parquet.*.tmp"))
+
+
+def test_atomic_output_path_rolls_back_when_body_raises(tmp_path: Path) -> None:
+    output_path = tmp_path / "result.parquet"
+
+    with pytest.raises(RuntimeError, match="writer failed"):
+        with atomic_output_path(output_path) as stage_path:
+            stage_path.write_bytes(b"partial")
+            raise RuntimeError("writer failed")
+
+    assert not output_path.exists()
+    assert not tuple(tmp_path.glob(".result.parquet.*.tmp"))
+
+
+def test_atomic_output_path_rejects_missing_staged_file_and_cleans_directory(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "result.parquet"
+
+    with pytest.raises(OSError, match="did not create"):
+        with atomic_output_path(output_path):
+            pass
+
+    assert not output_path.exists()
+    assert not tuple(tmp_path.glob(".result.parquet.*.tmp"))
+
+
+def test_atomic_output_path_no_overwrite_preserves_existing_file_when_commit_races(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_path = tmp_path / "result.parquet"
+    output_path.write_bytes(b"old")
+
+    def fail_link(source: Path, target: Path) -> None:
+        del source, target
+        raise FileExistsError("result.parquet")
+
+    monkeypatch.setattr("csvql.atomic_write.os.link", fail_link)
+
+    with pytest.raises(FileExistsError):
+        with atomic_output_path(output_path, overwrite=False) as stage_path:
+            stage_path.write_bytes(b"new")
+
+    assert output_path.read_bytes() == b"old"
+    assert not tuple(tmp_path.glob(".result.parquet.*.tmp"))
 
 
 def test_write_text_atomic_routes_through_atomic_text_output(

@@ -1,8 +1,12 @@
 """Core value objects shared by CSVQL services."""
 
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+from csvql.source import FrozenSourceOptions, build_source_request
 
 
 @dataclass(frozen=True, slots=True)
@@ -11,6 +15,41 @@ class TableSource:
 
     name: str
     path: Path
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class SourceDefinition:
+    """Public provider-neutral source intent accepted by LocalQL entry points."""
+
+    alias: str
+    locator: str
+    source_type: str | None
+    options: FrozenSourceOptions
+    base_dir: Path | None
+
+    def __init__(
+        self,
+        alias: str,
+        locator: str | os.PathLike[str],
+        *,
+        source_type: str | None = None,
+        options: Mapping[str, object] | None = None,
+        base_dir: str | os.PathLike[str] | None = None,
+    ) -> None:
+        """Freeze source intent without detecting, resolving, or activating it."""
+
+        request = build_source_request(
+            alias=alias,
+            locator=os.fspath(locator),
+            anchor=None if base_dir is None else Path(base_dir),
+            explicit_type=source_type,
+            options=() if options is None else options.items(),
+        )
+        object.__setattr__(self, "alias", request.alias)
+        object.__setattr__(self, "locator", request.locator)
+        object.__setattr__(self, "source_type", request.explicit_type)
+        object.__setattr__(self, "options", request.options)
+        object.__setattr__(self, "base_dir", request.anchor)
 
 
 @dataclass(frozen=True, slots=True)

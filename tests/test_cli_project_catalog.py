@@ -21,7 +21,7 @@ def test_init_creates_catalog_in_current_working_directory(
     assert result.exit_code == 0, result.output
     config_path = tmp_path / CONFIG_FILENAME
     assert config_path.exists()
-    assert config_path.read_text(encoding="utf-8") == "version: 1\ntables: {}\n"
+    assert config_path.read_text(encoding="utf-8") == "version: 2\ntables: {}\n"
     assert CONFIG_FILENAME in result.output
 
 
@@ -79,7 +79,7 @@ def test_init_force_rewrites_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyP
     result = runner.invoke(app, ["init", "--force"])
 
     assert result.exit_code == 0, result.output
-    assert config_path.read_text(encoding="utf-8") == "version: 1\ntables: {}\n"
+    assert config_path.read_text(encoding="utf-8") == "version: 2\ntables: {}\n"
     assert "Created project catalog" in result.output
 
 
@@ -103,8 +103,55 @@ def test_add_writes_nested_table_entry_from_subdirectory(
     assert result.exit_code == 0, result.output
     assert "orders" in result.output
     assert (project_root / CONFIG_FILENAME).read_text(encoding="utf-8") == (
-        "version: 1\ntables:\n  orders:\n    path: data/orders.csv\n"
+        "version: 2\n"
+        "tables:\n"
+        "  orders:\n"
+        "    source:\n"
+        "      type: csv\n"
+        "      locator: data/orders.csv\n"
     )
+
+
+def test_add_detects_recognized_extension_and_persists_normalized_type(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parquet_path = tmp_path / "data" / "orders.parquet"
+    parquet_path.parent.mkdir()
+    parquet_path.write_bytes(b"PAR1")
+    monkeypatch.chdir(tmp_path)
+    assert runner.invoke(app, ["init"]).exit_code == 0
+
+    result = runner.invoke(app, ["add", "orders", "data/orders.parquet"])
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / CONFIG_FILENAME).read_text(encoding="utf-8") == (
+        "version: 2\n"
+        "tables:\n"
+        "  orders:\n"
+        "    source:\n"
+        "      type: parquet\n"
+        "      locator: data/orders.parquet\n"
+    )
+
+
+def test_add_requires_explicit_type_for_extensionless_detected_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "records"
+    source_path.write_text("id,value\n1,alpha\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    config_path = tmp_path / CONFIG_FILENAME
+    before = config_path.read_bytes()
+
+    result = runner.invoke(app, ["add", "records", source_path.name])
+
+    assert result.exit_code == 8
+    assert "source.ambiguous" in result.output
+    assert "Required action: specify_type" in result.output
+    assert config_path.read_bytes() == before
 
 
 def test_add_success_output_encodes_terminal_controls_in_catalog_path(
@@ -175,7 +222,12 @@ def test_add_replace_updates_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     assert result.exit_code == 0, result.output
     assert (tmp_path / CONFIG_FILENAME).read_text(encoding="utf-8") == (
-        "version: 1\ntables:\n  orders:\n    path: data/orders_v2.csv\n"
+        "version: 2\n"
+        "tables:\n"
+        "  orders:\n"
+        "    source:\n"
+        "      type: csv\n"
+        "      locator: data/orders_v2.csv\n"
     )
 
 
@@ -222,13 +274,17 @@ def test_tables_json_output_is_deterministic(
         "tables": [
             {
                 "name": "alpha",
+                "options": {},
                 "path": "alpha.csv",
                 "resolved_path": alpha_path.resolve().as_posix(),
+                "source_type": "csv",
             },
             {
                 "name": "orders",
+                "options": {},
                 "path": "data/orders.csv",
                 "resolved_path": orders_path.resolve().as_posix(),
+                "source_type": "csv",
             },
         ],
     }

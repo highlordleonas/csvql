@@ -91,7 +91,7 @@ def test_getting_started_orders_the_core_query_before_the_optional_tui() -> None
     getting_started = read_doc("docs/getting-started.md")
 
     install_index = getting_started.index("## Install LocalQL")
-    query_index = getting_started.index("## Query a CSV")
+    query_index = getting_started.index("## Query your first source")
     first_query_index = getting_started.index(
         'csvql query orders.csv "SELECT * FROM orders LIMIT 5"'
     )
@@ -212,10 +212,13 @@ def test_roadmap_preserves_milestone_statuses_dependencies_and_scope() -> None:
     current_foundation = markdown_block_containing(
         roadmap,
         "Current foundation",
-        "LocalQL v1.1.1",
+        "LocalQL v1.2.0",
+        "Parquet",
+        "NDJSON",
+        "Excel",
+        "deterministically",
+        "version 2",
         "1,000 rows",
-        "SourceSpec",
-        "SourceAdapter",
         "1 GiB",
     )
     v1_1 = markdown_block_containing(
@@ -226,7 +229,17 @@ def test_roadmap_preserves_milestone_statuses_dependencies_and_scope() -> None:
         "SourceAdapter",
         "bounded or streaming",
     )
-    v1_2 = markdown_block_containing(roadmap, "v1.2", "Parquet", "JSON", "Excel")
+    v1_2 = markdown_block_containing(
+        roadmap,
+        "v1.2",
+        "Shipped in LocalQL 1.2.0",
+        "Parquet",
+        "JSON",
+        "NDJSON",
+        "Excel",
+        "deterministic",
+        "version 2",
+    )
     point_and_query = markdown_block_containing(
         roadmap,
         "Point-and-Query",
@@ -249,9 +262,9 @@ def test_roadmap_preserves_milestone_statuses_dependencies_and_scope() -> None:
     product_boundaries = markdown_block_containing(
         roadmap,
         "Product boundaries",
-        "LocalQL v1.1.1",
+        "LocalQL v1.2.0",
         "does not ship remote or cloud connectors",
-        "plugin ecosystem",
+        "public plugin ecosystem",
     )
     v1_1_text = " ".join(v1_1.casefold().split())
     v1_2_text = " ".join(v1_2.casefold().split())
@@ -273,8 +286,12 @@ def test_roadmap_preserves_milestone_statuses_dependencies_and_scope() -> None:
     assert "exports remain complete" in v1_1_text
     assert "python api remains complete" in v1_1_text
     assert "json output remains complete" in v1_1_text
-    assert re.search(r"\bstatus\b.{0,20}\bplanned\b", v1_2_text)
+    assert re.search(r"\bstatus\b.{0,20}\bshipped\b", v1_2_text)
     assert "depends on v1.1" in v1_2_text
+    assert "cross-format joins" in v1_2_text
+    assert "bounded evidence" in v1_2_text
+    assert "version 1 catalogs" in v1_2_text
+    assert "public plugin sdk" in v1_2_text
     assert re.search(r"\bstatus\b.{0,20}\bplanned\b", point_and_query_text)
     assert "not shipped behavior" in point_and_query_text
     assert re.search(r"\bstatus\b.{0,20}\bcandidate\b", v2_0_text)
@@ -287,7 +304,7 @@ def test_roadmap_preserves_milestone_statuses_dependencies_and_scope() -> None:
     assert "not shipped" in v2_x_text
 
 
-def test_v1_1_result_and_source_contracts_are_publicly_documented() -> None:
+def test_result_and_provider_source_contracts_are_publicly_documented() -> None:
     cli_reference = " ".join(read_doc("docs/cli-reference.md").casefold().split())
     tui_guide = " ".join(read_doc("docs/tui-guide.md").casefold().split())
     architecture = " ".join(read_doc("docs/ARCHITECTURE.md").casefold().split())
@@ -314,10 +331,14 @@ def test_v1_1_result_and_source_contracts_are_publicly_documented() -> None:
         assert marker in tui_guide
 
     for marker in (
-        "sourcespec",
+        "sourcerequest",
+        "detectionresult",
+        "adapterfactory",
         "sourceadapter",
+        "resolvedsource",
+        "relationalbinding",
         "resultstream",
-        "boundedqueryresult",
+        "bounded preview",
         "streaming export",
         "tuiqueryrunner",
         "tuiresultstore",
@@ -325,6 +346,108 @@ def test_v1_1_result_and_source_contracts_are_publicly_documented() -> None:
         "no automatic eviction",
     ):
         assert marker in architecture
+
+
+def test_provider_options_and_excel_provisioning_are_publicly_documented() -> None:
+    cli_reference = read_doc("docs/cli-reference.md")
+    option_reference = " ".join(
+        markdown_block_containing(
+            cli_reference,
+            "Source provider options",
+            "partitioning",
+            "record_path",
+            "type_mode",
+        )
+        .casefold()
+        .split()
+    )
+    getting_started = " ".join(read_doc("docs/getting-started.md").casefold().split())
+    faq = read_doc("docs/faq.md")
+    troubleshooting = read_doc("docs/troubleshooting.md")
+    tui_guide = read_doc("docs/tui-guide.md")
+
+    for marker in (
+        "csv dialect detection remains automatic",
+        "partitioning",
+        "union_by_name",
+        "sample_size",
+        "maximum_depth",
+        "schema",
+        "record_path",
+        "sheet",
+        "range",
+        "header",
+        "stop_at_empty",
+        "type_mode",
+        "--option key=value",
+        "--source-option name.key=value",
+        "source.options",
+        "sourcedefinition",
+    ):
+        assert marker in option_reference
+
+    for marker in (
+        "same environment that provides `csvql`",
+        "separate, explicit networked action",
+        "'autoinstall_known_extensions':'false'",
+        "'autoload_known_extensions':'false'",
+        "connection.install_extension('excel')",
+        "from duckdb_extensions()",
+        "the first value must be `true`",
+        "localql itself never installs optional duckdb extensions",
+    ):
+        assert marker in getting_started
+
+    for document in (faq, troubleshooting, tui_guide):
+        assert "(cli-reference.md#source-provider-options)" in document
+        assert "(getting-started.md#provision-excel-support)" in document
+
+
+def test_structured_result_exports_and_benchmark_are_publicly_documented() -> None:
+    cli_reference = " ".join(read_doc("docs/cli-reference.md").casefold().split())
+    getting_started = " ".join(read_doc("docs/getting-started.md").casefold().split())
+    tui_guide = " ".join(read_doc("docs/tui-guide.md").casefold().split())
+    development = " ".join(read_doc("docs/development.md").casefold().split())
+
+    for marker in (
+        "the localql result envelope",
+        "one json object per row with no envelope",
+        "typed columnar output",
+        "an `.xlsx` workbook with a header row",
+        "--format ndjson",
+        "--format parquet",
+        "--format excel",
+        "never downloads or installs it during export",
+    ):
+        assert marker in cli_reference
+
+    for marker in (
+        "orders_by_status.ndjson",
+        "orders_by_status.parquet",
+        "orders_by_status.xlsx",
+        "localql result envelope",
+        "one record per line",
+        "preserves duckdb logical types",
+    ):
+        assert marker in getting_started
+
+    for marker in (
+        ".ndjson`/`.jsonl",
+        ".parquet`/`.parq",
+        ".xlsx",
+        "never reruns the query",
+    ):
+        assert marker in tui_guide
+
+    for marker in (
+        "benchmark_multiformat_exports.py",
+        "--rows 100000",
+        "csv, json, ndjson, parquet, and excel inputs",
+        "ndjson, parquet, and excel outputs",
+        "atomic publication",
+        "validation runs after timing",
+    ):
+        assert marker in development
 
 
 def test_v1_1_onboarding_and_recovery_paths_are_publicly_documented() -> None:

@@ -27,14 +27,44 @@ environment. Only run SQL you trust.
 
 ## Why use LocalQL instead of DuckDB directly?
 
-DuckDB executes SQL. LocalQL adds a local CSV workflow around table aliases,
-project catalogs, saved SQL files, readable terminal output, explicit exports,
-data-quality checks, troubleshooting commands, and the optional terminal menu.
+DuckDB executes SQL. LocalQL adds deterministic local-source selection, table
+aliases, project catalogs, saved SQL files, readable terminal output, explicit
+exports, data-quality checks, troubleshooting commands, and the optional
+terminal menu.
 
-## Does LocalQL support Parquet, cloud sources, or web dashboards?
+## Which source formats does LocalQL support?
 
-LocalQL v1 focuses on local CSV files, DuckDB SQL, project catalogs, exports,
-and the optional terminal menu. See the [Roadmap](ROADMAP.md) for planned work.
+LocalQL supports local CSV, Parquet (including explicitly typed partitioned
+datasets), JSON, NDJSON/JSON Lines, and Excel `.xlsx` sources. The Excel provider
+requires DuckDB's optional `excel` extension to be provisioned before LocalQL
+starts; LocalQL does not install it during a query or export. Follow
+[Provision Excel support](getting-started.md#provision-excel-support) for the
+explicit install-and-verify workflow, and use the
+[source provider options](cli-reference.md#source-provider-options) reference
+for format-specific controls and defaults.
+
+Cloud sources, remote databases, object stores, and web dashboards are outside
+this local-source release. See the [Roadmap](ROADMAP.md) for planned work.
+
+## Which result formats can LocalQL export?
+
+`csvql export`, `CSVQLSession.export`, and the LocalQL Workbench can write CSV,
+the LocalQL JSON result envelope, record-oriented NDJSON, typed Parquet, Excel
+`.xlsx`, Markdown, or text. NDJSON, Parquet, and Excel are the structured
+v1.2 result formats. Use Parquet when logical-type fidelity matters; Excel
+follows spreadsheet conversions and requires the explicitly provisioned
+DuckDB `excel` extension.
+
+Query/run `--output` remains for terminal tables or the JSON envelope. Parquet
+and Excel are file outputs rather than terminal output modes.
+
+## How does LocalQL choose a source type?
+
+An explicit type always wins. Otherwise, one recognized extension selects its
+provider. If a file is extensionless or a directory is supplied without a type,
+LocalQL may inspect a bounded amount of local metadata to report possible
+matches, but it intentionally does not select from those matches. The
+diagnostic tells you which explicit choice is required.
 
 ## Where do terminal-menu result sources go?
 

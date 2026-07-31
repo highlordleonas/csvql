@@ -1,4 +1,4 @@
-"""Minimal Textual shell for the CSVQL menu TUI."""
+"""Minimal Textual shell for the LocalQL terminal workbench."""
 
 import asyncio
 from collections.abc import Callable, Sequence
@@ -14,7 +14,7 @@ from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import DataTable, Footer, Input, Static, TextArea
+from textual.widgets import DataTable, Footer, Input, Select, Static, TextArea
 from textual.widgets._footer import FooterKey
 from textual.worker import Worker, WorkerState
 
@@ -23,9 +23,13 @@ from csvql.exceptions import CSVQLError
 from csvql.export import ExportFormat
 from csvql.models import InspectResult, ProfileResult, QueryResult, SampleResult
 from csvql.operation import OperationCancelled, OperationContext, OperationToken
-from csvql.source import SourceCapability
+from csvql.output import format_source_diagnostic_table
 from csvql.table_mapping import parse_table_mapping
-from csvql.terminal_text import literal_terminal_text, terminal_safe_text
+from csvql.terminal_text import (
+    literal_terminal_text,
+    terminal_safe_multiline_text,
+    terminal_safe_text,
+)
 from csvql.tui_editor import all_sql_statements, selected_or_current_sql
 from csvql.tui_help import WORKBENCH_HELP
 from csvql.tui_native_picker import (
@@ -86,6 +90,7 @@ from csvql.tui_workflows import (
     build_initial_state,
     build_tui_export_intent,
     build_tui_run_request,
+    build_tui_source_preview,
     export_last_result,
     external_catalog_source_paths,
     inspect_source,
@@ -95,8 +100,11 @@ from csvql.tui_workflows import (
     sample_source,
     save_derived_result_source,
     save_sources_to_project_catalog,
-    source_capability_status,
     sources_from_csv_path_text,
+    structured_source_locator_from_text,
+    suggested_tui_source_alias,
+    tui_source_option_mappings,
+    tui_source_type_choices,
 )
 
 _FOOTER_KEY_ORDER = (
@@ -212,6 +220,115 @@ class _PromptInputScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+@dataclass(frozen=True, slots=True)
+class _StructuredSourceForm:
+    """Transport-only values collected by the structured add-source modal."""
+
+    alias: str
+    locator: str
+    source_type: str | None
+    option_text: str
+
+
+class _SourceInputScreen(ModalScreen[_StructuredSourceForm | None]):
+    """Structured source-intent form driven by import-free descriptor metadata."""
+
+    BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(
+        self,
+        *,
+        alias: str = "",
+        locator: str = "",
+        source_type: str | None = None,
+    ) -> None:
+        super().__init__()
+        self._initial_alias = alias
+        self._initial_locator = locator
+        self._initial_source_type = source_type or "auto"
+        self._choices = tui_source_type_choices()
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            "Add local source intent. Auto uses only deterministic extension selection; "
+            "ambiguous sources require an explicit type.",
+            markup=False,
+        )
+        yield Input(value=self._initial_alias, placeholder="Alias", id="source-alias")
+        yield Input(
+            value=self._initial_locator,
+            placeholder="File or directory",
+            id="source-locator",
+        )
+        yield Select(
+            (
+                ("Auto", "auto"),
+                *((choice.label, choice.source_type) for choice in self._choices),
+            ),
+            value=self._initial_source_type,
+            allow_blank=False,
+            id="source-type",
+        )
+        yield Static(
+            self._option_guidance(self._initial_source_type),
+            id="source-option-guidance",
+            markup=False,
+        )
+        yield Input(
+            placeholder="Explicit options, for example sheet=Orders header=true",
+            id="source-options",
+        )
+        yield Static(
+            "Press Enter to evaluate a bounded detection preview, then confirm.",
+            markup=False,
+        )
+
+    def on_mount(self) -> None:
+        target = "#source-alias" if not self._initial_alias else "#source-locator"
+        self.query_one(target, Input).focus()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "source-type":
+            return
+        source_type = event.value if isinstance(event.value, str) else "auto"
+        self.query_one("#source-option-guidance", Static).update(
+            terminal_safe_text(self._option_guidance(source_type))
+        )
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        del event
+        alias = self.query_one("#source-alias", Input).value.strip()
+        locator = self.query_one("#source-locator", Input).value.strip()
+        selected = self.query_one("#source-type", Select).value
+        source_type = selected if isinstance(selected, str) and selected != "auto" else None
+        option_text = self.query_one("#source-options", Input).value.strip()
+        self.dismiss(
+            _StructuredSourceForm(
+                alias=alias,
+                locator=locator,
+                source_type=source_type,
+                option_text=option_text,
+            )
+        )
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _option_guidance(self, source_type: str) -> str:
+        if source_type == "auto":
+            return "Options: choose an explicit type to see its supported option keys."
+        choice = next(
+            (candidate for candidate in self._choices if candidate.source_type == source_type),
+            None,
+        )
+        if choice is None or not choice.options:
+            return "Options: this source type accepts no explicit options."
+        rendered = ", ".join(f"{option.key}:{option.value_kind}" for option in choice.options)
+        return f"Options for {choice.label}: {rendered}"
 
 
 class _ConfirmationScreen(ModalScreen[bool]):
@@ -427,6 +544,8 @@ class _TrackedThreadCallable:
 class CSVQLMenuApp(App[None]):
     """Minimal interactive menu for loading sources and running SQL."""
 
+    TITLE = "LocalQL Workbench"
+
     CSS = """
     #status {
         height: 1;
@@ -466,7 +585,9 @@ class CSVQLMenuApp(App[None]):
     }
 
     #results-message {
-        height: 1;
+        height: auto;
+        min-height: 1;
+        max-height: 6;
     }
 
     #result-tabs {
@@ -486,7 +607,7 @@ class CSVQLMenuApp(App[None]):
         Binding("q", "quit_from_non_editor", "Quit", show=False),
         Binding("f1", "show_help", "Help", key_display="F1", priority=True),
         Binding("f2,ctrl+down", "focus_sql", "SQL", key_display="F2", priority=True),
-        Binding("f3,ctrl+o", "choose_csv_source", "Open CSV", key_display="F3", priority=True),
+        Binding("f3,ctrl+o", "choose_csv_source", "Open source", key_display="F3", priority=True),
         Binding(
             "f4",
             "run_selected_or_current_query",
@@ -712,7 +833,25 @@ class CSVQLMenuApp(App[None]):
         self._update_static_text("#run-status", "Ready.")
 
     def action_add_source(self) -> None:
-        self._open_add_source_prompt("Enter name=path or paste CSV path(s).")
+        self._open_structured_source_prompt()
+
+    def _open_structured_source_prompt(
+        self,
+        *,
+        alias: str = "",
+        locator: str = "",
+        source_type: str | None = None,
+    ) -> None:
+        if self._prompt_screen_active():
+            return
+        self.push_screen(
+            _SourceInputScreen(
+                alias=alias,
+                locator=locator,
+                source_type=source_type,
+            ),
+            callback=self._handle_structured_source_form,
+        )
 
     def _open_add_source_prompt(self, prompt: str) -> None:
         if self._prompt_screen_active():
@@ -731,7 +870,7 @@ class CSVQLMenuApp(App[None]):
     def _show_help_once(self) -> None:
         if self._help_screen_open or isinstance(
             self.screen,
-            (_HelpScreen, _PromptInputScreen, _ConfirmationScreen),
+            (_HelpScreen, _PromptInputScreen, _SourceInputScreen, _ConfirmationScreen),
         ):
             return
         self._help_screen_open = True
@@ -741,10 +880,16 @@ class CSVQLMenuApp(App[None]):
         self._help_screen_open = False
 
     def _prompt_screen_active(self) -> bool:
-        return isinstance(self.screen, (_HelpScreen, _PromptInputScreen, _ConfirmationScreen))
+        return isinstance(
+            self.screen,
+            (_HelpScreen, _PromptInputScreen, _SourceInputScreen, _ConfirmationScreen),
+        )
 
     def _input_or_confirmation_screen_active(self) -> bool:
-        return isinstance(self.screen, (_PromptInputScreen, _ConfirmationScreen))
+        return isinstance(
+            self.screen,
+            (_PromptInputScreen, _SourceInputScreen, _ConfirmationScreen),
+        )
 
     def action_choose_csv_source(self) -> None:
         if self._prompt_screen_active():
@@ -757,11 +902,27 @@ class CSVQLMenuApp(App[None]):
             if exc.suggestion:
                 fallback_message = f"{fallback_message} {exc.suggestion}"
             self._set_status(fallback_message)
-            self._open_add_source_prompt("Paste CSV path(s) or enter name=path.")
+            self._open_add_source_prompt("Paste a local source path or enter name=path.")
             return
 
         if not sources:
-            self._set_status("No CSV selected. " + self._status_message())
+            if len(path_values) == 1:
+                locator = structured_source_locator_from_text(
+                    path_values[0],
+                    start_dir=self.start_dir,
+                )
+                if locator is not None:
+                    self._open_structured_source_prompt(
+                        alias=suggested_tui_source_alias(locator, start_dir=self.start_dir),
+                        locator=locator,
+                    )
+                    return
+            if path_values:
+                self._set_status(
+                    "Choose one recognized non-CSV source at a time. " + self._status_message()
+                )
+            else:
+                self._set_status("No source selected. " + self._status_message())
             return
 
         self._add_session_sources(sources)
@@ -913,9 +1074,6 @@ class CSVQLMenuApp(App[None]):
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
-        if self._reject_unavailable_source_action(source, "inspect"):
-            return
-
         self._start_operation_worker(
             kind="inspect",
             label=f"Inspecting {source.name}",
@@ -936,9 +1094,6 @@ class CSVQLMenuApp(App[None]):
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
-        if self._reject_unavailable_source_action(source, "profile"):
-            return
-
         self._start_operation_worker(
             kind="profile",
             label=f"Profiling {source.name}",
@@ -962,9 +1117,6 @@ class CSVQLMenuApp(App[None]):
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
-        if self._reject_unavailable_source_action(source, "sample"):
-            return
-
         self._start_operation_worker(
             kind="sample",
             label=f"Sampling {source.name}",
@@ -988,9 +1140,6 @@ class CSVQLMenuApp(App[None]):
         if source is None:
             self._show_error(CSVQLError("No source selected."))
             return
-        if self._reject_unavailable_source_action(source, "inspect"):
-            return
-
         self._start_operation_worker(
             kind="columns",
             label=f"Loading columns for {source.name}",
@@ -999,22 +1148,6 @@ class CSVQLMenuApp(App[None]):
                 columns=inspect_source_columns(source, operation=operation),
             ),
         )
-
-    def _reject_unavailable_source_action(
-        self,
-        source: TUISource,
-        operation: SourceCapability,
-    ) -> bool:
-        status = source_capability_status(source, operation)
-        if status.state == "available":
-            return False
-        self._show_error(
-            CSVQLError(
-                (f"Source capability '{operation}' is {status.state} ({status.reason_code})."),
-                suggestion=status.remediation,
-            )
-        )
-        return True
 
     def action_insert_source_alias(self) -> None:
         source = self.state.selected_source()
@@ -1120,6 +1253,9 @@ class CSVQLMenuApp(App[None]):
             return
 
         self._run_editor_pending = True
+        # A run submitted from History must stop treating queued highlight
+        # events as user navigation before the deferred editor snapshot starts.
+        self.query_one("#sql", TextArea).focus()
         self._update_static_text("#run-status", preparing_message)
         if not self.call_after_refresh(callback):
             self._run_editor_pending = False
@@ -1501,7 +1637,8 @@ class CSVQLMenuApp(App[None]):
         prompt = _PromptInputScreen(
             (
                 "Export active result to path "
-                "(.csv, .json, .md, .markdown, .txt; blank suffix uses .csv)."
+                "(.csv, .json, .ndjson, .jsonl, .parquet, .parq, .xlsx, "
+                ".md, .markdown, .txt; blank suffix uses .csv)."
             ),
             input_id="export-path",
         )
@@ -2030,6 +2167,7 @@ class CSVQLMenuApp(App[None]):
                     base_dir=self.start_dir,
                     force=False,
                     token=operation.token,
+                    operation=operation,
                 )
             ),
         )
@@ -2183,7 +2321,7 @@ class CSVQLMenuApp(App[None]):
     def _refresh_sources_table(self) -> None:
         sources_table = self.query_one("#sources", DataTable)
         sources_table.clear(columns=True)
-        sources_table.add_columns("alias", "kind", "origin", "path")
+        sources_table.add_columns("alias", "type", "origin", "locator")
         for source in self.state.sources:
             sources_table.add_row(
                 literal_terminal_text(source.name),
@@ -2568,14 +2706,68 @@ class CSVQLMenuApp(App[None]):
                     start_dir=self.start_dir,
                 )
                 if not sources:
+                    locator = structured_source_locator_from_text(
+                        raw_mapping,
+                        start_dir=self.start_dir,
+                    )
+                    if locator is not None:
+                        self._open_structured_source_prompt(
+                            alias=suggested_tui_source_alias(
+                                locator,
+                                start_dir=self.start_dir,
+                            ),
+                            locator=locator,
+                        )
+                        return
                     raise CSVQLError(
                         "Invalid source input.",
-                        suggestion="Use name=path or paste one or more .csv file paths.",
+                        suggestion="Enter one local source path or a legacy CSV name=path mapping.",
                     )
             self._add_session_sources(sources)
         except CSVQLError as exc:
             self._show_error(exc)
             return
+
+    def _handle_structured_source_form(
+        self,
+        form: _StructuredSourceForm | None,
+    ) -> None:
+        if form is None:
+            return
+        try:
+            preview = build_tui_source_preview(
+                alias=form.alias,
+                locator=form.locator,
+                source_type=form.source_type,
+                option_mappings=tui_source_option_mappings(form.option_text),
+                existing_sources=self.state.sources,
+                start_dir=self.start_dir,
+            )
+        except CSVQLError as exc:
+            self._show_error(exc)
+            if (
+                exc.diagnostic is not None
+                and exc.diagnostic.required_action is not None
+                and exc.diagnostic.required_action.kind == "specify_type"
+            ):
+                self._open_structured_source_prompt(
+                    alias=form.alias,
+                    locator=form.locator,
+                )
+            return
+        self.push_screen(
+            _ConfirmationScreen(preview.confirmation_message()),
+            callback=lambda accepted: self._confirm_structured_source(preview.source, accepted),
+        )
+
+    def _confirm_structured_source(self, source: TUISource, accepted: bool) -> None:
+        if not accepted:
+            self._set_status("Source was not added.")
+            return
+        try:
+            self._add_session_sources((source,))
+        except CSVQLError as exc:
+            self._show_error(exc)
 
     def _handle_pending_export_prompt(
         self,
@@ -2767,6 +2959,7 @@ class CSVQLMenuApp(App[None]):
                             base_dir=self.start_dir,
                             force=False,
                             token=operation.token,
+                            operation=operation,
                         )
                     ),
                 )
@@ -3637,18 +3830,34 @@ class CSVQLMenuApp(App[None]):
         if preserve_active_result:
             self._set_status(
                 _status_with_cleanup_notes(
-                    _error_message(CSVQLError(event.error_message, suggestion=event.suggestion)),
+                    _error_message(
+                        CSVQLError(
+                            event.error_message,
+                            suggestion=event.suggestion,
+                            diagnostic=event.diagnostic,
+                        )
+                    ),
                     event.cleanup_notes,
                 ),
                 already_safe=True,
             )
         else:
-            self._show_error(CSVQLError(event.error_message, suggestion=event.suggestion))
+            self._show_error(
+                CSVQLError(
+                    event.error_message,
+                    suggestion=event.suggestion,
+                    diagnostic=event.diagnostic,
+                )
+            )
             if event.cleanup_notes:
                 self._set_status(
                     _status_with_terminal_warnings(
                         _error_message(
-                            CSVQLError(event.error_message, suggestion=event.suggestion)
+                            CSVQLError(
+                                event.error_message,
+                                suggestion=event.suggestion,
+                                diagnostic=event.diagnostic,
+                            )
                         ),
                         primary_error_message=None,
                         primary_suggestion=None,
@@ -3909,7 +4118,17 @@ class CSVQLMenuApp(App[None]):
             return True
 
         if not sources:
-            return False
+            locator = structured_source_locator_from_text(
+                raw_text,
+                start_dir=self.start_dir,
+            )
+            if locator is None:
+                return False
+            self._open_structured_source_prompt(
+                alias=suggested_tui_source_alias(locator, start_dir=self.start_dir),
+                locator=locator,
+            )
+            return True
 
         self._add_session_sources(sources)
         return True
@@ -4102,13 +4321,21 @@ def _export_path_and_format_for_prompt(path_value: str) -> tuple[str, ExportForm
         return cleaned_path, ExportFormat.csv
     if suffix == ".json":
         return cleaned_path, ExportFormat.json
+    if suffix in {".ndjson", ".jsonl"}:
+        return cleaned_path, ExportFormat.ndjson
+    if suffix in {".parquet", ".parq"}:
+        return cleaned_path, ExportFormat.parquet
+    if suffix == ".xlsx":
+        return cleaned_path, ExportFormat.excel
     if suffix in {".md", ".markdown"}:
         return cleaned_path, ExportFormat.markdown
     if suffix == ".txt":
         return cleaned_path, ExportFormat.text
     raise CSVQLError(
         f"Unsupported export file type: {suffix}",
-        suggestion="Use .csv, .json, .md, .markdown, or .txt.",
+        suggestion=(
+            "Use .csv, .json, .ndjson, .jsonl, .parquet, .parq, .xlsx, .md, .markdown, or .txt."
+        ),
     )
 
 
@@ -4125,9 +4352,13 @@ _PREVIOUS_RESULT_AVAILABLE = "Previous result is still available."
 
 
 def _error_message(error: CSVQLError) -> str:
-    lines = [f"Error: {terminal_safe_text(error.message)}"]
+    lines = [f"Error: {terminal_safe_multiline_text(error.message)}"]
     if error.suggestion:
-        lines.append(f"Suggestion: {terminal_safe_text(error.suggestion)}")
+        lines.append(f"Suggestion: {terminal_safe_multiline_text(error.suggestion)}")
+    if error.diagnostic is not None:
+        diagnostic = format_source_diagnostic_table(error.diagnostic).rstrip()
+        if diagnostic:
+            lines.append(terminal_safe_multiline_text(diagnostic))
     return "\n".join(lines)
 
 
@@ -4136,7 +4367,11 @@ def _with_previous_result_suggestion(error: CSVQLError) -> CSVQLError:
         suggestion = f"{error.suggestion} {_PREVIOUS_RESULT_AVAILABLE}"
     else:
         suggestion = _PREVIOUS_RESULT_AVAILABLE
-    return CSVQLError(error.message, suggestion=suggestion)
+    return CSVQLError(
+        error.message,
+        suggestion=suggestion,
+        diagnostic=error.diagnostic,
+    )
 
 
 def _non_durable_preview_pause_message(sequence: int, *, reason: str) -> str:
