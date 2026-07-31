@@ -980,7 +980,7 @@ def test_run_table_keyboard_interrupt_closes_engine_and_reports_public_error(
 
 
 def test_run_help_describes_limit_as_table_output_only() -> None:
-    result = runner.invoke(app, ["run", "--help"])
+    result = runner.invoke(app, ["run", "--help"], terminal_width=200)
     output = " ".join(Text.from_ansi(result.output).plain.split())
 
     assert result.exit_code == 0, result.output

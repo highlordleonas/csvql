@@ -1,4 +1,3 @@
-import os
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -262,7 +261,7 @@ def test_v12_source_request_builder_is_provider_neutral_and_performs_no_path_io(
 
     assert request.alias == "CustomerOrders"
     assert request.alias_key == "customerorders"
-    assert request.locator == os.path.normpath("missing/orders.data")
+    assert request.locator == "missing/orders.data"
     assert request.anchor == tmp_path / "project"
     assert request.explicit_type == "json"
 

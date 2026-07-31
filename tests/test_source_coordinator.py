@@ -24,6 +24,10 @@ from csvql.source import (
 from csvql.source_registry import DependencyRequirement, DescriptorView
 
 
+def _canonical_test_locator(filename: str) -> str:
+    return str(Path.cwd() / "data" / filename)
+
+
 def test_source_coordinator_module_exposes_the_lifecycle_boundary() -> None:
     """Removing the coordinator module would erase the application lifecycle seam."""
 
@@ -39,6 +43,8 @@ def test_resolved_source_is_an_immutable_resource_free_progressive_value() -> No
     """Adding a live runtime object to resolution would couple identity to lifecycle."""
 
     source_module = importlib.import_module("csvql.source")
+    canonical_locator = _canonical_test_locator("orders.csv")
+    canonical_parent = Path(canonical_locator).parent
 
     assert hasattr(source_module, "ResolvedSource")
     resolved = source_module.ResolvedSource(
@@ -47,7 +53,7 @@ def test_resolved_source_is_an_immutable_resource_free_progressive_value() -> No
         provider_interpretation_version="1",
         alias="orders",
         alias_key="orders",
-        canonical_locator="/data/orders.csv",
+        canonical_locator=canonical_locator,
         requested_locator="orders.csv",
         locator_shape="file",
         semantic_options=(),
@@ -70,7 +76,7 @@ def test_resolved_source_is_an_immutable_resource_free_progressive_value() -> No
         alias="orders",
         kind="csv",
         locator="orders.csv",
-        anchor=Path("/data"),
+        anchor=canonical_parent,
     )
     assert resolved.fingerprint.as_dict() == {
         "version": 1,
@@ -82,7 +88,7 @@ def test_resolved_source_is_an_immutable_resource_free_progressive_value() -> No
             "adapter_implementation_version": "1",
             "alias": "orders",
             "alias_key": "orders",
-            "canonical_locator": "/data/orders.csv",
+            "canonical_locator": canonical_locator,
             "dependency_versions": [],
             "duckdb_version": "1.4.0",
             "identity": {
@@ -287,7 +293,7 @@ def _resolved(request: SourceRequest) -> object:
         provider_interpretation_version="1",
         alias=request.alias,
         alias_key=request.alias_key,
-        canonical_locator=f"/data/{request.alias}.csv",
+        canonical_locator=_canonical_test_locator(f"{request.alias}.csv"),
         requested_locator=request.locator,
         locator_shape="file",
         semantic_options=(),
@@ -433,7 +439,7 @@ def test_prepare_reuses_valid_resolved_snapshots_without_resolving_again() -> No
     source_module = importlib.import_module("csvql.source")
     request = build_source_request(
         alias="orders",
-        locator="/data/orders.csv",
+        locator=_canonical_test_locator("orders.csv"),
         explicit_type="csv",
     )
     events: list[str] = []
@@ -465,7 +471,7 @@ def test_prepare_rejects_snapshot_runtime_mismatch_before_binding() -> None:
     source_module = importlib.import_module("csvql.source")
     request = build_source_request(
         alias="orders",
-        locator="/data/orders.csv",
+        locator=_canonical_test_locator("orders.csv"),
         explicit_type="csv",
     )
     events: list[str] = []
@@ -500,7 +506,7 @@ def test_prepare_rejects_snapshot_dependency_version_mismatch() -> None:
     source_module = importlib.import_module("csvql.source")
     request = build_source_request(
         alias="orders",
-        locator="/data/orders.csv",
+        locator=_canonical_test_locator("orders.csv"),
         explicit_type="csv",
     )
     dependency = DependencyRequirement("runtime.orders", "test_runtime")

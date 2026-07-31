@@ -186,7 +186,6 @@ class SourceRequest:
         if self.anchor is not None:
             expanded_anchor = self.anchor.expanduser()
             normalized_anchor = Path(os.path.abspath(os.path.normpath(os.fspath(expanded_anchor))))
-        object.__setattr__(self, "locator", os.path.normpath(self.locator))
         object.__setattr__(self, "anchor", normalized_anchor)
         object.__setattr__(self, "explicit_type", explicit_type)
         object.__setattr__(self, "options", freeze_source_options(self.options))

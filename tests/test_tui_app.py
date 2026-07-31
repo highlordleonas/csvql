@@ -2481,7 +2481,8 @@ def test_function_key_runs_query_from_sql_editor(tmp_path: Path) -> None:
             sql.load_text("SELECT * FROM customers")
 
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
+            await pilot.pause()
 
             status = app.query_one("#status", Static).content
             results = app.query_one("#results", DataTable)

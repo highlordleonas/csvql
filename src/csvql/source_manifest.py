@@ -178,7 +178,9 @@ def build_dataset_manifest(
             relative_path = _normalized_relative_path(relative_parent, entry.name)
             locator_relative_path = (locator_parent / entry.name).as_posix()
             try:
-                entry_stat = entry.stat(follow_symlinks=False)
+                # DirEntry may retain enumeration-time metadata on Windows.
+                # Re-stat the path so a removed or replaced member fails closed.
+                entry_stat = os.stat(entry.path, follow_symlinks=False)
             except OSError as exc:
                 raise DatasetManifestFailure(
                     "source.dataset_changed",
