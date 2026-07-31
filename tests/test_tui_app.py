@@ -5116,7 +5116,7 @@ def test_inspect_sample_and_profile_selected_source_update_output(tmp_path: Path
             app.query_one("#sources", DataTable).focus()
 
             await pilot.press("i")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
             inspect_status = app.query_one("#status", Static).content
             inspect_table = app.query_one("#results", DataTable)
             inspect_columns = tuple(str(column.label) for column in inspect_table.columns.values())
@@ -5126,7 +5126,7 @@ def test_inspect_sample_and_profile_selected_source_update_output(tmp_path: Path
             )
 
             await pilot.press("s")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
             sample_status = app.query_one("#status", Static).content
             sample_results = app.query_one("#results", DataTable)
             sample_columns = tuple(str(column.label) for column in sample_results.columns.values())
@@ -5134,7 +5134,7 @@ def test_inspect_sample_and_profile_selected_source_update_output(tmp_path: Path
             sample_message = app.query_one("#results-message", Static).content
 
             await pilot.press("p")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
             profile_status = app.query_one("#status", Static).content
             profile_results = app.query_one("#results", DataTable)
             profile_columns = tuple(
@@ -5226,11 +5226,11 @@ def test_source_intelligence_action_uses_operation_worker(
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("i")
-            await pilot.pause(0.1)
+            assert await asyncio.to_thread(started.wait, 2.0)
             running = app.state.operation_run.is_running
             status = app.query_one("#status", Static).content
             release.set()
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
             final_status = app.query_one("#status", Static).content
             return running, status, final_status
 
@@ -5268,7 +5268,7 @@ def test_source_worker_failure_preserves_csv_error_message_and_suggestion(
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("i")
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
             return (
                 app.query_one("#status", Static).content,
                 app.query_one("#results-message", Static).content,
@@ -5313,7 +5313,7 @@ def test_unexpected_operation_worker_failure_sanitizes_details(
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("i")
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
             return (
                 app.query_one("#status", Static).content,
                 app.query_one("#results-message", Static).content,
@@ -5433,11 +5433,11 @@ def test_escape_cancels_running_source_operation(
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("i")
-            await pilot.pause(0.1)
+            assert await asyncio.to_thread(started.wait, 2.0)
             await pilot.press("escape")
             await pilot.pause()
             release.set()
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
             return app.query_one("#status", Static).content, app.state.operation_run.is_running
 
     status, is_running = asyncio.run(_inner())
@@ -5480,10 +5480,9 @@ def test_escape_requests_shared_context_interrupt_and_worker_cleanup(
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("i")
-            await pilot.pause(0.1)
-            assert started.is_set()
+            assert await asyncio.to_thread(started.wait, 2.0)
             await pilot.press("escape")
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
             return (
                 app.query_one("#status", Static).content,
                 app.state.operation_run.is_running,
@@ -10331,7 +10330,7 @@ def test_source_columns_loads_grid_and_disables_export(tmp_path: Path) -> None:
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("c")
-            await pilot.pause()
+            await _settled_operation_idle(pilot, app)
             column_status = app.query_one("#status", Static).content
             columns_table = app.query_one("#results", DataTable)
             column_headers = tuple(str(column.label) for column in columns_table.columns.values())
@@ -10860,12 +10859,12 @@ def test_remove_source_is_blocked_while_inspect_operation_runs(
             await pilot.pause()
             app.query_one("#sources", DataTable).focus()
             await pilot.press("i")
-            await pilot.pause(0.1)
+            assert await asyncio.to_thread(started.wait, 2.0)
             await pilot.press("d")
             await pilot.press("y")
-            await pilot.pause(0.1)
+            await pilot.pause()
             release.set()
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
             return app.query_one("#sources", DataTable).row_count, app.query_one(
                 "#status", Static
             ).content
