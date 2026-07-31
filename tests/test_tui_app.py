@@ -3743,7 +3743,10 @@ def test_programmatic_history_refresh_does_not_restore_focused_history_row(
             history = app.query_one("#history", DataTable)
             history.focus()
             history.move_cursor(row=8)
-            await pilot.pause()
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if app.state.active_result.sequence == 9:
+                    break
             selected_sequence = app.state.active_result.sequence
 
             _record_stored_result(
@@ -5358,7 +5361,7 @@ def test_sample_worker_failure_preserves_previous_active_result(
             sql = app.query_one("#sql", TextArea)
             sql.load_text("SELECT * FROM customers")
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             previous_result = app.state.active_query_result_record()
             previous_active_result = app.state.active_result
@@ -5367,14 +5370,14 @@ def test_sample_worker_failure_preserves_previous_active_result(
 
             app.query_one("#sources", DataTable).focus()
             await pilot.press("s")
-            await pilot.pause(0.1)
+            assert await asyncio.to_thread(started.wait, 2.0)
 
             running_result_preserved = app.state.active_query_result_record() == previous_result
             running_active_result_preserved = app.state.active_result == previous_active_result
             running_view_preserved = app.state.result_view == previous_view
 
             release.set()
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
 
             return (
                 running_result_preserved,
@@ -5524,7 +5527,7 @@ def test_cancelled_sample_worker_preserves_previous_active_result(
             sql = app.query_one("#sql", TextArea)
             sql.load_text("SELECT * FROM customers")
             await pilot.press("f4")
-            await pilot.pause(0.2)
+            await _settled_query_idle(pilot, app)
 
             previous_result = app.state.active_query_result_record()
             previous_active_result = app.state.active_result
@@ -5534,7 +5537,7 @@ def test_cancelled_sample_worker_preserves_previous_active_result(
 
             app.query_one("#sources", DataTable).focus()
             await pilot.press("s")
-            await pilot.pause(0.1)
+            assert await asyncio.to_thread(started.wait, 2.0)
 
             running_result_preserved = app.state.active_query_result_record() == previous_result
             running_active_result_preserved = app.state.active_result == previous_active_result
@@ -5543,7 +5546,7 @@ def test_cancelled_sample_worker_preserves_previous_active_result(
             await pilot.press("escape")
             await pilot.pause(0.1)
             release.set()
-            await pilot.pause(0.2)
+            await _settled_operation_idle(pilot, app)
 
             return (
                 running_result_preserved,
