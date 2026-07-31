@@ -222,15 +222,15 @@ def test_ci_provisions_excel_for_every_required_matrix_cell() -> None:
     workflow = workflow_payload(".github/workflows/ci.yml")
     test_job = workflow["jobs"]["test"]
     job_env = test_job["env"]
-    assert job_env["LOCALQL_TEST_DUCKDB_EXTENSION_DIRECTORY"] == (
-        "${{ runner.temp }}/localql-duckdb-extensions"
-    )
+    assert "LOCALQL_TEST_DUCKDB_EXTENSION_DIRECTORY" not in job_env
 
     provision_step = named_step(
         ".github/workflows/ci.yml",
         "test",
         "Provision DuckDB Excel extension",
     )
+    extension_directory = "${{ runner.temp }}/localql-duckdb-extensions"
+    assert provision_step["env"]["LOCALQL_TEST_DUCKDB_EXTENSION_DIRECTORY"] == (extension_directory)
     provision_run = step_run(provision_step)
     assert provision_step["timeout-minutes"] == 5
     for required in (
@@ -245,6 +245,7 @@ def test_ci_provisions_excel_for_every_required_matrix_cell() -> None:
     assert "load_extension" not in provision_run
 
     test_step = named_step(".github/workflows/ci.yml", "test", "Test")
+    assert test_step["env"]["LOCALQL_TEST_DUCKDB_EXTENSION_DIRECTORY"] == extension_directory
     assert test_step["env"]["LOCALQL_REQUIRE_PROVISIONED_EXCEL"] == "1"
     assert step_run(test_step) == "uv run --all-extras pytest"
 

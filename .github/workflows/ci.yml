@@ -16,7 +16,6 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     env:
-      LOCALQL_TEST_DUCKDB_EXTENSION_DIRECTORY: ${{ runner.temp }}/localql-duckdb-extensions
       UV_PYTHON: ${{ matrix.python-version }}
     defaults:
       run:
@@ -52,6 +51,8 @@ jobs:
         run: uv sync --all-extras --frozen
       - name: Provision DuckDB Excel extension
         timeout-minutes: 5
+        env:
+          LOCALQL_TEST_DUCKDB_EXTENSION_DIRECTORY: ${{ runner.temp }}/localql-duckdb-extensions
         run: |
           set -euo pipefail
           uv run --frozen --no-sync python - <<'PY'
@@ -131,6 +132,7 @@ jobs:
         run: uv run --all-extras mypy src
       - name: Test
         env:
+          LOCALQL_TEST_DUCKDB_EXTENSION_DIRECTORY: ${{ runner.temp }}/localql-duckdb-extensions
           LOCALQL_REQUIRE_PROVISIONED_EXCEL: "1"
         run: uv run --all-extras pytest
       - name: Verify exact release artifacts
