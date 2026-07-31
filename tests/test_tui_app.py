@@ -6917,7 +6917,7 @@ def test_troubleshooting_documents_menu_entry_points() -> None:
     assert "`F3` opens a native source picker on macOS." in troubleshooting
     assert "`F3` or `Ctrl+O` opens the portable path prompt." in troubleshooting
     assert "Press `a` in Sources for the" in troubleshooting
-    assert "[Terminal menu guide](tui-guide.md)" in troubleshooting
+    assert "[Workbench guide](tui-guide.md)" in troubleshooting
 
 
 def test_question_mark_types_in_sql_editor_and_f1_opens_help(tmp_path: Path) -> None:

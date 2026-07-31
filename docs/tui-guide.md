@@ -1,4 +1,4 @@
-# LocalQL Terminal Menu Guide
+# LocalQL Workbench Guide
 
 `csvql menu` is an optional Textual-powered terminal workbench for the same
 local CSV, Parquet, JSON, NDJSON, and Excel sources and trusted SQL used by the
@@ -40,7 +40,7 @@ behavior and is added immediately. A recognized non-CSV path, extensionless
 file, or directory opens the structured source flow. Paths inside SQL strings,
 comments, or expressions remain ordinary SQL text.
 
-![Terminal screenshot of the LocalQL TUI showing loaded CSV sources, a successful History row, and a complete preserved result](assets/localql-tui-workbench.svg)
+![Terminal screenshot of the LocalQL Workbench showing loaded CSV sources, a successful History row, and a complete preserved result](assets/localql-tui-workbench.svg)
 
 ## Panes
 

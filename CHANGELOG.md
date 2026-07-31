@@ -31,7 +31,9 @@ contracts.
   JSON-envelope, Markdown, and text exports remain available.
 - Added an end-to-end multi-format export benchmark that crosses all five source
   providers with NDJSON, Parquet, and Excel outputs and validates every
-  generated artifact outside the timed interval.
+  generated artifact outside the timed interval. A curated
+  [v1.2.0 benchmark snapshot](docs/benchmarks.md) publishes the measured matrix,
+  environment, caveats, and reproduction path.
 
 ### Changed
 

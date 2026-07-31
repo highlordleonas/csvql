@@ -163,10 +163,15 @@ output requires the same explicitly provisioned DuckDB `excel` extension as
 Excel input and is intended for spreadsheet interchange. Use `--force` only
 when you intend to replace an existing export.
 
-## Use the optional terminal menu
+The [v1.2.0 benchmark snapshot](benchmarks.md) records a validated 15-route
+matrix across all five input providers and the NDJSON, Parquet, and Excel
+exports. It is machine-specific evidence rather than a universal performance
+claim.
 
-After your first core query, install the optional terminal-menu extra when you
-want an interactive source list, SQL editor, results, and history:
+## Use the optional LocalQL Workbench
+
+After your first core query, install the optional Workbench extra when you want
+an interactive source list, SQL editor, results, and history:
 
 ```console
 python -m pip install "localql[tui]"
@@ -176,12 +181,12 @@ csvql menu orders.csv
 You can also start with `csvql menu` and run source-free SQL such as `SELECT 1`
 before loading any sources.
 
-The menu keeps legacy CSV paste and picker behavior. Press `a`, or paste a
+The Workbench keeps legacy CSV paste and picker behavior. Press `a`, or paste a
 recognized non-CSV path, to open the structured source flow with alias, locator,
 type, options, bounded detection evidence, and confirmation. See the
-[Terminal menu guide](tui-guide.md) for keys and source actions.
+[Workbench guide](tui-guide.md) for keys and source actions.
 
-![Terminal screenshot of the LocalQL TUI workbench with CSV sources, SQL, History, and a complete preserved result](assets/localql-tui-workbench.svg)
+![Terminal screenshot of the LocalQL Workbench with CSV sources, SQL, History, and a complete preserved result](assets/localql-tui-workbench.svg)
 
 ## Compatibility and SQL safety
 
@@ -193,6 +198,8 @@ or restrict filesystem access, so run only SQL you trust.
 ## Next steps
 
 - Use the [CLI reference](cli-reference.md) for command options and JSON output.
+- Review the [v1.2.0 benchmarks](benchmarks.md) for measured multi-format export evidence.
+- Use the [Workbench guide](tui-guide.md) for the interactive UI workflow and key reference.
 - Use [Troubleshooting](troubleshooting.md) when a command or project does not work as expected.
 - Read the [FAQ](faq.md) for package naming, compatibility, and TUI questions.
 - Visit [Support](../SUPPORT.md) for bugs, documentation issues, and focused feature requests.

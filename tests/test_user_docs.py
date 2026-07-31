@@ -54,8 +54,9 @@ def test_readme_is_a_curated_user_starting_point() -> None:
     for expected_link in (
         f"[Getting started]({REPO_BLOB_PREFIX}docs/getting-started.md)",
         f"[CLI reference]({REPO_BLOB_PREFIX}docs/cli-reference.md)",
+        f"[v1.2.0 benchmarks]({REPO_BLOB_PREFIX}docs/benchmarks.md)",
         f"[Troubleshooting]({REPO_BLOB_PREFIX}docs/troubleshooting.md)",
-        f"[Terminal menu guide]({REPO_BLOB_PREFIX}docs/tui-guide.md)",
+        f"[Workbench guide]({REPO_BLOB_PREFIX}docs/tui-guide.md)",
         f"[Roadmap]({REPO_BLOB_PREFIX}docs/ROADMAP.md)",
         f"[Contributing]({REPO_BLOB_PREFIX}CONTRIBUTING.md)",
         f"[Security]({REPO_BLOB_PREFIX}SECURITY.md)",
@@ -69,14 +70,22 @@ def test_readme_guides_an_installed_user_from_setup_to_support() -> None:
 
     for heading in (
         "## Install and first query",
-        "## Optional terminal menu",
+        "## Supported sources and outputs",
+        "## Optional LocalQL Workbench",
         "## Compatibility and safety",
         "## Get help and stay current",
     ):
         assert heading in readme
 
-    assert readme.index("## Install and first query") < readme.index("## Optional terminal menu")
-    assert readme.index("## Optional terminal menu") < readme.index("## Compatibility and safety")
+    assert readme.index("## Install and first query") < readme.index(
+        "## Supported sources and outputs"
+    )
+    assert readme.index("## Supported sources and outputs") < readme.index(
+        "## Optional LocalQL Workbench"
+    )
+    assert readme.index("## Optional LocalQL Workbench") < readme.index(
+        "## Compatibility and safety"
+    )
     assert "python -m pip install localql" in readme
     assert 'csvql query orders.csv "SELECT * FROM orders LIMIT 5"' in readme
     assert 'python -m pip install "localql[tui]"' in readme
@@ -96,7 +105,7 @@ def test_getting_started_orders_the_core_query_before_the_optional_tui() -> None
         'csvql query orders.csv "SELECT * FROM orders LIMIT 5"'
     )
     tui_install_index = getting_started.index('python -m pip install "localql[tui]"')
-    terminal_menu_index = getting_started.index("## Use the optional terminal menu")
+    terminal_menu_index = getting_started.index("## Use the optional LocalQL Workbench")
 
     assert install_index < query_index < first_query_index < terminal_menu_index < tui_install_index
 
@@ -404,10 +413,20 @@ def test_provider_options_and_excel_provisioning_are_publicly_documented() -> No
 
 
 def test_structured_result_exports_and_benchmark_are_publicly_documented() -> None:
+    readme = " ".join(read_doc("README.md").casefold().split())
     cli_reference = " ".join(read_doc("docs/cli-reference.md").casefold().split())
     getting_started = " ".join(read_doc("docs/getting-started.md").casefold().split())
     tui_guide = " ".join(read_doc("docs/tui-guide.md").casefold().split())
     development = " ".join(read_doc("docs/development.md").casefold().split())
+    benchmarks = " ".join(read_doc("docs/benchmarks.md").casefold().split())
+    release_notes = " ".join(read_doc("docs/release-notes/v1.md").casefold().split())
+
+    for marker in (
+        "csv, parquet, json, ndjson, and excel",
+        "csv, json envelope, ndjson, parquet, excel",
+        "v1.2.0 benchmark snapshot",
+    ):
+        assert marker in readme
 
     for marker in (
         "the localql result envelope",
@@ -448,6 +467,27 @@ def test_structured_result_exports_and_benchmark_are_publicly_documented() -> No
         "validation runs after timing",
     ):
         assert marker in development
+
+    for marker in (
+        "one reproducible performance snapshot",
+        "5c9f793552e6b39df62c5e4671c82376e31025a4",
+        "f4c72b5",
+        "100,000 synthetic rows",
+        "one warmup followed by three measured runs",
+        "median of the three measured runs",
+        "process startup",
+        "atomic publication",
+        "post-timing validation",
+        "all 15 routes passed",
+        "not a universal speed claim",
+        "uncontrolled variables",
+    ):
+        assert marker in benchmarks
+    for source in ("csv", "json", "ndjson", "parquet", "excel"):
+        for output in ("ndjson", "parquet", "excel"):
+            assert f"| {source} | {output} |" in benchmarks
+
+    assert "[localql v1.2.0 benchmark snapshot](../benchmarks.md)" in release_notes
 
 
 def test_v1_1_onboarding_and_recovery_paths_are_publicly_documented() -> None:
@@ -499,12 +539,13 @@ def test_tui_workbench_asset_uses_current_result_language_and_accessible_metadat
         root.attrib["aria-labelledby"] == "localql-tui-workbench-title localql-tui-workbench-desc"
     )
     assert title is not None
-    assert title.text == "LocalQL TUI workbench showing a complete preserved result"
+    assert title.text == "LocalQL Workbench showing a complete preserved result"
     assert description is not None
     assert description.text
     assert "Showing 5 total row(s). Full export/save use the preserved result." in rendered_text
     assert "Delete removes the selected preserved result." in rendered_text
     assert "Showing 5 returned row(s)." not in rendered_text
+    assert "LocalQL Workbench" in rendered_text
 
 
 def test_roadmap_preserves_point_and_query_safety_and_compatibility() -> None:

@@ -39,6 +39,7 @@ PUBLIC_DOCUMENT_FILES: Final[frozenset[str]] = frozenset(
         "docs/assets/localql-terminal-project.svg",
         "docs/assets/localql-terminal-query.svg",
         "docs/assets/localql-tui-workbench.svg",
+        "docs/benchmarks.md",
         "docs/cli-reference.md",
         "docs/development.md",
         "docs/faq.md",

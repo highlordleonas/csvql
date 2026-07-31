@@ -49,6 +49,8 @@ Excel must already be provisioned for the active DuckDB runtime; the benchmark
 fails closed and never installs it. Results are local evidence under
 `output/benchmarks/multiformat-exports/`, which is ignored by Git. Compare only
 runs with the same machine, runtime, row count, warmups, and measured-run count.
+The curated [LocalQL v1.2.0 benchmark snapshot](benchmarks.md) publishes one
+validated reference matrix without treating local timings as universal claims.
 
 ## Package changes
 
